@@ -6,6 +6,7 @@ import json
 import subprocess
 import urllib.request
 from dataclasses import replace
+from fractions import Fraction
 from pathlib import Path
 
 import jsonschema
@@ -27,23 +28,24 @@ CASES = json.loads((Path(__file__).parent / "fixtures/spec_min.json").read_text(
 
 # Generated with the original normalizers read with git show from Agent base
 # 1784da3e903cbe2943039e0c2c9f95cab9827e7d, before adding the canonical view.
+# V2 pins follow the normalized generation defaults introduced by 2c58a6b21.
 LEGACY_DIGESTS = {
     "source_free_generate": (
         "de3ab4d9992d03c5b5005fa6134810f878a8f2e9d259d08d6e8e0f08f9bb4b12",
-        "cf04863d1a24e127553eb718b6c456e55368c60fb9795dbc6b110cc3758bda0b",
+        "38e6449e0e5e7e89d051f97bac5fdac5ada777d843f1574ca87dd9b45ccc340b",
     ),
     "source_backed_regenerate": (
         "c5017b87fe2a1fba981c067cfe3d57b70824f7f9268a3cd094e27aa257d3919e",
-        "cc6f04c3bc780933687a0e5e39ad7c472185d70a7842bf1964609aeb7e47ad0d",
+        "e117dfea50f3ab8e1cb46b211d2fdd84c1b260a52759c8b65dddad9fe10e6a14",
     ),
     "source_backed_extend": (
         "0207316b50a13d1e573cd0f5dc13c9d8a963688076b226d272020a6f6e97009b",
-        "ca502f4cc8da4ef03435a75dc64e21e748b22c3115dac5086fbd5588a6ca1698",
+        "c2661a323a72a23c20353f6c211ee3b34d46d545dda80fe95ca5e0cd505be672",
     ),
 }
 SCHEMA_DIGESTS = {
-    1: "3eb17c74f0c9788f4077896603c7918918aa62cf321dc26e394c31e4aca65403",
-    2: "ee22c452912dfe56c29b101dc7c6facd5a16508d352a791a23d1cf375c7b136e",
+    1: "bfe29da1691178d78d3c7b6664909fdc7fa707ab1db6acca7e946bd0620b053b",
+    2: "b5501572b5d519dad8eb63f06c95d9e0eeb47ecc95b63ab009e66227223245f7",
 }
 
 
@@ -73,6 +75,33 @@ def _edit(*ops: Operation, regions: tuple[Region, ...] = ()) -> H3Spec:
     return H3Spec(
         "Change the declared pixels.", 4, Source("source.mp4", (0, 4)), regions=regions, ops=ops
     )
+
+
+def test_exact_fraction_duration_keeps_node_limit_error_typed():
+    accepted_duration = Fraction(3592, 24)
+    accepted = H3Spec(
+        "Exact boundary.",
+        accepted_duration,
+        ops=(Operation("generate", (Fraction(0), accepted_duration), stream="av"),),
+    )
+    assert normalize_spec(accepted).duration == accepted_duration
+
+    one_frame_over = Fraction(3593, 24)
+    with pytest.raises(H3SpecError, match="job length frames"):
+        normalize_spec(H3Spec(
+            "One frame beyond the node grid.",
+            one_frame_over,
+            ops=(Operation("generate", (Fraction(0), one_frame_over), stream="av"),),
+        ))
+
+    oversized_duration = Fraction(10**400)
+    oversized = H3Spec(
+        "Beyond node limit.",
+        oversized_duration,
+        ops=(Operation("generate", (Fraction(0), oversized_duration), stream="av"),),
+    )
+    with pytest.raises(H3SpecError, match="job length frames"):
+        normalize_spec(oversized)
 
 
 def _assert_g21(error: BaseException, code: str | None = None) -> None:
@@ -486,3 +515,173 @@ def test_sampling_request_retains_v2_controls_and_rebinds_only_verified_source_w
     assert len(first.sampling_passes()[0].preserves) == 1
     assert len(first.sampling_passes()) == len(second.sampling_passes()) == 1
     assert request.digest == digest
+
+
+def test_reference_occurrences_preserve_trims_and_uses() -> None:
+    from astrid.packs.h3_av.shared.spec import canonical_spec, sampling_request_document
+
+    raw = {"version": 2, "prompt": "Replace a line", "duration": 4, "media": [
+        {"id": "clip", "asset": "scene", "role": "timeline", "modality": "video",
+         "at": {"frame": 0}, "range": [0, 4], "edit": [
+             {"stream": "audio", "during": [0, 2], "guides": ["replacement"]}]},
+        {"id": "replacement", "asset": "voice", "role": "reference", "modality": "audio", "range": [0, 2]},
+        {"id": "speaker", "asset": "voice", "role": "reference", "modality": "audio", "range": [2, 4]},
+        {"id": "performance", "asset": "movie", "role": "reference", "modality": "video", "audio": False, "range": [0, 2]},
+    ]}
+    request = normalize_request(raw)
+    rows = request.value["media"]
+    assert [r["occurrence_id"] for r in rows] == [f"occurrence-{i}" for i in range(1, 5)]
+    assert [rows[1]["use"], rows[2]["use"]] == ["replacement", "conditioning"]
+    assert rows[1]["range"] != rows[2]["range"]
+    assert rows[3]["audio"] is False
+    assert "model_tags" not in request.value and all("model_tag" not in row for row in rows)
+    spec = canonical_spec(request)
+    assert [(r.modality, r.range, r.use, r.audio) for r in spec.refs] == [
+        ("audio", (0, 2), "replacement", None), ("audio", (2, 4), "conditioning", None),
+        ("video", (0, 2), None, False)]
+    rebuilt = normalize_request(sampling_request_document(request, 0))
+    assert [(r.get("range"), r.get("use"), r.get("audio")) for r in rebuilt.value["media"][1:]] == [
+        (r.get("range"), r.get("use"), r.get("audio")) for r in rows[1:]]
+
+
+def test_pre_sr1_sealed_request_verifies_original_bytes() -> None:
+    from astrid.packs.h3_av.shared.request_v2 import read_prepared_request
+    fixture = json.loads((Path(__file__).parent / "fixtures/pre_sr1_sealed.json").read_text())
+    result = read_prepared_request(fixture["request"], fixture["request_digest"])
+    assert result.digest == fixture["request_digest"]
+    assert result.value["media"][0]["model_tag"] == "<Audio 1>"
+    fixture["request"]["prompt"] = "tampered"
+    with pytest.raises(H3RequestError, match="digest"):
+        read_prepared_request(fixture["request"], fixture["request_digest"])
+
+
+def test_identity_ignores_inspection_but_keeps_authored_intent() -> None:
+    raw = {"version": 2, "prompt": "A speaker", "duration": 2,
+           "media": [{"asset": "voice", "role": "reference"}]}
+    assert normalize_request(raw).digest == normalize_request(raw, asset_modalities={"voice": "audio"}).digest
+    changed = copy.deepcopy(raw)
+    changed["media"][0]["modality"] = "audio"
+    assert normalize_request(raw).digest != normalize_request(changed).digest
+
+
+def test_old_inflight_request_requires_rebuild(tmp_path: Path) -> None:
+    from astrid.packs.h3_av.shared.stages import STATE_NAME, load_build_state
+    fixture = json.loads((Path(__file__).parent / "fixtures/pre_sr1_sealed.json").read_text())
+    raw = {"version": 2, "prompt": "A speaker", "duration": 2,
+           "media": [{"id": "voice", "asset": "voice.wav", "role": "reference", "modality": "audio"}]}
+    (tmp_path / STATE_NAME).write_text(json.dumps({"request": raw, "request_digest": fixture["request_digest"]}))
+    with pytest.raises(ValueError, match="rebuild this request"):
+        load_build_state(tmp_path)
+
+
+def test_pre_sr1_settled_receipt_returns_existing_result(tmp_path: Path, monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from astrid.sdk.invocation import _resume_receipt_invocation
+    from astrid.sdk.recovery import AdmissionReceipt
+    from astrid.sdk.results import _reconstruct_generation_result
+    from astrid.packs.h3_av.shared.request_v2 import read_prepared_request
+    import astrid.packs.h3_av.shared.request as request_module
+
+    sealed = json.loads((Path(__file__).parent / "fixtures/pre_sr1_sealed.json").read_text())
+    # Verify the exact stored pre-break format before attempting result readback.
+    assert read_prepared_request(sealed["request"], sealed["request_digest"]).digest == sealed["request_digest"]
+    saved_result = {"seed_used": 42, "model_actual": "old-h3", "manifest": {"request_digest": sealed["request_digest"], "outputs": []}}
+    task = {"task_id": "old-task", "run_id": "old-run", "state": "succeeded",
+            "capability_id": "h3", "result": {"payload": {"generation_result": saved_result}, "outputs": []}}
+    reads = []
+    def show(task_id):
+        reads.append(task_id)
+        return SimpleNamespace(ok=True, data=task)
+    client = SimpleNamespace(handshake=lambda *_: {"realm_id": "test-realm"},
+                             tasks=SimpleNamespace(show=show))
+    path = tmp_path / "old-receipt.json"
+    admission = {"capability_id": "h3", "idempotency_key": "old-key", "sealed_request": sealed}
+    metadata = {"capability_id": "h3", "capability_type": "executor", "native_kind": "executor"}
+    with AdmissionReceipt(path, request=sealed, client=client, resume=False) as receipt:
+        receipt.freeze(admission, metadata=metadata)
+        receipt.locate(task)
+    # Resuming a settled task must use the stored result rather than rebuild it.
+    monkeypatch.setattr(request_module, "normalize_request", lambda *_a, **_k: pytest.fail("renormalized settled request"))
+    with AdmissionReceipt(path, request=sealed, client=client, resume=True) as receipt:
+        observed = _resume_receipt_invocation(receipt, client=client, wait=False,
+                                             timeout_seconds=1, poll_seconds=0.001)
+    result = _reconstruct_generation_result(observed)
+    assert reads == ["old-task"]
+    assert result.seed_used == 42 and result.model_actual == "old-h3"
+    assert result.manifest == saved_result["manifest"]
+
+
+def test_rectangle_authored_canvas_survives_request_and_typed_round_trip():
+    document = copy.deepcopy(next(case["v2"] for case in CASES if case["name"] == "source_backed_regenerate"))
+    edit = next(item for item in document["media"] if item.get("edit"))["edit"][0]
+    edit["mask"]["canvas"] = [640, 360]
+    request = normalize_request(document)
+    assert request.canonical.regions[0].canvas == (640, 360)
+    assert normalize_spec(request.canonical).regions[0].canvas == (640, 360)
+
+
+@pytest.mark.parametrize("canvas", [42, (0, 10), (10, True), (10, 1.5)])
+def test_typed_rectangle_rejects_invalid_canvas(canvas):
+    with pytest.raises(H3RequestError):
+        normalize_spec(_edit(Operation("regenerate", (0, 1), region="r"),
+                             regions=(Region("r", box=(0, 0, 1, 1), canvas=canvas),)))
+
+
+def test_multi_pass_planner_preserves_requested_canvas(tmp_path):
+    import json
+    from astrid.packs.h3_av.shared.planner import plan_request
+    from tests.packs.h3_av.test_moving_masks import _fixtures
+
+    source, _ = _fixtures(tmp_path)
+    import subprocess
+    resized = tmp_path / "resized.mkv"
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(source),
+                    "-vf", "scale=512:288", "-c:v", "ffv1", "-c:a", "copy", str(resized)],
+                   check=True, capture_output=True)
+    source = resized
+    request = normalize_request({"version": 2, "prompt": "Two edits", "duration": 1,
+        "output": {"size": [512, 288]},
+        "media": [{"asset": "source", "role": "timeline", "modality": "video",
+                   "at": {"frame": 0}, "range": [0, 1], "edit": [
+                       {"stream": "video", "during": [0, 1], "mask": {"rectangle": [0, 0, 256, 144]}},
+                       {"stream": "video", "during": [0, 1], "mask": {"rectangle": [512, 288, 256, 144]}}]}]})
+    plan = plan_request(request, asset_map={"source": str(source)}, out_dir=tmp_path / "plan")
+    assert plan["pass_count"] == 2
+    # Owner ruling 21 Nov: 3badab4d6, 461c4d91f, Plan 64 R1.1.
+    assert request.value["canvas"] == {"width": 512, "height": 288}
+    assert plan["compilation"]["status"] == "compiled"
+    assert plan["compilation"]["size"] == {"width": 512, "height": 288}
+    for item in plan["passes"]:
+        child = json.loads(Path(item["preparation_path"]).read_text())
+        assert child["request"]["canvas"] == {"width": 512, "height": 288}
+        assert child["runtime_submission"] == "blocked_inspection_only"
+
+
+def test_multi_pass_root_preparation_rejects_composition_and_verification(tmp_path):
+    import json
+    import subprocess
+    from pathlib import Path
+    from astrid.packs.h3_av.shared.planner import plan_request
+    from tests.packs.h3_av.test_moving_masks import _fixtures
+
+    source, generated = _fixtures(tmp_path)
+    resized = tmp_path / "resized.mkv"
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(source),
+                    "-vf", "scale=512:288", "-c:v", "ffv1", "-c:a", "copy", str(resized)],
+                   check=True, capture_output=True)
+    request = normalize_request({"version": 2, "prompt": "Two edits", "duration": 1,
+        "output": {"size": [512, 288]},
+        "media": [{"asset": "source", "role": "timeline", "modality": "video",
+                   "at": {"frame": 0}, "range": [0, 1], "edit": [
+                       {"stream": "video", "during": [0, 1], "mask": {"rectangle": [32, 32, 64, 64]}},
+                       {"stream": "video", "during": [0, 1], "mask": {"rectangle": [160, 32, 64, 64]}}]}]})
+    plan = plan_request(request, asset_map={"source": str(resized)}, out_dir=tmp_path / "plan")
+    # Owner ruling 21 Nov: 3badab4d6, 461c4d91f, Plan 64 R1.1.
+    assert request.value["canvas"] == {"width": 512, "height": 288}
+    assert plan["compilation"]["status"] == "compiled"
+    assert plan["compilation"]["size"] == {"width": 512, "height": 288}
+    for item in plan["passes"]:
+        handoff = json.loads(Path(item["preparation_path"]).read_text())
+        assert handoff["request"]["canvas"] == {"width": 512, "height": 288}
+        assert handoff["runtime_submission"] == "blocked_inspection_only"

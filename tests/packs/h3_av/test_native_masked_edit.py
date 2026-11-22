@@ -132,7 +132,22 @@ def _video_mask_prepare(tmp_path: Path, frames: int) -> dict:
 def test_native_masked_edit_video_mask_binding(tmp_path):
     import zipfile
 
-    manifest = compile_preparation(_video_mask_prepare(tmp_path, 120), out_dir=tmp_path / "out")
+    prepared = _video_mask_prepare(tmp_path, 120)
+    # The legacy 12px fixture below vanishes; use visible moving support here.
+    import subprocess
+    mask = tmp_path / "large-moving-mask.mkv"
+    frames = []
+    for index in range(120):
+        pixels = bytearray(1024 * 576)
+        x0 = 2 * index
+        for y in range(8, 40):
+            pixels[y * 1024 + x0:y * 1024 + x0 + 32] = b"\xff" * 32
+        frames.append(bytes(pixels))
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "gray", "-s", "1024x576", "-r", "24", "-i", "-", "-c:v", "ffv1", "-pix_fmt", "gray", str(mask)], input=b"".join(frames), check=True, capture_output=True)
+    for record in prepared["assets"]:
+        if record["asset"] == "pill-mask":
+            record.update(path=str(mask), size=mask.stat().st_size, sha256=hashlib.sha256(mask.read_bytes()).hexdigest())
+    manifest = compile_preparation(prepared, out_dir=tmp_path / "out")
     text = Path(manifest["workflow"]["workflow.py"]["path"]).read_text()
     assert "start_time=0.0" in text and text.count("frame_load_cap=120") == 2
     assert "imagetomask = ImageToMask(" in text
@@ -164,6 +179,12 @@ def test_native_masked_edit_video_mask_binding(tmp_path):
         assert hashlib.sha256(zf.read(row["member"])).hexdigest() == row["sha256"]
 
 
+@pytest.mark.ffmpeg
+def test_legacy_moving_mask_vanishing_grant_is_refused(tmp_path):
+    with pytest.raises(CompilationError, match=r"grant occurrence-1\.edit\[0\] vanishes"):
+        compile_preparation(_video_mask_prepare(tmp_path, 120), out_dir=tmp_path / "out")
+
+
 def _all_files(manifest: dict):
     stack = [manifest]
     while stack:
@@ -180,3 +201,1043 @@ def _all_files(manifest: dict):
 def test_native_masked_edit_video_mask_frame_mismatch_raises(tmp_path):
     with pytest.raises(CompilationError, match="frames"):
         compile_preparation(_video_mask_prepare(tmp_path, 100), out_dir=tmp_path / "out")
+
+
+def _multi_grant_request():
+    return {"version": 2, "duration": 1, "prompt": "A scene", "media": [{
+        "id": "source", "asset": "clip", "role": "timeline", "modality": "video",
+        "at": {"frame": 0}, "range": [0, 1], "edit": [
+            {"stream": "video", "during": [0, 1], "mask": {"rectangle": [0, 0, 128, 128]}, "strength": 0.25},
+            {"stream": "video", "during": [0, 1], "mask": {"rectangle": [64, 0, 128, 128]}, "strength": 0.75},
+        ],
+    }]}
+
+
+def test_multiple_grants_emit_independent_sampler_strength_mask(tmp_path):
+    import io
+    import subprocess
+    import zipfile
+    from PIL import Image
+
+    raw = _multi_grant_request()
+    raw["media"][0]["edit"][0]["during"] = [0, 0.75]
+    raw["media"][0]["edit"][1]["during"] = [0.25, 1]
+    compiled = compile_preparation(_prepare(raw, tmp_path), out_dir=tmp_path / "out")
+    assert compiled["capabilities"]["sampler_mask_precision"] == "8-bit"
+    row = next(row for row in compiled["managed_assets"]["manifest"]["assets"] if row["binding"] == "video_mask_0")
+    with zipfile.ZipFile(compiled["managed_assets"]["path"]) as archive:
+        mask = tmp_path / "strength.mkv"
+        mask.write_bytes(archive.read(row["member"]))
+    frame = subprocess.run(["ffmpeg", "-v", "error", "-i", str(mask), "-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "-"], check=True, capture_output=True).stdout
+    with Image.open(io.BytesIO(frame)) as image:
+        image = image.convert("L")
+        assert image.getpixel((32, 32)) == 64
+        assert image.getpixel((96, 32)) == 64
+        assert image.getpixel((300, 32)) == 0
+    overlap = subprocess.run(["ffmpeg", "-v", "error", "-i", str(mask), "-vf", "select=eq(n\\,12)", "-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "-"], check=True, capture_output=True).stdout
+    with Image.open(io.BytesIO(overlap)) as image:
+        assert image.convert("L").getpixel((96, 32)) == 191
+
+
+def test_zero_strength_keeps_source_but_does_not_suppress_overlap():
+    from astrid.packs.h3_av.shared.prepare import _v2_mask_schedule
+    raw = _multi_grant_request()
+    raw["media"][0]["edit"][0]["strength"] = 0
+    schedule = _v2_mask_schedule(normalize_request(raw))
+    assert len(schedule["video"]["changes"]) == 1
+    assert schedule["video"]["generated_intervals"] == [[0.0, 1.0]]
+    raw["media"][0]["edit"][1]["strength"] = 0
+    schedule = _v2_mask_schedule(normalize_request(raw))
+    assert schedule["video"]["changes"] == []
+    assert schedule["video"]["protected_intervals"] == [[0.0, 1.0]]
+
+
+def test_grant_that_vanishes_on_model_grid_names_the_grant(tmp_path):
+    raw = _multi_grant_request()
+    raw["media"][0]["edit"] = [raw["media"][0]["edit"][0]]
+    raw["media"][0]["edit"][0]["mask"] = {"rectangle": [0, 0, 1, 1]}
+    with pytest.raises(CompilationError, match=r"grant occurrence-1\.edit\[0\] vanishes"):
+        compile_preparation(_prepare(raw, tmp_path), out_dir=tmp_path / "out")
+
+
+@pytest.mark.ffmpeg
+def test_visible_moving_mask_composes_pixels_on_both_sides(tmp_path):
+    import subprocess
+    from tests.packs.h3_av.test_moving_masks import _fixtures, _prepare as prepare_composition
+    from astrid.packs.h3_av.shared.compose import compose_candidate
+
+    source, generated = _fixtures(tmp_path)
+    mask = tmp_path / "visible-mask.mkv"
+    frames = []
+    for index in range(24):
+        frame = bytearray(b"\x00\xff\x00" * (1024 * 576))
+        for y in range(8, 40):
+            x = index * 2
+            offset = (y * 1024 + x) * 3
+            frame[offset:offset + 32 * 3] = b"\xff\x00\x00" * 32
+        frames.append(bytes(frame))
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", "1024x576", "-r", "24", "-i", "-", "-c:v", "ffv1", "-pix_fmt", "gbrp", str(mask)], input=b"".join(frames), check=True, capture_output=True)
+    preparation = prepare_composition(source, mask)
+    result = compose_candidate(preparation=preparation, generated=generated, source=source, out_dir=tmp_path / "composed")
+    def first_frame(path):
+        return subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-frames:v", "1", "-vf", "scale=1024:576:flags=lanczos,format=gbrp,format=rgb24", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], check=True, capture_output=True).stdout
+    original, replacement, delivered = map(first_frame, (source, generated, result["candidate"]["path"]))
+    def pixel(data, x, y):
+        offset = (y * 1024 + x) * 3
+        return data[offset:offset + 3]
+    assert pixel(delivered, 12, 12) == pixel(replacement, 12, 12)
+    assert pixel(delivered, 80, 12) == pixel(original, 80, 12)
+    from astrid.packs.h3_av.shared.verify import verify_candidate
+    verification = verify_candidate(preparation=preparation, composition=result, source=source)
+    evidence = verification["preservation"]["spatial_complement"][0]
+    assert evidence["protected_pixel_count_per_frame"] == [1024 * 576 - 32 * 32] * 24
+
+
+@pytest.mark.parametrize("conflict", ["seed", "references"])
+def test_shared_pass_refuses_conflicting_grant_controls(tmp_path, conflict):
+    raw = _multi_grant_request()
+    if conflict == "seed":
+        raw["media"][0]["edit"][0]["seed"] = 1
+        raw["media"][0]["edit"][1]["seed"] = 2
+    else:
+        raw["media"].extend([
+            {"id": "a", "asset": "a", "role": "reference", "modality": "image"},
+            {"id": "b", "asset": "b", "role": "reference", "modality": "image"},
+        ])
+        raw["media"][0]["edit"][0]["guides"] = ["a"]
+        raw["media"][0]["edit"][1]["guides"] = ["b"]
+    with pytest.raises(CompilationError, match="separate sequential passes"):
+        compile_preparation(_prepare(raw, tmp_path), out_dir=tmp_path / "out")
+
+
+@pytest.mark.ffmpeg
+def test_zero_strength_composition_keeps_source_and_positive_overlap_wins(tmp_path):
+    import subprocess
+    from tests.packs.h3_av.test_moving_masks import _fixtures
+    from astrid.packs.h3_av.shared.compose import compose_candidate
+    from astrid.packs.h3_av.shared.prepare import prepare_request
+
+    source, generated = _fixtures(tmp_path)
+    raw = _multi_grant_request()
+    raw["media"][0]["edit"][0]["strength"] = 0
+    def decode(path):
+        return subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-frames:v", "1", "-vf", "scale=1024:576:flags=lanczos,format=gbrp,format=rgb24", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], check=True, capture_output=True).stdout
+    def pixel(data, x, y):
+        offset = (y * 1024 + x) * 3
+        return data[offset:offset + 3]
+    prepared = prepare_request(normalize_request(raw), asset_map={"clip": str(source)})
+    result = compose_candidate(preparation=prepared, generated=generated, source=source, out_dir=tmp_path / "positive")
+    original, replacement, delivered = map(decode, (source, generated, result["candidate"]["path"]))
+    assert pixel(delivered, 32, 32) == pixel(original, 32, 32)
+    assert pixel(delivered, 96, 32) == pixel(replacement, 96, 32)
+    assert pixel(delivered, 300, 32) == pixel(original, 300, 32)
+    raw["media"][0]["edit"][1]["strength"] = 0
+    prepared = prepare_request(normalize_request(raw), asset_map={"clip": str(source)})
+    result = compose_candidate(preparation=prepared, generated=generated, source=source, out_dir=tmp_path / "zero")
+    assert Path(result["candidate"]["path"]).read_bytes() == source.read_bytes()
+
+
+def test_mask_verification_uses_only_the_red_permission_channel():
+    from astrid.packs.h3_av.shared.compose import _protected_from_rgb
+    # Black, green-only and blue-only pixels are protected; red is editable.
+    assert _protected_from_rgb(bytes((0, 0, 0, 0, 255, 0, 0, 0, 255, 255, 0, 0))) == [0, 1, 2]
+
+
+def test_partial_window_mask_preprocessing_preserves_red_and_green_channels(tmp_path):
+    import subprocess
+    from astrid.packs.h3_av.shared.compile import _bounded_edit_mask
+
+    raw = bytearray(b"\x00\xff\x00" * (1024 * 576))
+    for y in range(8, 40):
+        start = (y * 1024 + 8) * 3
+        raw[start:start + 32 * 3] = b"\xff\x00\x00" * 32
+    mask = tmp_path / "colored-mask.mkv"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", "1024x576", "-r", "24", "-i", "-", "-c:v", "ffv1", "-pix_fmt", "gbrp", str(mask)], input=bytes(raw) * 3, check=True, capture_output=True)
+    bounded = _bounded_edit_mask(mask, kind="video", frames=3, during=(1, 2), destination=tmp_path)
+    decoded = subprocess.run(["ffmpeg", "-v", "error", "-i", str(bounded), "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], check=True, capture_output=True).stdout
+    frame_bytes = 1024 * 576 * 3
+    def pixel(frame, x, y):
+        offset = frame * frame_bytes + (y * 1024 + x) * 3
+        return decoded[offset:offset + 3]
+    assert pixel(0, 12, 12) == b"\x00\x00\x00"
+    assert pixel(1, 12, 12) == b"\xff\x00\x00"
+    assert pixel(1, 80, 12) == b"\x00\xff\x00"
+    assert pixel(2, 12, 12) == b"\x00\x00\x00"
+    assert set(decoded[0::3]) <= {0, 255}
+
+
+@pytest.mark.ffmpeg
+def test_intermediate_red_video_permission_is_refused(tmp_path):
+    import subprocess
+
+    raw = _multi_grant_request()
+    raw["media"][0]["edit"] = [raw["media"][0]["edit"][0]]
+    raw["media"][0]["edit"][0]["mask"] = {"asset": "mask"}
+    prepared = _prepare(raw, tmp_path)
+    mask = tmp_path / "nonbinary-mask.mkv"
+    # Plan 59 daa019ad requires equal channels before checking binary values.
+    frame = bytes((128, 128, 128)) * (1024 * 576)
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", "1024x576", "-r", "24", "-i", "-", "-c:v", "ffv1", "-pix_fmt", "gbrp", str(mask)], input=frame * 24, check=True, capture_output=True)
+    for record in prepared["assets"]:
+        if record["asset"] == "mask":
+            record.update(path=str(mask), size=mask.stat().st_size, sha256=hashlib.sha256(mask.read_bytes()).hexdigest())
+    with pytest.raises(CompilationError, match=r"grant occurrence-1\.edit\[0\].*binary \(0 or 255\)"):
+        compile_preparation(prepared, out_dir=tmp_path / "out")
+
+
+def test_masked_edit_accepts_nine_images_and_video_reference(tmp_path):
+    from vibecomfy.cli_loader import load_workflow_any
+    raw = _multi_grant_request()
+    raw["media"][0]["edit"] = [raw["media"][0]["edit"][0]]
+    raw["media"].extend({"id": f"image-{i}", "asset": f"image-{i}", "role": "reference", "modality": "image"} for i in range(9))
+    raw["media"].append({"id": "video", "asset": "video", "role": "reference", "modality": "video", "audio": False})
+    compilation = compile_preparation(_prepare(raw, tmp_path), out_dir=tmp_path / "out")
+    caps = compilation["capabilities"]
+    assert caps["effective_reference_count"] == 10
+    assert caps["reference_modality_counts"] == {"image": 9, "video": 1, "audio": 0}
+    workflow = load_workflow_any(compilation["workflow"]["workflow.py"]["path"])
+    api = workflow.compile("api", run_inputs=compilation["workflow_inputs"])
+    target = next(node for node in api.values() if node["class_type"] == "MiniMaxH3ReferenceToVideo")
+    assert sum(name.startswith("ref_images.") for name in target["inputs"]) == 9
+    assert "ref_videos.ref_video_0" in target["inputs"]
+
+
+@pytest.mark.parametrize("images,videos,audios,limit", [(10, 0, 0, "builder slots"), (0, 4, 0, "builder slots"), (0, 0, 4, "builder slots"), (9, 3, 1, "conditioning files")])
+def test_masked_edit_enforces_each_reference_limit(tmp_path, images, videos, audios, limit):
+    raw = _multi_grant_request()
+    raw["media"][0]["edit"] = [raw["media"][0]["edit"][0]]
+    for modality, count in (("image", images), ("video", videos), ("audio", audios)):
+        for index in range(count):
+            item = {"id": f"{modality}-{index}", "asset": f"{modality}-{index}", "role": "reference", "modality": modality}
+            if modality == "video":
+                item["audio"] = False
+            raw["media"].append(item)
+    with pytest.raises(CompilationError, match=limit):
+        compile_preparation(_prepare(raw, tmp_path), out_dir=tmp_path / "out")
+
+
+@pytest.mark.ffmpeg
+@pytest.mark.parametrize("red_outside", [False, True])
+def test_public_preparation_validates_only_red_mask_channel(tmp_path, red_outside):
+    import subprocess
+    from tests.packs.h3_av.test_moving_masks import _fixtures
+    from astrid.packs.h3_av.shared.prepare import PreparationError, prepare_request
+
+    source, _ = _fixtures(tmp_path)
+    # Plan 59 daa019ad requires equal RGB channels for video masks.
+    mask = tmp_path / "grayscale-mask.mkv"
+    frames = []
+    for index in range(24):
+        if 6 <= index < 18:
+            pixel = b"\xff\xff\xff"  # all channels grant permission
+        elif red_outside and index == 0:
+            pixel = b"\xff\xff\xff"
+        else:
+            pixel = b"\x00\x00\x00"  # no permission
+        frames.append(pixel * (1024 * 576))
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", "1024x576", "-r", "24", "-i", "-", "-c:v", "ffv1", "-pix_fmt", "gbrp", str(mask)], input=b"".join(frames), check=True, capture_output=True)
+    raw = {"version": 2, "duration": 1, "prompt": "Edit", "media": [{
+        "asset": "source", "role": "timeline", "modality": "video", "at": {"frame": 0}, "range": [0, 1],
+        "edit": [{"stream": "video", "during": [0.25, 0.75], "mask": {"asset": "mask"}}],
+    }]}
+    request = normalize_request(raw)
+    if red_outside:
+        with pytest.raises(PreparationError, match="non-zero outside"):
+            prepare_request(request, asset_map={"source": str(source), "mask": str(mask)})
+    else:
+        prepared = prepare_request(request, asset_map={"source": str(source), "mask": str(mask)})
+        assert prepared["mask_schedule"]["video"]["generated_intervals"] == [[0.25, 0.75]]
+
+@pytest.mark.parametrize("size", [(1024, 576), (512, 288), (768, 448)])
+def test_masked_canvas_is_emitted(tmp_path, size):
+    from vibecomfy.cli_loader import load_workflow_any
+    raw = json.loads(json.dumps(WATERMARK))
+    raw["output"] = {"size": list(size)}
+    compiled = compile_preparation(_prepare(raw, tmp_path), out_dir=tmp_path / "out")
+    api = load_workflow_any(compiled["workflow"]["workflow.py"]["path"]).compile("api", run_inputs=compiled["workflow_inputs"])
+    sized = [(row["class_type"], key, value) for row in api.values() for key, value in row["inputs"].items() if key in ("width", "height")]
+    assert sorted(sized) == sorted([("MiniMaxH3ReferenceToVideo", "width", size[0]), ("MiniMaxH3ReferenceToVideo", "height", size[1])])
+    assert compiled["size"] == {"width": size[0], "height": size[1]}
+
+
+
+def test_mixed_audio_composition_is_sample_exact_per_stereo_channel(tmp_path):
+    import struct
+    import subprocess
+    import wave
+    from astrid.packs.h3_av.shared.compose import _compose_media, _decode_exact_pcm, _exact_audio_for_request
+
+    rate = 48000
+    def write_audio(path, samples):
+        with wave.open(str(path), "wb") as stream:
+            stream.setnchannels(2)
+            stream.setsampwidth(2)
+            stream.setframerate(rate)
+            stream.writeframes(b"".join(struct.pack("<hh", left, right) for left, right in samples))
+    source_wav, generated_wav, fixed_wav = (tmp_path / name for name in ("source.wav", "generated.wav", "fixed.wav"))
+    source_samples = [(100 + i % 100, -500 - i % 100) for i in range(rate * 2)]
+    generated_samples = [(1000 + i % 100, -1500 - i % 100) for i in range(rate * 2)]
+    fixed_samples = [(2000 + i % 100, -2500 - i % 100) for i in range(rate)]
+    write_audio(source_wav, source_samples)
+    write_audio(generated_wav, generated_samples)
+    write_audio(fixed_wav, fixed_samples)
+    source, generated = tmp_path / "source.mkv", tmp_path / "generated.mkv"
+    for audio, output in ((source_wav, source), (generated_wav, generated)):
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=size=32x32:rate=24:duration=2",
+                        "-i", str(audio), "-c:v", "ffv1", "-c:a", "pcm_s16le", str(output)], check=True)
+    preparation = {"request": {"version": 2, "media": [
+        {"occurrence_id": "occurrence-1", "role": "timeline", "edit": [
+            {"stream": "audio", "action": "generate", "resolved": {"range": [10000, 30001]}, "guides": ["fixed"]},
+            {"stream": "audio", "action": "generate", "resolved": {"range": [50001, 70000]}},
+        ]},
+        {"id": "fixed", "occurrence_id": "occurrence-2", "asset": "voice", "role": "reference", "use": "replacement",
+         "resolved_range": [1, rate]},
+    ]}, "assets": [{"asset": "voice", "path": str(fixed_wav), "status": "resolved"}]}
+    prepared = _exact_audio_for_request(preparation, source=source, generated=generated,
+                                        destination=tmp_path / "prepared.wav", duration=2, source_offset=0)
+    expected = source_samples[:10000] + fixed_samples[1:20002] + source_samples[30001:50001] + generated_samples[50001:70000] + source_samples[70000:]
+    assert prepared is not None
+    output = tmp_path / "delivered.mkv"
+    _compose_media(source=source, generated=generated, destination=output, duration=2, generated_video=[],
+                   generated_audio=[[10000 / rate, 30001 / rate], [50001 / rate, 70000 / rate]],
+                   source_offset=0, exact_audio_path=prepared[0])
+    decoded, channels = _decode_exact_pcm(output)
+    assert channels == 2
+    assert decoded == b"".join(struct.pack("<hh", left, right) for left, right in expected)
+"""Focused source/generated audio segment coverage for masked edits."""
+
+from astrid.packs.h3_av.shared.compose import _segments
+
+
+def test_audio_window_retains_the_source_on_both_sides():
+    assert _segments(5, [[1, 2], [3, 4]]) == [
+        (0.0, 1.0, False), (1.0, 2.0, True), (2.0, 3.0, False),
+        (3.0, 4.0, True), (4.0, 5.0, False),
+    ]
+
+
+def test_asymmetric_stereo_pcm_splices_exact_samples_and_fixed_wins():
+    import struct
+    from astrid.packs.h3_av.shared.compose import _splice_exact_pcm
+
+    def pcm(samples):
+        return b"".join(struct.pack("<hh", left, right) for left, right in samples)
+
+    source = pcm([(1, -11), (2, -12), (3, -13), (4, -14), (5, -15), (6, -16)])
+    generated = pcm([(101, -101), (102, -102), (103, -103), (104, -104), (105, -105), (106, -106)])
+    fixed = pcm([(201, -201), (202, -202), (203, -203)])
+    delivered = _splice_exact_pcm(source, channels=2, total_samples=6, generated=generated,
+                                  generated_spans=[(1, 5)], fixed_spans=[(2, 4, fixed, 1)])
+    assert delivered == pcm([(1, -11), (102, -102), (202, -202), (203, -203), (105, -105), (6, -16)])
+
+
+def test_pcm_decode_rejects_noncanonical_kept_rate_and_wrong_layout(tmp_path):
+    import wave
+    import pytest
+    from astrid.packs.h3_av.shared.compose import CompositionError, _decode_exact_pcm
+
+    clip = tmp_path / "mono.wav"
+    with wave.open(str(clip), "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(44100)
+        output.writeframes(b"\x00\x00" * 100)
+    with pytest.raises(CompositionError, match="48000 Hz"):
+        _decode_exact_pcm(clip)
+    with pytest.raises(CompositionError, match="layout"):
+        _decode_exact_pcm(clip, expected_channels=2, generated=True)
+
+
+def test_fixed_audio_is_spliced_into_managed_v2v_source(tmp_path):
+    import copy
+    import subprocess
+    from astrid.packs.h3_av.shared.compose import _decode_exact_pcm
+    from vibecomfy.cli_loader import load_workflow_any
+
+    source, voice = tmp_path / "scene.mkv", tmp_path / "voice.wav"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=size=32x32:rate=24:duration=2",
+                    "-f", "lavfi", "-i", "sine=frequency=330:sample_rate=48000:duration=2",
+                    "-c:v", "ffv1", "-c:a", "pcm_s16le", str(source)], check=True)
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=48000:duration=2",
+                    "-c:a", "pcm_s16le", str(voice)], check=True)
+    raw = {"version": 2, "duration": 2, "prompt": "Edit", "media": [
+        {"id": "source", "asset": "scene", "role": "timeline", "modality": "video", "at": {"frame": 0},
+         "range": [0, 2], "edit": [
+             {"stream": "video", "during": [0, 2], "mask": {"rectangle": [0, 0, 128, 128]}, "guides": []},
+             {"stream": "audio", "during": [0.5, 1.5], "guides": ["fixed"]}]},
+        {"id": "fixed", "asset": "voice", "role": "reference", "modality": "audio", "range": [0, 2]},
+    ]}
+    request = normalize_request(raw)
+    records = [{"asset": name, "status": "resolved", "path": str(path), "size": path.stat().st_size,
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+               for name, path in (("scene", source), ("voice", voice))]
+    preparation = {"kind": "h3_av_preparation", "status": "prepared", "runtime_submission": "eligible",
+                   "request": copy.deepcopy(request.value), "request_digest": request.digest, "assets": records}
+    manifest = compile_preparation(preparation, out_dir=tmp_path / "out")
+    api = load_workflow_any(manifest["workflow"]["workflow.py"]["path"]).compile("api", run_inputs=manifest["workflow_inputs"])
+    v2v = next(row["inputs"] for row in api.values() if row["class_type"] == "H3V2VGranularFractionalDenoise")
+    concat = api[v2v["source_audio"][0]]
+    loader = api[concat["inputs"]["audio1"][0]]
+    assert loader["class_type"] == "LoadAudio"
+    assert v2v["audio_strength"] == 0
+    source_pcm, _ = _decode_exact_pcm(source)
+    voice_pcm, _ = _decode_exact_pcm(voice)
+    prepared_pcm, _ = _decode_exact_pcm(tmp_path / "out" / "source-with-fixed-audio.wav")
+    assert prepared_pcm == source_pcm[:24000 * 2] + voice_pcm[:48000 * 2] + source_pcm[72000 * 2:]
+
+
+def test_zero_strength_audio_keeps_source_and_positive_overlap_wins(tmp_path):
+    import copy
+
+    raw = copy.deepcopy(WATERMARK)
+    prepared = _prepare(raw, tmp_path)
+    raw["media"][0]["edit"].append({"stream": "audio", "during": [1, 3], "strength": 0})
+    request = normalize_request(raw)
+    prepared["request"], prepared["request_digest"] = request.value, request.digest
+    manifest = compile_preparation(prepared, out_dir=tmp_path / "zero")
+    assert manifest["status"] == "compiled"
+    block = _v2v_block(manifest)
+    assert "audio_strength=0," in block
+    raw["media"][0]["edit"].append({"stream": "audio", "during": [2, 4], "strength": 0.5})
+    request = normalize_request(raw)
+    prepared["request"], prepared["request_digest"] = request.value, request.digest
+    manifest = compile_preparation(prepared, out_dir=tmp_path / "overlap")
+    requested = manifest["capabilities"]["audio_time_mask"]["requested_frame_values"]
+    assert requested[24:48] == [0] * 24
+    assert requested[48:96] == [0.5] * 48
+    from vibecomfy.cli_loader import load_workflow_any
+    api = load_workflow_any(manifest["workflow"]["workflow.py"]["path"]).compile("api", run_inputs=manifest["workflow_inputs"])
+    setter = next(row["inputs"] for row in api.values() if row["class_type"] == "MiniMaxH3SetAVNoiseMask")
+    assert "video_mask" not in setter
+    assert api[setter["latent"][0]]["class_type"] == "H3V2VGranularFractionalDenoise"
+    sampler = next(row["inputs"] for row in api.values() if row["class_type"] == "SamplerCustomAdvanced")
+    assert sampler["latent_image"][0] == next(key for key, row in api.items() if row["class_type"] == "MiniMaxH3SetAVNoiseMask")
+
+
+def test_audio_mask_sample_overlap_and_managed_binding(tmp_path):
+    import copy
+    import struct
+    import subprocess
+    import zipfile
+    from vibecomfy.cli_loader import load_workflow_any
+
+    raw = copy.deepcopy(WATERMARK)
+    prepared = _prepare(raw, tmp_path)
+    raw["media"][0]["edit"].append({"stream": "audio", "during": ["2001/48000", "3999/48000"], "strength": 0.5})
+    request = normalize_request(raw)
+    prepared["request"], prepared["request_digest"] = request.value, request.digest
+    output = tmp_path / "compiled"
+    manifest = compile_preparation(prepared, out_dir=output)
+    values = manifest["capabilities"]["audio_time_mask"]
+    assert values["requested_frame_values"][:3] == [0, pytest.approx(1998 * 0.5 / 2000), 0]
+    assert values["decoded_frame_values"][1] == pytest.approx(values["requested_frame_values"][1], abs=0.5 / 65535)
+    binding = next(row for row in manifest["managed_assets"]["manifest"]["assets"] if row["binding"] == "audio_time_mask")
+    member = binding["member"]
+    graph_filename = manifest["workflow_inputs"]["audio_time_mask"]
+    assert Path(member).name == graph_filename
+    with zipfile.ZipFile(manifest["managed_assets"]["path"]) as archive:
+        packaged = archive.read(member)
+        assert packaged == (output / "audio-time-mask.mkv").read_bytes()
+        assert hashlib.sha256(packaged).hexdigest() == binding["sha256"]
+    api = load_workflow_any(manifest["workflow"]["workflow.py"]["path"]).compile("api", run_inputs=manifest["workflow_inputs"])
+    loader_id, loader = next((key, row) for key, row in api.items() if row["class_type"] == "VHS_LoadVideoFFmpeg" and row["inputs"].get("video") == graph_filename)
+    converter_id, converter = next((key, row) for key, row in api.items() if row["class_type"] == "ImageToMask" and row["inputs"].get("image") == [loader_id, 0])
+    assert converter["inputs"]["channel"] == "red"
+    crop_id, crop = next((key, row) for key, row in api.items() if row["class_type"] == "CropMask" and row["inputs"].get("mask") == [converter_id, 0])
+    assert (crop["inputs"]["width"], crop["inputs"]["height"]) == (1, 1)
+    setter = next(row for row in api.values() if row["class_type"] == "MiniMaxH3SetAVNoiseMask")
+    assert setter["inputs"]["audio_mask"] == [crop_id, 0]
+    assert "video_mask" not in setter["inputs"]
+    raw_bytes = subprocess.run(["ffmpeg", "-v", "error", "-i", str(output / "audio-time-mask.mkv"),
+                                "-pix_fmt", "rgba64le", "-f", "rawvideo", "-"], check=True, capture_output=True).stdout
+    assert len(raw_bytes) == len(values["decoded_frame_values"]) * 512
+    observed = [struct.unpack_from("<H", raw_bytes, index * 512)[0] / 65535 for index in range(len(values["decoded_frame_values"]))]
+    assert observed == values["decoded_frame_values"]
+
+
+@pytest.mark.ffmpeg
+def test_mixed_fixed_and_generated_audio_delivers_exact_pcm_and_masked_picture(tmp_path):
+    import subprocess
+    from astrid.packs.h3_av.shared.compose import compose_candidate, _decode_exact_pcm
+    from astrid.packs.h3_av.shared.prepare import prepare_request
+    from tests.packs.h3_av.test_moving_masks import _fixtures
+
+    source, generated = _fixtures(tmp_path)
+    distinct_source = tmp_path / "distinct-source.mkv"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(source), "-f", "lavfi", "-i",
+                    "sine=frequency=440:sample_rate=48000:duration=0.5", "-f", "lavfi", "-i",
+                    "sine=frequency=550:sample_rate=48000:duration=0.5", "-filter_complex", "[1:a][2:a]concat=n=2:v=0:a=1[a]",
+                    "-map", "0:v:0", "-map", "[a]", "-c:v", "copy", "-c:a", "pcm_s16le", str(distinct_source)], check=True)
+    source = distinct_source
+    voice = tmp_path / "voice.wav"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                    "sine=frequency=660:sample_rate=48000:duration=4", "-c:a", "pcm_s16le", str(voice)], check=True)
+    raw = {"version": 2, "duration": 1, "prompt": "Edit the mouth", "media": [
+        {"id": "source", "asset": "scene", "role": "timeline", "modality": "video", "at": {"frame": 0},
+         "range": [0, 1], "edit": [
+             {"stream": "video", "during": [0, 1], "mask": {"rectangle": [0, 0, 128, 128]}, "guides": ["speaker"]},
+             {"stream": "audio", "during": ["5000/48000", "15001/48000"], "guides": ["fixed"]},
+             {"stream": "audio", "during": ["25001/48000", "35003/48000"]},
+         ]},
+        {"id": "fixed", "asset": "voice", "role": "reference", "modality": "audio", "range": ["1/48000", "10002/48000"]},
+        {"id": "speaker", "asset": "voice", "role": "reference", "modality": "audio", "range": [2, 4]},
+    ]}
+    request = normalize_request(raw)
+    preparation = prepare_request(request, asset_map={"scene": str(source), "voice": str(voice)})
+    manifest = compile_preparation(preparation, out_dir=tmp_path / "compiled")
+    assert manifest["capabilities"]["reference_modality_counts"]["audio"] == 1
+    mask = manifest["capabilities"]["audio_time_mask"]
+    assert mask["requested_frame_values"][5] == 0
+    assert mask["requested_frame_values"][12] == pytest.approx(999 / 2000)
+    result = compose_candidate(preparation=preparation, generated=generated, source=source, out_dir=tmp_path / "composed")
+    source_pcm, channels = _decode_exact_pcm(source)
+    generated_pcm, _ = _decode_exact_pcm(generated, expected_channels=channels, generated=True)
+    voice_pcm, _ = _decode_exact_pcm(voice, expected_channels=channels)
+    delivered, _ = _decode_exact_pcm(Path(result["candidate"]["path"]), expected_channels=channels)
+    stride = channels * 2
+    expected = (source_pcm[:5000 * stride] + voice_pcm[1 * stride:10002 * stride] +
+                source_pcm[15001 * stride:25001 * stride] + generated_pcm[25001 * stride:35003 * stride] +
+                source_pcm[35003 * stride:48000 * stride])
+    assert delivered == expected
+    delivered_spans = result["composition"]["exact_audio"]["delivered_spans"]
+    assert [row["source"] for row in delivered_spans] == ["source", "fixed", "source", "generated", "source"]
+    assert manifest["capabilities"]["expected_delivered_audio_spans"] == delivered_spans
+    assert [(row["samples"], row["use"]) for row in manifest["capabilities"]["requested_audio_grants"]] == [
+        ([5000, 15001], "fixed"), ([25001, 35003], "generated")]
+    def decode_frames(path):
+        return subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-vf",
+                               "scale=1024:576:flags=lanczos,format=gbrp,format=rgb24", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                              check=True, capture_output=True).stdout
+    original, standin, actual = map(decode_frames, (source, generated, result["candidate"]["path"]))
+    row_bytes, frame_bytes = 1024 * 3, 1024 * 576 * 3
+    assert len(original) == len(standin) == len(actual) == 24 * frame_bytes
+    for frame in range(24):
+        for row in range(576):
+            start = frame * frame_bytes + row * row_bytes
+            inside_end = start + (128 * 3 if row < 128 else 0)
+            end = start + row_bytes
+            assert actual[inside_end:end] == original[inside_end:end]
+            if row < 128:
+                assert actual[start:inside_end] == standin[start:inside_end]
+
+
+def test_audio_mask_fixed_pcm_wins_over_fractional_generated_overlap(tmp_path):
+    from astrid.packs.h3_av.shared.compile import _audio_time_mask
+    path, requested, decoded = _audio_time_mask([(2001, 3999, 0.5), (4000, 6000, 1.0)],
+                                                 [(3000, 3500)], frames=5, destination=tmp_path)
+    assert path.is_file()
+    assert requested == [0, pytest.approx(1498 * 0.5 / 2000), 1, 0, 0]
+    assert decoded[1] == pytest.approx(requested[1], abs=0.5 / 65535)
+
+
+@pytest.mark.ffmpeg
+def test_mono_source_and_fixed_pcm_with_stereo_generated_audio(tmp_path):
+    import struct
+    import subprocess
+    from astrid.packs.h3_av.shared.compose import compose_candidate, _decode_exact_pcm
+    from astrid.packs.h3_av.shared.prepare import prepare_request
+    from tests.packs.h3_av.test_moving_masks import _fixtures
+
+    source, original_generated = _fixtures(tmp_path)
+    generated = tmp_path / "stereo-generated.mkv"
+    voice = tmp_path / "fixed.wav"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(original_generated), "-f", "lavfi", "-i",
+                    "aevalsrc=0.125|0.375:s=48000:d=1", "-map", "0:v:0", "-map", "1:a:0",
+                    "-c:v", "copy", "-c:a", "pcm_s16le", str(generated)], check=True)
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                    "sine=frequency=660:sample_rate=48000:duration=1", "-c:a", "pcm_s16le", str(voice)], check=True)
+    raw = {"version": 2, "duration": 1, "prompt": "Edit the mouth", "media": [
+        {"asset": "scene", "role": "timeline", "modality": "video", "at": {"frame": 0}, "range": [0, 1],
+         "edit": [
+             {"stream": "video", "during": [0, 1], "mask": {"rectangle": [0, 0, 128, 128]}, "guides": []},
+             {"stream": "audio", "during": ["5000/48000", "15001/48000"], "guides": ["fixed"]},
+             {"stream": "audio", "during": ["25001/48000", "35003/48000"]},
+         ]},
+        {"id": "fixed", "asset": "voice", "role": "reference", "modality": "audio", "range": ["1/48000", "10002/48000"]},
+    ]}
+    preparation = prepare_request(normalize_request(raw), asset_map={"scene": str(source), "voice": str(voice)})
+    result = compose_candidate(preparation=preparation, generated=generated, source=source, out_dir=tmp_path / "composed")
+    source_pcm, channels = _decode_exact_pcm(source)
+    fixed_pcm, fixed_channels = _decode_exact_pcm(voice)
+    stereo_pcm, generated_channels = _decode_exact_pcm(generated)
+    delivered, delivered_channels = _decode_exact_pcm(Path(result["candidate"]["path"]))
+    assert (channels, fixed_channels, generated_channels, delivered_channels) == (1, 1, 2, 1)
+    assert stereo_pcm[25001 * 4:25002 * 4] == struct.pack("<hh", 4096, 12288)
+    expected = (source_pcm[:5000 * 2] + fixed_pcm[1 * 2:10002 * 2] +
+                source_pcm[15001 * 2:25001 * 2] + struct.pack("<h", 8192) * (35003 - 25001) +
+                source_pcm[35003 * 2:48000 * 2])
+    assert delivered == expected
+    assert [row["source"] for row in result["composition"]["exact_audio"]["delivered_spans"]] == [
+        "source", "fixed", "source", "generated", "source"]
+
+
+def test_generated_audio_rejects_truncation_beyond_40hz_rounding():
+    from astrid.packs.h3_av.shared.compose import CompositionError, _splice_exact_pcm
+    source = b"\x01\x00" * 10000
+    generated = b"\x02\x00" * 9600
+    result = _splice_exact_pcm(source, channels=1, total_samples=10000, generated=generated,
+                               generated_spans=[(0, 10000)])
+    assert result == generated + b"\x00\x00" * 400
+    with pytest.raises(CompositionError, match="does not cover"):
+        _splice_exact_pcm(source, channels=1, total_samples=10000, generated=generated[:5000 * 2],
+                          generated_spans=[(0, 10000)])
+    result = _splice_exact_pcm(source, channels=1, total_samples=10000, generated=generated[:5000 * 2],
+                               generated_spans=[(0, 5000)])
+    assert result[:5000 * 2] == generated[:5000 * 2]
+    assert result[5000 * 2:] == source[5000 * 2:]
+
+
+@pytest.mark.ffmpeg
+@pytest.mark.parametrize("explicit_fixed", [False, True])
+def test_silent_character_swap_source_delivers_implicit_and_explicit_audio(tmp_path, explicit_fixed):
+    import subprocess
+    from PIL import Image
+    from astrid.packs.h3_av.shared.compose import compose_candidate, _decode_exact_pcm
+    from astrid.packs.h3_av.shared.prepare import prepare_request
+    from tests.packs.h3_av.test_moving_masks import _fixtures
+
+    source_with_audio, generated = _fixtures(tmp_path)
+    source, reference, voice, image = (tmp_path / name for name in ("silent.mkv", "reference.mp4", "voice.wav", "face.png"))
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(source_with_audio), "-map", "0:v:0", "-c:v", "copy", str(source)], check=True)
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=size=32x32:rate=24:duration=2",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", str(reference)], check=True)
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=660:sample_rate=48000:duration=1",
+                    "-c:a", "pcm_s16le", str(voice)], check=True)
+    Image.new("RGB", (32, 32), "white").save(image)
+    edits = [{"stream": "video", "during": [0, 1], "mask": {"rectangle": [0, 0, 128, 128]}, "guides": ["performance", "face"]}]
+    if explicit_fixed:
+        edits.extend([{"stream": "audio", "during": ["10000/48000", "20000/48000"]},
+                      {"stream": "audio", "during": ["24000/48000", "34000/48000"], "guides": ["fixed"]}])
+    media = [
+        {"asset": "scene", "role": "timeline", "modality": "video", "at": {"frame": 0}, "range": [0, 1], "edit": edits},
+        {"id": "performance", "asset": "performance", "role": "reference", "modality": "video", "audio": False},
+        {"id": "face", "asset": "face", "role": "reference", "modality": "image"},
+    ]
+    if explicit_fixed:
+        media.append({"id": "fixed", "asset": "voice", "role": "reference", "modality": "audio"})
+    raw = {"version": 2, "duration": 1, "prompt": "Edit", "settings": {"adapter": {"id": "character_swap_v1"}}, "media": media}
+    prep = prepare_request(normalize_request(raw), asset_map={"scene": str(source), "performance": str(reference), "face": str(image), "voice": str(voice)})
+    assert prep["mask_schedule"]["audio"]["baseline_intervals"] == []
+    assert prep["mask_schedule"]["audio"]["generated_intervals"] == [[0.0, 1.0]]
+    # Exercise the real public build hook and its managed graph bindings.
+    import importlib.util
+    from astrid.core.generation.engine_facts import comfyui_facts
+    hook_path = Path(__file__).parents[3] / "astrid/packs/h3_av/extensions/vibecomfy.workflows/hooks.py"
+    hook_spec = importlib.util.spec_from_file_location("h3_silent_source_hooks", hook_path)
+    hooks = importlib.util.module_from_spec(hook_spec)
+    hook_spec.loader.exec_module(hooks)
+    request_file = tmp_path / "request.json"
+    request_file.write_text(json.dumps(raw))
+    built = hooks.build({"request": str(request_file), "asset_map": {"scene": str(source), "performance": str(reference), "face": str(image), "voice": str(voice)}}, {}, tmp_path / "hook", engine=comfyui_facts())
+    graph = built["workflow"].compile("api", run_inputs=built["bindings"])
+    v2v = next(row for row in graph.values() if row["class_type"] == "H3V2VGranularFractionalDenoise")
+    assert v2v["inputs"]["audio_strength"] == 0
+    assert any(row["class_type"] == "MiniMaxH3SetAVNoiseMask" for row in graph.values())
+    assert "audio_time_mask" in built["assets"]
+    from astrid.packs.h3_av.shared.compose import _probe, _streams
+    assert len(_streams(_probe(built["assets"]["source_video"]), "audio")) == 1
+    compilation = json.loads((tmp_path / "hook/h3/plan/compile/compilation.json").read_text())
+    second = hooks.build({"request": str(request_file), "asset_map": {"scene": str(source), "performance": str(reference), "face": str(image), "voice": str(voice)}}, {}, tmp_path / "hook-again", engine=comfyui_facts())
+    compilation_again = json.loads((tmp_path / "hook-again/h3/plan/compile/compilation.json").read_text())
+    assert hashlib.sha256(built["assets"]["source_video"].read_bytes()).digest() == hashlib.sha256(second["assets"]["source_video"].read_bytes()).digest()
+    assert compilation["compilation_digest"] == compilation_again["compilation_digest"]
+    spans = compilation["capabilities"]["expected_delivered_audio_spans"]
+    assert {span["source"] for span in spans} == ({"generated", "fixed"} if explicit_fixed else {"generated"})
+    mask_values = compilation["capabilities"]["audio_time_mask"]["decoded_frame_values"]
+    expected_mask = [1.0] * 24 + [0.0] * (len(mask_values) - 24)
+    if explicit_fixed:
+        expected_mask[12:17] = [0.0] * 5
+        model_pcm, model_channels = _decode_exact_pcm(built["assets"]["source_audio_prepared"])
+        voice_pcm, _ = _decode_exact_pcm(voice, expected_channels=model_channels)
+        stride = model_channels * 2
+        assert model_pcm == bytes(24000 * stride) + voice_pcm[:10000 * stride] + bytes(14000 * stride)
+    assert mask_values == expected_mask
+    mask_node = next(row for row in graph.values() if row["class_type"] == "MiniMaxH3SetAVNoiseMask")
+    assert graph[mask_node["inputs"]["latent"][0]]["class_type"] == "H3V2VGranularFractionalDenoise"
+    result = compose_candidate(preparation=prep, generated=generated, source=source, out_dir=tmp_path / "composed")
+    delivered, channels = _decode_exact_pcm(Path(result["candidate"]["path"]))
+    generated_pcm, _ = _decode_exact_pcm(generated, expected_channels=channels, generated=True)
+    expected = generated_pcm[:48000 * channels * 2]
+    if explicit_fixed:
+        fixed_pcm, _ = _decode_exact_pcm(voice, expected_channels=channels)
+        stride = channels * 2
+        expected = expected[:24000 * stride] + fixed_pcm[:10000 * stride] + expected[34000 * stride:]
+    assert delivered == expected
+    settled = hooks.after_outputs(tmp_path / "hook", {}, {}, [str(generated)], engine=comfyui_facts())
+    settled_pcm, settled_channels = _decode_exact_pcm(Path(settled[0]))
+    assert settled_channels == channels
+    assert settled_pcm == expected
+    assert (tmp_path / "hook/h3/verify.json").is_file()
+
+
+@pytest.mark.ffmpeg
+def test_v2_continuation_composes_shorter_source_and_generated_suffix(tmp_path):
+    from astrid.packs.h3_av.shared.compose import compose_candidate
+    from astrid.packs.h3_av.shared.prepare import prepare_request
+    from tests.packs.h3_av.test_native_v2_contract import _av
+
+    source, generated = tmp_path / "source.mkv", tmp_path / "generated.mkv"
+    # Plan 59 c518417a10 requires at least 39 continuation source frames.
+    _av(source, frames=42, color="blue", frequency=440)
+    request = normalize_request({"version": 2, "prompt": "Continue", "duration": 2, "continuation": True,
+        "media": [{"asset": "source", "role": "timeline", "modality": "video", "at": {"frame": 0}, "range": [0, 1.75]}]})
+    preparation = prepare_request(request, asset_map={"source": str(source)})
+    assert preparation["mask_schedule"]["branch"] == "extension_context"
+    assert preparation["mask_schedule"]["audio"]["protected_intervals"] == [[0.0, 1.75]]
+    assert preparation["mask_schedule"]["audio"]["generated_intervals"] == [[1.75, 2.0]]
+    manifest = compile_preparation(preparation, out_dir=tmp_path / "compiled")
+    _av(generated, frames=manifest["continuation_timing"]["expected_graph_output_frames"], color="red", frequency=880)
+    result = compose_candidate(preparation=preparation, generated=generated, source=source, out_dir=tmp_path / "composed")
+    assert result["coverage"]["candidate"]["video"]["frames"] == 48
+    assert [segment["source"] for segment in result["composition"]["audio_segments"]] == ["source", "generated"]
+
+
+@pytest.mark.ffmpeg
+def test_full_generated_audio_does_not_require_44100hz_source_pcm(tmp_path):
+    import subprocess
+    from astrid.packs.h3_av.shared.compose import CompositionError, compose_candidate, _decode_exact_pcm
+    from astrid.packs.h3_av.shared.prepare import prepare_request
+    from tests.packs.h3_av.test_moving_masks import _fixtures
+
+    original, generated = _fixtures(tmp_path)
+    source = tmp_path / "source-44100.mkv"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(original), "-map", "0:v:0", "-map", "0:a:0",
+                    "-c:v", "copy", "-c:a", "pcm_s16le", "-ar", "44100", str(source)], check=True)
+    with pytest.raises(CompositionError, match="48000 Hz"):
+        _decode_exact_pcm(source)
+    request = normalize_request({"version": 2, "prompt": "Edit", "duration": 1, "media": [
+        {"asset": "scene", "role": "timeline", "modality": "video", "at": {"frame": 0}, "range": [0, 1],
+         "edit": [{"stream": "video", "during": [0, 1], "mask": {"rectangle": [0, 0, 128, 128]}},
+                  {"stream": "audio", "during": [0, 1]}]}]})
+    preparation = prepare_request(request, asset_map={"scene": str(source)})
+    assert preparation["mask_schedule"]["audio"]["protected_intervals"] == []
+    result = compose_candidate(preparation=preparation, generated=generated, source=source, out_dir=tmp_path / "composed")
+    delivered, channels = _decode_exact_pcm(Path(result["candidate"]["path"]))
+    candidate, _ = _decode_exact_pcm(generated, expected_channels=channels, generated=True)
+    assert delivered == candidate[:48000 * channels * 2]
+    assert result["composition"]["exact_audio"]["delivered_spans"] == [{"samples": [0, 48000], "source": "generated"}]
+
+
+def test_pcm_source_coverage_only_requires_kept_spans_and_fixed_wins_overlap():
+    import struct
+    from astrid.packs.h3_av.shared.compose import CompositionError, _splice_exact_pcm
+
+    def pcm(values):
+        return b"".join(struct.pack("<h", value) for value in values)
+    source = pcm(range(600))
+    generated = pcm([1000] * 1000)
+    fixed = pcm([2000] * 100)
+    # The source starts 100 samples into its file and is retained only for
+    # destination samples 0..500. Its missing tail is wholly generated.
+    result = _splice_exact_pcm(source, channels=1, total_samples=1000, source_start=100,
+                               generated=generated, generated_spans=[(500, 1000)],
+                               fixed_spans=[(700, 800, fixed, 0)])
+    assert result == pcm(list(range(100, 600)) + [1000] * 200 + [2000] * 100 + [1000] * 200)
+    with pytest.raises(CompositionError, match="source audio does not cover"):
+        _splice_exact_pcm(source[:-2], channels=1, total_samples=1000, source_start=100,
+                          generated=generated, generated_spans=[(500, 1000)], fixed_spans=[(700, 800, fixed, 0)])
+
+
+@pytest.mark.ffmpeg
+@pytest.mark.parametrize("source_audio", ["silent", "44100"])
+def test_pre_splice_reserves_generated_audio_without_requiring_source_pcm(tmp_path, source_audio):
+    import subprocess
+    from astrid.packs.h3_av.shared.compose import _decode_exact_pcm
+    from astrid.packs.h3_av.shared.prepare import prepare_request
+    from tests.packs.h3_av.test_moving_masks import _fixtures
+
+    original, _ = _fixtures(tmp_path)
+    source, voice = tmp_path / "prepared-source.mkv", tmp_path / "fixed.wav"
+    if source_audio == "silent":
+        command = ["ffmpeg", "-v", "error", "-y", "-i", str(original), "-map", "0:v:0", "-c:v", "copy", str(source)]
+    else:
+        command = ["ffmpeg", "-v", "error", "-y", "-i", str(original), "-map", "0:v:0", "-map", "0:a:0",
+                   "-c:v", "copy", "-c:a", "pcm_s16le", "-ar", "44100", str(source)]
+    subprocess.run(command, check=True)
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                    "sine=frequency=660:sample_rate=48000:duration=1", "-c:a", "pcm_s16le", str(voice)], check=True)
+    raw = {"version": 2, "duration": 1, "prompt": "Edit", "media": [
+        {"asset": "scene", "role": "timeline", "modality": "video", "at": {"frame": 0}, "range": [0, 1],
+         "edit": [{"stream": "video", "during": [0, 1], "mask": {"rectangle": [0, 0, 128, 128]}, "guides": []},
+                  {"stream": "audio", "during": [0, "1/2"], "guides": ["fixed"]},
+                  {"stream": "audio", "during": ["1/2", 1]}]},
+        {"id": "fixed", "asset": "voice", "role": "reference", "modality": "audio"},
+    ]}
+    preparation = prepare_request(normalize_request(raw), asset_map={"scene": str(source), "voice": str(voice)})
+    manifest = compile_preparation(preparation, out_dir=tmp_path / "compiled")
+    assert "source_audio_prepared" in manifest["workflow_inputs"]
+    prepared, channels = _decode_exact_pcm(tmp_path / "compiled" / "source-with-fixed-audio.wav")
+    fixed, _ = _decode_exact_pcm(voice, expected_channels=channels)
+    stride = channels * 2
+    assert prepared == fixed[:24000 * stride] + bytes(24000 * stride)
+    mask = manifest["capabilities"]["audio_time_mask"]["requested_frame_values"]
+    assert mask[:12] == [0] * 12
+    assert mask[12:24] == [1] * 12
+
+
+@pytest.mark.ffmpeg
+def test_pre_splice_preserves_available_source_for_fractional_generation(tmp_path):
+    import subprocess
+    from astrid.packs.h3_av.shared.compose import _decode_exact_pcm
+    from astrid.packs.h3_av.shared.prepare import prepare_request
+    from tests.packs.h3_av.test_moving_masks import _fixtures
+
+    source, _ = _fixtures(tmp_path)
+    voice = tmp_path / "fixed.wav"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                    "sine=frequency=660:sample_rate=48000:duration=1", "-c:a", "pcm_s16le", str(voice)], check=True)
+    raw = {"version": 2, "duration": 1, "prompt": "Edit", "media": [
+        {"asset": "scene", "role": "timeline", "modality": "video", "at": {"frame": 0}, "range": [0, 1],
+         "edit": [{"stream": "video", "during": [0, 1], "mask": {"rectangle": [0, 0, 128, 128]}, "guides": []},
+                  {"stream": "audio", "during": [0, "1/2"], "guides": ["fixed"]},
+                  {"stream": "audio", "during": ["1/2", 1], "strength": 0.5}]},
+        {"id": "fixed", "asset": "voice", "role": "reference", "modality": "audio"},
+    ]}
+    preparation = prepare_request(normalize_request(raw), asset_map={"scene": str(source), "voice": str(voice)})
+    manifest = compile_preparation(preparation, out_dir=tmp_path / "compiled")
+    assert "source_audio_prepared" in manifest["workflow_inputs"]
+    prepared, channels = _decode_exact_pcm(tmp_path / "compiled" / "source-with-fixed-audio.wav")
+    source_pcm, _ = _decode_exact_pcm(source, expected_channels=channels)
+    fixed, _ = _decode_exact_pcm(voice, expected_channels=channels)
+    stride = channels * 2
+    assert prepared == fixed[:24000 * stride] + source_pcm[24000 * stride:48000 * stride]
+    mask = manifest["capabilities"]["audio_time_mask"]["requested_frame_values"]
+    assert mask[:12] == [0] * 12
+    assert mask[12:24] == [0.5] * 12
+
+
+@pytest.mark.ffmpeg
+def test_fractional_pre_splice_conforms_unowned_44100_source_context(tmp_path):
+    import subprocess
+    from astrid.packs.h3_av.shared.compose import _decode_exact_pcm
+    from astrid.packs.h3_av.shared.prepare import prepare_request
+    from tests.packs.h3_av.test_moving_masks import _fixtures
+
+    original, _ = _fixtures(tmp_path)
+    source, voice = tmp_path / "source-44100.mkv", tmp_path / "fixed.wav"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(original), "-map", "0:v:0", "-map", "0:a:0",
+                    "-c:v", "copy", "-c:a", "pcm_s16le", "-ar", "44100", str(source)], check=True)
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                    "sine=frequency=660:sample_rate=48000:duration=1", "-c:a", "pcm_s16le", str(voice)], check=True)
+    raw = {"version": 2, "duration": 1, "prompt": "Edit", "media": [
+        {"asset": "scene", "role": "timeline", "modality": "video", "at": {"frame": 0}, "range": [0, 1],
+         "edit": [{"stream": "video", "during": [0, 1], "mask": {"rectangle": [0, 0, 128, 128]}, "guides": []},
+                  {"stream": "audio", "during": [0, "1/2"], "guides": ["fixed"]},
+                  {"stream": "audio", "during": ["1/2", 1], "strength": 0.5}]},
+        {"id": "fixed", "asset": "voice", "role": "reference", "modality": "audio"},
+    ]}
+    preparation = prepare_request(normalize_request(raw), asset_map={"scene": str(source), "voice": str(voice)})
+    manifest = compile_preparation(preparation, out_dir=tmp_path / "compiled")
+    assert "source_audio_prepared" in manifest["workflow_inputs"]
+    prepared, channels = _decode_exact_pcm(tmp_path / "compiled" / "source-with-fixed-audio.wav")
+    assert channels == 1
+    fixed, _ = _decode_exact_pcm(voice, expected_channels=channels)
+    conformed = subprocess.run(["ffmpeg", "-v", "error", "-i", str(source), "-map", "0:a:0", "-ar", "48000",
+                                "-c:a", "pcm_s16le", "-f", "s16le", "-"], check=True, capture_output=True).stdout
+    assert any(conformed[24000 * 2:48000 * 2])
+    assert prepared == fixed[:24000 * 2] + conformed[24000 * 2:48000 * 2]
+    mask = manifest["capabilities"]["audio_time_mask"]["requested_frame_values"]
+    assert mask[:12] == [0] * 12
+    assert mask[12:24] == [0.5] * 12
+
+
+@pytest.mark.ffmpeg
+def test_fractional_pre_splice_duplicates_mono_context_for_stereo_fixed_pcm(tmp_path):
+    import struct
+    import subprocess
+    from astrid.packs.h3_av.shared.compose import _decode_exact_pcm
+    from astrid.packs.h3_av.shared.prepare import prepare_request
+    from tests.packs.h3_av.test_moving_masks import _fixtures
+
+    source, _ = _fixtures(tmp_path)
+    voice = tmp_path / "stereo-fixed.wav"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                    "aevalsrc=0.125|0.375:s=48000:d=1", "-c:a", "pcm_s16le", str(voice)], check=True)
+    raw = {"version": 2, "duration": 1, "prompt": "Edit", "media": [
+        {"asset": "scene", "role": "timeline", "modality": "video", "at": {"frame": 0}, "range": [0, 1],
+         "edit": [{"stream": "video", "during": [0, 1], "mask": {"rectangle": [0, 0, 128, 128]}, "guides": []},
+                  {"stream": "audio", "during": [0, "1/2"], "guides": ["fixed"]},
+                  {"stream": "audio", "during": ["1/2", 1], "strength": 0.5}]},
+        {"id": "fixed", "asset": "voice", "role": "reference", "modality": "audio"},
+    ]}
+    preparation = prepare_request(normalize_request(raw), asset_map={"scene": str(source), "voice": str(voice)})
+    manifest = compile_preparation(preparation, out_dir=tmp_path / "compiled")
+    assert "source_audio_prepared" in manifest["workflow_inputs"]
+    prepared, channels = _decode_exact_pcm(tmp_path / "compiled" / "source-with-fixed-audio.wav")
+    assert channels == 2
+    fixed, _ = _decode_exact_pcm(voice, expected_channels=2)
+    mono, _ = _decode_exact_pcm(source, expected_channels=1)
+    samples = struct.unpack("<48000h", mono[:48000 * 2])
+    duplicated = b"".join(struct.pack("<hh", sample, sample) for sample in samples[24000:48000])
+    assert any(duplicated)
+    assert prepared == fixed[:24000 * 4] + duplicated
+    mask = manifest["capabilities"]["audio_time_mask"]["requested_frame_values"]
+    assert mask[:12] == [0] * 12
+    assert mask[12:24] == [0.5] * 12
+
+@pytest.mark.ffmpeg
+def test_timeline_still_uses_source_backed_generation_and_exact_first_frame(tmp_path):
+    import subprocess
+    from PIL import Image
+    from astrid.packs.h3_av.shared.compose import compose_candidate, _decode_exact_pcm
+    from astrid.packs.h3_av.shared.prepare import prepare_request, PreparationError
+    from vibecomfy.cli_loader import load_workflow_any
+
+    still = tmp_path / "still.png"
+    pixels = bytes((x * 7 + y * 13 + channel * 71) % 256 for y in range(576) for x in range(1024) for channel in range(3))
+    Image.frombytes("RGB", (1024, 576), pixels).save(still)
+    generated = tmp_path / "standin.mkv"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=1024x576:rate=24",
+                    "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-frames:v", "24",
+                    "-t", "1", "-c:v", "ffv1", "-pix_fmt", "gbrp", "-c:a", "pcm_s16le", str(generated)], check=True)
+    raw = {"version": 2, "duration": 1, "prompt": "Animate", "media": [
+        {"asset": "still", "role": "timeline", "modality": "image", "at": {"frame": 0}}]}
+    preparation = prepare_request(normalize_request(raw), asset_map={"still": str(still)})
+    manifest = compile_preparation(preparation, out_dir=tmp_path / "compiled")
+    source = tmp_path / "compiled" / "prepared-still-source.mkv"
+    assert source.is_file()
+    mask = manifest["capabilities"]["audio_time_mask"]
+    assert len(mask["decoded_frame_values"]) == manifest["capabilities"]["generation_timing"]["raw_frames"]
+    assert all(value == 1 for value in mask["decoded_frame_values"])
+    assert len(mask["resampled_40hz"]) == round(len(mask["decoded_frame_values"]) * 40 / 24)
+    assert all(value == 1 for value in mask["resampled_40hz"])
+    assert mask["padding"] == "generated"
+    api = load_workflow_any(manifest["workflow"]["workflow.py"]["path"]).compile(
+        "api", run_inputs=manifest["workflow_inputs"])
+    v2v = next(row for row in api.values() if row["class_type"] == "H3V2VGranularFractionalDenoise")
+    assert v2v["inputs"]["audio_strength"] == 0
+    source_batch = api[v2v["inputs"]["source_frames"][0]]
+    assert source_batch["class_type"] == "ImageBatch"
+    source_loader = api[source_batch["inputs"]["image1"][0]]
+    source_row = next(row for row in manifest["managed_assets"]["manifest"]["assets"] if row["binding"] == "source_video")
+    assert source_loader["inputs"]["video"] == manifest["workflow_inputs"]["source_video"] == Path(source_row["member"]).name
+    mask_node = api[v2v["inputs"]["source_mask"][0]]
+    mask_batch = api[mask_node["inputs"]["image"][0]]
+    mask_loader = api[mask_batch["inputs"]["image1"][0]]
+    mask_row = next(row for row in manifest["managed_assets"]["manifest"]["assets"] if row["binding"] == "video_mask_0")
+    assert mask_loader["inputs"]["video"] == manifest["workflow_inputs"]["video_mask_0"] == Path(mask_row["member"]).name
+    import zipfile
+    with zipfile.ZipFile(manifest["managed_assets"]["path"]) as archive:
+        assert archive.read(source_row["member"]) == source.read_bytes()
+        managed_mask = tmp_path / "managed-mask.mkv"
+        managed_mask.write_bytes(archive.read(mask_row["member"]))
+    decoded_mask = subprocess.run(["ffmpeg", "-v", "error", "-i", str(managed_mask), "-frames:v", "2", "-pix_fmt", "gray", "-f", "rawvideo", "-"], check=True, capture_output=True).stdout
+    mask_size = 1024 * 576
+    assert decoded_mask[:mask_size] == bytes(mask_size)
+    assert decoded_mask[mask_size:] == bytes([255]) * mask_size
+    assert any(row["class_type"] == "MiniMaxH3SetAVNoiseMask" for row in api.values())
+
+    result = compose_candidate(preparation=preparation, generated=generated, source=source, out_dir=tmp_path / "composed")
+    def frames(path):
+        return subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-vf", "scale=1024:576:flags=lanczos,format=gbrp,format=rgb24", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], check=True, capture_output=True).stdout
+    original, standin, actual = map(frames, (source, generated, result["candidate"]["path"]))
+    size = 1024 * 576 * 3
+    assert len(original) == 24 * size
+    assert original[:size] == pixels
+    assert standin[:size] != standin[size:2 * size]
+    assert original[:size] != standin[:size]
+    assert actual[:size] == pixels
+    assert actual[size:2 * size] == standin[size:2 * size]
+    delivered, channels = _decode_exact_pcm(Path(result["candidate"]["path"]))
+    soundtrack, _ = _decode_exact_pcm(generated, expected_channels=channels, generated=True)
+    silence, source_channels = _decode_exact_pcm(source)
+    assert len(silence) == 48000 * source_channels * 2 and not any(silence)
+    assert len(delivered) == 48000 * channels * 2
+    assert delivered == soundtrack[:len(delivered)]
+    raw["media"][0]["at"] = {"frame": 1}
+    with pytest.raises(PreparationError, match="timeline image frame"):
+        prepare_request(normalize_request(raw), asset_map={"still": str(still)})
+
+
+@pytest.mark.ffmpeg
+def test_timeline_still_preparation_uses_requested_canvas_dimensions(tmp_path):
+    import json
+    import subprocess
+    from PIL import Image
+    from astrid.packs.h3_av.shared.prepare import prepare_request
+
+    still = tmp_path / "still-small.png"
+    Image.new("RGB", (320, 180), (38, 126, 211)).save(still)
+    raw = {"version": 2, "duration": 1, "prompt": "Animate", "output": {"size": [512, 288]},
+           "media": [{"asset": "still", "role": "timeline", "modality": "image", "at": {"frame": 0}}]}
+    preparation = prepare_request(normalize_request(raw), asset_map={"still": str(still)})
+    out_dir = tmp_path / "compiled-nondefault-canvas"
+    manifest = compile_preparation(preparation, out_dir=out_dir)
+    assert manifest["size"] == {"width": 512, "height": 288}
+    prepared = out_dir / "prepared-still-source.mkv"
+    probe = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                            "stream=width,height,codec_name,pix_fmt", "-of", "json", str(prepared)],
+                           check=True, capture_output=True, text=True)
+    stream = json.loads(probe.stdout)["streams"][0]
+    assert (stream["width"], stream["height"]) == (512, 288)
+    assert stream["codec_name"] == "ffv1"
+    frame = subprocess.run(["ffmpeg", "-v", "error", "-i", str(prepared), "-frames:v", "1",
+                            "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                           check=True, capture_output=True).stdout
+    assert len(frame) == 512 * 288 * 3
+    center = (144 * 512 + 256) * 3
+    assert tuple(frame[center:center + 3]) == (38, 126, 211)
+
+
+def test_timeline_still_rejects_latent_pin():
+    from astrid.packs.h3_av.shared.request import H3RequestError
+    raw = {"version": 2, "duration": 1, "prompt": "Animate", "media": [
+        {"asset": "still", "role": "timeline", "modality": "image", "at": {"frame": 0}, "latent_pin": True}]}
+    with pytest.raises(H3RequestError, match="latent_pin"):
+        normalize_request(raw)
+
+
+@pytest.mark.ffmpeg
+def test_fixed_only_audio_does_not_create_generation_mask(tmp_path):
+    import subprocess
+    from astrid.packs.h3_av.shared.prepare import prepare_request
+    from tests.packs.h3_av.test_moving_masks import _fixtures
+    from vibecomfy.cli_loader import load_workflow_any
+
+    source, _ = _fixtures(tmp_path)
+    voice = tmp_path / "voice.wav"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                    "sine=frequency=660:sample_rate=48000:duration=1", "-c:a", "pcm_s16le", str(voice)], check=True)
+    raw = {"version": 2, "duration": 1, "prompt": "Edit", "media": [
+        {"asset": "scene", "role": "timeline", "modality": "video", "at": {"frame": 0}, "range": [0, 1],
+         "edit": [{"stream": "video", "during": [0, 1], "mask": {"rectangle": [0, 0, 128, 128]}},
+                  {"stream": "audio", "during": [0.5, 0.75], "guides": ["fixed"]}]},
+        {"id": "fixed", "asset": "voice", "role": "reference", "modality": "audio"}]}
+    prep = prepare_request(normalize_request(raw), asset_map={"scene": str(source), "voice": str(voice)})
+    manifest = compile_preparation(prep, out_dir=tmp_path / "compiled")
+    api = load_workflow_any(manifest["workflow"]["workflow.py"]["path"]).compile("api", run_inputs=manifest["workflow_inputs"])
+    assert "audio_time_mask" not in manifest["workflow_inputs"]
+    assert not any(row["class_type"] == "MiniMaxH3SetAVNoiseMask" for row in api.values())
+
+
+@pytest.mark.ffmpeg
+def test_silent_b_frame_subrange_passes_hook_preflight_with_exact_frames(tmp_path):
+    import importlib.util
+    import subprocess
+    from PIL import Image
+    from astrid.core.generation.engine_facts import comfyui_facts
+
+    source, reference, face = (tmp_path / name for name in ("source.mp4", "reference.mp4", "face.png"))
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                    "testsrc2=size=1024x576:rate=24:duration=2", "-c:v", "libx264", "-bf", "3",
+                    "-pix_fmt", "yuv420p", str(source)], check=True)
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                    "color=size=32x32:rate=24:duration=2", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(reference)], check=True)
+    Image.new("RGB", (32, 32), "white").save(face)
+    raw = {"version": 2, "duration": 1, "prompt": "Edit", "settings": {"adapter": {"id": "character_swap_v1"}}, "media": [
+        {"asset": "scene", "role": "timeline", "modality": "video", "at": {"frame": 0}, "range": [0, 1],
+         "edit": [{"stream": "video", "during": [0, 1], "mask": {"rectangle": [0, 0, 128, 128]}, "guides": ["performance", "face"]}]},
+        {"id": "performance", "asset": "performance", "role": "reference", "modality": "video", "audio": False},
+        {"id": "face", "asset": "face", "role": "reference", "modality": "image"}]}
+    hook_path = Path(__file__).parents[3] / "astrid/packs/h3_av/extensions/vibecomfy.workflows/hooks.py"
+    spec = importlib.util.spec_from_file_location("h3_b_frame_hooks", hook_path)
+    hooks = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hooks)
+    request_file = tmp_path / "request.json"
+    request_file.write_text(json.dumps(raw))
+    result = hooks.build({"request": str(request_file), "asset_map": {"scene": str(source), "performance": str(reference), "face": str(face)}}, {}, tmp_path / "hook", engine=comfyui_facts())
+    assert result["plan"]["source_av"]["video_frames"] == 24
+    assert result["plan"]["source_av"]["audio_samples"] == 32000
+    def frames(path):
+        return subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-frames:v", "24", "-pix_fmt", "yuv420p", "-f", "rawvideo", "-"], check=True, capture_output=True).stdout
+    assert frames(result["assets"]["source_video"]) == frames(source)

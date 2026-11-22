@@ -42,9 +42,13 @@ def _request(**overrides):
     return normalize_request(value)
 
 
-def _prepared(tmp_path: Path, request, *, masks: bool = False, references: bool = False):
-    source = tmp_path / "source.mp4"
-    source.write_bytes(b"source-video")
+def _prepared(
+    tmp_path: Path, request, *, masks: bool = False, references: bool = False,
+    source_path: Path | None = None,
+):
+    source = source_path or (tmp_path / "source.mp4")
+    if source_path is None:
+        source.write_bytes(b"source-video")
     asset_map = {"source.mp4": str(source)}
     if masks:
         mask = tmp_path / "mask.png"
@@ -190,3 +194,15 @@ def test_lanpaint_regional_change_requires_and_binds_real_mask_asset(tmp_path: P
     compiled = compile_preparation(_prepared(tmp_path, request, masks=True), out_dir=tmp_path / "compiled")
     keyframes = json.loads(compiled["workflow_inputs"]["mask_keyframes"])
     assert keyframes["24"].endswith("mask.png")
+
+
+def test_v1_sequential_operations_remain_fail_closed(tmp_path, valid_h3_av_source):
+    request = _request(changes={"video": [
+        {"during": [0, 2], "area": {"full_frame": True}, "action": "generate"},
+        {"during": [2, 4], "area": {"full_frame": True}, "action": "generate"},
+    ], "audio": []})
+    with pytest.raises(CompilationError, match="exactly one modifying video operation"):
+        compile_preparation(
+            _prepared(tmp_path, request, source_path=valid_h3_av_source),
+            out_dir=tmp_path / "compiled",
+        )

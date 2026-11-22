@@ -4,8 +4,8 @@ from __future__ import annotations
 import hashlib
 import json
 import tempfile
-from pathlib import Path
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 from .whisper_transcript import import_whisper_transcript, whisper_source_id
@@ -30,12 +30,13 @@ def _bytes(client: Any, digest: str) -> bytes:
 
 def _expected_workflow_digest(source: Path) -> str:
     """Recreate exactly the graph the named entry admits for these source bytes."""
-    from astrid.core.generation import entries
-    from astrid.packs.vibecomfy.production_engine import _workflow_content_digest
+    import yaml
     from vibecomfy.workflow_bundle import emit_bundle
 
+    from astrid.core.generation import entries
+    from astrid.packs.vibecomfy.production_engine import _workflow_content_digest
+
     # Do not let a user entry with the same name define the verifier's authority.
-    import yaml
     pack = Path(__file__).resolve().parents[1] / 'packs' / 'generation'
     manifest = pack / 'extensions' / 'vibecomfy.workflows' / 'transcription.yaml'
     declaration = yaml.safe_load(manifest.read_text(encoding='utf-8'))
@@ -113,9 +114,9 @@ def transcription_run_id(client: Any, value: Any) -> str:
 
 def import_transcription_run(client: Any, project: str, media_id: str, run_id: str, *,
                              replace: bool = False, expected_version: int | None = None) -> str:
+    from astrid.core.media import ffprobe_duration_seconds
     from astrid.packs.vibecomfy.asset_manifest import read_archive_bytes
     from astrid.sdk.media_handles import resolve_media_handle
-    from astrid.core.media import ffprobe_duration_seconds
 
     descriptor, _ = resolve_media_handle(client, project, media_id)
     digest = descriptor['digest']

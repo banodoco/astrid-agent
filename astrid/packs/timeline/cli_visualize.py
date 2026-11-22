@@ -799,7 +799,7 @@ def cmd_visualize(parsed: argparse.Namespace) -> int:
             print(f"error validation_error: {exc}", file=sys.stderr)
             return 2
     _resolve_view(parsed)
-    human_outputs: Mapping[str, Any] | None = None
+    human_outputs: dict[str, Any] | None = None
 
     formats = [
         item.strip().lower()
@@ -1073,9 +1073,8 @@ def cmd_visualize(parsed: argparse.Namespace) -> int:
         else:
             envelope = result
     elif result.ok:
-        outputs = result.outputs
-        if isinstance(outputs, Mapping):
-            outputs = dict(outputs)
+        if isinstance(result.outputs, Mapping):
+            outputs = dict(result.outputs)
             outputs.setdefault("working_copy", working if working is not None else None)
             outputs.setdefault("source_identity", source_identity)
             summary = cli._visualization_artifact_summary(outputs)
@@ -1093,7 +1092,7 @@ def cmd_visualize(parsed: argparse.Namespace) -> int:
                 "kernel_task_id": result.kernel_task_id,
                 "kernel_attempt_id": result.kernel_attempt_id,
                 "manifest_path": result.manifest_path,
-                "outputs": outputs,
+                "outputs": human_outputs if human_outputs is not None else result.outputs,
             }
         )
     else:
@@ -1195,7 +1194,10 @@ def _region_request(parsed: argparse.Namespace) -> Any:
     if getattr(parsed, "at", None) in (None, "") and getattr(parsed, "frame", None) is None:
         return "--region/--zoom need --at T (one frame to crop)"
     if region:
-        from astrid.packs.rendering.actions.timeline_visualize.fast_lane import FastLaneError, parse_region
+        from astrid.packs.rendering.actions.timeline_visualize.fast_lane import (
+            FastLaneError,
+            parse_region,
+        )
 
         try:
             box = parse_region(region)
@@ -1307,7 +1309,11 @@ def _draw_region_page(outputs: Mapping[str, Any], request: Mapping[str, Any], *,
     """Crop the captured frame at source resolution (the ``timelines check --zoom/--region`` crop) onto a page."""
     from PIL import Image, ImageDraw
 
-    from astrid.packs.rendering.actions.timeline_visualize.fast_lane import _zoom_tile, zoom_region, zoom_scale
+    from astrid.packs.rendering.actions.timeline_visualize.fast_lane import (
+        _zoom_tile,
+        zoom_region,
+        zoom_scale,
+    )
     from astrid.packs.rendering.actions.timeline_visualize.layers.base import PALETTE, draw_text
 
     root, frame_path, card = _frame_image(outputs)

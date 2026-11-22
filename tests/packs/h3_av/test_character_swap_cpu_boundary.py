@@ -441,7 +441,7 @@ def test_character_swap_digest_override_is_source_and_inventory_bound(
 
     assert generation.character_swap_asset_sha256() == model_digest.removeprefix("sha256:")
 
-    workflow = generation.build_generation_workflow(
+    workflow = generation.build_generation_workflow(generation.generation_inputs_from_bindings(
         references=["replacement.png"],
         prompt="Keep the replacement identity stable.",
         frames=24,
@@ -451,7 +451,7 @@ def test_character_swap_digest_override_is_source_and_inventory_bound(
         adapter_strength=0.7,
         turbo_enabled=False,
         character_swap_sha256=model_digest.removeprefix("sha256:"),
-    )
+    ))
     adapter_rows = [
         row for row in workflow.metadata["model_assets"]
         if row.get("name") == generation.CHARACTER_SWAP_FILENAME

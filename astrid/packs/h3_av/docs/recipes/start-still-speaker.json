@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "duration": 6,
+  "prompt": "The woman at the window is <Subject 1> (S1). <Audio 1> is the voice-timbre reference for <Subject 1> (S1). She turns toward the door and says, \"I saved you a seat.\"",
+  "media": [
+    {
+      "asset": "window-portrait.png",
+      "role": "timeline",
+      "modality": "image",
+      "at": {"frame": 0}
+    },
+    {
+      "asset": "speaker-sample.mp4",
+      "role": "reference",
+      "modality": "video",
+      "range": [0, 3],
+      "audio": true
+    }
+  ],
+  "settings": {"seed": 42}
+}

@@ -27,8 +27,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from .duration import clip_timeline_duration
 from .asset_dimensions import canonicalize_asset_dimensions
+from .duration import clip_timeline_duration
 from .shot_composition import validate_shot_composition
 from .validators.meta import validate_meta, validate_timeline_meta_locations
 

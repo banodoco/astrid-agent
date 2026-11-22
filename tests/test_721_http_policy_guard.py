@@ -55,7 +55,7 @@ OPENINGS = {
 LOOPBACK_FUNCTIONS = {
     ("astrid/mcp_server.py", "_comfy_workflow_import"),
     ("astrid/installer/backend.py", "Backend.verify"),
-    ("astrid/packs/vibecomfy/native_preparation.py", "run_native_doctor"),
+    ("astrid/packs/vibecomfy/native_preparation.py", "_read_object_info"),
     ("astrid/packs/vibecomfy/local.py", "_get_json"),
     ("astrid/core/dev/journey.py", "runtime_request"),
     ("astrid/packs/runpod/pod_reset.py", "_post"),
@@ -80,12 +80,12 @@ POLICY_OPENINGS = {
         "astrid/core/generation/backends/comfy_target.py",
         "open_comfy_http",
         "urllib.request.HTTPSHandler",
-    ): (1, "566b3a313a242ff97d1bee70282fe7af6378d185b02bf101f1d9b991069398ab"),
+    ): (1, "cdafb657bc9b41c9236239b3b0e3d49ae6d2488d3044d0871a94dfad78617493"),
     (
         "astrid/core/generation/backends/comfy_target.py",
         "open_comfy_http",
         "urllib.request.build_opener",
-    ): (1, "566b3a313a242ff97d1bee70282fe7af6378d185b02bf101f1d9b991069398ab"),
+    ): (1, "cdafb657bc9b41c9236239b3b0e3d49ae6d2488d3044d0871a94dfad78617493"),
     ("astrid/core/generation/backends/openai.py", "_request_json", "urllib.request.urlopen"): (
         1,
         "2913ce0e966270cd9cc6aed4ac2a100546a4d9707c0ee5937abc96a32de9b65e",
@@ -188,7 +188,7 @@ LOOPBACK_HTTP_OPENINGS = {
     ),
     ("astrid/installer/backend.py", "Backend.verify", "urllib.request.build_opener"): (
         1,
-        "20f66fe079c64a1709d8c6bbbf298b5198a04336308a6c317fac35dfcf6797e9",
+        "aae5a363a6ceddaf529031acf53814aeafb2c5bf24eab64da8ee66c18331a7f8",
     ),
     ("astrid/mcp_server.py", "_comfy_workflow_import", "urllib.request.build_opener"): (
         1,
@@ -202,9 +202,11 @@ LOOPBACK_HTTP_OPENINGS = {
         1,
         "355401289403130d0ca0c4ada7827ccd3f70e1fdece5e688226df7932620461c",
     ),
-    ("astrid/packs/vibecomfy/native_preparation.py", "run_native_doctor", "httpx.stream"): (
+    # One GET per attempt, up to two per engine and four across one restart.
+    # Literal IPv4 loopback only; redirects and environment proxies are disabled.
+    ("astrid/packs/vibecomfy/native_preparation.py", "_read_object_info", "httpx.stream"): (
         1,
-        "6f69335d2f8818e4c1cb098943658f1ac5b634dc54db18a69d6ad43a64949325",
+        "2c8233fd6ca8a751f928d67b935041398791fad298e503f55aea38104d934ebe",
     ),
 }
 
