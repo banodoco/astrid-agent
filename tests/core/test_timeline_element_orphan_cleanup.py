@@ -293,6 +293,7 @@ def test_wrong_cleanup_previous_value_is_refused_atomically(monkeypatch, configu
 
 
 def test_cleanup_flight_retries_exact_body_without_recapture(monkeypatch, configured):
+    from astrid.sdk.contracts import DomainResult
     from astrid.sdk.workspace_client import WorkspaceClientError
 
     owner, bundle, ref = setup_owner(monkeypatch, configured)
@@ -303,7 +304,21 @@ def test_cleanup_flight_retries_exact_body_without_recapture(monkeypatch, config
     first = copy.deepcopy(owner.commit.call_args.args)
     first_options = copy.deepcopy(owner.commit.call_args.kwargs)
     assert first[2]['commands'][-1]['op'] == 'doc.patch'
-    owner.commit.side_effect = commit
+
+    def accepted_with_history(project, timeline, body, **kwargs):
+        accepted = commit(project, timeline, body, **kwargs)
+        receipt = accepted.receipt.as_dict()
+        receipt['result'].update(
+            base_revision_id=body['base_revision_id'],
+            commands=copy.deepcopy(body['commands']))
+        owner.history.return_value = DomainResult.success({
+            'head': {'revision_id': accepted.data['accepted_revision_id'],
+                     'publication_id': receipt['receipt_id']},
+            'items': [{'publisher': 'author', 'receipt': receipt}],
+            'next_cursor': None})
+        return accepted
+
+    owner.commit.side_effect = accepted_with_history
 
     def forbidden(*args, **kwargs):
         pytest.fail('cleanup flight was recaptured')
