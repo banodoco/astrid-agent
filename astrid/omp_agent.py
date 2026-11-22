@@ -183,6 +183,16 @@ def _dispatch_toolkit(rest: list[str]) -> int:
     # installation and makes ``astrid --help`` independent of runtime deps.
     from astrid.core.gateway import main as gateway_main
 
+    if rest and rest[0] == "timelines":
+        # The console entry point captures process start before this module and
+        # the gateway are imported. Keep direct OMP invocations on the legacy
+        # gateway timing path, and pass the stamp only for a live console call.
+        from astrid.console import cli_started_at
+
+        started_at = cli_started_at()
+        if started_at is not None:
+            return int(gateway_main(rest, started_at=started_at))
+
     return int(gateway_main(rest))
 
 

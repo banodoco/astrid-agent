@@ -2,9 +2,20 @@
 from __future__ import annotations
 
 import sys
+import time
+from contextvars import ContextVar
+
+
+_CLI_STARTED_AT: ContextVar[float | None] = ContextVar("astrid_cli_started_at", default=None)
+
+
+def cli_started_at() -> float | None:
+    """Start of this console invocation, when dispatching through OMP."""
+    return _CLI_STARTED_AT.get()
 
 
 def main(argv: list[str] | None = None) -> int:
+    started_at = time.monotonic()
     rest = list(sys.argv[1:] if argv is None else argv)
     if rest and rest[0] == "generate":
         from .core.gateway import main as gateway_main
@@ -26,6 +37,10 @@ def main(argv: list[str] | None = None) -> int:
         from .core.action_cli import main as action_main
 
         return action_main(rest[1:])
-    from .omp_agent import main as omp_main
+    token = _CLI_STARTED_AT.set(started_at)
+    try:
+        from .omp_agent import main as omp_main
 
-    return omp_main(rest)
+        return omp_main(rest)
+    finally:
+        _CLI_STARTED_AT.reset(token)
