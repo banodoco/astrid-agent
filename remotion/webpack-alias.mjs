@@ -213,6 +213,10 @@ const applyAliasesForRoot = (currentConfiguration, remotionRoot) => {
       alias: {
         ...currentConfiguration.resolve?.alias,
         ...packAliases,
+        // R6 STOPGAP (not for merge): use the App-vendored motion pack sources.
+        ...(process.env.ASTRID_R6_MOTION_PACK_OVERRIDE && fs.existsSync(process.env.ASTRID_R6_MOTION_PACK_OVERRIDE)
+          ? {'@pack-astrid_motion-elements-effects': process.env.ASTRID_R6_MOTION_PACK_OVERRIDE}
+          : {}),
         // Collection packs outside the in-tree packs directory import the
         // rendering pack's shared element contracts by the relative path they
         // have in-tree; bind those requests to the product's own copy.
