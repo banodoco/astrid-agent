@@ -67,8 +67,8 @@ def test_snapshot_lifecycle_cleans_tempdir_after_successful_yield(tmp_path, monk
         ("stage-enter", "workflow snapshot"),
         ("temp-enter", scratch),
         ("stage-exit", "workflow snapshot"),
-        ("temp-exit", None),
         ("stage-enter", "workflow snapshot cleanup"),
+        ("temp-exit", None),
         ("stage-exit", "workflow snapshot cleanup"),
     ]
 
@@ -96,9 +96,9 @@ def test_snapshot_setup_read_failure_keeps_refusal_and_cleans_up(tmp_path, monke
     assert caught.value.__cause__ is failure
     assert events[0][0:2] == ("stage-enter", "workflow snapshot")
     assert events[1][0:2] == ("temp-enter", events[1][1])
-    assert events[2][0:2] == ("temp-exit", generation.GenerationInputError)
-    assert events[3:] == [
+    assert events[2:] == [
         ("stage-enter", "workflow snapshot cleanup"),
+        ("temp-exit", generation.GenerationInputError),
         ("stage-exit", "workflow snapshot cleanup"),
         ("stage-error", "workflow snapshot", generation.GenerationInputError),
     ]
@@ -121,8 +121,8 @@ def test_snapshot_yield_body_exception_propagates_after_cleanup(tmp_path, monkey
     assert caught.value is refusal
     assert not scratch.exists()
     assert events[2:] == [
-        ("temp-exit", RuntimeError),
         ("stage-enter", "workflow snapshot cleanup"),
+        ("temp-exit", RuntimeError),
         ("stage-exit", "workflow snapshot cleanup"),
     ]
 
@@ -146,8 +146,8 @@ def test_snapshot_cleanup_failure_surfaces_without_suppressing_cleanup_stage(
     assert caught.value.__context__ is body_error
     assert not scratch.exists()
     assert events[2:] == [
-        ("temp-exit", RuntimeError),
         ("stage-enter", "workflow snapshot cleanup"),
+        ("temp-exit", RuntimeError),
         ("stage-error", "workflow snapshot cleanup", OSError),
     ]
 
