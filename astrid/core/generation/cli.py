@@ -955,8 +955,9 @@ def main(argv: list[str] | None = None) -> int:
         return _main_with_errors(argv)
     from astrid.sdk.command_timing import TimingCollector, TimingOutput, command_started, timing_scope
     collector = TimingCollector(started=command_started())
+    output = contextlib.redirect_stdout(TimingOutput(sys.stdout, collector)) if '--timings' in argv else contextlib.nullcontext()
     try:
-        with timing_scope(collector), contextlib.redirect_stdout(TimingOutput(sys.stdout, collector)):
+        with timing_scope(collector), output:
             return _main_with_errors(argv)
     finally:
         if '--timings' in argv:
