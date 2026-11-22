@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from astrid.sdk.command_timing import stage
 from astrid.core.foundation.paths import PACKAGE_ROOT, REPO_ROOT
 from astrid.core.pack import (
     PackDefinition,
@@ -362,6 +363,7 @@ def discover_canonical_packs_ordered(**kwargs: Any) -> tuple[CanonicalPackEntry,
     return tuple(item.entry for item in discover_canonical_pack_metadata(**kwargs))
 
 
+@stage("pack discovery")
 def discover_pack_metadata(
     *,
     project_root: str | Path = REPO_ROOT,
