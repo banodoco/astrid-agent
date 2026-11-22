@@ -310,6 +310,19 @@ def ordinary_move_requested(parsed):
     return store.find_draft(parsed.project, parsed.ref, client=parsed.client) is None
 
 
+def ordinary_swap_requested(parsed):
+    from astrid.sdk.timeline import store
+
+    if (parsed.client is None or parsed.file or parsed.draft or not parsed.swap_asset):
+        return False
+    accepted = {'project', 'ref', 'clip', 'cut', 'near', 'swap_asset',
+                'dry_run', 'idempotency_key', 'json', 'no_sweep'}
+    if not all(name in accepted or getattr(parsed, name) == default
+               for name, default in parsed.native_trim_defaults.items() if name != 'help'):
+        return False
+    return store.find_draft(parsed.project, parsed.ref, client=parsed.client) is None
+
+
 def dispatch_ordinary_edit(parsed):
     """Dispatch the supported ordinary native edit, or leave legacy edits alone."""
     if getattr(parsed, "operations", None) is not None:
@@ -318,6 +331,10 @@ def dispatch_ordinary_edit(parsed):
         return commit_edit(parsed, edit=commit_operations)
     if parsed.client is not None and not parsed.file and not parsed.draft and parsed.add_layer == 'media':
         return commit_edit(parsed, edit=commit_add_media)
+    if ordinary_swap_requested(parsed):
+        result = commit_edit(parsed, edit=commit_swap)
+        if result is not NotImplemented:
+            return result
     if ordinary_move_requested(parsed):
         result = commit_edit(parsed, edit=commit_move)
         if result is not NotImplemented:
@@ -440,6 +457,30 @@ def commit_trim(session, parsed, options):
                 raise
             return NotImplemented
     return session.trim(select, in_s=parsed.trim_in, out_s=parsed.trim_out, **options)
+
+
+def commit_swap(session, parsed, options):
+    from astrid.sdk.timeline.commit_session import Timeline
+    from astrid.sdk.timeline._common import TimelineEditError
+
+    if not parsed.swap_asset:
+        raise TimelineEditError('--swap-asset needs a media file, handle, or asset key')
+    timeline = Timeline.open(session.project_id, session.timeline_id,
+                             client=session.client, outbox_path=session.outbox.path)
+
+    def swap(t):
+        if parsed.clip is not None:
+            clip = t.clip(parsed.clip, near=parsed.near, cut=parsed.cut)
+        else:
+            cut = int(parsed.cut) if str(parsed.cut).isdigit() else parsed.cut
+            clip = t.cut_picture(cut) if isinstance(cut, str) else t.cut(cut).picture
+        if clip is None:
+            raise TimelineEditError('no clip matches the selected target')
+        clip.swap_asset(parsed.swap_asset)
+
+    return timeline.commit(swap, label='Swap clip media',
+                           dry_run=parsed.dry_run,
+                           idempotency_key=parsed.idempotency_key)
 
 
 def commit_move(session, parsed, options):
@@ -600,9 +641,9 @@ def commit_edit(parsed, *, sheet=False, edit=None, inverse=False):
 def configure_edit_options(subparser):
     from astrid.core.cli.domain_timelines import _add_idempotency_key, _add_json_flag
 
-    subparser.description = ("Media layer adds, literal clip moves and trims commit through the durable timeline session. "
+    subparser.description = ("Media layer adds, literal clip moves and trims, and selected media swaps commit through the durable timeline session. "
                              "Other flags edit a legacy detached working copy.")
-    subparser.add_argument("--dry-run", action="store_true", help="Preview a media add, move or trim without accepting a publication.")
+    subparser.add_argument("--dry-run", action="store_true", help="Preview a media add, move, trim or selected media swap without accepting a publication.")
     _add_idempotency_key(subparser)
     _add_json_flag(subparser, default=False)
     subparser.set_defaults(native_trim_defaults={action.dest: action.default for action in subparser._actions})
