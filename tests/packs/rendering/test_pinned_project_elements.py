@@ -298,6 +298,50 @@ def test_non_effect_pins_use_revision_slots_and_assets(configured_project_pack, 
     assert len(summary[kind + "s"]) == 2
     assert config["clips"][0][slot]["id"] != config["clips"][1][slot]["id"]
 
+
+@pytest.mark.parametrize("slot", ["entrance", "exit", "continuous"])
+def test_admitted_animation_phase_and_top_level_refusal(configured_project_pack, slot):
+    runtime = _Runtime()
+    runtime.documents = configured_project_pack
+    source, element, manifest = test_project_packs.seed(runtime.project["id"])
+    target = source / "rendering/elements/animations/reveal"
+    target.parent.mkdir()
+    element.rename(target)
+    definition = yaml.safe_load((target / "element.yaml").read_text())
+    definition["kind"] = "animation"
+    (target / "element.yaml").write_text(yaml.safe_dump(definition))
+    declaration = manifest["rendering"].pop("effects/reveal")
+    declaration["path"] = declaration["path"].replace("/effects/", "/animations/")
+    declaration["resources"][0]["path"] = declaration["resources"][0]["path"].replace("/effects/", "/animations/")
+    manifest["rendering"]["animations/reveal"] = declaration
+    (source / "pack.yaml").write_text(yaml.safe_dump(manifest))
+    record = project_packs.admit_project_pack("realm", runtime.project["id"])["elements"][0]
+    ref = {key: record["descriptor"][key] for key in ("packId", "kind", "id", "revision")}
+    row = copy.deepcopy(next(iter(configured_project_pack.rows.values())))
+    row["project_id"] = runtime.project["id"]
+    pin = {"document_id": row["document_id"], "version": row["version"],
+           "content_digest": project_packs._json_digest(row["content"])}
+    runtime.get_project_verified_document = lambda *_: {"document": row, "pin": pin}
+    runtime.get_project_verified_document_object = lambda project, _pin, object_id: {
+        **next(a["snapshot_object"] for a in row["content"]["admissions"] if a["snapshot_object"]["object_id"] == object_id),
+        "bytes_base64": base64.b64encode(configured_project_pack.media.objects[project, object_id]).decode(),
+    }
+    runtime.documents._client = runtime
+    clip = {"id": "animation", "track": "v", "at": 0, "hold": 1,
+            "clipType": "media", "elementRef": ref,
+            slot: {"type" if slot == "continuous" else "id": ref["id"]}}
+    runtime.timeline["config"] = {"tracks": [{"id": "v", "kind": "visual", "label": "V"}], "clips": [clip]}
+    managed.validate_managed_render_snapshot(_snapshot(runtime))
+
+    clip["clipType"] = ref["id"]
+    clip.pop(slot)
+    snapshot = _snapshot(runtime)
+    assert selections(snapshot.config)[0]["reference"] == ref
+    with pytest.raises(managed.ManagedRenderValidationError, match="admitted top-level animation id .* unsupported") as error:
+        managed.validate_managed_render_snapshot(snapshot)
+    assert error.value.details["path"] == "$.clips[0].clipType"
+    assert error.value.details["validator"] == "registered_element_reference"
+
 @pytest.mark.parametrize("failure", ["document", "admission", "object", "missing-descriptor", "corrupt", "digest"])
 def test_missing_or_corrupt_snapshot_never_uses_current_source(admitted, failure):
     runtime, refs, _ = admitted

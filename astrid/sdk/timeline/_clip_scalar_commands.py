@@ -7,7 +7,7 @@ import math
 from astrid.core.timeline.duration import clip_end_frame, clip_start_frame
 
 from ._command_state import CommandError
-from ._scalar_commands import _capture, _changes, _clip_basis, _selected_schema, _target
+from ._scalar_commands import _capture, _changes, _clip_basis, _selected_schema, _target, _validate_param_values
 from .capture import CLIP_FIELDS, MAP_FIELDS, RELATIONS, _duration, number, occurrence_start, rate
 
 
@@ -118,34 +118,52 @@ def capture_clip_set(bundle, select, *, values=None, clear=()):
     return _capture(bundle, 'clip.set', select, values, clear)
 
 
+def _builtin_effect(clip_type):
+    """A clip type that names a built-in effect: not media, and not declared as another element kind."""
+    if not isinstance(clip_type, str) or clip_type in ('', 'media'):
+        return False
+    from astrid.core.element.registry import load_default_registry
+
+    try:
+        kinds = {item.kind for item in load_default_registry().list() if item.id == clip_type}
+    except Exception:  # noqa: BLE001 - an unreadable registry cannot prove the target is an effect
+        return False
+    return kinds == {'effects'}
+
+
 def _clip_element(ctx, command, *, allow_initial=False):
     ref = _target(ctx, command, 'clip')
     ctx.select('element.targets', ref.rsplit('/', 1)[0])
-    for key in ('clipType', 'hold', 'asset', 'file', 'src', 'source', 'from', 'to'):
+    for key in ('clipType', 'clip_type', 'hold', 'asset', 'file', 'src', 'source', 'from', 'to'):
         ctx.read(ref, [key])
     element = command['args']['elementRef']
     selected, alias = ctx.read(ref, ['elementRef']), ctx.read(ref, ['element_ref'])
     before = selected if selected is not None else alias
     row = ctx.state.entity(ref)
-    initial_discord = (
-        allow_initial
-        and ctx.read(ref, ['clipType']) == 'am-discord'
-        and 'elementRef' not in row
-        and 'element_ref' not in row
-    )
-    if initial_discord and element.get('kind') != 'effect':
-        raise CommandError('clip.place-element supports effect elements on am-discord clips only', ref=ref)
-    if not isinstance(before, dict) and not initial_discord:
-        raise CommandError('clip.set-element requires an existing element ref', ref=ref)
+    # A built-in effect clip (no element ref yet) may be pointed at an admitted project effect.
+    retarget = (allow_initial and not isinstance(before, dict)
+                and _builtin_effect(row.get('clipType', row.get('clip_type'))))
+    if retarget and element.get('kind') != 'effect':
+        raise CommandError('clip.place-element supports effect elements on built-in effect clips only', ref=ref)
+    if not isinstance(before, dict) and not retarget:
+        raise CommandError('clip.set-element requires an existing element ref, or a built-in effect clip '
+                           'to point at an admitted effect', ref=ref)
     if isinstance(before, dict) and (any(before.get(key) != element[key] for key in ('id', 'kind'))
             or before.get('packId') is not None and before['packId'] != element.get('packId')):
         raise CommandError('clip.set-element must keep the element id and kind and pack owner', ref=ref)
     if allow_initial and not element.get('packId'):
         raise CommandError('clip.place-element requires an admitted project-pack element', ref=ref)
     if element.get('packId'):
-        _selected_schema(ctx, command, ref, element)
+        schema = _selected_schema(ctx, command, ref, element)
     elif 'schema_source' in command['args']:
         raise CommandError('schema_source requires a selected project pack element', ref=ref)
+    if retarget:
+        # The clip keeps its params, timing and media; they must still fit the new element.
+        ctx.read(ref, ['params'])
+        _validate_param_values(ref, ctx.state.entity(ref).get('params') or {}, schema)
+        type_key = 'clip_type' if 'clip_type' in row and 'clipType' not in row else 'clipType'
+        if row.get(type_key) != element['id']:
+            ctx.write(ref, [type_key], element['id'])
     ctx.write(ref, ['elementRef'], element)
     if 'element_ref' in ctx.state.entity(ref):
         ctx.clear(ref, ['element_ref'])
@@ -153,7 +171,9 @@ def _clip_element(ctx, command, *, allow_initial=False):
 
 def clip_set_element(ctx, command):
     ref = command['select']
-    _clip_element(ctx, command, allow_initial=isinstance(ref, str) and ref.startswith('occurrence:'))
+    _clip_element(ctx, command, allow_initial=(command['args'].get('placement') == 'place'
+                                              and isinstance(ref, str)
+                                              and ref.startswith(('occurrence:', 'parent/'))))
 
 
 def capture_clip_set_element(bundle, select, *, element, schema_source=None,

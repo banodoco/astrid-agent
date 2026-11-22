@@ -10,7 +10,11 @@ from astrid.sdk.contracts import DomainResult,ErrorObject
 from pathlib import Path
 import pytest
 import yaml
+import os
+import subprocess
+
 from astrid.core.element import project_packs as packs
+from astrid.core.foundation.renderer_toolchain import resolve_pinned_node, resolve_remotion_project_dir
 
 # Wire grammar of Runtime's Idempotency-Key (runtime_protocol/service.py: IDEMPOTENCY_KEY_RE,
 # enforced by validate_idempotency_key). Mirrored here so the fake client needs no runtime checkout.
@@ -58,13 +62,14 @@ class FakeMedia:
         return next(data for (_,digest),data in self.objects.items() if digest==object_id)
 
 
+def _sha(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
 @pytest.fixture(autouse=True)
 def configured(tmp_path,monkeypatch):
     monkeypatch.setenv(packs.ROOT_ENV,str(tmp_path/'user-data'))
     monkeypatch.setenv(packs.ARTIFACT_ENV,str(tmp_path/'build-cache'))
-    verifier=tmp_path/'test-build-verifier.py'
-    verifier.write_text("import json,sys,hashlib\nfrom pathlib import Path\np=Path(sys.argv[1]);x=json.loads(p.read_text());print(json.dumps({'schema':'astrid.element-build/v1','selectionDigest':'sha256:'+hashlib.sha256(p.read_bytes()).hexdigest(),'elements':[{'projectId':e['projectId'],**{k:e['descriptor'][k] for k in ('packId','id','kind','revision')}} for e in x['elements']]}))")
-    monkeypatch.setenv(packs.BUILD_ENV,json.dumps([sys.executable,str(verifier)]))
     documents=FakeDocuments()
     documents.media=FakeMedia()
     client=SimpleNamespace(documents=documents,media=documents.media)
@@ -201,13 +206,15 @@ def test_canonical_paths_and_commands_on_timeline_inspection():
     assert packs.timeline_element_authoring('realm','project','timeline',bundle)['elements'][0]['status']=='legacy-migration-required'
 
 
-def test_missing_or_failed_compiler_never_advances_selection(monkeypatch):
-    seed();first=packs.admit_project_pack('realm','project');selection=Path(first['manifestPath']);before=selection.read_bytes()
-    monkeypatch.delenv(packs.BUILD_ENV)
-    with pytest.raises(ValueError,match='not configured'):packs.admit_project_pack('realm','project')
+def test_missing_or_failed_compiler_never_advances_selection(monkeypatch, tmp_path):
+    root, directory, _ = seed();first=packs.admit_project_pack('realm','project');selection=Path(first['manifestPath']);before=selection.read_bytes()
+    bare=tmp_path/'bare-remotion';bare.mkdir();(bare/'package.json').write_text(json.dumps({'dependencies':{'esbuild':'0.27.7'}}))
+    with monkeypatch.context() as remote:
+        remote.setenv('ASTRID_REMOTION_PROJECT_DIR',str(bare))
+        with pytest.raises(ValueError,match='Remotion esbuild.*is missing'):packs.admit_project_pack('realm','project')
     assert selection.read_bytes()==before
-    monkeypatch.setenv(packs.BUILD_ENV,json.dumps([sys.executable,'-c','import sys;sys.exit(1)']))
-    with pytest.raises(ValueError,match='build verification failed'):packs.admit_project_pack('realm','project')
+    (directory/'component.tsx').write_text('export default function Reveal( {\n')
+    with pytest.raises(ValueError,match='component.tsx.*failed to compile'):packs.admit_project_pack('realm','project')
     assert selection.read_bytes()==before
 
 
@@ -229,7 +236,11 @@ def test_one_pack_change_does_not_scan_or_rewrite_1000_other_configs(configured)
     row=next(row for (_,identity),row in configured.rows.items() if identity not in {f'other-{i}' for i in range(1000)})
     assert row['content']['schema']=='astrid.project-pack/v1'
     assert row['version']>1 and 'schema_version' not in row['content']
-    encoded=json.dumps(row['content']);assert str(Path.home()) not in encoded and 'component.tsx' not in encoded
+    # Portable admission facts only: no machine-local absolute path reaches the shared document.
+    encoded=json.dumps(row['content']);assert str(Path.home()) not in encoded
+    for admission in row['content']['admissions']:
+        assert set(admission['authoring']) == {'packRoot','descriptorPath','componentPath','status'}
+        assert not admission['authoring']['descriptorPath'].startswith('/') and not admission['authoring']['componentPath'].startswith('/')
 
 
 def test_named_collection_uses_one_exact_stable_document(configured):
@@ -250,15 +261,6 @@ def test_missing_derived_index_reconstructs_from_selected_document_and_snapshot(
     assert Path(rebuilt['manifestPath']).is_file() and len(configured.writes)==before
 
 
-def test_failed_init_build_does_not_create_authority_document(configured,monkeypatch):
-    monkeypatch.delenv(packs.BUILD_ENV)
-    with pytest.raises(ValueError,match='not configured'):packs.init_project_pack('realm','project')
-    assert configured.rows=={}
-    context=packs.inspect_project_pack('realm','project')
-    assert context['documentVersion']==0
-    assert (Path(context['packRoot'])/'pack.yaml').is_file()
-
-
 def test_read_wrong_realm_does_not_create_or_write(configured):
     with pytest.raises(ValueError,match='authenticated'):packs.inspect_project_pack('otherrealm','project')
     assert configured.rows=={} and configured.writes==[]
@@ -271,3 +273,153 @@ def test_undeclared_descriptor_asset_cannot_advance_document(configured):
     (directory/'element.yaml').write_text(yaml.safe_dump(descriptor))
     with pytest.raises(ValueError,match='asset/support closure'):packs.admit_project_pack('realm','project')
     assert configured.rows==before
+
+
+def _remotion_copy(tmp_path, *, bin_esbuild):
+    """A Remotion project dir sharing the install's real esbuild native package, with ``bin/esbuild`` as given."""
+    real = resolve_remotion_project_dir('ASTRID_REMOTION_PROJECT_DIR', repo_root=packs.REPO_ROOT)
+    project = tmp_path / 'remotion-copy'
+    modules = project / 'node_modules'
+    (modules / '@esbuild').mkdir(parents=True)
+    shutil.copy(real / 'package.json', project / 'package.json')
+    shutil.copytree(real / 'node_modules' / 'esbuild', modules / 'esbuild', ignore=shutil.ignore_patterns('bin'))
+    for native in (real / 'node_modules' / '@esbuild').iterdir():
+        (modules / '@esbuild' / native.name).symlink_to(native.resolve())
+    if bin_esbuild is not None:
+        (modules / 'esbuild' / 'bin').mkdir()
+        (modules / 'esbuild' / 'bin' / 'esbuild').write_text(bin_esbuild)
+    return project
+
+
+def test_admission_compiles_when_bin_esbuild_is_a_js_shim(monkeypatch, tmp_path):
+    shim = '#!/usr/bin/env node\nthrow new Error("shim is not a native executable");\n'
+    monkeypatch.setenv('ASTRID_REMOTION_PROJECT_DIR', str(_remotion_copy(tmp_path, bin_esbuild=shim)))
+    seed()
+    result = packs.admit_project_pack('realm', 'project')
+    compiled = result['elements'][0]['compiled']
+    assert compiled['path'].startswith('compiled/')
+    assert b'AbsoluteFill' in (Path(result['elements'][0]['snapshot']['root']) / compiled['path']).read_bytes()
+
+
+def test_compiler_discovery_needs_no_bin_esbuild_and_forwards_windows_env(monkeypatch, tmp_path):
+    # The Windows layout has no bin/esbuild and a native package of its own; discovery goes through the JS API only.
+    project = _remotion_copy(tmp_path, bin_esbuild=None)
+    monkeypatch.setenv('ASTRID_REMOTION_PROJECT_DIR', str(project))
+    node = resolve_pinned_node(project)
+    assert node.ok and node.path is not None and node.pin is not None and node.version == node.pin, (
+        f"Windows discovery emulation needs the Remotion-pinned Node; {node.problem or node}"
+    )
+    monkeypatch.setenv('ASTRID_NODE_EXECUTABLE', str(node.path))
+    monkeypatch.setattr(sys, 'platform', 'win32')
+    monkeypatch.setenv('SYSTEMROOT', 'C:\\Windows')
+    node, api = packs._renderer_compiler()
+    assert api.name == 'main.js' and api.parent.name == 'lib'
+    assert packs._node_env() == {'PATH': '', 'LANG': 'C.UTF-8', 'SYSTEMROOT': 'C:\\Windows'}
+
+
+def test_missing_esbuild_api_and_wrong_version_have_plain_fixes(monkeypatch, tmp_path):
+    project = _remotion_copy(tmp_path, bin_esbuild=None)
+    monkeypatch.setenv('ASTRID_REMOTION_PROJECT_DIR', str(project))
+    package = json.loads((project / 'package.json').read_text())
+    package['dependencies']['esbuild'] = '0.0.1'
+    (project / 'package.json').write_text(json.dumps(package))
+    with pytest.raises(ValueError, match=r'reports 0\.27\.7, but .* pins 0\.0\.1.*Repair the install'):packs._renderer_compiler()
+    (project / 'node_modules' / 'esbuild' / 'lib' / 'main.js').unlink()
+    with pytest.raises(ValueError, match=r'main\.js is missing.*Repair the install'):packs._renderer_compiler()
+
+
+def _make_legacy(configured, first):
+    """Rewrite an admission to the pre-compiled-module shape: source-only closure digest, no `compiled`, stale index."""
+    key = ('project', first['documentId'])
+    row = configured.rows[key]
+    admission = row['content']['admissions'][0]
+    record = first['elements'][0]
+    source = [f for f in record['snapshot']['files'] if not f['path'].startswith('compiled/')]
+    admission['snapshot_digest'] = packs._closure_digest(source)
+    del admission['compiled']
+    legacy = copy.deepcopy(record)
+    legacy['snapshot']['files'] = source
+    del legacy['compiled']
+    packs._atomic_json(Path(first['manifestPath']), packs._index('realm', 'project', first['documentId'], row['version'], row['content'], [legacy]))
+    return admission
+
+
+def test_readmitting_unchanged_legacy_admission_upgrades_it_with_a_compiled_module(configured):
+    seed()
+    first = packs.admit_project_pack('realm', 'project')
+    legacy = _make_legacy(configured, first)
+    old_digest = legacy['snapshot_digest']
+    with pytest.raises(ValueError, match='predates compiled modules'):
+        packs.materialize_project_pack('realm', 'project')
+    again = packs.admit_project_pack('realm', 'project')
+    row = configured.rows[('project', first['documentId'])]
+    admissions = row['content']['admissions']
+    assert len(admissions) == 1
+    upgraded = admissions[0]
+    assert upgraded['revision'] == first['elements'][0]['descriptor']['revision']
+    assert upgraded['snapshot_digest'] not in (old_digest, None) and upgraded['compiled']['path'].startswith('compiled/')
+    assert upgraded['compiled'] == again['elements'][0]['compiled']
+    snapshot = Path(again['elements'][0]['snapshot']['root'])
+    assert hashlib.sha256((snapshot / upgraded['compiled']['path']).read_bytes()).hexdigest() == upgraded['compiled']['sha256']
+    # The repair no longer loops: the index rebuilds from the document and the element resolves with its compiled file.
+    selected = json.loads(Path(again['manifestPath']).read_text())['elements']
+    assert [e['compiled'] for e in selected] == [upgraded['compiled']]
+    Path(again['manifestPath']).unlink()
+    rebuilt = packs.materialize_project_pack('realm', 'project')
+    assert rebuilt['elements'][0]['compiled'] == upgraded['compiled']
+    ref = {k: again['elements'][0]['descriptor'][k] for k in ('id', 'kind', 'packId', 'revision')}
+    assert packs.resolve_admitted_element('realm', 'project', ref)['compiled'] == upgraded['compiled']
+    # A second admit is a no-op on the document.
+    version = row['version']
+    packs.admit_project_pack('realm', 'project')
+    assert configured.rows[('project', first['documentId'])]['version'] == version
+
+
+@pytest.mark.parametrize('drift', [False, True])
+def test_legacy_source_pin_includes_shared_sibling(configured, drift):
+    root, directory, manifest = seed()
+    shared = directory.parent / 'shared' / 'helper.ts'
+    shared.parent.mkdir()
+    shared.write_text('export const value = 1;\n')
+    component = directory / 'component.tsx'
+    component.write_text("import {value} from '../shared/helper';\n" + component.read_text() + '\nvoid value;\n')
+    manifest['rendering']['effects/reveal']['resources'].append(
+        {'kind': 'implementation', 'path': shared.relative_to(root).as_posix()})
+    (root / 'pack.yaml').write_text(yaml.safe_dump(manifest))
+    first = packs.admit_project_pack('realm', 'project')
+    admission = _make_legacy(configured, first)
+    del admission['snapshot_object']
+    row = configured.rows[('project', first['documentId'])]
+    index = Path(first['manifestPath'])
+    legacy_record = json.loads(index.read_text())['elements'][0]
+    packs._atomic_json(index, packs._index('realm', 'project', first['documentId'], row['version'], row['content'], [legacy_record]))
+    before, index_before = copy.deepcopy(row), index.read_bytes()
+    writes_before, imports_before = list(configured.writes), list(configured.media.imports)
+    ref = {k: first['elements'][0]['descriptor'][k] for k in ('packId', 'id', 'kind', 'revision')}
+    if drift:
+        shared.write_text('export const value = 2;\n')
+        assert packs.inspect_project_pack('realm', 'project')['elements'][0]['descriptor']['revision'] == ref['revision']
+        with pytest.raises(ValueError, match='source closure changed.*restore.*resources'):
+            packs.admit_project_pack('realm', 'project')
+        assert configured.rows[('project', first['documentId'])] == before
+        assert index.read_bytes() == index_before
+        assert configured.writes == writes_before and configured.media.imports == imports_before
+        assert {k: legacy_record['descriptor'][k] for k in ref} == ref
+    else:
+        result = packs.admit_project_pack('realm', 'project')
+        assert {k: result['elements'][0]['descriptor'][k] for k in ref} == ref
+        assert result['elements'][0]['compiled']
+
+
+def test_fresh_scaffold_declares_current_pack_api_and_is_not_quarantined(configured):
+    from astrid.pack_api import VERSION
+    root, _, _ = seed()
+    manifest = yaml.safe_load((root / 'pack.yaml').read_text())
+    assert manifest['pack_api'] == '%d.%d' % VERSION
+    result = packs.admit_project_pack('realm', 'project')
+    from astrid.core.element.registry import load_pack_elements
+    # Render stages a snapshot under a folder named for its pack id.
+    staged = (root.parent / 'staged' / manifest['id']).resolve()
+    shutil.copytree(result['elements'][0]['snapshot']['root'], staged)
+    loaded = load_pack_elements(project_root=staged.parent, extra_pack_roots=(str(staged),))
+    assert [e.id for e in loaded if e.root.is_relative_to(staged)] == ['reveal']
