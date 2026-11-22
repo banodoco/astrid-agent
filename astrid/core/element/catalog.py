@@ -19,6 +19,8 @@ from typing import Any
 
 from astrid.core.element.registry import (
     ElementRegistry,
+    _default_registry_lock,
+    _default_registry_state,
     clear_default_registry_cache,
     load_default_registry,
 )
@@ -53,30 +55,18 @@ def _validate_kind(kind: str) -> ElementKind:
 def _registry(theme: str | Path | None = None, *, project_slug: str | None = None) -> ElementRegistry:
     # Timeline theme slugs are authoring metadata.  They cannot select
     # executable element definitions; only discovered Astrid packs do that.
-    del theme
-    return _cached_registry(
-        project_slug,
-        _path_cache_key(TOOLS_DIR),
-    )
+    del theme, project_slug
+    project_root = Path(TOOLS_DIR).resolve()
+    with _default_registry_lock:
+        return _cached_registry(project_root, _default_registry_state(project_root))
 
 
-def _path_cache_key(path: str | Path | None) -> str | None:
-    if path is None:
-        return None
-    return str(Path(path).resolve())
-
-
-@lru_cache(maxsize=None)
-def _cached_registry(
-    project_slug: str | None,
-    project_root_key: str | None,
-) -> ElementRegistry:
-    project_root = Path(project_root_key) if project_root_key is not None else TOOLS_DIR
+@lru_cache(maxsize=16)
+def _cached_registry(project_root: Path, pack_root_state: tuple) -> ElementRegistry:
     return load_default_registry(project_root=project_root)
 
 
 def _clear_registry_cache() -> None:
-    _cached_registry.cache_clear()
     clear_default_registry_cache()
 
 
