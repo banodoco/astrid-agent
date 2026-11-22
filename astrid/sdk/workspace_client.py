@@ -36,6 +36,10 @@ _DOCUMENT_CONTENT_UNSET = object()
 
 RECONFIGURE_ACTION = "run the Astrid install line again"
 
+# The generated client's 30 s default is too short for large realms: a commit can
+# finish server-side after that, and the lost acknowledgement surfaces as a timeout.
+WORKSPACE_REQUEST_TIMEOUT_SECONDS = 300.0
+
 
 # Generated operations that only read Runtime state.  A timed-out read changed
 # nothing; a timed-out write may still land, so it is reported as unknown.
@@ -229,7 +233,9 @@ class WorkspaceClient:
 
     def __init__(self, endpoint: str, token: str):
         self.endpoint, self.token = resolve_runtime_connection(endpoint, token)
-        self._generated = GeneratedWorkspaceClient(self.endpoint, self.token)
+        self._generated = GeneratedWorkspaceClient(
+            self.endpoint, self.token, timeout=WORKSPACE_REQUEST_TIMEOUT_SECONDS
+        )
         # Keep the generated protocol untouched while timing each actual HTTP path.
         from astrid.sdk.command_timing import stage
         request = getattr(self._generated, "_request", None)

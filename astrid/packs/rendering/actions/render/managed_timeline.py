@@ -206,7 +206,7 @@ def _validate_render_element_clip_types(
     """
 
     from astrid.core.element import catalog as element_catalog
-    from astrid.core.rendering.project_elements import selections
+    from astrid.core.rendering.project_elements import selection_key, selections
 
     effect_ids = set(element_catalog.list_effect_ids())
 
@@ -260,6 +260,30 @@ def _validate_render_element_clip_types(
             "Use a built-in clipType (media, video, image, audio, text, or "
             f"effect-layer) or an installed effect id. Available effect ids: {available}."
         )
+        ref = clip.get("elementRef")
+        if (isinstance(ref, Mapping) and ref.get("id") == clip_type
+                and ref.get("kind") == "animation"
+                and all(isinstance(ref.get(key), str) and ref[key]
+                        for key in ("packId", "kind", "id", "revision"))
+                and selection_key(ref) in {
+                    selection_key(row["reference"]) for row in selections(config)
+                }):
+            reason = f"admitted top-level animation id {clip_type!r} is unsupported for managed render"
+            recovery = "Use a supported visual clip and animation phase, or remove this animation, then retry."
+        else:
+            # Only consult the exact moved-element table on the refusal path.
+            from astrid.sdk.timeline_address import ElementRegistryUnavailable, moved_element_pack
+
+            try:
+                moved = moved_element_pack(clip_type)
+            except ElementRegistryUnavailable:
+                moved = None
+            if moved:
+                pack_id, record = moved
+                reason = f"unregistered reusable visual element id {clip_type!r}; it requires pack {pack_id!r}"
+                recovery = f"Make pack {pack_id!r} available and ensure its element loads, then retry."
+                if record.get("install"):
+                    recovery += f" Install command: {record['install']}"
         raise ManagedRenderValidationError(
             f"canonical timeline {snapshot.timeline_slug!r} is not renderable at "
             f"{path}: {reason}. Recovery: {recovery}",

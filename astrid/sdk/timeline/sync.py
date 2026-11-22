@@ -1044,9 +1044,11 @@ class TimelineSession:
                            release_conflict=release_conflict)
 
     def _flush(self, *, idempotency_key=None, dry_run=False, via="python", prepare=None,
-               release_conflict=False):
+               release_conflict=False, expected_flight=None):
         with self.outbox.locked():
             state = self._state()
+            if expected_flight is not None and state["flight"] != expected_flight:
+                return None
             if prepare is not None:
                 prepare(state)
             flight = state["flight"]

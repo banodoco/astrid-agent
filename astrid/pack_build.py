@@ -13,7 +13,7 @@ import subprocess
 import unicodedata
 from typing import Any, Mapping, TypedDict
 
-from .pack_builder import BUILDER_SOURCE
+from .pack_builder import BUILDER_SOURCE, ELEMENT_BUILDER_SOURCE
 
 
 class BuildRequest(TypedDict):
@@ -121,3 +121,28 @@ def build_pack_assets(request: BuildRequest) -> BuildResult:
         return _error(pack_id, "io_failed", "Build input or tool could not be accessed.", "Check the stage and tool paths.")
     except (TypeError, ValueError, KeyError, json.JSONDecodeError):
         return invalid()
+
+
+class ElementBuildError(ValueError):
+    """A project element component did not compile; the message names the cause."""
+
+
+def compile_element_module(node: Path, esbuild_api: Path, stage_root: Path, entry: str, env: Mapping[str, str] | None = None) -> bytes:
+    """Bundle one admitted component to a single ESM module with the renderer's Node and esbuild.
+
+    The caller resolves the Node and esbuild JS API (``node_modules/esbuild/lib/main.js``) as the render path does
+    (``project_packs._renderer_compiler``); esbuild finds its own native binary.
+    A compile failure is the component's verification.
+    """
+    request = {"stage_root": str(stage_root), "entry": entry, "esbuild_api": str(esbuild_api)}
+    try:
+        result = subprocess.run([str(node), "-e", ELEMENT_BUILDER_SOURCE],
+                                input=json.dumps(request, allow_nan=False).encode("utf-8"), capture_output=True,
+                                env=dict(env) if env is not None else {"PATH": "", "LANG": "C.UTF-8"}, timeout=120, cwd=stage_root)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ElementBuildError(f"The element compiler could not run ({exc}). Check the pinned Node and esbuild install.") from exc
+    if result.returncode != 0 or not result.stdout:
+        detail = result.stderr.decode("utf-8", "replace").strip()[-2000:] or "no compiler output"
+        raise ElementBuildError(f"Element component {entry} failed to compile: {detail}. "
+                                "Fix the component imports or exports and admit again.")
+    return result.stdout
