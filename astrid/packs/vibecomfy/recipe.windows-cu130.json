@@ -4,7 +4,7 @@
   "platform": "windows-x86_64-cu130",
   "pins": {
     "path": "packs/runpod/pins.json",
-    "sha256": "5f8fb29040602ab1d4edffb9f2430ffd3261eb7e0025e33d31ac7d716f95dfcf"
+    "sha256": "e80d1b154588d781c37655d0d7c6bdd0c7431a14b9f0e123fcf91605908a212b"
   },
   "source_bindings": [
     {
@@ -52,10 +52,6 @@
             "path": "pyproject.toml"
           },
           {
-            "source": "h3-motion-context",
-            "path": "requirements.txt"
-          },
-          {
             "source": "videohelpersuite",
             "path": "requirements.txt"
           }
@@ -65,7 +61,9 @@
           "comfy-aimdo==0.5.5",
           "opencv-python-headless==5.0.0.93",
           "setuptools==80.9.0",
-          "wheel==0.46.3"
+          "wheel==0.46.3",
+          "openai-whisper==20250625",
+          "soundfile==0.14.0"
         ],
         "exclude_newer": "2026-10-31T00:00:00Z"
       },
@@ -121,7 +119,8 @@
     "object_info_path": "/object_info",
     "required_nodes": [
       "MiniMaxH3ReferenceToVideo",
-      "VHS_VideoCombine"
+      "VHS_VideoCombine",
+      "Apply Whisper"
     ],
     "timeout_seconds": 120,
     "poll_interval_seconds": 2
@@ -131,7 +130,7 @@
       "source": "comfyui-whisper",
       "path": "apply_whisper.py",
       "sha256_before": "89a9b9e522d9d5fa0c8655a370fdc6a88bc8a819f3bbbb17cf880981ad7a4832",
-      "sha256_after": "c3c72c746f81923fb0a1249e67645353010ec205e0f8ef4135533977287c347c",
+      "sha256_after": "459c53daf4217671f2f0bb722e9e22857198ab77314a788b2712572ad16bc4ee",
       "replacement": "packs/runpod/patches/ComfyUI-Whisper-apply_whisper.py"
     }
   ]

@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "defaults": {
+    "durationFrames": 8
+  },
+  "dependencies": {
+    "js_packages": [],
+    "python_requirements": []
+  },
+  "description": "Slide-push transition that slides the incoming clip over the outgoing clip from the right.",
+  "id": "slide-push",
+  "keywords": [
+    "slide-push",
+    "transition",
+    "slide",
+    "push",
+    "right"
+  ],
+  "kind": "transition",
+  "inputs": [
+    {
+      "name": "from_clip",
+      "type": "clip",
+      "required": true,
+      "artifact_type": "clip/visual"
+    },
+    {
+      "name": "to_clip",
+      "type": "clip",
+      "required": true,
+      "artifact_type": "clip/visual"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "clip",
+      "type": "clip",
+      "artifact_type": "clip/visual"
+    }
+  ],
+  "metadata": {
+    "label": "Slide Push",
+    "pack_id": "rendering"
+  },
+  "pack_id": "rendering",
+  "runtime": {
+    "adapter": "remotion"
+  },
+  "schema": {
+    "properties": {
+      "durationFrames": {
+        "minimum": 1,
+        "type": "number"
+      }
+    },
+    "type": "object"
+  },
+  "short_description": "Slide-push transition with the incoming clip entering from the right."
+}

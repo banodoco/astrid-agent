@@ -55,6 +55,25 @@ def workspace(tmp_path, system):
 
     backend.runtime = Mock(side_effect=runtime)
     backend.stop = Mock()
+
+    def installer_subprocess(argv, **_kwargs):
+        # Backup now bootstraps the neutral Runtime directly, and restore calls
+        # its offline restore API. These fixture Versions intentionally point
+        # at nonexistent interpreters, so model just those subprocess effects.
+        script = str(argv[5]) if len(argv) > 5 else ""
+        if "BootstrapConfig" in script:
+            # Keep the previous fixture's observable `up` phase so its
+            # failure-path case still exercises partial-snapshot cleanup.
+            backend.runtime(version, data, "up")
+            return {}
+        if "inspect_canonical_schema" in script:
+            return json.dumps({"identity": {"version": 29}, "target": 33})
+        if "restore_backup" in script:
+            shutil.copytree(Path(argv[-3]), Path(argv[-2]))
+            return {}
+        raise AssertionError(f"unexpected installer subprocess: {argv}")
+
+    backend.run = Mock(side_effect=installer_subprocess)
     return backend, data, realm, version
 
 

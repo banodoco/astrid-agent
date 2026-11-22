@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import wave
 from contextlib import contextmanager
 from types import SimpleNamespace
 from pathlib import Path
@@ -25,11 +26,12 @@ REFUSALS = {'runpod_engine_unavailable', 'missing_dependency',
 TARGETS = ('auto', 'managed', 'runpod', 'attached')
 
 
-def _slot_kwargs(modality, mode, image):
+def _slot_kwargs(modality, mode, image, audio_ref=None):
     """Minimal public inputs per default slot; a new slot must be listed here."""
     return {('image', 't2i'): dict(prompt='a boat'),
             ('image', 'edit'): dict(mode='edit', prompt='a boat', image_ref=str(image)),
             ('audio', 'tts'): dict(mode='tts', text='hello'),
+            ('audio', 'transcribe'): dict(mode='transcribe', audio_ref=str(audio_ref)),
             ('audio', 'music'): dict(mode='music', prompt='a song'),
             ('audio', 'sfx'): dict(mode='sfx'),
             ('video', 'i2v'): dict(prompt='a boat', image_ref=str(image))}[(modality, mode)]
@@ -48,6 +50,17 @@ def image(tmp_path):
     path = tmp_path / 'start.png'
     # H3 planning decodes the reference; use a real still at its output canvas size.
     Image.new('RGB', (1024, 576)).save(path, format='PNG')
+    return path
+
+
+@pytest.fixture
+def audio_ref(tmp_path):
+    path = tmp_path / 'reference.wav'
+    with wave.open(str(path), 'wb') as stream:
+        stream.setnchannels(1)
+        stream.setsampwidth(2)
+        stream.setframerate(16000)
+        stream.writeframes(b'\0\0' * 16000)
     return path
 
 
@@ -155,8 +168,8 @@ def _expected_engine(entry_id, mode):
     return entries.runpod_engine(entry)
 
 
-def _call(modality, mode, image, **kwargs):
-    return getattr(GenerationFacade(), modality)(**_slot_kwargs(modality, mode, image), **kwargs)
+def _call(modality, mode, image, audio_ref=None, **kwargs):
+    return getattr(GenerationFacade(), modality)(**_slot_kwargs(modality, mode, image, audio_ref), **kwargs)
 
 
 # An attached ComfyUI resolves sfx and tts only where their model weights are installed; the CPU
@@ -171,13 +184,14 @@ _CELLS = [pytest.param(slot, target, id=f"{'/'.join(slot)}-{target}",
 @pytest.mark.parametrize('slot,target', _CELLS)
 # Measured 90 s on a hosted run (CI 43348849041); the suite default is 120 s.
 @pytest.mark.timeout(300)
-def test_default_slot_resolves_to_requested_target_or_refuses(slot, target, image, monkeypatch, request):
+def test_default_slot_resolves_to_requested_target_or_refuses(slot, target, image, audio_ref, monkeypatch, request):
     modality, mode = slot
     if target != 'runpod':
         monkeypatch.setattr(entries, 'runpod_engine', lambda *a, **k: pytest.fail('RunPod engine chosen'))
         monkeypatch.setattr(generation, '_runpod_placement_policy', lambda *a, **k: pytest.fail('RunPod policy'))
     try:
-        plan = _call(modality, mode, image, placement=_target_value(target, request), dry_run=True)
+        plan = _call(modality, mode, image, audio_ref=audio_ref,
+                     placement=_target_value(target, request), dry_run=True)
     except AstridError as exc:
         assert exc.code in REFUSALS, (slot, target, exc.code, str(exc))
         return

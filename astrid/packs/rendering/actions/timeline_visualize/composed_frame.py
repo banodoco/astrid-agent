@@ -341,6 +341,13 @@ def renderer_environment_identity(config: Mapping[str, Any] | None = None) -> st
         paths.append(("explicit-source-root", Path(source_root)))
     paths.append(("remotion-project-source", project / "src"))
     paths.append(("remotion-project-config", project / "remotion.config.ts"))
+    paths.append(("remotion-webpack-aliases", project / "webpack-alias.mjs"))
+    paths.append(("remotion-native-scene", project / "native-scene.mjs"))
+    paths.append(("remotion-legacy-loader", project / "timeline-composition-legacy-loader.cjs"))
+    paths.append((
+        "r13-timeline-elements",
+        project.parent / "astrid/core/timeline/schema/r13-legacy-elements.json",
+    ))
     paths.append(("package-lock", project / "package-lock.json"))
     paths.append((
         "generated-effects",
