@@ -576,6 +576,19 @@ def _inverse_element_sources(port, records, *, context):
     return sources
 
 
+def _retained_element_object(port, verified, objects, admission):
+    """Capture the portable object belonging to an exact retained admission."""
+    descriptor = admission.get('snapshot_object')
+    if not isinstance(descriptor, Mapping) or not isinstance(descriptor.get('object_id'), str):
+        return None
+    _require(callable(getattr(port, 'document_object', None)),
+             'Runtime document_object support is required for pack snapshots')
+    object_id = descriptor['object_id']
+    if object_id not in objects:
+        objects[object_id] = port.document_object(verified['pin'], object_id)
+    return objects[object_id]
+
+
 def _schema_resolver(port, inputs, inverse_records, *, context, through):
     """Resolve bytes at the real command stage, never by simulating handlers."""
     from astrid.core.element.project_packs import admitted_element_snapshot_descriptor
@@ -636,12 +649,7 @@ def _schema_resolver(port, inputs, inverse_records, *, context, through):
                                    kind='history_unavailable')
             snapshot = None
             if descriptor is not None:
-                _require(callable(getattr(port, 'document_object', None)),
-                         'Runtime document_object support is required for pack snapshots')
-                object_id = descriptor['object_id']
-                if object_id not in objects:
-                    objects[object_id] = port.document_object(pin, object_id)
-                snapshot = objects[object_id]
+                snapshot = _retained_element_object(port, verified, objects, admissions[0])
             if command['op'] == 'timeline.inverse' or authority is not None:
                 try:
                     admitted_element_snapshot_descriptor(
@@ -1522,6 +1530,8 @@ class RuntimeCommitService:
                     baseline=(closures[restored_from['revision_id']] if restored_from is not None
                               else bundle if current == base else head_bundle),
                     schema_inputs=schema_inputs,
+                    snapshot_loader=lambda verified, objects, admission: _retained_element_object(
+                        port, verified, objects, admission),
                     realm_id=context.get('realm_id'),
                     source_bundles=[*inverse_sources, *closures.values()],
                     restoration_records=plan.records if inverse_records or restore else (),

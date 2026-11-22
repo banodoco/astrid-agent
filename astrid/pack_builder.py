@@ -145,3 +145,28 @@ async function main() {
 main().then(r => process.stdout.write(JSON.stringify(r))).catch(() => process.stdout.write(JSON.stringify(fail('io_failed', 'Build output could not be written.', 'Check the private stage.'))));
 
 '''
+
+
+# One project element component -> one ESM module. React, the JSX runtime and
+# Remotion are supplied by the editor's import map, so they stay external.
+ELEMENT_BUILDER_SOURCE = r'''
+'use strict';
+const fs = require('node:fs');
+const path = require('node:path');
+const input = JSON.parse(fs.readFileSync(0, 'utf8'));
+const esbuild = require(input.esbuild_api);
+const fail = reason => { process.stderr.write(reason); process.exit(1); };
+esbuild.build({
+  entryPoints: [path.join(input.stage_root, input.entry)],
+  outfile: path.join(input.stage_root, 'element.mjs'),
+  bundle: true, write: false, metafile: true, format: 'esm', platform: 'browser',
+  target: 'es2020', jsx: 'automatic', logLevel: 'silent',
+  external: ['react', 'react/jsx-runtime', 'remotion'],
+}).then(result => {
+  if (result.warnings.length) fail('warnings: ' + result.warnings.map(w => w.text).join('; '));
+  if (result.outputFiles.length !== 1) fail('the element must bundle to exactly one module');
+  const exports = Object.values(result.metafile.outputs).map(o => o.exports);
+  if (exports.length !== 1 || !exports[0].includes('default')) fail('the element component needs a default export');
+  process.stdout.write(Buffer.from(result.outputFiles[0].contents));
+}, error => fail(error.errors ? error.errors.map(e => e.text).join('; ') : String(error)));
+'''

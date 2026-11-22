@@ -120,7 +120,7 @@ def test_snapshot_yield_body_exception_propagates_after_cleanup(tmp_path, monkey
 
     assert caught.value is refusal
     assert not scratch.exists()
-    assert events[2:] == [
+    assert events[3:] == [
         ("stage-enter", "workflow snapshot cleanup"),
         ("temp-exit", RuntimeError),
         ("stage-exit", "workflow snapshot cleanup"),
@@ -145,7 +145,7 @@ def test_snapshot_cleanup_failure_surfaces_without_suppressing_cleanup_stage(
     assert caught.value is cleanup_error
     assert caught.value.__context__ is body_error
     assert not scratch.exists()
-    assert events[2:] == [
+    assert events[3:] == [
         ("stage-enter", "workflow snapshot cleanup"),
         ("temp-exit", RuntimeError),
         ("stage-error", "workflow snapshot cleanup", OSError),

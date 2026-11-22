@@ -35,7 +35,6 @@ ARTIFACT_ENV = "ASTRID_ELEMENT_ARTIFACT_ROOT"
 DOCUMENT_KIND = "astrid.project-pack"
 DOCUMENT_SCHEMA = "astrid.project-pack/v1"
 SOURCE_BINDING = "project-packs"
-BUILD_ENV = "ASTRID_ELEMENT_BUILD_COMMAND"
 _ALLOWED_IMPORTS = {"react", "react/jsx-runtime", "remotion"}
 _SOURCE_EXTENSIONS = {".ts", ".tsx", ".js", ".jsx", ".mjs", ".css"}
 
@@ -94,9 +93,16 @@ def _project_pack_content(row):
     if not re.fullmatch(r'[a-z][a-z0-9_]*',str(content.get('pack_id',''))):raise ValueError('Invalid project pack owner')
     if set(content)!={'schema','pack_id','source_binding_key','relative_manifest','admissions'} or not isinstance(content['admissions'],list):raise ValueError('Invalid project pack payload fields')
     for admission in content['admissions']:
-        if not isinstance(admission,dict) or set(admission)-{'snapshot_object'}!={'id','kind','revision','snapshot_digest'} or admission['kind'] not in {'effect','animation','transition'} or not re.fullmatch(r'sha256:[0-9a-f]{64}',str(admission['revision'])) or not re.fullmatch(r'[0-9a-f]{64}',str(admission['snapshot_digest'])):raise ValueError('Invalid selected pack admission')
+        if not isinstance(admission,dict) or set(admission)-{'snapshot_object','compiled','descriptor','authoring'}!={'id','kind','revision','snapshot_digest'} or admission['kind'] not in {'effect','animation','transition'} or not re.fullmatch(r'sha256:[0-9a-f]{64}',str(admission['revision'])) or not re.fullmatch(r'[0-9a-f]{64}',str(admission['snapshot_digest'])):raise ValueError('Invalid selected pack admission')
         if 'snapshot_object' in admission:
             _snapshot_descriptor(admission['snapshot_object'])
+        if 'compiled' in admission:
+            compiled=admission['compiled']
+            if (not isinstance(compiled,dict) or set(compiled)!={'path','sha256'}
+                    or not isinstance(compiled['path'],str) or not re.fullmatch(r'[0-9a-f]{64}',str(compiled['sha256']))):
+                raise ValueError('Invalid compiled element descriptor')
+        if 'descriptor' in admission and not isinstance(admission['descriptor'],dict):raise ValueError('Invalid admitted element descriptor')
+        if 'authoring' in admission and not isinstance(admission['authoring'],dict):raise ValueError('Invalid admitted element authoring')
 
     return content
 
@@ -272,28 +278,18 @@ def _atomic_bytes(path: Path, data: bytes) -> None:
         if os.path.exists(temporary):os.unlink(temporary)
 
 
-def _verify_build(selection: dict[str,Any], path: Path) -> dict[str,Any]:
-    configured=os.environ.get(BUILD_ENV)
-    if not configured:raise ValueError(f'Native element build verifier is not configured; set {BUILD_ENV} through the explicit native host setup')
-    try:command=json.loads(configured)
-    except json.JSONDecodeError as exc:raise ValueError('Element build command must be a JSON argv array') from exc
-    if not isinstance(command,list) or not command or any(not isinstance(arg,str) or not arg for arg in command):raise ValueError('Element build command must be a nonempty JSON argv array')
-    fd,name=tempfile.mkstemp(prefix='build-candidate-',suffix='.json',dir=path.parent)
-    candidate=Path(name)
-    try:
-        with os.fdopen(fd,'w') as stream:json.dump(selection,stream,indent=2,sort_keys=True);stream.write('\n')
-        try:result=subprocess.run([*command,str(candidate)],stdin=subprocess.DEVNULL,capture_output=True,text=True,timeout=60,check=False)
-        except (OSError,subprocess.TimeoutExpired) as exc:raise ValueError(f'Element build verifier could not finish: {exc}') from exc
-        if result.returncode!=0:raise ValueError('Element build verification failed: '+(result.stderr or result.stdout)[-4096:])
-        try:receipt=json.loads(result.stdout)
-        except json.JSONDecodeError as exc:raise ValueError('Element build verifier omitted its structured receipt') from exc
-        digest='sha256:'+hashlib.sha256(candidate.read_bytes()).hexdigest()
-        if receipt.get('schema')!='astrid.element-build/v1' or receipt.get('selectionDigest')!=digest:raise ValueError('Element build receipt does not match captured selection')
-        expected={(e['projectId'],*(e['descriptor'][k] for k in ('packId','id','kind','revision'))) for e in selection['elements']}
-        actual={(e.get('projectId'),*(e.get(k) for k in ('packId','id','kind','revision'))) for e in receipt.get('elements',[]) if isinstance(e,dict)}
-        if expected!=actual:raise ValueError('Element build receipt has missing or unexpected exact revisions')
-        return receipt
-    finally:candidate.unlink(missing_ok=True)
+def _build_receipt(selection: dict[str,Any]) -> dict[str,Any]:
+    """The build record stored with the snapshot: the exact selection every element compiled under.
+
+    The compile is the verification (``_compile_components`` runs before this), so nothing else is checked.
+    """
+    data = (json.dumps(selection,indent=2,sort_keys=True)+'\n').encode('utf-8')
+    return {'schema':'astrid.element-build/v1','selectionDigest':'sha256:'+hashlib.sha256(data).hexdigest(),
+            'elements':[{'projectId':e['projectId'],**{k:e['descriptor'][k] for k in ('packId','id','kind','revision')}}
+                        for e in selection['elements']],
+            'compiledBindings':[{'projectId':e['projectId'],**{k:e['descriptor'][k] for k in ('packId','id','kind','revision')},
+                                 'componentPath':e['snapshot']['componentPath'],'compiled':e['compiled']}
+                                for e in selection['elements']]}
 
 
 def init_project_pack(realm: str, project: str, *, client=None, collection='default') -> dict[str, Any]:
@@ -308,7 +304,8 @@ def init_project_pack(realm: str, project: str, *, client=None, collection='defa
         try:
             (temporary/'docs').mkdir()
             (temporary/'docs/SKILL.md').write_text('---\nname: project-drafts\ndescription: Ordinary project-owned draft rendering source.\n---\n\n# Project drafts\n\nEdit declared source files, validate/admit, then update exact timeline refs. Keep files while timelines use them.\n')
-            pack={'schema_version':3,'id':content['pack_id'],'name':'Project drafts','version':'0.1.0','status':'active','domain':'media','stability':'experimental','support':'project','visibility':'visible','description':'Editable project-owned visual elements.','permissions':[{'id':'project_files','reason':'Provides project-owned visual source.'}],'documentation':{'kind':'skill','path':'docs/SKILL.md'},'rendering':{}}
+            from astrid.pack_api import VERSION as PACK_API_VERSION
+            pack={'schema_version':3,'id':content['pack_id'],'name':'Project drafts','version':'0.1.0','pack_api':'%d.%d'%PACK_API_VERSION,'status':'active','domain':'media','stability':'experimental','support':'project','visibility':'visible','description':'Editable project-owned visual elements.','permissions':[{'id':'project_files','reason':'Provides project-owned visual source.'}],'documentation':{'kind':'skill','path':'docs/SKILL.md'},'rendering':{}}
             (temporary/'pack.yaml').write_text(yaml.safe_dump(pack,sort_keys=False))
             validate_canonical_pack(temporary,expected_pack_id=content['pack_id']);temporary.rename(root)
         finally:
@@ -316,8 +313,6 @@ def init_project_pack(realm: str, project: str, *, client=None, collection='defa
     validate_canonical_pack(root,expected_pack_id=content['pack_id'])
     if row is None:
         path=Path(location['manifestPath']);path.parent.mkdir(parents=True,exist_ok=True)
-        candidate=_index(realm,project,document_id,1,content,[])
-        _verify_build(candidate,path)
         committed=_publish_document(client,project,document_id,None,content)
         _atomic_json(path,_index(realm,project,document_id,committed['version'],content,[]))
     return inspect_project_pack(realm,project,client=client,collection=collection)
@@ -364,6 +359,97 @@ def _definitions(root: Path, entry):
         definition=load_element_definition(descriptor.parent,kind=kind,source=f"pack:{entry.definition.id}",editable=True,priority=100)
         definitions.append((definition,descriptor))
     return definitions
+
+
+COMPILED_DIR='compiled'
+
+
+def _compiled_path(component: str) -> str:
+    return f'{COMPILED_DIR}/{component}.mjs'
+
+
+def _closure(root: Path, entry, resources) -> list[dict[str,str]]:
+    """Source resources plus one compiled module per element component, path-sorted."""
+    components=[definition.component.relative_to(root).as_posix() for definition,_ in _definitions(root,entry)]
+    files=[{'path':p,'sha256':r.sha256} for p,r in resources.items()]
+    for component in sorted(set(components)):
+        name=_compiled_path(component);target=root/name
+        if target.is_symlink() or not target.is_file():
+            raise ValueError(f'Compiled element module {name} is missing from the admitted snapshot; re-admit the pack')
+        files.append({'path':name,'sha256':hashlib.sha256(target.read_bytes()).hexdigest()})
+    return sorted(files,key=lambda item:item['path'])
+
+
+def _compiled_ref(files, component: str) -> dict[str,str]:
+    name=_compiled_path(component)
+    return {'path':name,'sha256':next(item['sha256'] for item in files if item['path']==name)}
+
+
+_REPAIR = "Repair the install: run the Astrid install command again without --update."
+
+
+def _esbuild_pin(project: Path) -> str:
+    """The exact esbuild version the Remotion project pins in its own package.json."""
+    package = project/'package.json'
+    try:
+        pinned = json.loads(package.read_text(encoding='utf-8'))['dependencies']['esbuild']
+    except (OSError,ValueError,KeyError,TypeError) as exc:
+        raise ValueError(f'Project element admission needs the Remotion esbuild pin, but {package} does not declare esbuild. {_REPAIR}') from exc
+    if not isinstance(pinned,str) or not re.fullmatch(r'\d+\.\d+\.\d+',pinned):
+        raise ValueError(f'{package} must pin esbuild to one exact version, not {pinned!r}')
+    return pinned
+
+
+_ESBUILD_VERSION_PROBE = "process.stdout.write(require(process.argv[1]).version)"
+
+
+def _renderer_compiler() -> tuple[Path,Path]:
+    """The renderer's own Node and the Remotion project's esbuild JS API, on any platform.
+
+    Node follows the Remotion project's engines pin (``ASTRID_NODE_EXECUTABLE`` must match it when set).
+    esbuild is the project's own package, loaded through Node (``node_modules/esbuild/lib/main.js``): the API
+    finds its own native binary, so a JS shim at ``bin/esbuild`` or a Windows ``.exe`` layout both work.
+    Its version is checked against the project's exact pin. No separate lock, no PATH.
+    """
+    from astrid.core.env_vars import ASTRID_NODE_EXECUTABLE, ASTRID_REMOTION_PROJECT_DIR
+    from astrid.core.foundation.renderer_toolchain import (
+        resolve_pinned_node,
+        resolve_remotion_project_dir,
+    )
+
+    project = resolve_remotion_project_dir(ASTRID_REMOTION_PROJECT_DIR, repo_root=REPO_ROOT)
+    node = resolve_pinned_node(project,override=(os.environ.get(ASTRID_NODE_EXECUTABLE) or '').strip() or None)
+    if not node.ok:
+        raise ValueError(f'Project element admission needs the renderer Node: {node.problem}')
+    pin = _esbuild_pin(project)
+    api = project/'node_modules'/'esbuild'/'lib'/'main.js'
+    if not api.is_file():
+        raise ValueError(f'Project element admission needs the Remotion esbuild {pin}, but {api} is missing. {_REPAIR}')
+    try:
+        probe = subprocess.run([str(node.path),'-e',_ESBUILD_VERSION_PROBE,str(api)],
+                               stdin=subprocess.DEVNULL,capture_output=True,text=True,
+                               env=_node_env(),timeout=15,check=False)
+    except (OSError,subprocess.SubprocessError) as exc:
+        raise ValueError(f'The Remotion esbuild {api} cannot run ({exc}). {_REPAIR}') from exc
+    observed = probe.stdout.strip() if probe.returncode == 0 else ''
+    if observed != pin:
+        raise ValueError(f'The Remotion esbuild {api} reports {observed or "nothing"}, but {project/"package.json"} pins {pin}. {_REPAIR}')
+    return node.path, api
+
+
+def _node_env() -> dict[str,str]:
+    """An empty environment for Node, plus the Windows variables it cannot start without."""
+    env = {'PATH':'','LANG':'C.UTF-8'}
+    env.update({k:os.environ[k] for k in ('SYSTEMROOT','SystemRoot') if k in os.environ})
+    return env
+
+
+def _compile_components(staging: Path, components) -> None:
+    from astrid.pack_build import compile_element_module
+    node, api = _renderer_compiler()
+    for component in sorted(set(components)):
+        target=staging/_compiled_path(component);target.parent.mkdir(parents=True,exist_ok=True)
+        target.write_bytes(compile_element_module(node,api,staging,component,_node_env()))
 
 
 def _selected_index(realm,project,document_id,row):
@@ -416,21 +502,33 @@ def admit_project_pack(realm: str, project: str, *, client=None, collection='def
 
         for helper in definition.root.rglob("*"):
             if helper.is_file() and helper.suffix in _SOURCE_EXTENSIONS and helper.relative_to(root).as_posix() not in resources:raise ValueError(f"Element helper is undeclared: {helper}")
-    files=[{"path":p,"sha256":r.sha256} for p,r in sorted(resources.items())]
-    closure_hash=_closure_digest(files)
-    snapshot_root=artifact_root()/realm/project/entry.definition.id/"snapshots"/closure_hash
-    snapshot_root.parent.mkdir(parents=True,exist_ok=True)
-    staging=Path(tempfile.mkdtemp(prefix="capture-",dir=snapshot_root.parent))
+    components=[definition.component.relative_to(root).as_posix() for definition,_ in definitions]
+    if any(_compiled_path(component) in resources for component in components):raise ValueError("Compiled element path collides with a source file")
+    snapshots=artifact_root()/realm/project/entry.definition.id/"snapshots"
+    snapshots.mkdir(parents=True,exist_ok=True)
+    staging=Path(tempfile.mkdtemp(prefix="capture-",dir=snapshots))
     try:
-        for item in files:
-            target=staging/item["path"];target.parent.mkdir(parents=True,exist_ok=True)
-            payload=(root/item["path"]).read_bytes()
-            if hashlib.sha256(payload).hexdigest()!=item["sha256"]:raise ValueError("Source changed during admission; inspect and admit again")
+        for relative,handle in sorted(resources.items()):
+            target=staging/relative;target.parent.mkdir(parents=True,exist_ok=True)
+            payload=(root/relative).read_bytes()
+            if hashlib.sha256(payload).hexdigest()!=handle.sha256:raise ValueError("Source changed during admission; inspect and admit again")
             target.write_bytes(payload)
         # Revalidate after capture; the canonical source cannot silently move mid-copy.
         _,confirmed=_resources(root)
         if {p:r.sha256 for p,r in confirmed.items()}!={p:r.sha256 for p,r in resources.items()}:raise ValueError("Source changed during admission")
         validate_canonical_pack(staging,expected_pack_id=entry.definition.id)
+        # Each component also compiles to one ESM module; that file joins the closure.
+        # The raw TSX stays in the snapshot for render.
+        _compile_components(staging,components)
+        files=_closure(staging,entry,resources)
+        source_digest=_closure_digest([item for item in files if item['path'] in resources])
+        for definition,_ in definitions:
+            descriptor=_element_descriptor(definition)
+            matching=[a for a in content['admissions'] if all(a[k]==descriptor[k] for k in ('id','kind','revision'))]
+            if any('compiled' not in a and a['snapshot_digest']!=source_digest for a in matching):
+                raise ValueError('Legacy selected pack admission source closure changed; restore its original pack resources before re-admitting')
+        closure_hash=_closure_digest(files)
+        snapshot_root=snapshots/closure_hash
         if snapshot_root.exists():
             for item in files:
                 saved=snapshot_root/item["path"]
@@ -444,16 +542,27 @@ def admit_project_pack(realm: str, project: str, *, client=None, collection='def
             descriptor["componentPath"]=f"external/{entry.definition.id}/{closure_hash}/{component}"
             records.append({"projectId":project,"descriptor":descriptor,
                 "authoring":{"packRoot":str(root),"descriptorPath":str(descriptor_path),"componentPath":str(definition.component),"status":"admitted"},
-                "snapshot":{"root":str(snapshot_root),"componentPath":component,"files":files}})
+                "snapshot":{"root":str(snapshot_root),"componentPath":component,"files":files},
+                "compiled":_compiled_ref(files,component)})
         previous=_selected_index(realm,project,document_id,row)
         admissions=[dict(a) for a in content['admissions']]
         build_records=list(records)
-        selected_keys=set()
+        selected_keys=set();upgraded=set()
         for index,record in enumerate(records):
             descriptor=record['descriptor'];admission={k:descriptor[k] for k in ('id','kind','revision')};admission['snapshot_digest']=closure_hash
             matching=[a for a in admissions if all(a[k]==admission[k] for k in ('id','kind','revision'))]
             if len(matching)>1:
                 raise ValueError('Ambiguous selected pack admission')
+            if matching and 'compiled' not in matching[0]:
+                # A pre-compiled-module admission with its original source closure, upgraded in place to the new
+                # closure and compiled file. Its snapshot object is republished under the new digest.
+                new=dict(admission,descriptor=descriptor,compiled=record['compiled'],
+                    authoring={'packRoot':str(root),'descriptorPath':Path(record['authoring']['descriptorPath']).relative_to(root).as_posix(),
+                               'componentPath':record['snapshot']['componentPath'],'status':'admitted'})
+                admissions[admissions.index(matching[0])]=new
+                upgraded.add((admission['id'],admission['kind'],admission['revision']))
+                selected_keys.add((admission['id'],admission['kind'],admission['revision']))
+                continue
             if matching:
                 if 'snapshot_object' not in matching[0] and matching[0]['snapshot_digest']!=closure_hash:
                     raise ValueError('Selected pack admission closure changed; cannot replace immutable snapshot')
@@ -461,6 +570,10 @@ def admit_project_pack(realm: str, project: str, *, client=None, collection='def
                     e['descriptor'][k]==admission[k] for k in ('id','kind','revision'))),None)
                 records[index]=retained if retained is not None else _record_from_admission(realm,project,content,matching[0])
             else:
+                # Runtime's exact listing shape: packRoot is the authoring root; the element paths are pack-relative.
+                admission.update(descriptor=descriptor,compiled=record['compiled'],
+                    authoring={'packRoot':str(root),'descriptorPath':Path(record['authoring']['descriptorPath']).relative_to(root).as_posix(),
+                               'componentPath':record['snapshot']['componentPath'],'status':'admitted'})
                 admissions.append(admission)
             if not matching or matching[0]['snapshot_digest']==closure_hash:
                 selected_keys.add((admission['id'],admission['kind'],admission['revision']))
@@ -471,7 +584,7 @@ def admit_project_pack(realm: str, project: str, *, client=None, collection='def
             {k:v for k,v in a.items() if k!='snapshot_object'}
             if (a['id'],a['kind'],a['revision']) in selected_keys else a for a in admissions]}
         build_candidate=_index(realm,project,document_id,row['version']+1,build_content,build_records)
-        build_receipt=_verify_build(build_candidate,path)
+        build_receipt=_build_receipt(build_candidate)
         existing=[a['snapshot_object'] for a in admissions
                   if (a['id'],a['kind'],a['revision']) in selected_keys and 'snapshot_object' in a]
         receipt_path=snapshot_root/'.build-receipt.json'
@@ -505,9 +618,10 @@ def admit_project_pack(realm: str, project: str, *, client=None, collection='def
                 if (admission['id'],admission['kind'],admission['revision']) in selected_keys and 'snapshot_object' not in admission:
                     admission['snapshot_object']=snapshot_object
         committed=_publish_document(client,project,document_id,row,next_content) if next_content!=content else row
-        retained_keys={(e['descriptor']['id'],e['descriptor']['kind'],e['descriptor']['revision']) for e in previous['elements']}
+        previous_elements=[e for e in previous['elements'] if (e['descriptor']['id'],e['descriptor']['kind'],e['descriptor']['revision']) not in upgraded]
+        retained_keys={(e['descriptor']['id'],e['descriptor']['kind'],e['descriptor']['revision']) for e in previous_elements}
         added=[e for e in records if (e['descriptor']['id'],e['descriptor']['kind'],e['descriptor']['revision']) not in retained_keys]
-        selected=_index(realm,project,document_id,committed['version'],next_content,[*previous['elements'],*added])
+        selected=_index(realm,project,document_id,committed['version'],next_content,[*previous_elements,*added])
         _atomic_json(path,selected)
         return {'ok':True,'manifestPath':str(path),'documentId':document_id,'documentVersion':committed['version'],'project':{**location,'status':'admitted'},'elements':records,'instruction':'Pack files compiled and selected by Runtime document CAS. Publish the exact same timeline placement at its captured head, then refresh the editor. Admission alone did not edit a timeline.'}
     finally:
@@ -515,9 +629,10 @@ def admit_project_pack(realm: str, project: str, *, client=None, collection='def
 
 
 def _record_from_admission(realm,project,content,admission):
+    if 'compiled' not in admission:raise ValueError('Admitted element predates compiled modules; re-admit the pack')
     root=artifact_root()/realm/project/content['pack_id']/'snapshots'/admission['snapshot_digest']
     entry,resources=_resources(root,expected_pack_id=content['pack_id'])
-    files=[{'path':p,'sha256':r.sha256} for p,r in sorted(resources.items())]
+    files=_closure(root,entry,resources)
     if _closure_digest(files)!=admission['snapshot_digest']:raise ValueError('Selected snapshot resource closure is corrupt')
     matches=[(d,p) for d,p in _definitions(root,entry) if d.id==admission['id'] and _element_descriptor(d)['kind']==admission['kind']]
     if len(matches)!=1:raise ValueError('Selected pack element is unavailable')
@@ -526,7 +641,7 @@ def _record_from_admission(realm,project,content,admission):
     source_root=Path(_location(realm,project,content,'derived',0)['packRoot'])
     relative_component=definition.component.relative_to(root).as_posix()
     descriptor['componentPath']=f"external/{content['pack_id']}/{admission['snapshot_digest']}/{relative_component}"
-    return {'projectId':project,'descriptor':descriptor,'authoring':{'packRoot':str(source_root),'descriptorPath':str(source_root/path.relative_to(root)),'componentPath':str(source_root/relative_component),'status':'admitted'},'snapshot':{'root':str(root),'componentPath':relative_component,'files':files}}
+    return {'projectId':project,'descriptor':descriptor,'authoring':{'packRoot':str(source_root),'descriptorPath':str(source_root/path.relative_to(root)),'componentPath':str(source_root/relative_component),'status':'admitted'},'snapshot':{'root':str(root),'componentPath':relative_component,'files':files},'compiled':_compiled_ref(files,relative_component)}
 
 
 def materialize_project_pack(realm,project,*,client=None,collection='default'):
@@ -676,6 +791,18 @@ def _admitted_snapshot_descriptor(project, reference, content, admission, files,
     if len(exact) != 1 or any(exact[0].get(k) != reference[k] for k in required):
         raise ValueError("Admitted source does not match canonical revision")
     descriptor = exact[0]
+    if 'compiledBindings' in build:
+        bindings = build['compiledBindings']
+        if not isinstance(bindings, list):
+            raise ValueError('Invalid compiled binding receipt')
+        matches = [b for b in bindings if isinstance(b, dict) and all(b.get(k) == v for k, v in identity.items())]
+        component = descriptor['componentPath']
+        compiled_path = _compiled_path(component)
+        expected_compiled = {'path': compiled_path, 'sha256': hashlib.sha256(files[compiled_path]).hexdigest()} if compiled_path in files else None
+        if (len(matches) != 1 or expected_compiled is None
+                or matches[0] != {**identity, 'componentPath': component, 'compiled': expected_compiled}
+                or admission.get('compiled') != expected_compiled):
+            raise ValueError('Selected compiled binding does not match admitted source')
     descriptor["componentPath"] = (
         f"external/{owner}/{admission['snapshot_digest']}/{descriptor['componentPath']}"
     )
@@ -724,14 +851,14 @@ def resolve_admitted_element(realm: str, project: str, reference: dict[str,str],
     expected_root=artifact_root()/realm/project/reference['packId']/'snapshots'/admitted[0]['snapshot_digest']
     if root!=expected_root:raise ValueError('Artifact snapshot is outside its selected Runtime binding')
     entry,resources=_resources(root,expected_pack_id=reference['packId'])
-    files=[{'path':p,'sha256':r.sha256} for p,r in sorted(resources.items())]
+    files=_closure(root,entry,resources)
     digest=_closure_digest(files)
     if digest!=admitted[0]['snapshot_digest'] or files!=snapshot['files']:raise ValueError('Admitted element snapshot is missing or corrupt')
     verified={'pin':{'document_id':document_id,'version':row['version'],
                      'content_digest':_json_digest(row['content'])},
               'document':{**row,'project_id':project}}
     descriptor=admitted_element_descriptor(
-        realm,project,reference,verified,{name:(root/name).read_bytes() for name in resources},
+        realm,project,reference,verified,{item['path']:(root/item['path']).read_bytes() for item in files},
         (root/'.build-receipt.json').read_bytes())
     if descriptor!=record['descriptor']:
         raise ValueError('Admitted source descriptor mismatch')

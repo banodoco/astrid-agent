@@ -876,6 +876,38 @@ def test_unknown_effect_structured_schema_and_opaque_params_contracts() -> None:
     validate_managed_render_snapshot(_snapshot(runtime))
 
 
+@pytest.mark.parametrize("clip_type,expected_pack", [("am-discord", True), ("am-invented", False)])
+def test_unresolved_effect_reports_only_exact_moved_pack(clip_type, expected_pack, monkeypatch) -> None:
+    from astrid.core.element import catalog
+
+    monkeypatch.setattr(catalog, "list_effect_ids", lambda: [])
+    runtime = _Runtime()
+    runtime.timeline["config"] = {"tracks": [{"id": "v", "kind": "visual", "label": "V"}],
+        "clips": [{"id": "missing", "at": 0, "track": "v", "clipType": clip_type, "hold": 1}]}
+    with pytest.raises(ManagedRenderValidationError) as error:
+        validate_managed_render_snapshot(_snapshot(runtime))
+    assert error.value.details["path"] == "$.clips[0].clipType"
+    assert error.value.details["validator"] == "registered_element_reference"
+    assert ("astrid_motion" in str(error.value)) is expected_pack
+    if expected_pack:
+        assert "requires pack" in str(error.value)
+        assert "ensure its element loads" in str(error.value)
+
+
+def test_forged_animation_pin_does_not_nominate_project_snapshot() -> None:
+    from astrid.core.rendering.project_elements import CARRIER
+
+    runtime = _Runtime()
+    ref = {"id": "am-invented", "kind": "animation", "packId": "astrid_motion",
+           "revision": "sha256:" + "f" * 64}
+    runtime.timeline["config"] = {"tracks": [{"id": "v", "kind": "visual", "label": "V"}],
+        "clips": [{"id": "fake", "at": 0, "track": "v", "clipType": ref["id"], "hold": 1, "elementRef": ref}],
+        "app": {CARRIER: [{"reference": ref}]}}
+    with pytest.raises(ValueError, match="Project element snapshot missing") as error:
+        _snapshot(runtime)
+    assert "unsupported for managed render" not in str(error.value)
+
+
 def test_alpha_mov_compatibility_requires_matching_profile(tmp_path: Path) -> None:
     runtime = _Runtime()
     runtime.timeline["config"] = {"metadata": {"astrid_layer": {"alpha": True}}, "tracks": [], "clips": []}
