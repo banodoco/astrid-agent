@@ -1285,3 +1285,46 @@ def test_execution_size_guard_counts_only_trailing_suite_comments() -> None:
     functions, _ = _functions(source)
     assert functions["first"] == [5]
     assert functions["sibling"] == [3]
+
+
+def test_execution_size_guard_reads_nul_tree_entries_and_binary_blobs(monkeypatch) -> None:
+    import scripts.reshape.compare_execution_size as guard
+
+    unicode_oid = b"1" * 40
+    binary_oid = b"2" * 40
+    encoded_oid = b"3" * 40
+    entries = b"\0".join((
+        b"100644 blob " + unicode_oid + b"\tastrid/core/execution/caf\xc3\xa9.py",
+        b"100644 blob " + binary_oid + b"\tastrid/core/execution/probe.bin",
+        b"100644 blob " + encoded_oid + b"\tastrid/core/execution/legacy.py",
+        b"",
+    ))
+    blobs = {
+        unicode_oid.decode(): b"value = 'caf\xc3\xa9'\n",
+        binary_oid.decode(): b"\xff\x00\n",
+        encoded_oid.decode(): b"# coding: latin-1\nvalue = 'caf\xe9'\n",
+    }
+    fetched: list[str] = []
+
+    def fake_git_bytes(*args: str) -> bytes:
+        if args[:3] == ("ls-tree", "-r", "-z"):
+            return entries
+        assert args[:2] == ("cat-file", "blob")
+        fetched.append(args[2])
+        return blobs[args[2]]
+
+    monkeypatch.setattr(guard, "_git_bytes", fake_git_bytes)
+    result = guard.sources("fixture")
+
+    assert set(result) == {
+        "astrid/core/execution/café.py",
+        "astrid/core/execution/probe.bin",
+        "astrid/core/execution/legacy.py",
+    }
+    assert fetched == [unicode_oid.decode(), binary_oid.decode(), encoded_oid.decode()]
+    assert result["astrid/core/execution/probe.bin"] == b"\xff\x00\n"
+    assert guard.compare({}, result) == []
+
+    # Byte line accounting must still enforce the existing file-size boundary.
+    oversized = {"astrid/core/execution/probe.bin": b"\xff\x00\n" * 1201}
+    assert any("newly exceeds 1200 lines (1201)" in error for error in guard.compare({}, oversized))
