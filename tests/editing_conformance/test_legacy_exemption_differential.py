@@ -291,3 +291,31 @@ def test_exemptions_deep_copy_a_constant_number_of_times_whatever_the_declaratio
     at_5 = _deep_copies_during_exemptions(monkeypatch, 5)
     at_50 = _deep_copies_during_exemptions(monkeypatch, 50)
     assert at_5 == at_50 <= 60, (at_5, at_50)
+
+
+def test_a_head_with_many_unresolved_declarations_matches_the_frozen_oracle():
+    """The scale the basis fix was made for: 250 unresolved declarations, exemptions and verdicts equal."""
+    head = candidate()
+    for index in range(250):
+        row = copy.deepcopy(_child(head, 0))
+        row["id"] = f"x{index}"
+        row.setdefault("app", {}).setdefault("astrid", {}).update(cut="c1", on=f"c9{index}")
+        head["shots"][SHOT]["internal_timeline"]["clips"].append(row)
+    def move_child(bundle):
+        bundle = copy.deepcopy(bundle)
+        _child(bundle, 1)["at"] = 2
+        return bundle
+
+    for edit in (_unrelated, move_child):
+        edited = edit(head)
+        old = oracle.old_exemptions(edited, head)
+        # An unrelated edit keeps all 250; moving a sibling changes every declaration's basis, so none stay.
+        assert len(old) == (250 if edit is _unrelated else 0)
+        assert cv._legacy_exemptions(edited, head) == old
+        assert (_accepts(edited, head) is None) == (_accepts(edited, head, old) is None)
+    # Moving a parent clip leaves its config.clips mirror behind: the candidate itself is invalid, so both
+    # sides refuse. The verdicts are equal; the exemption sets are not compared, as the new pass judges the
+    # candidate too and an invalid candidate has no pass.
+    edited = _moved(head)
+    assert _accepts(edited, head) is not None
+    assert _accepts(edited, head, oracle.old_exemptions(edited, head)) is not None
