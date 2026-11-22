@@ -8,8 +8,8 @@ It is pure and deterministic: it runs on the controller through ``requirements()
 copy-back. It shares ``build``'s job directory, reads the saved state and never re-runs prepare
 or compile.
 
-This module imports nothing from Astrid. It loads the pack's own modules by path (they use
-relative imports) and takes engine-side facts from the ``engine`` argument the engine passes.
+This module loads its own pack modules by path and takes engine-side facts from the
+``engine`` argument. Controller capabilities use Astrid's workflow contribution contract.
 """
 from __future__ import annotations
 
@@ -50,8 +50,12 @@ def _path(inputs: Mapping[str, Any], files: Mapping[str, Any], name: str) -> Pat
 
 
 def _file_map(inputs: Mapping[str, Any], files: Mapping[str, Any]) -> dict[str, str]:
-    value = (files or {}).get("asset_map") or (inputs or {}).get("asset_map")
-    if not isinstance(value, Mapping) or not value:
+    value = (files or {}).get("asset_map")
+    if value is None:
+        value = (inputs or {}).get("asset_map")
+    if value is None:
+        value = {}
+    if not isinstance(value, Mapping):
         raise ValueError("h3 needs the 'asset_map' file map ({asset id: file path})")
     return {str(key): str(path) for key, path in value.items()}
 
@@ -127,8 +131,27 @@ def _state_dir(job_dir) -> Path:
     return (Path(job_dir) if job_dir else Path(tempfile.mkdtemp(prefix="astrid-h3-"))) / "h3"
 
 
+def inspect_inputs(inputs):
+    """Declare the controller's project media dependencies before build."""
+    from astrid.core.generation.entries import read_file_map_document
+    from astrid.core.generation.workflows import InputRequirements
+    from astrid.sdk.exceptions import CapabilityValidationError
+    from astrid.sdk.media_handles import is_media_handle
+
+    supplied = read_file_map_document(
+        inputs.get("asset_map") or {}, allow_output_handles=True, allow_empty=True)
+    if isinstance(supplied, Mapping) and "__astrid_h3_prepared__" in supplied:
+        raise CapabilityValidationError("the H3 prepared-source handoff is reserved for the runtime")
+    if not inputs.get("request"):
+        return InputRequirements()
+    request = _shared("request")
+    value = request.normalize_request(request.load_request_document(inputs["request"]))
+    handles = tuple(asset for asset in request._asset_ids(value) if is_media_handle(asset))
+    return InputRequirements(handle_ids=handles, file_map_port="asset_map", lineage_port="request.asset")
+
+
 def build(inputs, files, out, *, engine=None, check_runtime=False, publish_source=None):
-    """{workflow, bindings, plan, assets, bundle}: the chosen trio's graph, bindings, sealed plan, media, folder."""
+    """Build the chosen trio, its bindings and media, and the controller transport."""
     # Source inspection checks its own tools during planning. Output composition
     # tools belong to execution, on the machine that will run after_outputs.
     if check_runtime:
@@ -172,28 +195,54 @@ def build(inputs, files, out, *, engine=None, check_runtime=False, publish_sourc
     if publish_source is not None:
         options["publish_source"] = publish_source
     paths, preparation, compilation = stages.compile_stages(request, asset_map, work / "plan", **options)
-    _shared("prepare").write_preparation(work / "preparation.json", preparation)
     bindings = compilation["workflow_inputs"]
     facts.assert_no_unresolved_placeholders(bindings)
-    plan = {**stages._sealed_plan(compilation), "request_digest": request.digest}
+    plan = {**stages._sealed_plan(compilation, preparation=preparation), "request_digest": request.digest}
     if preparation.get("source_conform"):
         plan["source_conform"] = preparation["source_conform"]
     source_id = stages._authoritative_source_asset_id(request)
     source = paths[source_id] if source_id else None
-    if source is not None and "source_video" in bindings:
-        plan["source_av"] = _source_av_measurement(preparation, source, facts)
-    stages.save_build_state(work, request=request, document=document, preparation=preparation, source=source, plan=plan)
+    if any(item.get("role") == "timeline" and item.get("modality") == "image" for item in request.value.get("media", [])):
+        source = str(work / "plan" / "compile" / "prepared-still-source.mkv")
     trio = Path(compilation["workflow"]["workflow.py"]["path"]).parent
-    # The media the graph binds, unpacked from compile's managed-assets archive: {binding: path}.
-    resolved = facts.read_archive(compilation["managed_assets"]["path"])
+    # The archive also carries composition permissions, which stay in job custody.
     assets = {}
-    for record in resolved.manifest["assets"]:
-        target = work / "managed" / record["member"]
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(resolved.members[record["member"]])
-        assets[record["binding"]] = target
-    return {"workflow": _load_graph(trio), "bindings": bindings, "plan": plan, "assets": assets,
-            "bundle": str(trio)}
+    reference_assets = {}
+    if "managed_assets" in compilation:
+        resolved = facts.read_archive(compilation["managed_assets"]["path"])
+        for record in resolved.manifest["assets"]:
+            target = work / "managed" / record["member"]
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(resolved.members[record["member"]])
+            assets[record["binding"]] = target
+            reference_assets[record["binding"]] = {"member": record["member"], "sha256": record["sha256"]}
+    if source is not None and "source_video" in assets:
+        conform = preparation.get("source_conform")
+        bound_sha256 = reference_assets["source_video"]["sha256"]
+        conformed_binding = isinstance(conform, Mapping) and bound_sha256.removeprefix("sha256:") == conform["output"]["sha256"]
+        plan["source_av"] = _source_av_measurement(preparation if conformed_binding else {}, assets["source_video"], facts)
+    for record in preparation.get("assets", []):
+        binding = record.get("binding")
+        if isinstance(binding, str) and binding.startswith("permission_mask_"):
+            if binding not in assets:
+                raise ValueError(f"managed permission mask {binding} is missing")
+            record["path"] = str(assets[binding])
+    _shared("prepare").write_preparation(work / "preparation.json", preparation)
+    stages.save_build_state(work, request=request, document=document, preparation=preparation, source=source, plan=plan, reference_assets=reference_assets)
+    runtime_assets = {binding: path for binding, path in assets.items() if binding in bindings}
+    from astrid.core.generation.workflows import BuildTransport, RemoteBuildTransport
+    remote = None
+    # Remote live builds publish on the controller and check output tools on the worker.
+    if publish_source is not None and not check_runtime and source is not None:
+        handoff = _shared("handoff")._h3_remote_handoff({"job_dir": work.parent}, work)
+        if handoff is not None:
+            remote = RemoteBuildTransport(
+                inputs=handoff["inputs"], descriptor=handoff["descriptor"],
+                idempotency={"h3_prepared_source": handoff["lineage"]})
+    transport = BuildTransport(
+        lineage=stages.source_asset_lineage(plan), preflight_source_video=False, remote=remote)
+    return {"workflow": _load_graph(trio), "bindings": bindings, "plan": plan, "assets": runtime_assets,
+            "bundle": str(trio), "transport": transport}
 
 
 def _load_graph(trio: Path):
@@ -224,6 +273,14 @@ def after_outputs(job_dir, inputs, files, outputs, *, engine=None):
                                     out_dir=work / "compose")
     verification = verify_candidate(preparation=preparation, composition=composition, source=source,
                                     candidate=composition["candidate"]["path"])
+    # Keep the path-free sealed view with settled verification. The separate
+    # CPU re-decode derives the VHS frame count from the exact managed bytes and
+    # leaves the metadata upper-bound estimate distinct.
+    if isinstance(state.get("plan", {}).get("reference_view"), Mapping):
+        verification["reference_view"] = stages._settled_reference_view(
+            state["plan"]["reference_view"], reference_assets=state.get("reference_assets", {}), workdir=work,
+            composition=composition.get("composition") if isinstance(composition, Mapping) else None,
+        )
     facts.write_json_atomic(work / "verify.json", verification)
     _continuation_take(work, state, composition, facts)
     return [composition["candidate"]["path"], *outputs[1:]]

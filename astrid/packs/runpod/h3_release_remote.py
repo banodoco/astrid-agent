@@ -57,16 +57,16 @@ def download_model(row, destination, repository, deadline, *, opener=None, chunk
     """Adapt the old H3 row/signature onto the shared verified downloader."""
     destination = Path(destination)
     # ``path`` is the repository file (the resolve URL); ``destination`` is the local install.
-    local_parts = Path(row.get("destination", row["path"])).parts
+    local_parts = Path(row.get("destination") or row["path"]).parts
     if len(destination.parts) >= len(local_parts) and destination.parts[-len(local_parts):] == local_parts:
         models_root = destination.parents[len(local_parts) - 1]
         relative_destination = "/".join(local_parts)
     else:
         models_root = destination.parent
         relative_destination = destination.name
-    model = ModelSpec(name=str(row.get("path", Path(destination).name)),
-                      repository=repository, revision=row["revision"], path=row["path"],
-                      url=None, destination=relative_destination, bytes=row["bytes"],
+    model = ModelSpec(name=str(row.get("path") or Path(destination).name),
+                      repository=row.get("repository", repository), revision=row["revision"], path=row["path"],
+                      url=row.get("url"), destination=relative_destination, bytes=row["bytes"],
                       sha256=row["sha256"])
     # H3's historical request deadline is wall-clock time. The shared contract
     # uses an absolute monotonic deadline, so preserve its remaining duration.

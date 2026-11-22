@@ -34,8 +34,6 @@ from .inspection_contract import (
 )
 from .inspector_navigation import build_inspector_navigation
 from .provenance import snapshot_label
-
-
 from .render_clock import normalize_time as _q
 
 
@@ -837,8 +835,8 @@ def total_frames_of(snapshot: Mapping) -> int:
 
 def picture_cut_frames(snapshot: Mapping, fps: Fraction, total: int) -> list[dict]:
     """The shared picture cuts (``astrid.core.timeline.cuts``) on this render's frame clock."""
-    from astrid.pack_api import picture_cuts
     from astrid.core.timeline.cuts import cut_sample_time, occurrences_from_snapshot
+    from astrid.pack_api import picture_cuts
 
     from .motion.model import Word, elements_from_occurrences, words
 

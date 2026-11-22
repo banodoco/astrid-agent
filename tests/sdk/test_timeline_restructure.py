@@ -1114,9 +1114,14 @@ def test_copy_of_an_unreadable_source_is_not_refused_by_the_reader_gate(saved_so
     from astrid.sdk.timeline.commit import create_runtime_commit_service, reader_problem
     from astrid.sdk.timeline_duplicate import duplicate_timeline
 
-    client, project, document, _bodies = saved_source(flat_film())
+    source = flat_film()
+    # Runtime accepts unknown parent registry keys (shot-composition.json:186–197).
+    # The strict reader refuses them (validators/registry.py:30–36).
+    source['parent']['registry']['legacy_notes'] = {}
+    client, project, document, _bodies = saved_source(source)
     service = create_runtime_commit_service()
-    # The source's tracks have no label, so render cannot open it ...
+    problem = reader_problem(service, document('t'))
+    assert problem is not None and "unknown key 'legacy_notes'" in problem
     assert reader_problem(service, document('t')) is not None
     # ... and a faithful copy is as readable as its source: duplicating to repair it is allowed.
     duplicate_timeline(project, 't', slug='copy', client=client)

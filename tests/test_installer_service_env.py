@@ -1,6 +1,8 @@
 """The login owner reads its settings without depending on a shell profile."""
 
 import json
+import re
+import subprocess
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -14,6 +16,7 @@ from astrid.installer.core import Version, read_json, write_json
 from astrid.installer.service import (
     LABEL,
     Service,
+    TASK_QUERY,
     command,
     default_program_root,
     installer_lock_path,
@@ -114,6 +117,100 @@ def test_windows_stop_validation_rejects_mutated_canonical_task_action(tmp_path,
 
     assert manager.path.read_bytes() == before["task"]
     assert manager.selection.read_bytes() == before["selection"]
+
+
+def test_windows_large_r13_action_replacement_uses_bounded_file_payload(tmp_path, monkeypatch):
+    """A realistic retained action and replacement must stay below CreateProcess limits."""
+    root = tmp_path / "program"
+    manager = Service(root, tmp_path / "log", lambda _argv: "", home=tmp_path, system="win32")
+    version = Version(root / "versions" / "candidate", tmp_path / "python.exe",
+                      tmp_path / "profile.json", {"R13_ACTION_DATA": "x" * 22_000}, 13)
+    version.root.mkdir(parents=True)
+    write_json(version.root / "version.json", version.document())
+    data = tmp_path / "data"
+    write_json(manager.selection, {
+        "owner": LABEL, "program_root": str(root), "data_root": str(data),
+    })
+    old_argv = command(version, data, windows=True, log=manager.log,
+                       expected_lock=manager.activation_lock_path)
+    stored = [{"Execute": old_argv[0], "Arguments": subprocess.list2cmdline(old_argv[1:])}]
+    observed = json.dumps(stored, separators=(",", ":"))
+
+    # R13 passes its generated -c action in the ScheduledTask action. The old
+    # replacement command repeated both the prior and new large action literals.
+    prior_quote = "'" + observed.replace("'", "''") + "'"
+    replacement = command(version, data, windows=True, log=manager.log,
+                           env_file=manager.env_file, expected_lock=manager.activation_lock_path,
+                           home=manager.home)
+    old_script = ("$ErrorActionPreference='Stop'; " + TASK_QUERY +
+                  "$prior=" + prior_quote + "; " +
+                  "-Argument '" + subprocess.list2cmdline(replacement[1:]).replace("'", "''") + "'")
+    old_windows_argv = subprocess.list2cmdline([
+        str(tmp_path / "powershell.exe"), "-NoProfile", "-NonInteractive", "-ExecutionPolicy",
+        "Bypass", "-Command", old_script,
+    ])
+    assert len(observed) >= 22_000
+    assert len(old_windows_argv) > 32_767
+
+    calls = []
+    payload_paths = []
+
+    def run(argv):
+        argv = [str(part) for part in argv]
+        calls.append(argv)
+        script = argv[-1]
+        if "Set-ScheduledTask" in script:
+            assert len(subprocess.list2cmdline(argv)) < 32_767
+            payload_match = re.search(r"-LiteralPath '([^']+)'", script)
+            assert payload_match
+            payload_path = Path(payload_match.group(1))
+            payload_paths.append(payload_path)
+            payload = json.loads(payload_path.read_text(encoding="utf-8"))
+            assert payload["observed"] == observed
+            assert payload["execute"] == replacement[0]
+            assert payload["arguments"] == subprocess.list2cmdline(replacement[1:])
+            stored[:] = [{"Execute": payload["execute"], "Arguments": payload["arguments"]}]
+            return ""
+        return observed
+
+    monkeypatch.setattr(manager, "run", run)
+    manager.publish_launch_admission(version, data)
+
+    replacement_call = calls[-1]
+    assert len(subprocess.list2cmdline(replacement_call)) < 32_767
+    assert "-cne $payload.observed" in replacement_call[-1]
+    assert "New-ScheduledTaskAction" in replacement_call[-1]
+    assert len(payload_paths) == 1 and not payload_paths[0].exists()
+
+
+def test_windows_reconcile_sets_scheduled_task_by_task_name_and_path(tmp_path, monkeypatch):
+    root, data = tmp_path / "program", tmp_path / "data"
+    version_root = root / "versions" / "candidate"
+    version_root.mkdir(parents=True)
+    version = Version(version_root, tmp_path / "python.exe", tmp_path / "profile.json", {})
+    write_json(version_root / "version.json", version.document())
+    manager = Service(root, tmp_path / "log", Mock(), home=tmp_path, system="win32")
+    write_json(manager.selection, {"owner": LABEL, "program_root": str(root), "data_root": str(data)})
+    # An unbound wrapper is a recognized prior action, so reconcile generates
+    # the replacement Set-ScheduledTask operation.
+    prior = command(version, data, windows=True, log=manager.log, env_file=manager.env_file)
+    observed_action = [{"Execute": prior[0], "Arguments": subprocess.list2cmdline(prior[1:])}]
+    scripts = []
+
+    def powershell(script):
+        if "Set-ScheduledTask" in script:
+            scripts.append(script)
+            return ""
+        return json.dumps(observed_action, separators=(",", ":"))
+
+    monkeypatch.setattr(manager, "powershell", powershell)
+
+    manager.publish_launch_admission(version, data)
+
+    assert len(scripts) == 1
+    assert "Set-ScheduledTask" in scripts[0]
+    assert "-TaskName $t.TaskName" in scripts[0]
+    assert "-TaskPath $t.TaskPath" in scripts[0]
 
 
 @pytest.mark.parametrize("release,managed_by", [(0, None), (37, "pinokio")])

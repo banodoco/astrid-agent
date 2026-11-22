@@ -7,6 +7,7 @@ import http.server
 import io
 import json
 import os
+import re
 import shlex
 import ssl
 import subprocess
@@ -15,6 +16,7 @@ import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import urlparse
 import zipfile
 
 import httpx
@@ -317,6 +319,40 @@ def model_row(payload):
             "bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}
 
 
+@pytest.mark.parametrize("source", ["https", "repository"])
+@pytest.mark.parametrize("corrupt", [False, True])
+def test_release_model_sources_reach_verified_downloader(tmp_path, source, corrupt):
+    lock = build.release_inputs()["lock"]
+    if source == "https":
+        original = next(row for row in lock["models"] if row["url"] is not None)
+        expected_url = original["url"]
+    else:
+        original = next(row for row in lock["models"]
+                        if row["repository"] and row["repository"] != lock["repository"])
+        from urllib.parse import quote
+        expected_url = (f"https://huggingface.co/{original['repository']}/resolve/"
+                        f"{original['revision']}/{quote(original['path'], safe='/')}")
+    payload = b"verified model bytes"
+    row = {**original, "bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}
+    delivered = b"x" * len(payload) if corrupt else payload
+    destination = tmp_path / row["destination"]
+    requests = []
+
+    def opener(request, timeout):
+        requests.append(request.full_url)
+        start, end = map(int, request.headers["Range"].removeprefix("bytes=").split("-"))
+        return RangeResponse(delivered, start, end)
+
+    if corrupt:
+        with pytest.raises(RuntimeError, match="SHA-256 mismatch"):
+            remote.download_model(row, destination, lock["repository"], time.time() + 60, opener=opener)
+        assert not destination.exists()
+    else:
+        remote.download_model(row, destination, lock["repository"], time.time() + 60, opener=opener)
+        assert destination.read_bytes() == payload
+    assert requests == [expected_url]
+
+
 def test_real_downloader_crash_resume_skip_and_atomic_promotion(tmp_path):
     payload = b"model-bytes" * 25
     row = model_row(payload)
@@ -473,6 +509,24 @@ def test_produced_manifest_passes_existing_staging_validators(tmp_path):
     assert len(contract["custom_node_roots"]) == 2
 
 
+def _assert_model_pin(row, recipe_row):
+    assert re.fullmatch(r"[0-9a-fA-F]{64}", row["sha256"])
+    assert row["sha256"] == recipe_row["sha256"]
+    if row.get("revision"):
+        assert len(row["revision"]) == 40
+        assert row["revision"] == recipe_row["revision"]
+    else:
+        assert urlparse(row.get("url") or "").scheme == "https"
+        assert urlparse(row["url"]).netloc
+        assert row["url"] == recipe_row["url"]
+
+
+def test_model_pin_rejects_missing_revision_and_url():
+    row = {"revision": None, "url": None, "sha256": "a" * 64}
+    with pytest.raises(AssertionError):
+        _assert_model_pin(row, row)
+
+
 def test_real_lock_and_recipe_pins():
     from astrid.core.generation.vibecomfy_dependency import VIBECOMFY_ENGINE_REVISION
 
@@ -486,7 +540,8 @@ def test_real_lock_and_recipe_pins():
     assert [row["path"] for row in models] == [row["path"] for row in shipped]
     assert len(models) == len(shipped) > 0
     assert sum(row["bytes"] for row in models) == sum(row["bytes"] for row in shipped)
-    assert all(len(row["sha256"]) == 64 and len(row["revision"]) == 40 for row in models)
+    for row, recipe_row in zip(models, shipped):
+        _assert_model_pin(row, recipe_row)
     from astrid.core.generation.gpu_environment import _description
 
     _, windows = _description("vibecomfy")

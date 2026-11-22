@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from astrid.packs.h3_av.shared.generation import generation_inputs_from_bindings
+
 import hashlib
 import json
 import shutil
@@ -310,11 +312,11 @@ def test_generation_prompt_socket_type_survives_canonical_reload(tmp_path: Path,
     from vibecomfy.security.provenance import Provenance
     from vibecomfy.workflow_bundle import emit_bundle, load_bundle
 
-    workflow = build_generation_workflow(
+    workflow = build_generation_workflow(generation_inputs_from_bindings(
         references=[f"reference-{index}.png" for index in range(reference_count)],
         prompt="Preserve the reference identity.", frames=124,
         model="minimax_h3_ref2va_pruned_int8_convrot.safetensors", steps=8, seed=7,
-    )
+    ))
     path = tmp_path / "workflow.py"
     emit_bundle(workflow, path, provenance=Provenance.AGENT_AUTHORED)
     reloaded = load_bundle(path, trust=Provenance.USER_CONFIRMED).workflow
