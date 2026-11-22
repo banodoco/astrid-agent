@@ -38,7 +38,10 @@ from astrid.core.timeline.duration import (
     timeline_render_duration_frames,
     visual_tracks_paint_order,
 )
-from astrid.core.timeline.legacy_elements import LEGACY_TRANSITION_IDS, normalize_legacy_transition_id
+from astrid.core.timeline.legacy_elements import (
+    LEGACY_TRANSITION_IDS,
+    normalize_legacy_transition_id,
+)
 from astrid.core.timeline.resolution import AssetIntegrity, classify_registry
 from astrid.core.timeline.snapshot import TimelineSnapshot
 from astrid.core.timeline.validate import (
