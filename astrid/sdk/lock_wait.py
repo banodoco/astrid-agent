@@ -12,7 +12,7 @@ LOCK_TIMEOUT = 135.0
 
 @contextmanager
 def thread_lock(lock, name):
-    with stage(name):
+    with stage(name, report_without_collector=True):
         acquired = lock.acquire(timeout=LOCK_TIMEOUT)
     if not acquired:
         raise TimeoutError(f"{name} timed out after {LOCK_TIMEOUT:g} seconds")
@@ -24,7 +24,7 @@ def thread_lock(lock, name):
 
 def acquire_file_lock(fd, name):
     deadline = time.monotonic() + LOCK_TIMEOUT
-    with stage(name):
+    with stage(name, report_without_collector=True):
         while True:
             try:
                 platform.lock_file(fd, blocking=False)

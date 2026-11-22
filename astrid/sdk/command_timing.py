@@ -138,10 +138,14 @@ class TimingOutput:
 
 
 @contextmanager
-def stage(name):
+def stage(name, *, report_without_collector=False):
     collector = _current.get()
     if collector is None:
-        yield
+        if report_without_collector:
+            with timing_scope(TimingCollector()), stage(name):
+                yield
+        else:
+            yield
         return
     item = {'name': name, 'started': time.monotonic(), 'seconds': 0.0,
             'reported': False, 'parent': _parent.get()}
