@@ -39,7 +39,7 @@ def test_workspace_client_uses_long_timeout_and_reports_delayed_http_wait(monkey
     with timing_scope(collector):
         health = client.health()
 
-    assert health.status == "ok"
+    assert health["status"] == "ok"
     assert len(observed) == 1
     assert observed[0][0] == "http://127.0.0.1:8123/v1/health"
     assert observed[0][1] == 300.0
