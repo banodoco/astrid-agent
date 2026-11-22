@@ -144,18 +144,11 @@ def _matches(saved, calls):
         for prior, call in zip(saved, calls))
 
 
-def _settle_held_flight(session):
-    """Replay the outbox's unacknowledged flight under its own key before any head check.
-
-    A lost acknowledgement leaves the outbox base behind the Runtime while the flight
-    is still held. Resending that flight verbatim (same idempotency key) returns the
-    Runtime's original receipt and settles the base, so the caller's head check and
-    history reconciliation read the true state. Failures raise, leaving the flight held.
-    """
-    with session.outbox.locked():
-        held = session._state()['flight'] is not None
-    if held:
-        session.flush()
+def _settle_held_flight(session, held):
+    """Replay only the captured flight; another writer may have settled it."""
+    if held is None:
+        return True
+    return session._flush(expected_flight=held, release_conflict=True) is not None
 
 
 def _clip(bundle, clip_id):
@@ -274,14 +267,15 @@ def update_parent_element(owner: Any, project: str, timeline: str, *, realm: str
         calls = _calls(clip_id, element, duration, params, clear_params)
         with session.outbox.locked():
             state = session._state()
-            key = key or (state['flight']['key'] if state['flight'] else f'element-{uuid.uuid4().hex}')
-        _settle_held_flight(session)
+            held = copy.deepcopy(state['flight'])
+            key = key or (held['key'] if held else f'element-{uuid.uuid4().hex}')
+        settled = _settle_held_flight(session, held)
         with session.outbox.locked():
             state = session._state()
         # Acknowledged identities belong to Runtime history, never a client cache.
         # Return its original result without recapturing against a newer head/pin.
         cursor = None
-        while state['flight'] is None and idempotency_key is not None:
+        while idempotency_key is not None or held is not None:
             history = owner.history(session.project_id, session.timeline_id, cursor=cursor, limit=100)
             if not history.ok:
                 return history
@@ -308,6 +302,8 @@ def update_parent_element(owner: Any, project: str, timeline: str, *, realm: str
             cursor = history.data['next_cursor']
             if cursor is None:
                 break
+        if held is not None and (not settled or key == held['key']):
+            raise ValueError('Captured flight has no matching acknowledged request; inspect before retrying')
         if state['base']['revision_id'] != expected_head:
             current = owner.history(session.project_id, session.timeline_id, limit=1)
             if not current.ok:
@@ -453,17 +449,18 @@ def place_element(owner: Any, project: str, timeline: str, *, realm: str, target
                     project_id, timeline_id, _connection(client)):
                 raise ValueError('Session belongs to a different realm, actor, project or timeline')
         calls = [{'schema_version': 1, 'op': 'clip.set-element', 'version': '1',
-                  'select': target, 'args': {'elementRef': copy.deepcopy(element)}}]
+                  'select': target, 'args': {'elementRef': copy.deepcopy(element), 'placement': 'place'}}]
         with session.outbox.locked():
             state = session._state()
-            key = key or (state['flight']['key'] if state['flight'] else f'element-place-{uuid.uuid4().hex}')
+            held = copy.deepcopy(state['flight'])
+            key = key or (held['key'] if held else f'element-place-{uuid.uuid4().hex}')
 
         # Settle a lost-ack flight first so the reconciliation and head check see the Runtime.
-        _settle_held_flight(session)
+        settled = _settle_held_flight(session, held)
         with session.outbox.locked():
             state = session._state()
         cursor = None
-        while state['flight'] is None and idempotency_key is not None:
+        while idempotency_key is not None or held is not None:
             history = owner.history(session.project_id, session.timeline_id, cursor=cursor, limit=100)
             if not history.ok:
                 return history
@@ -481,12 +478,20 @@ def place_element(owner: Any, project: str, timeline: str, *, realm: str, target
                     if ('elementRef' not in before and 'element_ref' not in before
                             and element['kind'] != 'effect'):
                         raise ValueError('First placement supports effect elements only')
-                    if not _matches(data['commands'], calls):
+                    # Authenticated history may contain a placement accepted before the
+                    # explicit marker existed. Compare its original body without altering it.
+                    historical_calls = copy.deepcopy(calls)
+                    if all('placement' not in cmd['args'] for cmd in data['commands']):
+                        for call in historical_calls:
+                            call['args'].pop('placement', None)
+                    if not _matches(data['commands'], historical_calls):
                         raise ValueError('Acknowledged request identity has different original intent')
                     return _placement_result(session, data, receipt, before, target, expected_head, key)
             cursor = history.data['next_cursor']
             if cursor is None:
                 break
+        if held is not None and (not settled or key == held['key']):
+            raise ValueError('Captured flight has no matching acknowledged request; inspect before retrying')
         if state['base']['revision_id'] != expected_head:
             current = owner.history(session.project_id, session.timeline_id, limit=1)
             if not current.ok:

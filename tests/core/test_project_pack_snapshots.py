@@ -84,6 +84,86 @@ def test_noop_readmission_after_cache_loss_reuses_original_cas_receipt(admitted,
     assert (Path(record['snapshot']['root']) / '.build-receipt.json').read_bytes() == source[3]
 
 
+@pytest.mark.parametrize('drift', [False, True])
+def test_historical_source_only_snapshot_readmission(configured, drift):
+    # Recreate the pre-compiled admission's source-only files, selection receipt,
+    # portable envelope and four-field admission, without a modern admission.
+    root, directory, manifest = test_project_packs.seed()
+    shared = directory.parent / 'shared' / 'helper.ts'
+    shared.parent.mkdir()
+    shared.write_text('export const value = 1;\n')
+    component = directory / 'component.tsx'
+    component.write_text("import {value} from '../shared/helper';\n" + component.read_text() + '\nvoid value;\n')
+    manifest['rendering']['effects/reveal']['resources'].append(
+        {'kind': 'implementation', 'path': shared.relative_to(root).as_posix()})
+    (root / 'pack.yaml').write_text(yaml.safe_dump(manifest))
+    with packs._open_client() as client:
+        document_id, row = packs._read_document(client, 'realm', 'project', 'default')
+    entry, resources = packs._resources(root)
+    source_files = {name: (root / name).read_bytes() for name in sorted(resources)}
+    closure = [{'path': name, 'sha256': hashlib.sha256(raw).hexdigest()}
+               for name, raw in source_files.items()]
+    digest = hashlib.sha256(canonical(closure)).hexdigest()
+    snapshot_root = packs.artifact_root() / 'realm' / 'project' / entry.definition.id / 'snapshots' / digest
+    for name, raw in source_files.items():
+        path = snapshot_root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(raw)
+    definition, descriptor_path = packs._definitions(root, entry)[0]
+    descriptor = packs._element_descriptor(definition)
+    relative_component = definition.component.relative_to(root).as_posix()
+    descriptor['componentPath'] = f'external/{entry.definition.id}/{digest}/{relative_component}'
+    reference = {key: descriptor[key] for key in ('packId', 'id', 'kind', 'revision')}
+    record = {'projectId': 'project', 'descriptor': descriptor,
+              'authoring': {'packRoot': str(root), 'descriptorPath': str(descriptor_path),
+                            'componentPath': str(definition.component), 'status': 'admitted'},
+              'snapshot': {'root': str(snapshot_root), 'componentPath': relative_component, 'files': closure}}
+    admission = {key: descriptor[key] for key in ('id', 'kind', 'revision')}
+    admission['snapshot_digest'] = digest
+    content = {**row['content'], 'admissions': [admission]}
+    selection = packs._index('realm', 'project', document_id, row['version'] + 1, content, [record])
+    selection_bytes = (json.dumps(selection, indent=2, sort_keys=True) + '\n').encode()
+    receipt = {'schema': 'astrid.element-build/v1',
+               'selectionDigest': 'sha256:' + hashlib.sha256(selection_bytes).hexdigest(),
+               'elements': [{'projectId': 'project', **reference}]}
+    receipt_bytes = (json.dumps(receipt, indent=2, sort_keys=True) + '\n').encode()
+    (snapshot_root / '.build-receipt.json').write_bytes(receipt_bytes)
+    portable = canonical({'files': [{'path': name, 'sha256': hashlib.sha256(raw).hexdigest(),
+                                     'bytes_base64': base64.b64encode(raw).decode('ascii')}
+                                    for name, raw in source_files.items()],
+                          'build_receipt_base64': base64.b64encode(receipt_bytes).decode('ascii')})
+    object_id = 'sha256:' + hashlib.sha256(portable).hexdigest()
+    admission['snapshot_object'] = {'object_id': object_id, 'digest': object_id,
+                                    'size': len(portable), 'media_type': 'application/json'}
+    configured.media.objects[('project', object_id)] = portable
+    committed = packs._publish_document(client, 'project', document_id, row, content)
+    index = Path(packs._location('realm', 'project', content, document_id, committed['version'])['manifestPath'])
+    packs._atomic_json(index, packs._index('realm', 'project', document_id, committed['version'], content, [record]))
+    verified = {'document': {**copy.deepcopy(committed), 'project_id': 'project'},
+                'pin': {'document_id': document_id, 'version': committed['version'],
+                        'content_digest': packs._json_digest(content)}}
+    snapshot = {**admission['snapshot_object'], 'bytes_base64': base64.b64encode(portable).decode('ascii')}
+    assert packs.admitted_element_snapshot_descriptor('realm', 'project', reference, verified, snapshot) == descriptor
+    before, index_before = copy.deepcopy(configured.rows), index.read_bytes()
+    writes, imports = list(configured.writes), list(configured.media.imports)
+    if drift:
+        shared.write_text('export const value = 2;\n')
+        assert packs.inspect_project_pack('realm', 'project')['elements'][0]['descriptor']['revision'] == reference['revision']
+        with pytest.raises(ValueError, match='source closure changed.*restore.*resources'):
+            packs.admit_project_pack('realm', 'project')
+        assert configured.rows == before and index.read_bytes() == index_before
+        assert configured.writes == writes and configured.media.imports == imports
+        assert configured.media.objects[('project', object_id)] == portable
+        assert {name: (snapshot_root / name).read_bytes() for name in source_files} == source_files
+        assert (snapshot_root / '.build-receipt.json').read_bytes() == receipt_bytes
+        assert packs.admitted_element_snapshot_descriptor('realm', 'project', reference, verified, snapshot) == descriptor
+    else:
+        result = packs.admit_project_pack('realm', 'project')
+        assert {key: result['elements'][0]['descriptor'][key] for key in reference} == reference
+        assert result['elements'][0]['compiled']
+        assert configured.media.objects[('project', object_id)] == portable
+
+
 def test_mixed_admission_retains_old_records_closures_and_pins(configured):
     root, directory, manifest = test_project_packs.seed()
     other = test_project_packs.add_second_element(root, directory, manifest)

@@ -368,6 +368,42 @@ def test_readmitting_unchanged_legacy_admission_upgrades_it_with_a_compiled_modu
     assert configured.rows[('project', first['documentId'])]['version'] == version
 
 
+@pytest.mark.parametrize('drift', [False, True])
+def test_legacy_source_pin_includes_shared_sibling(configured, drift):
+    root, directory, manifest = seed()
+    shared = directory.parent / 'shared' / 'helper.ts'
+    shared.parent.mkdir()
+    shared.write_text('export const value = 1;\n')
+    component = directory / 'component.tsx'
+    component.write_text("import {value} from '../shared/helper';\n" + component.read_text() + '\nvoid value;\n')
+    manifest['rendering']['effects/reveal']['resources'].append(
+        {'kind': 'implementation', 'path': shared.relative_to(root).as_posix()})
+    (root / 'pack.yaml').write_text(yaml.safe_dump(manifest))
+    first = packs.admit_project_pack('realm', 'project')
+    admission = _make_legacy(configured, first)
+    del admission['snapshot_object']
+    row = configured.rows[('project', first['documentId'])]
+    index = Path(first['manifestPath'])
+    legacy_record = json.loads(index.read_text())['elements'][0]
+    packs._atomic_json(index, packs._index('realm', 'project', first['documentId'], row['version'], row['content'], [legacy_record]))
+    before, index_before = copy.deepcopy(row), index.read_bytes()
+    writes_before, imports_before = list(configured.writes), list(configured.media.imports)
+    ref = {k: first['elements'][0]['descriptor'][k] for k in ('packId', 'id', 'kind', 'revision')}
+    if drift:
+        shared.write_text('export const value = 2;\n')
+        assert packs.inspect_project_pack('realm', 'project')['elements'][0]['descriptor']['revision'] == ref['revision']
+        with pytest.raises(ValueError, match='source closure changed.*restore.*resources'):
+            packs.admit_project_pack('realm', 'project')
+        assert configured.rows[('project', first['documentId'])] == before
+        assert index.read_bytes() == index_before
+        assert configured.writes == writes_before and configured.media.imports == imports_before
+        assert {k: legacy_record['descriptor'][k] for k in ref} == ref
+    else:
+        result = packs.admit_project_pack('realm', 'project')
+        assert {k: result['elements'][0]['descriptor'][k] for k in ref} == ref
+        assert result['elements'][0]['compiled']
+
+
 def test_fresh_scaffold_declares_current_pack_api_and_is_not_quarantined(configured):
     from astrid.pack_api import VERSION
     root, _, _ = seed()
