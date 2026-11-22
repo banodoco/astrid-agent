@@ -203,7 +203,18 @@ def test_audio_edit_binds_time_mask_to_native_v2v(tmp_path, monkeypatch):
     monkeypatch.setattr(compiler, "_compile_lanpaint", lambda *a, **kw: pytest.fail("legacy route reached"))
     raw = copy.deepcopy(CASES[2]["v2"])
     raw["media"][0]["edit"].append({"stream": "audio", "during": [0, 4]})
-    manifest, api = _compile(raw, tmp_path, _assets(tmp_path), "compiled-audio")
+    assets = _assets(tmp_path)
+    source = Path(assets["source.mp4"])
+    subprocess.run(
+        [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "lavfi", "-i", "color=size=1024x576:rate=24:duration=4",
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=4",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(source),
+        ],
+        check=True, capture_output=True, text=True, timeout=30,
+    )
+    manifest, api = _compile(raw, tmp_path, assets, "compiled-audio")
     assert "audio_time_mask" in manifest["workflow_inputs"]
     assert any(row["binding"] == "audio_time_mask" for row in manifest["managed_assets"]["manifest"]["assets"])
     v2v_id = next(node_id for node_id, row in api.items() if row["class_type"] == "H3V2VGranularFractionalDenoise")

@@ -52,7 +52,8 @@ def media_only_publication(project_id: str, media: Sequence[Mapping[str, Any]], 
 
     ``_seed_timeline`` commits its ``parent_composition`` and admits its ``dependency_manifest`` media.
     """
-    assets = {f"clip{n}": {"media_id": m["object_id"], "content_sha256": m["object_id"], "type": "video"}
+    assets = {f"clip{n}": {"media_id": m["object_id"],
+                            "content_sha256": m["object_id"].removeprefix("sha256:"), "type": "video"}
               for n, m in enumerate(media, 1)}
     clips = [{"id": f"clip-{n}", "clipType": "media", "track": "video", "asset": f"clip{n}",
               "at": seconds * (n - 1), "from": 0, "to": seconds, "speed": 1}
