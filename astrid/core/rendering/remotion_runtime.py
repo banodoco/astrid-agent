@@ -551,6 +551,10 @@ def _registry_context(environment: Mapping[str, str], *, generator: bool) -> dic
     if not generator:
         keys.update((*_REGISTRY_SELECTORS, 'PYTHONPATH', 'XDG_CONFIG_HOME'))
     context = {k: environment[k] for k in sorted(keys) if k in environment}
+    # An empty pack search path selects no extra roots, exactly like an unset
+    # one; a child that inherits the empty spelling is the same context.
+    if context.get(ASTRID_PACKS_PATH) == '':
+        del context[ASTRID_PACKS_PATH]
     # This mapping is the registry child's complete environment. Ambient
     # Git/startup controls omitted here cannot influence that child.
     probe_context(environment=context, python_executable=sys.executable)
