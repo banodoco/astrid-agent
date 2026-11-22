@@ -12089,7 +12089,6 @@ class GenericPackHost:
                     "deterministic admission failure was not recorded by Runtime"
                 ) from runtime_exc
             raise HostError(str(error)) from error
-
         captured_record = None
         captured_pack_map = None
         verified_pack_relocations = {}
@@ -12170,7 +12169,6 @@ class GenericPackHost:
                     and not isinstance(exc, PackCaptureError)):
                 exc = PackCaptureError(f"selected pack snapshot capture refused: {exc}")
             fail_admission(exc)
-
         registration_error = self._registration_admission_reason()
         if registration_error:
             fail_admission(HostError(registration_error))
