@@ -6,7 +6,6 @@ import sys
 import time
 from contextvars import ContextVar
 
-
 _STARTUP_MARKS: ContextVar[tuple | None] = ContextVar("astrid_startup_marks", default=None)
 
 

@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping
 
 from runtime_protocol import platform
+
 from astrid.sdk.command_timing import stage
 from astrid.sdk.lock_wait import thread_lock
 

@@ -1,13 +1,13 @@
 """Command-local, monotonic client timings and progress messages."""
 from __future__ import annotations
 
-from contextlib import contextmanager
-from contextvars import ContextVar
 import json
 import os
 import sys
 import threading
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 
 class TimingCollector:

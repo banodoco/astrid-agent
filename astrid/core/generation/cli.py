@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-from contextvars import ContextVar
 import json
 import logging
 import sys
 import time
 from contextlib import nullcontext
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
@@ -41,8 +41,8 @@ def _generate_facade() -> Any:
 
 def _open_client() -> Any:
     """Acquire the Runtime connection at the explicit public CLI boundary."""
-    from astrid.sdk.command_timing import stage
     from astrid.sdk.client import AstridClient
+    from astrid.sdk.command_timing import stage
 
     with stage("Runtime connection"):
         return AstridClient.open_from_launcher()
@@ -750,6 +750,7 @@ def _main_request(argv: list[str], stack, *, output=None) -> int:
     discovery = None
     if selector:
         from astrid.sdk.command_timing import timed_call
+
         from .entries import _EntryDiscovery
         discovery = timed_call("entry discovery", _EntryDiscovery)
 

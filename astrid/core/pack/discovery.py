@@ -27,7 +27,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from astrid.sdk.command_timing import stage
 from astrid.core.foundation.paths import PACKAGE_ROOT, REPO_ROOT
 from astrid.core.pack import (
     PackDefinition,
@@ -45,6 +44,7 @@ from astrid.core.pack.canonical import (
     read_normalize_validate,
 )
 from astrid.core.pack.loader import discover_packs as _default_discover_packs
+from astrid.sdk.command_timing import stage
 
 DiscoverPacksFn = Callable[..., "tuple[PackDefinition, ...]"]
 
