@@ -10330,6 +10330,7 @@ class GenericPackHost:
             align=align,
             generation_entry=generation_entry,
             managed_preparation=managed_preparation,
+            readiness_worker_kind="command",
             network_policy=(
                 _network_policy(record, inputs)
                 if record.id == "vibecomfy.run" and inputs.get("comfy_url") else None
