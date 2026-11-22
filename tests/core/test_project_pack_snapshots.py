@@ -518,3 +518,113 @@ def test_render_stages_the_admitted_compiled_module_as_the_component(configured,
     assert b'react/jsx-runtime' in compiled  # externals stay for webpack to resolve
     # The stored closure still holds the original TSX; only the render staging swaps it.
     assert (Path(record['snapshot']['root']) / record['snapshot']['componentPath']).read_bytes().startswith(b"import React from 'react';")
+
+
+@pytest.mark.parametrize('collection', ['default', 'special_effects'])
+def test_compiled_receipt_binds_each_declared_component(configured, collection, tmp_path):
+    from astrid.core.element.registry import ElementRegistry
+    from astrid.core.rendering.project_elements import CARRIER, stage_project_elements
+    from tests.core.test_project_pack_inputs import repin
+    if collection == 'default':
+        root, directory, manifest = test_project_packs.seed()
+    else:
+        context = packs.init_project_pack('realm', 'project', collection=collection)
+        root = Path(context['packRoot'])
+        directory = root / 'rendering/elements/effects/reveal'
+        directory.mkdir(parents=True)
+        (directory / 'component.tsx').write_text("import React from 'react'; export default function Reveal(){return <div/>;}\n")
+        (directory / 'element.yaml').write_text(yaml.safe_dump({'schema_version': 1, 'id': 'reveal', 'kind': 'effect', 'pack_id': context['packId'], 'short_description': 'Test reveal.', 'defaults': {'seed': 15}, 'schema': {'type': 'object', 'properties': {'seed': {'type': 'number'}}}, 'runtime': {'adapter': 'remotion'}}))
+        manifest = yaml.safe_load((root / 'pack.yaml').read_text())
+        manifest['rendering'] = {'effects/reveal': {'type': 'element', 'path': 'rendering/elements/effects/reveal/element.yaml', 'resources': [{'kind': 'implementation', 'path': 'rendering/elements/effects/reveal/component.tsx'}]}}
+        (root / 'pack.yaml').write_text(yaml.safe_dump(manifest))
+    test_project_packs.add_second_element(root, directory, manifest)
+    result = packs.admit_project_pack('realm', 'project', collection=collection)
+    records = result['elements']
+    sources = [capture_input(configured, record) for record in records]
+    receipt = json.loads(sources[0][3])
+    for record, (ref, verified, files, raw_receipt) in zip(records, sources):
+        identity = {'projectId': 'project', **{k: ref[k] for k in ('packId', 'id', 'kind', 'revision')}}
+        component = record['snapshot']['componentPath']
+        compiled = record['compiled']
+        assert {**identity, 'componentPath': component, 'compiled': compiled} in receipt['compiledBindings']
+        assert compiled['path'] == packs._compiled_path(component)
+        assert compiled['sha256'] == hashlib.sha256(files[compiled['path']]).hexdigest()
+        assert packs.admitted_element_descriptor('realm', 'project', ref, verified, files, raw_receipt) == record['descriptor']
+        wrong = next(other['compiled'] for other in records if other is not record)
+        damaged = copy.deepcopy(verified)
+        admission = next(a for a in damaged['document']['content']['admissions'] if a['id'] == ref['id'])
+        admission['compiled'] = wrong
+        with pytest.raises(ValueError, match='compiled'):
+            packs._admitted_snapshot_descriptor('project', ref, damaged['document']['content'], admission, files, raw_receipt)
+        repin(damaged)
+        selected_admission = next(a for a in verified['document']['content']['admissions'] if a['id'] == ref['id'])
+        object_ref = selected_admission['snapshot_object']
+        portable_bytes = configured.media.objects['project', object_ref['object_id']]
+        snapshot = {**object_ref, 'bytes_base64': base64.b64encode(portable_bytes).decode()}
+        selection = {'realm': 'realm', 'project': 'project', 'reference': ref, 'verified': verified, 'snapshot': snapshot, 'descriptor': record['descriptor']}
+        config = {'clips': [{'elementRef': ref}], 'app': {CARRIER: [selection]}}
+        registry, _ = stage_project_elements(config, tmp_path / collection / (ref['id'] + '-modern'), registry=ElementRegistry())
+        assert registry.get('effects', ref['id'], pack_id=ref['packId'], revision=ref['revision']).component.read_bytes() == files[compiled['path']]
+        selection['verified'] = damaged
+        with pytest.raises(ValueError, match='compiled'):
+            stage_project_elements(config, tmp_path / collection / (ref['id'] + '-wrong'), registry=ElementRegistry())
+        bad_receipt = copy.deepcopy(receipt)
+        binding = next(b for b in bad_receipt['compiledBindings'] if b['id'] == ref['id'])
+        binding['compiled'] = wrong
+        with pytest.raises(ValueError, match='compiled'):
+            packs._admitted_snapshot_descriptor('project', ref, verified['document']['content'], next(a for a in verified['document']['content']['admissions'] if a['id'] == ref['id']), files, json.dumps(bad_receipt).encode())
+        legacy = copy.deepcopy(receipt)
+        del legacy['compiledBindings']
+        assert packs.admitted_element_descriptor('realm', 'project', ref, verified, files, json.dumps(legacy).encode()) == record['descriptor']
+        portable = packs._portable_snapshot(files, json.dumps(legacy).encode())
+        digest = 'sha256:' + hashlib.sha256(portable).hexdigest()
+        object_ref = {'object_id': digest, 'digest': digest, 'size': len(portable), 'media_type': 'application/json'}
+        old_verified = copy.deepcopy(verified)
+        next(a for a in old_verified['document']['content']['admissions'] if a['id'] == ref['id'])['snapshot_object'] = object_ref
+        repin(old_verified)
+        snapshot = {**object_ref, 'bytes_base64': base64.b64encode(portable).decode()}
+        selection = {'realm': 'realm', 'project': 'project', 'reference': ref, 'verified': old_verified, 'snapshot': snapshot, 'descriptor': record['descriptor']}
+        config = {'clips': [{'elementRef': ref}], 'app': {CARRIER: [selection]}}
+        registry, _ = stage_project_elements(config, tmp_path / collection / ref['id'], registry=ElementRegistry())
+        element = registry.get('effects', ref['id'], pack_id=ref['packId'], revision=ref['revision'])
+        assert element.component.read_bytes() == files[compiled['path']]
+
+
+def test_bindingless_snapshot_noop_then_changed_revision_gets_binding(admitted, configured):
+    result, record, source, _, _, _, directory = admitted
+    ref, verified, files, receipt = source
+    legacy = json.loads(receipt)
+    del legacy['compiledBindings']
+    legacy_bytes = (json.dumps(legacy, indent=2, sort_keys=True) + '\n').encode()
+    portable = packs._portable_snapshot(files, legacy_bytes)
+    digest = 'sha256:' + hashlib.sha256(portable).hexdigest()
+    old_object = {'object_id': digest, 'digest': digest, 'size': len(portable), 'media_type': 'application/json'}
+    row = configured.rows['project', result['documentId']]
+    row['content']['admissions'][0]['snapshot_object'] = old_object
+    configured.media.objects['project', digest] = portable
+    (Path(record['snapshot']['root']) / '.build-receipt.json').write_bytes(legacy_bytes)
+    index_path = Path(result['manifestPath'])
+    index = json.loads(index_path.read_bytes())
+    index['binding']['contentDigest'] = packs._json_digest(row['content'])
+    index_path.write_text(json.dumps(index))
+    old_source = capture_input(configured, record)
+    assert packs.admitted_element_descriptor('realm', 'project', *old_source) == record['descriptor']
+    before = copy.deepcopy(row)
+    uploads = len(configured.media.imports)
+    again = packs.admit_project_pack('realm', 'project')
+    assert again['documentVersion'] == result['documentVersion']
+    assert configured.rows['project', result['documentId']] == before
+    assert len(configured.media.imports) == uploads
+    component = directory / 'component.tsx'
+    component.write_text(component.read_text() + '\n// New selected revision.\n')
+    changed = packs.admit_project_pack('realm', 'project')
+    new_record = changed['elements'][0]
+    assert new_record['descriptor']['revision'] != ref['revision']
+    new_source = capture_input(configured, new_record)
+    binding = json.loads(new_source[3])['compiledBindings'][0]
+    assert binding['revision'] == new_record['descriptor']['revision']
+    assert binding['componentPath'] == new_record['snapshot']['componentPath']
+    assert binding['compiled'] == new_record['compiled']
+    assert configured.rows['project', result['documentId']]['content']['admissions'][0] == before['content']['admissions'][0]
+    assert configured.media.objects['project', digest] == portable
+    assert packs.admitted_element_descriptor('realm', 'project', *old_source) == record['descriptor']
