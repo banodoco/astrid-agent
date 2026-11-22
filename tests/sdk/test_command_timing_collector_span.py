@@ -28,3 +28,15 @@ def test_collector_span_is_opt_in(monkeypatch):
     output = command_timing.TimingOutput(stream, command_timing.TimingCollector())
     output.write('{"ok": true}')
     assert "collector_span_seconds" not in json.loads(stream.getvalue())
+
+
+def test_span_is_not_derived_from_row_totals(monkeypatch):
+    clock = [10.0]
+    monkeypatch.setattr(command_timing.time, "monotonic", lambda: clock[0])
+    collector = command_timing.TimingCollector(started=10.0)
+    # Deliberately inconsistent accounting proves C is read from the clock.
+    collector.timings.append({"stage": "synthetic", "seconds": 20.0})
+    clock[0] = 12.5
+    rows, span = collector.snapshot_with_span()
+    assert sum(row["seconds"] for row in rows) == 20.0
+    assert span == 2.5
