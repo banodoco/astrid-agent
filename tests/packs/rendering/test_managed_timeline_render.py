@@ -32,6 +32,107 @@ def test_projection_preserves_independent_clip_fit():
     assert projected is not config
 
 
+def test_render_projection_can_preserve_authored_fps_pair():
+    pair = {"numerator": 30000, "denominator": 1001}
+    config = {"output": {"resolution": "640x360", "file": "film.mp4", "fps": pair},
+              "theme_overrides": {"visual": {"canvas": {"fps": pair}}}}
+    scalar, _ = managed_timeline._render_compatible_projection(config, {"assets": {}})
+    exact, _ = managed_timeline._render_compatible_projection(config, {"assets": {}}, preserve_exact_fps=True)
+    assert scalar["output"]["fps"] == scalar["theme_overrides"]["visual"]["canvas"]["fps"] == 30000 / 1001
+    assert exact["output"]["fps"] == pair
+    assert exact["theme_overrides"]["visual"]["canvas"]["fps"] == pair
+    assert exact["output"]["fps"] is not pair
+
+
+def test_timeline_fps_accepts_authored_pair():
+    assert managed_timeline._timeline_fps({"output": {"fps": {"numerator": 30000, "denominator": 1001}}}) == pytest.approx(30000 / 1001)
+
+
+def test_render_clock_uses_authored_fps_pair():
+    rate = {"numerator": 30000, "denominator": 1001}
+    config = {
+        "output": {"resolution": "640x360", "file": "film.mp4", "fps": rate},
+        "clips": [{"at": 0, "hold": 0.05}],
+        "app": {"astrid_render_clock": {
+            "authored_duration_frames": 1,
+            "render_duration_frames": 2,
+            "tail": {"policy": "unmapped_excess_rendered_region", "source_asset": "tail",
+                     "start_frame": 1, "end_frame": 2, "source_start_frame": 1, "source_end_frame": 2},
+        }},
+    }
+    registry = {"assets": {"tail": {"media_id": "tail-object", "content_sha256": "a" * 64}}}
+    managed_timeline._validate_render_clock_binding(config, registry)
+
+
+@pytest.mark.parametrize("numerator", [30000, 24000])
+@pytest.mark.parametrize("location", ["output", "canvas"])
+def test_managed_snapshot_validates_exact_fps_pair_without_rewriting_it(tmp_path, numerator, location):
+    from astrid.core.rendering.profile import resolve_render_profile
+    from astrid.core.rendering.storage import managed_render_window
+    from astrid.core.timeline.banodoco_composer import Timeline
+    from astrid.packs.rendering.shared.rendering_backend import (
+        _canonical_profile,
+        _resolved_theme_for_render,
+        _serialize_timeline,
+    )
+
+    runtime = _Runtime()
+    pair = {"numerator": numerator, "denominator": 1001}
+    config = {
+        "tracks": [{"id": "title", "kind": "visual", "label": "Title"}],
+        "clips": [{"id": "title", "track": "title", "clipType": "text", "at": 0, "hold": 1.001,
+                   "text": {"content": "Title"}}],
+    }
+    if location == "output":
+        config["output"] = {"resolution": "640x360", "file": "film.mp4", "fps": pair}
+    else:
+        config["theme_overrides"] = {"visual": {"canvas": {"width": 640, "height": 360, "fps": pair}}}
+    runtime.timeline["config"] = config
+    snapshot = _snapshot(runtime)
+    validate_managed_render_snapshot(snapshot)
+    timeline_path, _, authority = materialize_managed_render_snapshot(tmp_path, snapshot)
+    saved = json.loads(timeline_path.read_text())
+    assert saved == snapshot.config
+    timeline = Timeline.load(timeline_path)
+    assert timeline.to_config() == saved
+    assert timeline.for_render().to_json_data() == {**saved, "theme": "banodoco-default"}
+    if location == "output":
+        assert saved["output"]["fps"] == pair
+    else:
+        assert saved["theme_overrides"]["visual"]["canvas"]["fps"] == pair
+    assert authority["config_hash"] == snapshot.config_hash
+    profile = resolve_render_profile(timeline_path)
+    assert profile.fps_rational == (numerator, 1001)
+    assert profile.time_base == (1, numerator)
+    assert _canonical_profile(timeline_path, snapshot.registry, None) == profile
+    props = _serialize_timeline(timeline_path)
+    if location == "output":
+        assert props["output"]["fps"] == numerator / 1001
+    else:
+        assert props["theme_overrides"]["visual"]["canvas"]["fps"] == numerator / 1001
+        assert _resolved_theme_for_render(timeline_path, None)["visual"]["canvas"]["fps"] == numerator / 1001
+    assert json.loads(timeline_path.read_text()) == saved
+    window = managed_render_window(saved, snapshot.registry, [0, 1.001])
+    assert window.duration_frames == numerator // 1000
+    assert window.fps_rational == (numerator, 1001)
+
+
+def test_managed_scalar_fps_snapshot_keeps_output_and_config_hash(tmp_path):
+    from astrid.core.rendering.profile import resolve_render_profile
+
+    runtime = _Runtime()
+    output = {"resolution": "640x360", "file": "film.mp4", "fps": 24}
+    runtime.timeline["config"] = {
+        "tracks": [], "clips": [], "output": output,
+        "theme_overrides": {"visual": {"canvas": {"width": 640, "height": 360, "fps": 24}}},
+    }
+    snapshot = _snapshot(runtime)
+    timeline_path, _, authority = materialize_managed_render_snapshot(tmp_path, snapshot)
+    assert json.loads(timeline_path.read_text())["output"] == output
+    assert resolve_render_profile(timeline_path).fps_rational == (24, 1)
+    assert authority["config_hash"] == "a174e4cfaca5c04506d7a2d6a7be6631496bd2f97d686dbb5bb2e7bb87e9d6e6"
+
+
 @pytest.mark.parametrize("location", ["config", "duplicate", "payload"])
 def test_saved_parent_clip_precedence_preserves_prepared_scene(location):
     from astrid.core.timeline.shot_composition_projection import project_runtime_parent_composition

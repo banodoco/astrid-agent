@@ -31,6 +31,7 @@ from astrid.core.pack.discovery import discover_pack_metadata
 from astrid.core.rendering.contracts import RenderProfile
 from astrid.core.rendering.profile import resolve_render_profile
 from astrid.core.theme import builtin_theme, load_runtime_theme
+from astrid.core.timeline.reader_projection import reader_fps_view
 
 
 # Review exports are deliberately small enough for a browser/editorial pass
@@ -58,9 +59,9 @@ def _serialize_timeline(
     *,
     default_theme: str = "banodoco-default",
 ) -> dict[str, Any]:
-    return (
-        Timeline.load(timeline_path).for_render(default_theme=default_theme).to_json_data()
-    )
+    """Serialize scalar composition props from the exact render input file."""
+    timeline = Timeline.load(timeline_path).for_render(default_theme=default_theme)
+    return reader_fps_view(timeline.to_json_data())
 
 
 def _resolve_theme_path(theme_path: Path) -> Path:
@@ -101,7 +102,7 @@ def _resolved_theme_for_render(
     """
 
     loaded = Timeline.load(timeline_path)
-    timeline_config = loaded.to_config()
+    timeline_config = reader_fps_view(loaded.to_config())
     merged = (
         _theme_for_props(runtime_theme_path)
         if runtime_theme_path is not None

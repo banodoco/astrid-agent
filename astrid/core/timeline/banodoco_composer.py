@@ -26,6 +26,7 @@ from .banodoco_schema import (
     validate_registry,
     validate_timeline,
 )
+from .reader_projection import reader_fps_view
 
 
 def _write_json(path: Path, payload: Any) -> None:
@@ -182,7 +183,7 @@ class Timeline:
     def __init__(self, config: Mapping[str, Any], *, validate: bool = True) -> None:
         data = copy.deepcopy(dict(config))
         if validate:
-            validate_timeline(data)
+            validate_timeline(reader_fps_view(data))
         self._data = data
 
     @classmethod
@@ -268,7 +269,7 @@ class Timeline:
                 _round_at_for_dump(_swap_from_dump(dict(clip))) if isinstance(clip, dict) else clip
                 for clip in clips
             ]
-        validate_timeline(payload)
+        validate_timeline(reader_fps_view(payload))
         return payload
 
     def dump(self, path: Path) -> None:

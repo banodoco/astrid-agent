@@ -43,6 +43,45 @@ def test_managed_selection_reads_generated_runtime_client():
     assert timelines[0].config_version == 3
 
 
+def test_kernel_visualize_materialization_uses_detached_reader_projection(tmp_path):
+    from astrid.core.timeline.reader_projection import READER_PROJECTION_APP_KEY
+    from astrid.packs.rendering.actions.timeline_visualize import run
+
+    rate = {"numerator": 30000, "denominator": 1001}
+    config = {
+        "output": {"resolution": "640x360", "fps": rate, "file": "film.mp4"},
+        "tracks": [{"id": "video", "kind": "visual"}],
+        "clips": [{"id": "clip", "track": "video", "asset_id": "picture",
+                   "at": 0, "hold": 1, "vendor.notes": {"color": "blue"}}],
+    }
+    registry = {"assets": {"picture": {"media_id": "media-1", "media_type": "video/mp4"}}}
+    row = select.KernelTimeline(
+        timeline_id="timeline-1", timeline_ulid="01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        slug="main", name="Main", is_default=True, config=config, registry=registry,
+        config_version=1, head_event_id="event-1", head_hash="hash-1",
+        head_created_at="2026-08-30T00:00:00Z",
+    )
+
+    materialized = run._materialize_kernel_timeline(
+        row, project_root=tmp_path, project_slug="demo", destination=tmp_path / "view"
+    )
+
+    projected_clip = materialized.runtime_config["clips"][0]
+    assert projected_clip["asset"] == "picture"
+    assert "asset_id" not in projected_clip
+    assert projected_clip["app"][READER_PROJECTION_APP_KEY]["extensions"]["clip"] == {
+        "vendor.notes": {"color": "blue"},
+    }
+    assert materialized.runtime_config["tracks"][0]["label"] == "video"
+    assert materialized.runtime_config["output"]["fps"] == 30000 / 1001
+    assert materialized.runtime_config is not row.config
+    assert materialized.runtime_registry["assets"]["picture"]["media_id"] == "media-1"
+    assert "asset_id" in row.config["clips"][0]
+    assert "vendor.notes" in row.config["clips"][0]
+    assert row.config["output"]["fps"] == rate
+    assert "media_type" in row.registry["assets"]["picture"]
+
+
 def test_managed_visualization_readers_have_no_local_store_authority():
     select_source = inspect.getsource(select)
     frozen_source = inspect.getsource(frozen)

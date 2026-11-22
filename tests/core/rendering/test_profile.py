@@ -43,6 +43,13 @@ def test_profile_uses_theme_canvas_when_timeline_has_no_override(tmp_path: Path)
     assert profile.duration_tolerance == 1
 
 
+def test_profile_accepts_exact_authored_fps_object():
+    rate = {"numerator": 30000, "denominator": 1001}
+    timeline = _timeline(output={"resolution": "640x360", "file": "film.mp4", "fps": rate})
+    profile = resolve_render_profile(timeline)
+    assert profile.fps_rational == (30000, 1001)
+
+
 def test_profile_mirrors_remotion_partial_override_precedence(tmp_path: Path) -> None:
     _write_theme(tmp_path, "cinema", width=1024, height=576, fps=24)
     timeline = _timeline(

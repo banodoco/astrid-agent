@@ -144,6 +144,15 @@ def _fps_fraction(value: Any) -> Fraction:
             fps = Fraction(value)
         except (ValueError, ZeroDivisionError) as exc:
             raise ValueError(f"invalid canvas fps {value!r}") from exc
+    elif isinstance(value, Mapping):
+        if value.keys() != {"numerator", "denominator"}:
+            raise ValueError("canvas fps rational must contain numerator and denominator")
+        numerator, denominator = value.get("numerator"), value.get("denominator")
+        if type(numerator) is not int or type(denominator) is not int:
+            raise TypeError("canvas fps rational must contain integer numerator and denominator")
+        if numerator <= 0 or denominator <= 0:
+            raise ValueError("canvas fps rational components must be positive")
+        fps = Fraction(numerator, denominator)
     elif (
         isinstance(value, Sequence)
         and not isinstance(value, (str, bytes))
