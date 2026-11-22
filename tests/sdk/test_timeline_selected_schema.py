@@ -98,8 +98,17 @@ def test_new_valid_selected_param_compiles_commits_reloads_and_roundtrips(select
     assert redone['data']['canonical_document'] == document
 
 
-def test_admitted_element_can_be_placed_on_occurrence_clip_without_prior_ref(selected_effect):
-    realm, selected, _ = selected_effect
+@pytest.fixture
+def astrid_motion_registry(monkeypatch):
+    from pathlib import Path
+    from astrid.core.element.registry import load_default_registry
+
+    fixture_pack = Path(__file__).parents[1] / 'fixtures/packs/astrid_motion'
+    registry = load_default_registry(extra_pack_roots=(str(fixture_pack),))
+    monkeypatch.setattr('astrid.core.element.registry.load_default_registry', lambda: registry)
+
+
+def _unbound_occurrence_clip(realm):
     original = current(realm)
     shot_id = 'shot-placement'
     occurrence_id = 'occ-placement'
@@ -125,15 +134,47 @@ def test_admitted_element_can_be_placed_on_occurrence_clip_without_prior_ref(sel
             },
         },
     }
+    return original, target
 
-    command = capture_clip_set_element(
-        original, target, element=selected, **realm.schema_options)
+
+def test_admitted_element_can_be_placed_on_occurrence_clip_without_prior_ref(
+        selected_effect, astrid_motion_registry):
+    realm, selected, _ = selected_effect
+    original, target = _unbound_occurrence_clip(realm)
+
+    command = {
+        'schema_version': 1,
+        'op': 'clip.set-element',
+        'version': '1',
+        'select': target,
+        'args': {'elementRef': copy.deepcopy(selected), 'placement': 'place',
+                 'schema_source': copy.deepcopy(realm.schema_options['schema_source'])},
+    }
+    command = execute(original, [command],
+                      schema_inputs=realm.schema_options['schema_inputs'],
+                      realm_id=realm.schema_options['realm_id']).commands[0]
     assert command['select'] == target
     assert command['args']['schema_source'] == realm.schema_options['schema_source']
     plan = execute(original, [command],
                    schema_inputs=realm.schema_options['schema_inputs'],
                    realm_id=realm.schema_options['realm_id'])
     assert State(plan.bundle).entity(target)['elementRef'] == selected
+
+
+def test_unmarked_occurrence_capture_refuses_without_mutating_document(
+        selected_effect, astrid_motion_registry):
+    realm, selected, _ = selected_effect
+    original, target = _unbound_occurrence_clip(realm)
+    before = copy.deepcopy(original)
+
+    with pytest.raises(CommandError) as refused:
+        capture_clip_set_element(original, target, element=selected, **realm.schema_options)
+
+    assert str(refused.value) == (
+        'clip.set-element requires an existing element ref, or a built-in effect clip '
+        'to point at an admitted effect'
+    )
+    assert original == before
 
 
 @pytest.mark.parametrize('stage', ['capture', 'compile', 'provider'])
