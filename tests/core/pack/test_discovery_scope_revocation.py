@@ -1,9 +1,65 @@
 """A copied context cannot extend the lifetime of a discovery cache."""
 from contextvars import copy_context
+from threading import Event, Thread
 
 import pytest
 
 from astrid.core.pack import discovery
+
+
+def test_inflight_projection_cannot_publish_after_scope_revocation(monkeypatch):
+    monkeypatch.setattr(discovery, "_discovery_fingerprint", lambda *args, **kwargs: "same")
+    from astrid.core.pack import source_setup
+
+    monkeypatch.setattr(source_setup, "active_source_inventory", lambda: object())
+    entered_projection = Event()
+    release_projection = Event()
+    calls = []
+    results = []
+    failures = []
+
+    def projection():
+        calls.append(len(calls) + 1)
+        call_number = calls[-1]
+        if call_number == 1:
+            entered_projection.set()
+            if not release_projection.wait(timeout=5):
+                raise AssertionError("test did not release the in-flight projection")
+        return f"result-{call_number}"
+
+    worker = None
+    try:
+        with discovery.pack_discovery_scope():
+            owner = discovery._discovery_cache.get()
+            copied = copy_context()
+
+            def run_projection():
+                try:
+                    results.append(copied.run(discovery.reuse_pack_projection, projection))
+                except BaseException as exc:
+                    failures.append(exc)
+
+            worker = Thread(target=run_projection, daemon=True)
+            worker.start()
+            assert entered_projection.wait(timeout=5), "worker did not enter the cache-miss projection"
+    finally:
+        # The scope has exited and revoked its owner before the blocked
+        # projection is released, even when the synchronization assertion fails.
+        release_projection.set()
+        if worker is not None:
+            worker.join(timeout=5)
+
+    assert not worker.is_alive(), "in-flight projection did not finish"
+    assert failures == []
+    assert results == ["result-1"]
+    assert not owner.active
+    assert owner == {}, "a result completing after revocation must not repopulate the owner"
+
+    # The copied context still carries the revoked owner, so a later call must
+    # recompute instead of observing the late result.
+    assert copied.run(discovery.reuse_pack_projection, projection) == "result-2"
+    assert calls == [1, 2]
+    assert owner == {}
 
 
 @pytest.mark.parametrize("fail", [False, True])
