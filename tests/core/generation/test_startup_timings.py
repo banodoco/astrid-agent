@@ -45,7 +45,7 @@ def test_fresh_generation_entrypoints_report_startup_on_early_refusal(command):
     )
 
     assert result.returncode == 2
-    assert "prompt is required" in result.stderr
+    assert "prompt is required" in result.stdout
     # The refusal happens during argument validation, before any generation
     # work, but the fresh process start is still included in its timing trace.
     assert "interpreter start:" in result.stderr
@@ -67,7 +67,7 @@ def test_installed_console_executable_reports_fresh_process_start():
     )
 
     assert result.returncode == 2
-    assert "prompt is required" in result.stderr
+    assert "prompt is required" in result.stdout
     assert "interpreter start:" in result.stderr
 
 
@@ -107,7 +107,7 @@ def test_unavailable_start_probe_falls_back_and_returns_bounded_timing_json(tmp_
 
     assert result.returncode == 2
     payload = json.loads(result.stdout)
-    assert "deterministic startup timing refusal" in payload["message"]
+    assert "deterministic startup timing refusal" in payload["issues"][0]["message"]
     assert payload["start"] == "command entry"
     rows = payload["timings"]
     assert rows
@@ -130,7 +130,7 @@ def test_module_entrypoint_preserves_user_facing_generation_refusal():
     )
 
     assert result.returncode == 2
-    assert "prompt is required" in result.stderr
+    assert "prompt is required" in result.stdout
     assert "Traceback" not in result.stderr
 
 
@@ -155,7 +155,7 @@ def test_long_lived_first_console_call_uses_command_entry_when_gateway_is_unimpo
     )
 
     assert result.returncode == 2
-    assert "prompt is required" in result.stderr
+    assert "prompt is required" in result.stdout
     assert "command dispatch:" in result.stderr
     assert "interpreter start:" not in result.stderr
 
@@ -215,8 +215,7 @@ def test_direct_generation_cli_ignores_stale_process_marker(monkeypatch):
         original_init(self, *args, **kwargs)
 
     monkeypatch.setattr(command_timing.TimingCollector, "__init__", capture_init)
-    with pytest.raises(SystemExit) as excinfo:
-        generation_cli.main(["image", "--json", "--timings"])
+    result = generation_cli.main(["image", "--json", "--timings"])
 
-    assert excinfo.value.code == 2
+    assert result == 2
     assert starts == [(900.0, (900.0, "command entry", None, None, 900.0))]
