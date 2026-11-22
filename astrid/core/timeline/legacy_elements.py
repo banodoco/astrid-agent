@@ -30,7 +30,7 @@ def uses_editor_incoming_transition(identity: str, *, editor_type: bool) -> bool
     """Recognize the editor's incoming owner convention, including detached alias copies."""
     return (
         identity in LEGACY_TRANSITION_IDS
-        or identity in _CROSS_FADE_ALIASES
+        or normalize_legacy_transition_id(identity) != identity
         or (editor_type and identity == "cross-fade")
     )
 

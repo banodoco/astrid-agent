@@ -46,7 +46,9 @@ def _patch_transitions(service, project, selections):
     )
 
 
-def test_new_builtin_transition_choices_commit_and_visualize(real_runtime, tmp_path):
+def test_new_builtin_transition_choices_commit_and_visualize(
+    real_runtime, tmp_path, monkeypatch, owned_process_groups,
+):
     daemon = real_runtime(authoring_profile="astrid", support_root=tmp_path / "runtime")
     service = daemon.service
     project = service.create_project({"slug": "r14-transitions", "name": "R14 transitions"})["id"]
@@ -98,6 +100,17 @@ def test_new_builtin_transition_choices_commit_and_visualize(real_runtime, tmp_p
     assert len(after["items"]) == len(before["items"]) + 1
     assert after["items"][-1]["records"]["commands"][0]["command"]["op"] == "doc.patch"
 
+    from astrid.sdk import host_bootstrap
+
+    launch_host = host_bootstrap.popen_owned_group
+
+    def retain_launch(*args, **kwargs):
+        process = launch_host(*args, **kwargs)
+        # The test process outlives the bootstrap call and retains its custody.
+        owned_process_groups.add_cleanup(lambda: host_bootstrap.terminate_group(process))
+        return process
+
+    monkeypatch.setattr(host_bootstrap, "popen_owned_group", retain_launch)
     host = None
     env_keys = ("ASTRID_RUNTIME_ENDPOINT", "ASTRID_RUNTIME_CREDENTIAL", "ASTRID_RUNTIME_DATA_ROOT")
     prior = {key: os.environ.get(key) for key in env_keys}
