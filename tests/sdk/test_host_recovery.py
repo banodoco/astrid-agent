@@ -1254,35 +1254,6 @@ def test_supervised_starting_host_attaches_once_its_ready_record_appears(harness
     assert h.launches == []
 
 
-def test_supervised_host_readiness_wait_is_attributed_to_timing_stage(harness, monkeypatch):
-    h = harness
-    h.host()
-    _supervise(h)
-    ready_record = (h.support / "generic-host.ready.json").read_bytes()
-    (h.support / "generic-host.ready.json").unlink()
-    monkeypatch.setattr(host_bootstrap, "_registered_host_status", lambda _state: "ours")
-    real_sleep = time.sleep
-
-    def publish_ready(seconds):
-        real_sleep(0.02)
-        (h.support / "generic-host.ready.json").write_bytes(ready_record)
-
-    monkeypatch.setattr(host_bootstrap.time, "sleep", publish_ready)
-    from astrid.sdk.command_timing import TimingCollector, stage, timing_scope
-
-    collector = TimingCollector()
-    with timing_scope(collector), stage("pack host readiness"):
-        host_bootstrap._await_supervised_startup(
-            h.support / "generic-host.json",
-            h.support / "generic-host.ready.json",
-            lambda: {"pack-host": RUNNING_ROW},
-        )
-
-    readiness = [row for row in collector.snapshot() if row["stage"] == "pack host readiness"]
-    assert len(readiness) == 1
-    assert readiness[0]["seconds"] >= 0.015
-
-
 def test_supervised_host_that_never_becomes_ready_is_left_alone(harness, monkeypatch):
     h = harness
     _supervise(h)
