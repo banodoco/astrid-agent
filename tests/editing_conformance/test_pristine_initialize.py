@@ -193,6 +193,16 @@ def test_complete_s2_schema_is_retained_additively():
                          'agent-frozen-s2-26ef2bbb.json').read_text())
     assert schema['$defs']['Intent']['properties']['ownership']['enum'].pop() == 'parent'
     schema['$defs']['ClipSetArgs']['description'] = frozen['$defs']['ClipSetArgs']['description']
+    element = schema['$defs']['ClipSetElementArgs']
+    assert element['properties'].pop('placement') == {'const': 'place'}
+    assert element['required'] == ['elementRef']
+    retained_description = frozen['$defs']['ClipSetElementArgs']['description']
+    introduction, separator, remainder = retained_description.partition('. ')
+    assert element['description'] == (
+        introduction + separator
+        + 'Explicit placement may initially bind a known built-in effect clip to an admitted project effect. '
+        + remainder)
+    element['description'] = retained_description
     canonical = json.dumps(schema, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()
     assert hashlib.sha256(canonical).hexdigest() == CURRENT['s2_semantic_sha256']
     # Remove exactly the approved appearance extensions to retain the frozen
