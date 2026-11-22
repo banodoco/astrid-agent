@@ -213,6 +213,11 @@ const applyAliasesForRoot = (currentConfiguration, remotionRoot) => {
       alias: {
         ...currentConfiguration.resolve?.alias,
         ...packAliases,
+        // Collection packs outside the in-tree packs directory import the
+        // rendering pack's shared element contracts by the relative path they
+        // have in-tree; bind those requests to the product's own copy.
+        '../../../../rendering/shared': path.resolve(repoRoot, 'astrid/packs/rendering/shared'),
+        '../../../../../rendering/shared': path.resolve(repoRoot, 'astrid/packs/rendering/shared'),
         ...selectedRegistries,
         ...primitiveAliases(repoRoot),
       },
