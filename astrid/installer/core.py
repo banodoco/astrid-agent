@@ -783,6 +783,9 @@ class Installer:
                     candidate = self.backend.stage(manifest, self.root, self.data)
                 with self._phase("Checking it"):
                     self.backend.validate_candidate(candidate, self.data, realm)
+                    if manifest.get("packs"):
+                        self.backend.install_defaults(candidate, manifest)
+                        self.say("Default packs may remain installed if the update does not finish.")
                     same_schema = schema_unchanged(self.backend, old, candidate, realm)
                 prepared_candidate = candidate
                 return candidate
@@ -856,6 +859,9 @@ class Installer:
         try:
             with self._phase(f"Downloading {new}"):
                 candidate_version = self.backend.stage(manifest, self.root, self.data)
+            if manifest.get("packs"):
+                self.backend.install_defaults(candidate_version, manifest)
+                self.say("Default packs may remain installed if setup does not finish.")
             if reinstall:
                 with self._phase("Opening your workspace"):
                     realm = self.backend.attach_existing(candidate_version, self.data)
