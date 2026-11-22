@@ -5,8 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Mapping
-from typing import Any
+from typing import Any, Mapping
 
 from astrid.core.execution.host_errors import HostError
 from astrid.sdk.execution_request import normalize_execution_request
