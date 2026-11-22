@@ -23,9 +23,12 @@ under ``--json`` always emits one exact envelope object.
 
 from __future__ import annotations
 
+import builtins
 import json
 import sys
 from collections.abc import Callable, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any, TextIO
 
 from astrid.core.receipts.canonical import canonical_json
@@ -52,6 +55,34 @@ EXIT_FAILURE = 1
 
 EXIT_USAGE = 2
 """Command-line usage/parse error (argparse's conventional exit code)."""
+
+_output_stream: ContextVar[TextIO | None] = ContextVar(
+    "astrid_product_output_stream", default=None
+)
+
+
+@contextmanager
+def output_stream_scope(stream: TextIO | None):
+    """Route product success and JSON output to *stream* for this dispatch."""
+    token = _output_stream.set(stream)
+    try:
+        yield
+    finally:
+        _output_stream.reset(token)
+
+
+def cli_print(
+    *values: object,
+    sep: str | None = " ",
+    end: str | None = "\n",
+    file: TextIO | None = None,
+    flush: bool = False,
+) -> None:
+    """``print`` for product handlers, honoring a dispatch-scoped stdout sink."""
+    stream = file
+    if stream is None:
+        stream = _output_stream.get()
+    builtins.print(*values, sep=sep, end=end, file=stream, flush=flush)
 
 
 def envelope_dict(result: object) -> dict[str, Any]:
@@ -209,7 +240,15 @@ def print_result(
     receives the complete result envelope; JSON output and typed failure
     rendering remain unchanged.
     """
-    out = stream if stream is not None else sys.stdout
+    scoped_stream = _output_stream.get()
+    out = (
+        stream
+        if stream is not None
+        else (scoped_stream if scoped_stream is not None else sys.stdout)
+    )
+    # An explicitly supplied stream retains the historical all-output behavior
+    # used by embedders and tests. A dispatch-scoped output sink owns stdout;
+    # human failures continue to use stderr.
     err = sys.stderr if stream is None else stream
     if as_json:
         print(render_envelope_json(result), file=out)

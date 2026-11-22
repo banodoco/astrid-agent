@@ -602,21 +602,26 @@ def _dispatch_product(args: list[str]) -> int:
     if not args or args[0] != "timelines" or any(arg in {"-h", "--help"} for arg in args[1:]):
         return _dispatch_product_inner(args)
 
-    from astrid.sdk.command_timing import TimingCollector, TimingOutput, command_started, timing_scope
-    import contextlib
     import sys
+
+    from astrid.sdk.command_timing import (
+        TimingCollector,
+        TimingOutput,
+        command_started,
+        timing_scope,
+    )
 
     collector = TimingCollector(started=command_started())
     show_timings = "--timings" in args
     # Verification already owns a --timings flag; preserve its behavior.
     verify_timings = len(args) > 1 and ((args[1] == "check" and any(arg == "--at" or arg.startswith("--at=") for arg in args)) or (args[1] == "edit" and "--verify" in args))
     forwarded = args if verify_timings else [arg for arg in args if arg != "--timings"]
-    output = TimingOutput(sys.stdout, collector, defer_success=True) if show_timings else None
+    output = TimingOutput(sys.stdout, collector, defer_success=True) if show_timings else sys.stdout
     try:
-        with timing_scope(collector), contextlib.redirect_stdout(output) if output else contextlib.nullcontext():
-            result = _dispatch_product_inner(forwarded)
+        with timing_scope(collector):
+            result = _dispatch_product_inner(forwarded, output_stream=output)
     finally:
-        if output:
+        if show_timings:
             output.finalize()
     if show_timings:
         for item in collector.snapshot():
@@ -624,7 +629,7 @@ def _dispatch_product(args: list[str]) -> int:
     return result
 
 
-def _dispatch_product_inner(args: list[str]) -> int:
+def _dispatch_product_inner(args: list[str], *, output_stream: Any = None) -> int:
     """Run one product-family command through the remote SDK boundary."""
     from astrid.core.cli.domain_product import PRODUCT_FAMILY_SET, run_product_family
 
@@ -660,7 +665,7 @@ def _dispatch_product_inner(args: list[str]) -> int:
                 start_pack_host=_product_command_needs_pack_host(family, rest)
             )
         with client_context as client:
-            return run_product_family(family, rest, client=client)
+            return run_product_family(family, rest, client=client, output_stream=output_stream)
     except Exception as exc:
         from astrid.sdk.exceptions import ServiceUnavailableError
 
@@ -672,6 +677,7 @@ def _dispatch_product_inner(args: list[str]) -> int:
         return print_result(
             DomainResult.failure(exc.to_error_object()),
             as_json="--json" in rest,
+            stream=output_stream if "--json" in rest else None,
         )
 
 
