@@ -375,8 +375,15 @@ def read_animation_defaults(animation_id: str, theme: str | Path | None = None) 
     return read_element_defaults(animation_id, kind="animations", theme=theme)
 
 
-def list_transition_ids(theme: str | Path | None = None) -> list[str]:
-    return list_element_ids("transitions", theme=theme)
+def list_transition_ids(
+    theme: str | Path | None = None, *, include_legacy: bool = False,
+) -> list[str]:
+    ids = list_element_ids("transitions", theme=theme)
+    if not include_legacy:
+        return ids
+    from astrid.core.timeline.legacy_elements import LEGACY_TRANSITION_IDS
+
+    return sorted(set(ids) | LEGACY_TRANSITION_IDS)
 
 
 def read_transition_schema(transition_id: str, theme: str | Path | None = None) -> dict[str, Any]:

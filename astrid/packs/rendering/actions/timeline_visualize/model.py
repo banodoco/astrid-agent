@@ -38,6 +38,7 @@ from astrid.core.timeline.duration import (
     timeline_render_duration_frames,
     visual_tracks_paint_order,
 )
+from astrid.core.timeline.legacy_elements import LEGACY_TRANSITION_IDS, normalize_legacy_transition_id
 from astrid.core.timeline.resolution import AssetIntegrity, classify_registry
 from astrid.core.timeline.snapshot import TimelineSnapshot
 from astrid.core.timeline.validate import (
@@ -55,6 +56,8 @@ _PINNED_TRANSITION_DEFAULTS: Mapping[str, int | None] = {
     "cross-fade": 8,
     "fade": 8,
 }
+# R13 App de7dd1e6, lib/transition-reference.ts.
+_LEGACY_INCOMING_FRAMES = 8
 
 
 def _is_number(value: Any) -> bool:
@@ -160,6 +163,7 @@ class ClipModel:
     # ``None`` is an init-only compatibility sentinel.  Existing ClipModel
     # constructions automatically retain their raw frame interval.
     mounted: IntervalFrames = None  # type: ignore[assignment]
+    legacy_incoming_transition: bool = False
 
     def __post_init__(self) -> None:
         if self.mounted is None:
@@ -309,6 +313,19 @@ def _raw_transition(value: Any) -> dict[str, Any] | None:
     if isinstance(value, Mapping):
         return deepcopy(dict(value))
     raise ValueError("clip transition must be a string or object")
+
+
+def _inspection_transition(value: Any) -> tuple[dict[str, Any] | None, bool]:
+    transition = _raw_transition(value)
+    if transition is None:
+        return None, False
+    field = "id" if "id" in transition else "type"
+    identity = transition.get(field)
+    if not isinstance(identity, str):
+        return transition, False
+    canonical = normalize_legacy_transition_id(identity)
+    transition[field] = canonical
+    return transition, canonical != identity or canonical in LEGACY_TRANSITION_IDS
 
 
 def _registry_entries(registry: Mapping[str, Any]) -> dict[str, Any]:
@@ -572,6 +589,7 @@ def build_model(
         # The compositor's effect-layer exclusion is keyed by ``clipType``.
         kind_raw = raw_clip.get("clipType", raw_clip.get("kind", raw_clip.get("type")))
         kind = kind_raw if isinstance(kind_raw, str) and kind_raw else "other"
+        transition, legacy_incoming = _inspection_transition(raw_clip.get("transition"))
         clips.append(
             ClipModel(
                 clip_id=clip_id,
@@ -580,12 +598,13 @@ def build_model(
                 frames=frames,
                 effective=frames.as_seconds(),
                 speed=speed,
-                transition=_raw_transition(raw_clip.get("transition")),
+                transition=transition,
                 source=_source_bounds(raw_clip),
                 kind=kind,
                 asset_keys=_asset_keys(raw_clip),
                 authored_text=_authored_text(raw_clip) if kind in ("text", "text-card") else None,
                 pixel_text_state="not_inspected",
+                legacy_incoming_transition=legacy_incoming,
             )
         )
 
@@ -655,6 +674,43 @@ def _transition_id(transition: Mapping[str, Any]) -> str:
     return value
 
 
+def _legacy_incoming_schedule(
+    clip: ClipModel, predecessor: ClipModel | None, composition_end: int,
+) -> tuple[IntervalFrames, IntervalSeconds, dict[str, Any]]:
+    """Mirror the incoming clip sequence used by R13 and the managed compositor."""
+    assert clip.transition is not None
+    fps = clip.frames.fps
+    ref = clip.transition
+    raw_frames = ref.get("durationFrames")
+    if raw_frames is None:
+        seconds = ref.get("duration")
+        if seconds is not None and (not _is_number(seconds) or seconds <= 0):
+            raise ValueError("legacy incoming transition duration must be positive")
+        raw_frames = _LEGACY_INCOMING_FRAMES if seconds is None else seconds * fps
+    if (not _is_number(raw_frames) or not math.isfinite(raw_frames)
+            or not 1 <= math.floor(raw_frames + 0.5) <= 2**53 - 1):
+        raise ValueError("legacy incoming transition requires positive safe frames")
+    duration = math.floor(raw_frames + 0.5)
+    preroll = duration if predecessor is not None else 0
+    start = max(0, clip.frames.start - preroll)
+    end = min(composition_end, start + clip.frames.duration_frames + preroll)
+    transition_end = min(end, start + duration)
+    return (
+        IntervalFrames(start, end, fps),
+        IntervalFrames(transition_end, end, fps).as_seconds(),
+        {
+            "owner_clip_id": clip.clip_id,
+            "from_clip_id": predecessor.clip_id if predecessor is not None else None,
+            "to_clip_id": clip.clip_id,
+            "transition": ref,
+            "status": "resolved",
+            "start_frame": start,
+            "end_frame": transition_end,
+            "fps": fps,
+        },
+    )
+
+
 def _transition_interval_maps(
     model: TimelineInspectionModel,
     *, declarations: list[dict[str, Any]] | None = None,
@@ -690,7 +746,7 @@ def _transition_interval_maps(
         while index < len(clips):
             from_clip = clips[index]
             to_clip = clips[index + 1] if index + 1 < len(clips) else None
-            transition = from_clip.transition
+            transition = None if from_clip.legacy_incoming_transition else from_clip.transition
             declaration = {"from_clip_id": from_clip.clip_id, "to_clip_id": to_clip.clip_id if to_clip else None,
                            "transition": transition, "status": "unresolved"}
             if transition is not None and declarations is not None:
@@ -765,11 +821,29 @@ def _transition_interval_maps(
             )
             declaration.update(status="resolved", start_frame=to_mounted_start,
                                end_frame=min(composition_end, from_start + from_duration), fps=model.fps)
-            if to_clip.transition is not None and declarations is not None:
+            if to_clip.transition is not None and not to_clip.legacy_incoming_transition and declarations is not None:
                 declarations.append({"from_clip_id": to_clip.clip_id, "to_clip_id": None,
                                      "transition": to_clip.transition, "status": "unresolved",
                                      "reason": "clip consumed as destination of previous transition group"})
             index += 2
+        for index, clip in enumerate(clips):
+            if not clip.legacy_incoming_transition or clip.kind == "effect-layer":
+                continue
+            predecessor = clips[index - 1] if index else None
+            try:
+                mount, visible, declaration = _legacy_incoming_schedule(clip, predecessor, composition_end)
+            except (ValueError, OverflowError, TypeError) as exc:
+                if declarations is None:
+                    raise
+                declarations.append({"owner_clip_id": clip.clip_id,
+                                     "from_clip_id": predecessor.clip_id if predecessor else None,
+                                     "to_clip_id": clip.clip_id, "transition": clip.transition,
+                                     "status": "unresolved", "reason": str(exc)})
+                continue
+            mounted[clip.clip_id] = mount
+            effective[clip.clip_id] = visible
+            if declarations is not None:
+                declarations.append(declaration)
 
     return mounted, effective
 

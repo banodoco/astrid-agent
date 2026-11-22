@@ -12,6 +12,7 @@ from astrid.core.timeline.banodoco_schema import (
     _validate_shared_timeline,
 )
 from astrid.core.timeline.kinds import normalize_track_kind
+from astrid.core.timeline.legacy_elements import normalize_legacy_transition_id
 from astrid.core.timeline.validators.meta import validate_timeline_meta_locations
 
 # Registry lookups are late-imported through banodoco_schema so that
@@ -156,7 +157,7 @@ def _validate_clip_transitions(clips: list[dict[str, Any]], fps: float) -> None:
             if "transition" not in clip:
                 continue
             transition_id, duration_frames = _transition_reference(clip["transition"], f"clips[{index}].transition")
-            if known_ids and transition_id not in known_ids:
+            if known_ids and normalize_legacy_transition_id(transition_id) not in known_ids:
                 raise ValueError(
                     f"clips[{index}].transition id {transition_id!r} is not present in the transitions catalog"
                 )
