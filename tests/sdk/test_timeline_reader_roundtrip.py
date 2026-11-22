@@ -394,3 +394,44 @@ def test_created_track_without_a_label_is_labelled_with_its_id_and_passes_the_ga
 
     payload["config"]["tracks"][-1]["label"] = None
     assert "is not of type 'string'" in reader_problem(service, _document_of(payload))
+
+
+def test_reader_gate_rediscovers_pack_added_after_registry_was_cached(tmp_path, monkeypatch):
+    from astrid.core.element import catalog
+    from tests.sdk.test_timeline_element_schema_resolution import ELEMENT, _probe_pack
+    from runtime_protocol.timeline_commit import CommitRejected
+    from astrid.sdk.timeline.commit import _check_readers
+
+    monkeypatch.setenv("ASTRID_PACKS_PATH", str(tmp_path))
+    catalog._clear_registry_cache()
+    service = create_runtime_commit_service()
+    baseline = _document_of(readable_payload())
+    payload = readable_payload()
+    payload["clips"][0].update(clipType=ELEMENT, params={"size": 2})
+    candidate = _document_of(payload)
+    base = {"revision_id": "r0", "publication_id": "pub0"}
+    try:
+        # Warm both default discovery and the catalog before installing the pack.
+        assert reader_problem(service, baseline) is None
+        with pytest.raises(KeyError, match=ELEMENT):
+            catalog.read_effect_schema(ELEMENT)
+        _probe_pack(tmp_path)
+        from astrid.sdk.timeline_address import element_schema
+        assert element_schema(ELEMENT) is not None
+        assert reader_problem(service, candidate) is None
+        _check_readers(service, candidate, baseline, base, base)
+        from astrid.core.element import registry as element_registry
+        def unexpected_discovery(*args, **kwargs):
+            raise AssertionError("successful cached lookup rediscovered packs")
+        with monkeypatch.context() as patch:
+            patch.setattr(element_registry, "discover_pack_metadata", unexpected_discovery)
+            assert catalog.read_effect_schema(ELEMENT)["properties"]["size"]["type"] == "integer"
+            assert catalog.read_effect_schema(ELEMENT)["properties"]["size"]["type"] == "integer"
+        with pytest.raises(KeyError, match="zz-still-missing"):
+            catalog.read_effect_schema("zz-still-missing")
+        missing = readable_payload()
+        missing["clips"][0].update(clipType=ELEMENT, params={"size": "bad"})
+        with pytest.raises(CommitRejected):
+            _check_readers(service, _document_of(missing), baseline, base, base)
+    finally:
+        catalog._clear_registry_cache()

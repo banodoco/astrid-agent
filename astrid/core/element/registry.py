@@ -194,6 +194,27 @@ class ElementRegistry(CapabilityRegistry[tuple[str, str], ElementDefinition]):
         """
         return {key: definitions[0] for key, definitions in self._entries.items()}
 
+class _DefaultElementRegistry(ElementRegistry):
+    """A default registry can discover packs installed after it was assembled."""
+
+    def get(self, kind, element_id, *, pack_id=None, revision=None):
+        try:
+            return super().get(kind, element_id, pack_id=pack_id, revision=revision)
+        except KeyError:
+            refreshed = getattr(self, "_refreshed", None)
+            if refreshed is not None:
+                try:
+                    return ElementRegistry.get(refreshed, kind, element_id, pack_id=pack_id, revision=revision)
+                except KeyError:
+                    pass
+            _load_default_registry_data.cache_clear()
+            refreshed = load_default_registry(**self._load_options)
+            # Use the base accessor for exactly one retry, without recursion.
+            result = ElementRegistry.get(refreshed, kind, element_id, pack_id=pack_id, revision=revision)
+            self._refreshed = refreshed
+            return result
+
+
 @lru_cache(maxsize=None)
 def _load_default_registry_data(
     project_root_key: str,
@@ -272,11 +293,13 @@ def load_default_registry(
     )
     resolver = create_shared_alias_resolver()
     _register_pack_aliases(resolver, {})  # no aliases yet
-    registry = ElementRegistry(
+    registry = _DefaultElementRegistry(
         alias_resolver=resolver,
         element_kind_registry=element_kind_registry,
         diagnostics=diagnostics,
     )
+    registry._load_options = dict(project_root=project_root, include_missing_roots=include_missing_roots,
+                                  extra_pack_roots=extra_pack_roots)
     for element in elements:
         registry.register(element)
     return registry
