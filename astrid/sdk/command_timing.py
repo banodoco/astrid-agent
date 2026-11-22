@@ -13,6 +13,7 @@ import time
 class TimingCollector:
     def __init__(self, started=None):
         self.timings = []
+        self.next_occurrence_id = 1
         if started is None:
             started = time.monotonic()
         self.started = min(started, time.monotonic())
@@ -59,7 +60,7 @@ class TimingCollector:
             now = time.monotonic()
             self._advance(now)
             rows = [dict(row) for row in self.timings]
-            rows.extend({'stage': item['name'], 'seconds': item['seconds']} for item in self.active)
+            rows.extend(_row(item, now) for item in self.active)
             measured = sum(row['seconds'] for row in rows)
             rows.append({'stage': 'other command work', 'seconds': max(0.0, now - self.started - measured)})
             return rows
@@ -79,9 +80,11 @@ _parent = ContextVar('astrid_timing_parent', default=None)
 @contextmanager
 def timing_scope(collector):
     token = _current.set(collector)
+    parent_token = _parent.set(None)
     try:
         yield collector
     finally:
+        _parent.reset(parent_token)
         _current.reset(token)
         collector.close()
 
@@ -137,19 +140,73 @@ class TimingOutput:
         return getattr(self.stream, name)
 
 
+def _row(item, end):
+    parent = item['parent']
+    row = {'stage': item['name'], 'seconds': item['seconds'],
+           'total_seconds': end - item['started'], 'occurrence_id': item['id'],
+           'parent': parent['name'] if parent is not None else None,
+           'parent_id': parent['id'] if parent is not None else None}
+    if item['detail'] is not None:
+        row['detail'] = item['detail']
+    return row
+
+
+def print_timings(rows, *, file=None):
+    """Print occurrences grouped only when their complete ancestry matches."""
+    file = sys.stderr if file is None else file
+    nodes = {}
+    roots = []
+    remainder = None
+    for row in rows:
+        if 'occurrence_id' not in row:
+            remainder = row
+        else:
+            nodes[row['occurrence_id']] = (row, [])
+    for row, children in nodes.values():
+        parent = nodes.get(row['parent_id'])
+        (parent[1] if parent else roots).append((row, children))
+
+    def render(siblings, depth):
+        groups = {}
+        for row, children in siblings:
+            key = (row['stage'], row.get('detail'))
+            group = groups.setdefault(key, [0, 0.0, 0.0, []])
+            group[0] += 1
+            group[1] += row['seconds']
+            group[2] += row['total_seconds']
+            group[3].extend(children)
+        for (name, detail), (count, seconds, total, children) in sorted(
+                groups.items(), key=lambda item: -item[1][2]):
+            label = name + (f" ({detail})" if detail is not None else '')
+            label += f" ×{count}" if count > 1 else ''
+            print(f"{'  ' * depth}{label}: {seconds:.3f}s (total {total:.3f}s)", file=file)
+            render(children, depth + 1)
+
+    render(roots, 0)
+    if remainder is not None:
+        wall = sum(row['seconds'] for row in rows)
+        share = 100 * remainder['seconds'] / wall if wall else 0.0
+        print(f"{remainder['stage']}: {remainder['seconds']:.3f}s ({share:.1f}%)", file=file)
+
+
 @contextmanager
-def stage(name, *, report_without_collector=False):
+def stage(name, *, detail=None, report_without_collector=False):
     collector = _current.get()
     if collector is None:
         if report_without_collector:
-            with timing_scope(TimingCollector()), stage(name):
+            with timing_scope(TimingCollector()), stage(name, detail=detail):
                 yield
         else:
             yield
         return
-    item = {'name': name, 'started': time.monotonic(), 'seconds': 0.0,
-            'reported': False, 'parent': _parent.get()}
     with collector.changed:
+        parent = _parent.get()
+        if parent is not None and parent['collector'] is not collector:
+            parent = None
+        item = {'name': name, 'detail': detail, 'started': time.monotonic(), 'seconds': 0.0,
+                'reported': False, 'parent': parent, 'collector': collector,
+                'id': collector.next_occurrence_id}
+        collector.next_occurrence_id += 1
         collector._advance(item['started'])
         collector.active.append(item)
         if collector.monitor is None:
@@ -162,9 +219,10 @@ def stage(name, *, report_without_collector=False):
     finally:
         _parent.reset(token)
         with collector.changed:
-            collector._advance(time.monotonic())
-            collector.active.remove(item)
-            collector.timings.append({'stage': name, 'seconds': item['seconds']})
+            now = time.monotonic()
+            collector._advance(now)
+            collector.active[:] = [active for active in collector.active if active is not item]
+            collector.timings.append(_row(item, now))
             collector.changed.notify_all()
 
 
