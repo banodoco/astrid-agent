@@ -665,11 +665,18 @@ class _Runner:
                 inputs = [self.path(next(s.relative_path for s in self.recipe.sources if s.name == p.source), p.path)
                           for p in environment.requirements.input_paths]
                 inputs.append(self.path(".astrid-engine/environments", name, "requirements.in"))
+                windows_whisper = (self.recipe.engine == "comfyui"
+                                   and self.recipe.platform == "windows-x86_64-cu130")
+                build_constraints = self.path(".astrid-engine/environments", name,
+                                              "whisper-compile-build-constraints.txt")
+                if windows_whisper:
+                    self.helper("stage-whisper-artifacts", environment=name)
                 self.run((uv, "--no-config", "pip", "compile", "--python", python,
                           "--no-sources", "--generate-hashes", "--only-binary", ":all:",
                           *(("--no-binary", "openai-whisper")
                             if (self.recipe.engine == "comfyui"
                                 and self.recipe.platform == "windows-x86_64-cu130") else ()),
+                          *(("--build-constraints", build_constraints) if windows_whisper else ()),
                           "--exclude-newer", environment.requirements.exclude_newer,
                           "--index-url", "https://pypi.org/simple", "-o", lock_path + ".tmp", *inputs))
             self.helper("commit-lock", environment=name)
@@ -682,6 +689,8 @@ class _Runner:
         self.write(state_path, {**identity, "requirements_lock_sha256": lock.sha256, "validated": False})
         self.helper("install-locks", environment=name)
         support = self.path(".astrid-engine/environments", name, "support.lock")
+        whisper_build_constraints = self.path(".astrid-engine/environments", name,
+                                             "whisper-build-constraints.lock")
         wheels = self.path(".astrid-engine/environments", name, "wheels.lock")
         sync = (uv, "--no-config", "pip", "sync", "--python", python,
                 "--index-url", "https://pypi.org/simple", "--require-hashes")
@@ -692,7 +701,8 @@ class _Runner:
                      "--build-constraints", support)
         elif (self.recipe.engine == "comfyui" and self.recipe.platform == "windows-x86_64-cu130"
               and environment.requirements.mode == "resolve-once"):
-            sync += ("--only-binary", ":all:", "--no-binary", "openai-whisper")
+            sync += ("--only-binary", ":all:", "--no-binary", "openai-whisper",
+                     "--build-constraints", whisper_build_constraints)
         self.run((*sync, support))
         for install in environment.source_installs:
             cwd = self.path(next(s.relative_path for s in self.recipe.sources if s.name == install.source))

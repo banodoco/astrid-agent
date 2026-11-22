@@ -309,3 +309,16 @@ def test_whisper_node_is_required_by_recipe_health(platform):
 
     assert facts["healthy"] is True
     assert facts["required_nodes_present"] is False
+
+
+@pytest.mark.parametrize("platform", ["linux-x86_64-cu130", "windows-x86_64-cu130"])
+def test_whisper_is_workflow_scoped_not_shared_engine_health(platform):
+    recipe = recipes.load_recipe("comfyui", platform)
+    object_info = {node: {} for node in recipe.health.required_nodes if node != "Apply Whisper"}
+
+    required = recipes.engine_health_required_nodes(recipe)
+    facts = _health_facts({"system": {}}, object_info, required)
+
+    assert "Apply Whisper" not in required
+    assert facts["healthy"] is True
+    assert facts["required_nodes_present"] is True

@@ -551,5 +551,11 @@ def recipe_digest(recipe: EngineRecipe) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def engine_health_required_nodes(recipe: EngineRecipe) -> tuple[str, ...]:
+    """Nodes required for shared engine health, independent of workflows."""
+    return tuple(node for node in recipe.health.required_nodes if node != "Apply Whisper")
+
+
 __all__ = ["load_recipe_index", "load_recipe", "load_model_lock", "load_recipe_model_lock", "load_pin_set", "pin_set_refs",
-           "engine_source_revision", "serialize_recipe", "serialize_model_lock", "recipe_digest"]
+           "engine_source_revision", "serialize_recipe", "serialize_model_lock", "recipe_digest",
+           "engine_health_required_nodes"]
