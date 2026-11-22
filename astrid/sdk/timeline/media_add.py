@@ -161,7 +161,9 @@ def add_media(session, source, *, on, duration, track, clip_id, values,
             raise TimelineEditError('pending intent differs; retry the original edit and key first')
         return session.flush(idempotency_key=idempotency_key, dry_run=dry_run, via=via)
 
-    bundle = session._bundle(state)
+    captured_bundle = session._capture_bundle(state)
+    bundle = copy.deepcopy(captured_bundle)
+    bundle.get("source_mapping", {}).pop("_runtime_document", None)
     local_source = not isinstance(source, Mapping) and Path(source).expanduser().is_file()
     pin, verified = _selection(session, bundle, source)
     commands = _placement_commands(bundle, pin, verified, on=on, duration=duration,
@@ -186,5 +188,7 @@ def add_media(session, source, *, on, duration, track, clip_id, values,
         else:
             state.pop('media_imports', None)
         session.outbox.write(state)
+        captured_state = copy.deepcopy(state)
     return session.commit_many(commands, idempotency_key=idempotency_key, dry_run=dry_run,
-                               via=via, verified_media=[verified], label='Add media')
+                               via=via, verified_media=[verified], label='Add media',
+                               _captured=(captured_state, captured_bundle))
