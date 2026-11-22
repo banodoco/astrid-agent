@@ -114,7 +114,8 @@ def test_workflow_and_image_admissions_report_generation_stage_tree(
     # A qualified catalog candidate with a missing target model is prepared,
     # rejected by the real ComfyUI resolver, and followed by the ready catalog
     # route. This proves the candidate loop and its per-candidate timing detail.
-    from astrid.core.generation import defaults
+    from astrid.core.generation import defaults, entries
+    import astrid.sdk.generation as generation
     base = registry.get("z-image")
     mode_spec = base.modes["t2i"]
     local_spec = mode_spec.backends["local"]
@@ -128,6 +129,24 @@ def test_workflow_and_image_admissions_report_generation_stage_tree(
     fallback_registry = ModelRegistry([missing_entry, base])
     monkeypatch.setattr(sdk, "_load_model_registry", lambda **_kwargs: fallback_registry)
     monkeypatch.setattr(defaults, "dispatch_ids", lambda *args, **_kwargs: (None, ()))
+    # Limit discovery inputs for this scenario; qualification, preparation and
+    # admission still run through the command's normal implementations.
+    monkeypatch.setattr(entries._EntryDiscovery, "users", lambda self: [])
+    monkeypatch.setattr(entries._EntryDiscovery, "ready_candidates", lambda self: [])
+    prepare = generation._prepare_catalog_target_workflow
+    attempts = []
+
+    def record_preparation(*args, **kwargs):
+        identifier = kwargs["candidate"].id
+        try:
+            result = prepare(*args, **kwargs)
+        except Exception as exc:
+            attempts.append((identifier, exc))
+            raise
+        attempts.append((identifier, None))
+        return result
+
+    monkeypatch.setattr(generation, "_prepare_catalog_target_workflow", record_preparation)
     fallback_rows = _stage_rows(capsys, [
         "generate", "image", "a silver paper boat", "--placement", comfy.target.url,
         "--project", project.data["project_id"], "--no-wait", "--json", "--timings",
@@ -135,7 +154,11 @@ def test_workflow_and_image_admissions_report_generation_stage_tree(
     candidate_rows = [row for row in fallback_rows if row["stage"] == "candidate preparation"]
     assert len(candidate_rows) == 2, candidate_rows
     assert candidate_rows[0].get("detail") == "a-missing", candidate_rows
-    assert candidate_rows[1].get("detail") != "a-missing", candidate_rows
+    assert candidate_rows[1].get("detail") == "z-image", candidate_rows
+    assert len({row["occurrence_id"] for row in candidate_rows}) == 2
+    assert [identifier for identifier, _ in attempts] == ["a-missing", "z-image"]
+    assert attempts[0][1] is not None and "missing-" in str(attempts[0][1])
+    assert attempts[1][1] is None
     assert all(row["seconds"] > 0 and row["total_seconds"] > 0 for row in candidate_rows)
 
     common = {
