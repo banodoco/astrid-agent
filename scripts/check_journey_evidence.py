@@ -584,11 +584,18 @@ def _windows_update_invocation_matches(update, outcome, exit_code, live_release)
     if not isinstance(update, dict):
         return False
     receipt = update.get("installer_receipt")
+    if not isinstance(receipt, dict):
+        return False
+    target = receipt.get("target")
+    # Recovery can return before the installer selects an update target.
+    recovery_only = (outcome == "not-updated" and exit_code == 3 and live_release == 13
+                     and "target" in receipt and target is None
+                     and receipt.get("reason") == "recovered-previous-version")
     return (update.get("command") == "install --update" and type(update.get("exit_code")) is int
             and update["exit_code"] == exit_code and update.get("receipt_invocation_tied") is True
             and _windows_receipt_matches_invocation(receipt, update.get("invocation"))
             and receipt.get("kind") == outcome and type(receipt.get("exit_code")) is int and receipt["exit_code"] == exit_code
-            and receipt.get("still") == live_release and receipt.get("target") == 14)
+            and receipt.get("still") == live_release and (target == 14 or recovery_only))
 
 
 def _one_runtime_at(owners, data):
