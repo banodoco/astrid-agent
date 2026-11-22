@@ -31,7 +31,7 @@ import inspect
 import io
 import json
 import logging
-import mimetypes
+import mimetypes as mimetypes
 import queue
 import re
 import secrets as secrets_module
@@ -45,7 +45,6 @@ import tempfile
 import threading
 import time
 import zipfile
-
 from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import asdict, dataclass, field, is_dataclass, replace
 from datetime import datetime, timezone
@@ -60,14 +59,22 @@ from runtime_protocol.dirfd import filesystem as os
 from runtime_protocol.errors import ConflictError
 from runtime_protocol.storage import free_disk_floor_bytes
 
+from astrid.core.execution import execution_contract_helpers as _contract_helpers
+from astrid.core.execution.execution_contract_helpers import (
+    _admitted_spec_envelope,
+    _assert_verified_placement_binding,
+    _canonical_digest,
+)
+from astrid.core.execution.host_errors import HostError
+from astrid.core.execution.host_matrix import load_matrix as _load_host_matrix
 from astrid.core.execution.pipe_io import PipeReader, PipeWriter, close_pipe_workers
-from astrid.core.execution.stall_diagnostics import process_stall_diagnostics
 from astrid.core.execution.platform_helpers import (
     PROCESS_CONTROL_SUPPORT_ENV,
     configure_process_control,
     owned_by_current_user,
     process_control_support,
 )
+from astrid.core.execution.stall_diagnostics import process_stall_diagnostics
 from astrid.core.source_identity import (
     _source_digest,
     source_checkout_closure,
@@ -165,6 +172,32 @@ from astrid.core.execution.guards import (
     write_evidence_status,
 )
 from astrid.core.execution.host_log import log_lease_diagnostic, start_stdio_rotator
+from astrid.core.execution.host_naming import (
+    _MANAGED_ASSET_LOCATOR_KEYS as _MANAGED_ASSET_LOCATOR_KEYS,
+)
+from astrid.core.execution.host_naming import (
+    _RUNTIME_OUTPUT_NAMESPACES as _RUNTIME_OUTPUT_NAMESPACES,
+)
+from astrid.core.execution.host_naming import (
+    _SUFFIX_MEDIA_TYPES as _SUFFIX_MEDIA_TYPES,
+)
+from astrid.core.execution.host_naming import (
+    _VIDEO_SUFFIX_MEDIA_TYPES as _VIDEO_SUFFIX_MEDIA_TYPES,
+)
+from astrid.core.execution.host_naming import (
+    _bind_named_parent_output,
+    _generation_output_port,
+    _managed_input_staging_name,
+    _named_raw_publication_port,
+    _runtime_output_filename,
+    _settlement_media_type,
+)
+from astrid.core.execution.host_naming import (
+    _generation_selector_declarations as _naming_generation_selector_declarations,
+)
+from astrid.core.execution.host_naming import (
+    _managed_asset_identity as _naming_managed_asset_identity,
+)
 from astrid.core.execution.managed_inputs import managed_file_digest
 from astrid.core.execution.managed_tool_session import (
     AdmissionToken,
@@ -194,7 +227,8 @@ from astrid.core.execution.provider_route_grant import (
     ProviderRouteGrantAuthority,
     ProviderRouteGrantError,
 )
-from astrid.core.execution.task_scope import TaskScopeUnresolved, spawn as spawn_task_scope
+from astrid.core.execution.task_scope import TaskScopeUnresolved
+from astrid.core.execution.task_scope import spawn as spawn_task_scope
 from astrid.core.execution.terminal_result import serialize_terminal_result
 from astrid.core.execution.thumbnails import (
     THUMBNAIL_RECIPE_VERSION,
@@ -219,21 +253,11 @@ from astrid.core.generation.vibecomfy_dependency import (
     configured_vibecomfy_checkout,
     dependency_pythonpath,
 )
-from astrid.core.rendering.assets import managed_asset_digest
+from astrid.core.rendering.assets import managed_asset_digest as managed_asset_digest
 from astrid.core.subprocess_env import build_child_subprocess_env
 from astrid.core.util.secrets import load_local_api_key_with_source
 from astrid.sdk.execution_request import normalize_execution_request
 from astrid.sdk.workspace_client import WorkspaceClientError, validate_runtime_endpoint
-
-
-def _managed_input_staging_name(port: str, digest: str, original_name: str | None) -> str:
-    """Build a stable managed-input path without using the supplied filename."""
-
-    suffix = Path(original_name or "").suffix
-    if not re.fullmatch(r"\.[A-Za-z0-9]{1,16}", suffix):
-        suffix = ""
-    port_digest = hashlib.sha256(port.encode("utf-8")).hexdigest()[:16]
-    return f"managed-{port_digest}-{digest}{suffix.lower()}"
 
 if TYPE_CHECKING:
     from astrid.core.execution.executor.schema import ExecutorDefinition
@@ -263,12 +287,6 @@ def _structured_failure_kwargs(error: object) -> dict[str, Any]:
     }
 
 
-class HostError(RuntimeError):
-    """A controlled host-side error suitable for a worker diagnostic."""
-
-    def __init__(self, message: str, *, safe_message: str | None = None) -> None:
-        super().__init__(message)
-        self.safe_message = safe_message
 
 
 class HostLeaseLost(HostError):
@@ -561,44 +579,10 @@ class HostCancelled(HostError):
     """The runtime cancelled the attempt while the subprocess was running."""
 
 
-_MANAGED_ASSET_LOCATOR_KEYS = frozenset({"url", "uri", "path", "source_path", "locator", "realm", "file"})
 
 
-def _managed_asset_identity(key: str, raw: Mapping[str, Any]) -> tuple[str, str]:
-    """Validate a frozen registry asset and return its CAS ID and digest hex.
-
-    A SHA-256 media_id is already a content identity, so it may supply the
-    digest when no explicit digest field is present. Opaque media IDs still
-    require an explicit digest. Display metadata such as thumbnailUrl and
-    generationId is permitted; locator-shaped fields remain forbidden.
-    """
-    if not isinstance(raw, Mapping):
-        raise HostError(f"managed asset {key!r} is invalid")
-    if _MANAGED_ASSET_LOCATOR_KEYS.intersection(raw):
-        raise HostError(f"managed asset {key!r} contains an unmanaged locator")
-    object_id = raw.get("object_id") or raw.get("media_id")
-    try:
-        raw_digest = managed_asset_digest(raw)
-    except ValueError as exc:
-        raise HostError(f"managed asset {key!r}: {exc}") from exc
-    if not isinstance(object_id, str) or not object_id.strip() or not isinstance(raw_digest, str):
-        raise HostError(f"managed asset {key!r} requires object_id and digest")
-    digest_hex = raw_digest.removeprefix("sha256:")
-    if len(digest_hex) != 64 or any(char not in "0123456789abcdef" for char in digest_hex):
-        raise HostError(f"invalid managed digest for {key}")
-    return object_id, digest_hex
 
 
-_VIDEO_SUFFIX_MEDIA_TYPES = {
-    ".mp4": "video/mp4",
-    ".mov": "video/quicktime",
-    ".webm": "video/webm",
-    ".mkv": "video/x-matroska",
-}
-_SUFFIX_MEDIA_TYPES = {
-    **_VIDEO_SUFFIX_MEDIA_TYPES,
-    ".wav": "audio/wav",
-}
 _ACTIVATION_VERSION = "runtime.local-worker-activation/v1"
 _ACTIVATION_ACCEPTED_VERSION = "astrid.local-worker-activation-accepted/v1"
 _ACTIVATION_RECEIPT_MODE = "runtime-owner-receipt/v1"
@@ -618,22 +602,6 @@ _SETTLEMENT_OUTPUT_METADATA_FIELDS = (
     "coverage",
 )
 
-_RUNTIME_OUTPUT_NAMESPACES = frozenset(
-    (
-        "images",
-        "videos",
-        "video-windows",
-        "audio",
-        "tiles",
-        "frames",
-        "cache",
-        "segments",
-        "outputs",
-        "artifacts",
-        "agent-view",
-        "filmstrip-view",
-    )
-)
 
 
 # Runtime limits (Runtime/runtime_protocol/server.py MAX_BODY_BYTES and
@@ -644,138 +612,15 @@ INLINE_SETTLEMENT_BUDGET_BYTES = 40 * 1024 * 1024
 INLINE_OUTPUT_MAX_BYTES = 8 * 1024 * 1024
 
 
-def _settlement_media_type(descriptor: Mapping[str, Any]) -> str:
-    """Publish a MIME media type while retaining internal artifact semantics."""
-
-    from astrid.core.contracts.artifact_types import ARTIFACT_TYPE_REGISTRY
-
-    def transport_type(value: Any) -> bool:
-        if not isinstance(value, str) or any(ord(char) < 32 for char in value):
-            return False
-        base_type = value.split(";", 1)[0].strip()
-        if ARTIFACT_TYPE_REGISTRY.is_known(base_type.lower()):
-            return False
-        return bool(re.fullmatch(
-            r"(?:application|audio|font|image|message|model|multipart|text|video)/[A-Za-z0-9!#$&^_.+\-]+",
-            base_type,
-            re.IGNORECASE,
-        ))
-
-    explicit = descriptor.get("media_type")
-    if isinstance(explicit, str) and explicit.strip():
-        explicit = explicit.strip()
-        if transport_type(explicit) and explicit.lower() != "application/octet-stream":
-            return explicit
-    artifact_type = str(descriptor.get("artifact_type") or "")
-    filename = descriptor.get("filename")
-    if isinstance(filename, str) and filename:
-        suffix_media_type = _SUFFIX_MEDIA_TYPES.get(Path(filename).suffix.lower())
-        if suffix_media_type is not None:
-            return suffix_media_type
-        guessed_media_type = mimetypes.guess_type(filename)[0]
-        if guessed_media_type and guessed_media_type.lower() != "application/octet-stream":
-            return guessed_media_type
-    return artifact_type if transport_type(artifact_type) else "application/octet-stream"
-
-
-def _runtime_output_filename(value: str) -> str:
-    """Map a safe staged output name to Runtime's direct-leaf wire name.
-
-    Producers keep known namespaces in their private attempt spool (for
-    example ``images/output_000.png`` or ``agent-view/structure.md``).
-    Runtime's managed output contract carries only a direct filename, so
-    strip exactly one known producer namespace at the upload boundary.
-    Arbitrary nesting is not a filename mapping mechanism and remains
-    rejected.
-    """
-    if (
-        not isinstance(value, str)
-        or not value
-        or len(value) > 512
-        or any(ord(char) < 32 for char in value)
-        or "\\" in value
-        or Path(value).is_absolute()
-        or ".." in Path(value).parts
-        or Path(value).as_posix() != value
-    ):
-        raise HostError("generated output has an invalid managed filename")
-    parts = Path(value).parts
-    if not parts or parts[-1] in {".", ".."}:
-        raise HostError("generated output has an invalid managed filename")
-    if len(parts) == 1:
-        return parts[0]
-    if len(parts) == 2 and parts[0] in _RUNTIME_OUTPUT_NAMESPACES:
-        return parts[1]
-    raise HostError("generated output has an invalid managed filename")
-
-
-def _generation_output_port(record: Any, intent: Mapping[str, Any] | None) -> str | None:
-    """Resolve the primary generated output port from the admitted schema."""
-    if not isinstance(intent, Mapping):
-        return None
-    modality = intent.get("modality")
-    if modality not in {"image", "video", "audio"}:
-        return None
-    expected = {"image": "generated_images", "video": "generated_videos", "audio": "generated_audio"}[modality]
-    definition = getattr(record, "definition", None)
-    metadata = getattr(definition, "metadata", {})
-    publication = metadata.get("generation_publication") if isinstance(metadata, Mapping) else None
-    if isinstance(publication, Mapping) and "output_port" in publication:
-        port = publication["output_port"]
-        selected = [output for output in (getattr(definition, "outputs", ()) or ()) if output.name == port]
-        if (type(publication.get("version")) is not int or publication["version"] != 1
-                or publication.get("modality") != modality
-                or not isinstance(port, str) or not port.strip() or port != port.strip()
-                or len(selected) != 1 or selected[0].type != "file"
-                or port == "manifest" or port.endswith("_manifest")
-                or getattr(selected[0], "artifact_type", None) == "metadata/result-manifest"):
-            raise HostError("generation publication has an invalid explicit output declaration")
-        return port
-    if publication is not None and not isinstance(publication, Mapping):
-        raise HostError("generation publication metadata must be a mapping")
-
-    candidates = [
-        output.name for output in (getattr(getattr(record, "definition", None), "outputs", ()) or ())
-        if getattr(output, "type", None) == "file"
-        and not str(getattr(output, "name", "")).endswith("_manifest")
-        and getattr(output, "artifact_type", None)
-    ]
-    if candidates.count(expected) == 1:
-        return expected
-    if len(candidates) == 1:
-        return candidates[0]
-    untyped_candidates = [
-        output.name for output in (getattr(getattr(record, "definition", None), "outputs", ()) or ())
-        if getattr(output, "type", None) == "file"
-        and not str(getattr(output, "name", "")).endswith("_manifest")
-    ]
-    if len(untyped_candidates) == 1:
-        return untyped_candidates[0]
-    raise HostError(
-        f"generation capability must declare exactly one primary {modality!r} output"
-    )
 
 
 def _generation_selector_declarations(
-    record: Any,
-    intent: Mapping[str, Any] | None,
+    record: Any, intent: Mapping[str, Any] | None,
 ) -> tuple[str | None, tuple[dict[str, Any], ...]]:
     """Flatten admitted selector declarations without changing their order."""
-    output_port = _generation_output_port(record, intent)
-    if output_port is None:
-        return None, ()
-    declarations: list[dict[str, Any]] = []
-    for group in intent["groups"]:
-        for selector in group["selectors"]:
-            declarations.append({
-                "group_key": group["group_key"],
-                "selector": selector["selector"],
-                "ordinal": selector["ordinal"],
-                "variant_key": selector["variant_key"],
-                "output_port": output_port,
-                **({"required": selector["required"]} if "required" in selector else {}),
-            })
-    return output_port, tuple(declarations)
+    return _naming_generation_selector_declarations(
+        record, intent, output_port_resolver=_generation_output_port
+    )
 
 
 class StorageEnvelopeError(HostError):
@@ -1800,8 +1645,6 @@ class AdapterRegistry:
         )
 
 
-def _canonical_digest(value: Any) -> str:
-    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
 
 
 def _capability_digest(value: Any) -> str:
@@ -1951,14 +1794,16 @@ def _confined_cwd(
 REMOTION_GATE_DESCRIPTION = "tasks that render with rendering.remotion"
 
 
+def _managed_asset_identity(key: str, raw: Mapping[str, Any]) -> tuple[str, str]:
+    return _naming_managed_asset_identity(key, raw, digest_resolver=managed_asset_digest)
+
+
+_managed_asset_identity.__doc__ = _naming_managed_asset_identity.__doc__
+
+
 def _task_selector(task_data: Mapping[str, Any]) -> str | None:
     """The renderer selector the admitted task names, or None when it omits one."""
-    spec = _admitted_task_spec(task_data)
-    for section in ("inputs", "params"):
-        values = spec.get(section)
-        if isinstance(values, Mapping) and values.get("selector"):
-            return str(values["selector"])
-    return None
+    return _contract_helpers._task_selector(task_data, admitted_task_spec=_admitted_task_spec)
 
 
 def _renderer_selection(record: "CapabilityRecord", task_data: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -1973,7 +1818,6 @@ def _renderer_selection(record: "CapabilityRecord", task_data: Mapping[str, Any]
     if adapter is None or adapter.remotion != "selected":
         return None
     from astrid.core.rendering.contracts import FFMPEG_RENDERER_ID, REMOTION_RENDERER_ID
-
     check = record.preflight.get("remotion")
     check = check if isinstance(check, Mapping) else {}
     remotion_ok = check.get("ok") is True
@@ -1985,7 +1829,6 @@ def _renderer_selection(record: "CapabilityRecord", task_data: Mapping[str, Any]
         selector, chosen_by = requested, "task"
     if selector == REMOTION_RENDERER_ID and not remotion_ok:
         from astrid.core.rendering.failure_message import render_failure_message
-
         raise HostError(
             render_failure_message(
                 f"{record.id}: this task renders with {REMOTION_RENDERER_ID}, which this host cannot run: {reason}",
@@ -2334,7 +2177,6 @@ def _network_policy(record: "CapabilityRecord", inputs: Mapping[str, Any] | None
     policy = {str(key): value for key, value in raw.items()}
     if record.id == "vibecomfy.run" and inputs and inputs.get("comfy_url"):
         from astrid.core.generation.backends.vibecomfy_local_server import validate_comfy_url
-
         url = validate_comfy_url(inputs["comfy_url"])
         policy = {"allowed_protocols": ["dns", "tcp"],
                   "allowed_destinations": [url.removeprefix("http://")],
@@ -2369,7 +2211,6 @@ def _provider_routes(record: "CapabilityRecord", inputs: Mapping[str, Any] | Non
         from astrid.core.execution.provider_route_resolvers import (
             resolve_runpod_pod_handle_ssh_route,
         )
-
         for name in handle_names or ():
             raw = (inputs or {}).get(str(name))
             if raw is None:
@@ -2751,233 +2592,27 @@ def _fixed_request_scope(metadata: Mapping[str, Any]) -> dict[str, Any]:
     return scope
 
 
-def _admitted_spec_envelope(raw_spec: Any) -> Mapping[str, Any]:
-    """Return the immutable capability request from a runtime task envelope.
-
-    Runtime task snapshots have one stable wrapper around the immutable
-    capability request::
-
-        task.spec         = admission envelope
-        task.spec.spec    = capability request
-        task.spec.spec.inputs
-
-    A few older in-process callers provide the capability request directly.
-    Accept that compatibility shape, but never recursively unwrap arbitrary
-    mappings or silently accept conflicting duplicate fields.
-    """
-    if not isinstance(raw_spec, Mapping):
-        raise HostError("runtime task is missing its immutable spec envelope")
-    nested = raw_spec.get("spec")
-    if nested is None:
-        return raw_spec
-    if not isinstance(nested, Mapping):
-        raise HostError("runtime task immutable spec envelope has a non-object spec")
-    for key in (
-        "capability_id",
-        "kind",
-        "inputs",
-        "params",
-        "outputs",
-        "runtime_dependencies",
-        "authority_context",
-    ):
-        if key in raw_spec and key in nested and raw_spec[key] != nested[key]:
-            raise HostError(f"runtime task spec has conflicting {key!r} values")
-    return nested
 
 
 def _admitted_task_spec(task_data: Mapping[str, Any]) -> Mapping[str, Any]:
     """Decode the canonical immutable request from a task snapshot."""
-    return _admitted_spec_envelope(task_data.get("spec"))
+    return _contract_helpers._admitted_task_spec(task_data, admitted_spec_envelope=_admitted_spec_envelope)
 
 
-def _assert_verified_placement_binding(
-    binding: Mapping[str, Any], target: Mapping[str, Any]
-) -> None:
-    """Require Runtime's exact credential-backed placement projection.
-
-    The host consumes this evidence; it does not mint or upgrade selector,
-    config, environment, or self-reported target data into evidence.
-    """
-
-    actual = binding.get("actual_target")
-    if not isinstance(actual, Mapping):
-        raise HostError("task target binding has no credential-verified actual target")
-    verification = binding.get("verification")
-    if not isinstance(verification, Mapping) or set(verification) != {
-        "method", "evidence_digest", "verified",
-    }:
-        raise HostError("task target binding has no credential-verified placement verification")
-    if verification.get("method") != "credential_claim" or verification.get("verified") is not True:
-        raise HostError("task target binding placement verification is not a credential claim")
-    digest = verification.get("evidence_digest")
-    if not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
-        raise HostError("task target binding placement verification digest is invalid")
-    incarnation = binding.get("executor_incarnation")
-    if not isinstance(incarnation, str) or not incarnation.strip() or len(incarnation) > 256:
-        raise HostError("task target binding has no valid executor incarnation")
-
-    selected_kind = target.get("kind")
-    actual_kind = actual.get("kind")
-    resolved = binding.get("resolved_target")
-    if not isinstance(resolved, Mapping) or resolved != target:
-        raise HostError("credential-verified resolved target disagrees with execution_request")
-    if selected_kind != "default" and actual_kind != selected_kind:
-        raise HostError("credential-verified actual target kind disagrees with execution_request")
-    for key, expected in target.items():
-        if key != "kind" and actual.get(key) != expected:
-            raise HostError(f"credential-verified actual target {key} disagrees with execution_request")
 
 
 def _execution_contract(
-    task_data: Mapping[str, Any],
-    *,
-    runtime_session_id: str | None = None,
+    task_data: Mapping[str, Any], *, runtime_session_id: str | None = None,
     allow_runtime_empty_inputs: bool = False,
 ) -> dict[str, Any] | None:
     """Validate the carried request before the worker spends or opens a session."""
-    envelope = task_data.get("spec")
-    # A small set of legacy in-process callers intentionally provide only the
-    # task identity while exercising capability-level admission guards.  With
-    # no carried contract there is nothing to validate here; preserve that
-    # compatibility path and let the ordinary capability checks continue.
-    if envelope is None:
-        if task_data.get("execution_request") is not None:
-            raise HostError("execution_request requires its immutable spec envelope")
-        return None
-    if not isinstance(envelope, Mapping):
-        raise HostError("runtime task is missing its immutable spec envelope")
-    request = task_data.get("execution_request")
-    nested = _admitted_spec_envelope(envelope)
-    for carried in (envelope.get("execution_request"), nested.get("execution_request")):
-        if request is None:
-            request = carried
-        elif carried is not None and _canonical_digest(request) != _canonical_digest(carried):
-            raise HostError("runtime task has conflicting execution_request values")
-    if request is None:
-        return None
-    if not envelope or ("inputs" in nested and not isinstance(nested["inputs"], Mapping)):
-        raise HostError("execution_request requires a usable immutable spec envelope")
-    try:
-        normalized = normalize_execution_request(request)
-    except ValueError as exc:
-        raise HostError(f"invalid execution_request: {exc}") from exc
-    if normalized is None or not isinstance(request, Mapping):
-        raise HostError("invalid execution_request")
-    carried_request = dict(request)
-    # Exact delegated claims receive Runtime's canonical empty input manifest.
-    # The SDK omits that empty member; permit this one representation only on
-    # the authenticated exact handoff, preserving ordinary claim validation.
-    if allow_runtime_empty_inputs and type(carried_request.get("inputs")) is list and carried_request["inputs"] == []:
-        carried_request.pop("inputs")
-    if _canonical_digest(carried_request) != _canonical_digest(normalized):
-        raise HostError("runtime task execution_request is not normalized")
-
-    declared = normalized.get("inputs", [])
-    authorized = task_data.get("input_object_ids")
-    if not isinstance(authorized, (list, tuple)):
-        raise HostError("execution_request requires task input_object_ids")
-    def object_id(value: Any) -> str:
-        if not isinstance(value, str):
-            raise HostError("execution_request input object IDs must be strings")
-        return value.removeprefix("sha256:")
-    expected_ids = [object_id(item["object_id"]) for item in declared]
-    actual_ids = [object_id(item) for item in authorized]
-    if len(actual_ids) != len(expected_ids) or set(actual_ids) != set(expected_ids):
-        raise HostError("task input_object_ids do not match execution_request inputs")
-    inputs = nested.get("inputs")
-    if not isinstance(inputs, Mapping):
-        inputs = {}
-    declared_names = {item["name"] for item in declared}
-    for name, descriptor in inputs.items():
-        if isinstance(descriptor, Mapping) and (
-            "digest" in descriptor or "object_id" in descriptor
-        ) and name not in declared_names:
-            raise HostError(f"task spec managed input {name!r} is absent from execution_request")
-    for item in declared:
-        name = item["name"]
-        descriptor = inputs.get(name)
-        if not isinstance(descriptor, Mapping):
-            raise HostError(f"task spec input {name!r} is missing its execution_request descriptor")
-        # ``object_id`` is the canonical managed-object digest.  ``digest``
-        # is an optional repeated witness for callers that want the wire
-        # envelope to spell it out, so its absence must not make an otherwise
-        # valid frozen input unrunnable.
-        digest = descriptor.get("digest") or descriptor.get("object_id")
-        if digest is None:
-            raise HostError(f"task spec input {name!r} is missing its materialization digest")
-        if object_id(digest) != object_id(item["object_id"]):
-            raise HostError(f"task spec input {name!r} disagrees with execution_request object_id")
-        if descriptor.get("object_id") is not None and object_id(descriptor["object_id"]) != object_id(item["object_id"]):
-            raise HostError(f"task spec input {name!r} disagrees with execution_request object_id")
-        if descriptor.get("filename") != item["filename"]:
-            raise HostError(f"task spec input {name!r} disagrees with execution_request filename")
-
-    workflow = normalized.get("workflow")
-    if isinstance(workflow, Mapping):
-        workflow_spec = nested.get("workflow")
-        workflow_id = nested.get("workflow_id")
-        if workflow_id is None and isinstance(workflow_spec, Mapping):
-            workflow_id = workflow_spec.get("id")
-        if workflow_id is None:
-            workflow_id = task_data.get("capability")
-        if workflow_id != workflow["id"]:
-            raise HostError("task spec workflow id disagrees with execution_request")
-        identity = nested.get("workflow_contract_digest")
-        if identity is None and isinstance(workflow_spec, Mapping):
-            identity = workflow_spec.get("contract_digest")
-        if identity != workflow["contract_digest"]:
-            raise HostError("task spec workflow contract digest disagrees with execution_request")
-
-    target = normalized["target"]
-    binding = task_data.get("execution_binding") or task_data.get("placement_binding") or task_data.get("binding")
-    if not isinstance(binding, Mapping):
-        raise HostError("execution_request target requires an observed task binding")
-    if binding.get("status") not in (None, "claimed"):
-        raise HostError("task target binding is not claimed")
-    required_identity = {
-        "task_id": task_data.get("id") or task_data.get("task_id"),
-        "run_id": task_data.get("run_id"),
-        "attempt_id": task_data.get("attempt_id"),
-        "lease_id": task_data.get("lease_id"),
-        "fence": task_data.get("fence"),
-        "executor_id": task_data.get("executor_id"),
-        "runtime_epoch": task_data.get("runtime_epoch"),
-        "capability_id": task_data.get("capability") or task_data.get("capability_id"),
-    }
-    for field, expected in required_identity.items():
-        if expected is not None and binding.get(field) != expected:
-            raise HostError(f"task target binding {field} disagrees with the claimed identity")
-    if not isinstance(binding.get("binding_id"), str) or not binding["binding_id"]:
-        raise HostError("task target binding has no Runtime-issued binding_id")
-    if not isinstance(binding.get("session_id"), str) or not binding["session_id"]:
-        raise HostError("task target binding has no Runtime session identity")
-    expected_session = task_data.get("runtime_session_id") or runtime_session_id
-    if expected_session is not None and binding["session_id"] != expected_session:
-        raise HostError("task target binding session_id disagrees with the Runtime session")
-    resolved_target = binding.get("resolved_target")
-    if not isinstance(resolved_target, Mapping):
-        raise HostError("task target binding has no resolved target identity")
-    kind = target["kind"]
-    if binding.get("target_kind") not in (None, kind) and binding.get("kind") not in (None, kind):
-        raise HostError("task target binding kind disagrees with execution_request")
-    identity_fields = {
-        "default": (),
-        "profile": (("id", "target_id"), ("profile_alias", "target_id")),
-        "machine": (("id", "target_id"), ("machine_id", "target_id")),
-        "runpod": (("pod_id", "pod_id"), ("provider_account_ref", "provider_account_ref")),
-    }[kind]
-    for requested, observed in identity_fields:
-        if requested in target and target[requested] is not None and binding.get(observed) != target[requested]:
-            raise HostError(f"task target binding {observed} disagrees with execution_request")
-    for key in ("profile_revision", "profile_digest", "release_digest"):
-        if key in target and binding.get(key) != target[key]:
-            raise HostError(f"task target binding {key} disagrees with execution_request")
-    for key in ("storage", "mounts"):
-        if key in target and resolved_target.get(key) != target[key]:
-            raise HostError(f"task target binding {key} disagrees with execution_request")
-    _assert_verified_placement_binding(binding, target)
-    return normalized
+    return _contract_helpers._execution_contract(
+        task_data, runtime_session_id=runtime_session_id,
+        allow_runtime_empty_inputs=allow_runtime_empty_inputs,
+        admitted_spec_envelope=_admitted_spec_envelope,
+        assert_verified_placement_binding=_assert_verified_placement_binding,
+        canonical_digest=_canonical_digest, normalize_request=normalize_execution_request,
+    )
 
 
 @dataclass
@@ -3132,7 +2767,6 @@ def _interactive_review_authority(
     from astrid.sdk._child_bridge import _validate_child_policy
 
     from ._child_bridge import _snapshot_grant, task_resource
-
     parent_id = "iteration.experiment_review_session"
     child_id = "editorial.human_review"
     if record.id not in {parent_id, child_id}:
@@ -3361,7 +2995,6 @@ class _DiscoveryCollection:
                  lease_id: str, fence: int, runtime_epoch: int,
                  cancelled: Callable[[], bool]):
         from astrid.sdk._child_bridge import _validate_child_policy
-
         spec = parent.get("spec")
         if not isinstance(spec, Mapping) or "delegated_parent" in spec:
             raise HostError("discovery requires an admitted root parent")
@@ -3627,7 +3260,6 @@ class _DiscoveryCollection:
         Runtime path. Neither source filenames nor caller maps select a path.
         """
         from ._child_bridge import _DIGEST, _MAX_OBJECT
-
         try:
             self._active()
             if self._collected_outputs is None:
@@ -3719,7 +3351,6 @@ class _DiscoveryCollection:
         remain host provenance; uploads use the current bridge attempt.
         """
         from ._child_bridge import _KEY, _snapshot
-
         try:
             self._active()
             if self._prepared_objects is None or type(media_bindings) is not dict or not media_bindings:
@@ -3818,7 +3449,6 @@ def _iteration_video_discovery(
     receives the retained media file, and only its rendering child is adapted.
     """
     from ._child_bridge import _DIGEST, _MAX_OBJECT, _snapshot
-
     if record.id != "video_editing.iteration_video":
         return None
     if bridge is None or getattr(bridge, "_iteration_video_submit", None) is not None:
@@ -7720,45 +7350,7 @@ class GenericPackHost:
 
     @staticmethod
     def _load_matrix(path: Path | None, *, ledger: Mapping[str, Any] | None = None) -> dict[str, dict[str, Any]]:
-        if path is None:
-            return {}
-        try:
-            payload = ledger if ledger is not None else load_capability_ledger(path)
-        except ValueError as exc:
-            raise HostError(
-                "capability matrix could not be loaded",
-                safe_message=f"capability matrix could not be loaded; field=capability_matrix path={path}",
-            ) from exc
-        if payload.get("schema_version") != 1 or not isinstance(payload.get("capabilities"), list):
-            raise HostError(
-                "capability matrix requires schema_version 1 and a capabilities list",
-                safe_message=f"capability matrix schema or capabilities list is invalid; field=capability_matrix path={path}",
-            )
-        allowed = {"required", "optional", "unsupported", "retired"}
-        result = {}
-        for entry in payload["capabilities"]:
-            if not isinstance(entry, dict) or not isinstance(entry.get("id"), str):
-                raise HostError(
-                    "capability matrix entries require an id",
-                    safe_message=f"capability matrix entry is missing an id; field=capabilities path={path}",
-                )
-            if entry.get("disposition") not in allowed:
-                raise HostError(
-                    f"invalid capability disposition for {entry.get('id')!r}",
-                    safe_message=f"capability disposition is invalid; field=disposition path={path}",
-                )
-            if not entry.get("evidence_reason"):
-                raise HostError(
-                    f"capability matrix entry {entry['id']!r} needs evidence_reason",
-                    safe_message=f"capability evidence reason is missing; field=evidence_reason path={path}",
-                )
-            if entry["id"] in result:
-                raise HostError(
-                    f"duplicate capability matrix entry {entry['id']!r}",
-                    safe_message=f"capability matrix has a duplicate id; field=id path={path}",
-                )
-            result[entry["id"]] = entry
-        return result
+        return _load_host_matrix(path, ledger=ledger, load_capability_ledger=load_capability_ledger)
 
     def discover(self) -> tuple[CapabilityRecord, ...]:
         # Folder/schema modules are runtime discovery dependencies.  Keeping
@@ -12497,7 +12089,6 @@ class GenericPackHost:
                     "deterministic admission failure was not recorded by Runtime"
                 ) from runtime_exc
             raise HostError(str(error)) from error
-
         captured_record = None
         captured_pack_map = None
         verified_pack_relocations = {}
@@ -12578,7 +12169,6 @@ class GenericPackHost:
                     and not isinstance(exc, PackCaptureError)):
                 exc = PackCaptureError(f"selected pack snapshot capture refused: {exc}")
             fail_admission(exc)
-
         registration_error = self._registration_admission_reason()
         if registration_error:
             fail_admission(HostError(registration_error))
@@ -14040,7 +13630,9 @@ class GenericPackHost:
                     and not _terminal.get("retain_spool")):
                 # Keeping the receipt/output evidence does not keep relocated
                 # VibeComfy scratch. Unresolved writers/publication keep both.
-                from astrid.core.generation.vibecomfy_runtime_root import remove_windows_runtime_root
+                from astrid.core.generation.vibecomfy_runtime_root import (
+                    remove_windows_runtime_root,
+                )
                 try:
                     remove_windows_runtime_root(root / "outputs")
                 except OSError as exc:
@@ -17396,78 +16988,10 @@ class LocalExecutionPreparation:
 
 
 
-def _named_raw_publication_port(task: Mapping[str, Any]) -> str | None:
-    """Read the raw-stage marker reserved and populated by Runtime admission."""
-    spec = task.get("spec")
-    if not isinstance(spec, Mapping) or not isinstance(spec.get("delegated_parent"), Mapping):
-        return None
-    source = spec.get("verified_publication_source")
-    if (not isinstance(spec.get("delegated_stage"), str) or not isinstance(source, Mapping)
-            or set(source) != {"publication_name", "output_port"}
-            or source.get("publication_name") != "raw"):
-        return None
-    port = source.get("output_port")
-    return port if isinstance(port, str) and port else None
 
 
-def _task_generation_intent(task: Mapping[str, Any]) -> Mapping[str, Any] | None:
-    intent = task.get("generation_intent")
-    # Named child effects are frozen by Runtime from the parent's policy.
-    # Reconstruct the host's existing selector view from that effect, not
-    # from the worker or from the ordering or media type of its outputs.
-    spec = task.get("spec")
-    source = spec.get("verified_publication_source") if isinstance(spec, Mapping) else None
-    effect = task.get("expected_effect")
-    if (not isinstance(spec, Mapping) or not isinstance(spec.get("delegated_parent"), Mapping)
-            or not isinstance(source, Mapping) or source.get("publication_name") not in {"raw", "final"}):
-        return intent if isinstance(intent, Mapping) else None
-    if (not isinstance(effect, Mapping) or effect.get("effect_type") != "generation.publish_v1"
-            or not isinstance(effect.get("payload"), Mapping)):
-        raise HostError("named publication has no admitted generation effect")
-    payload = effect["payload"]
-    groups = payload.get("groups")
-    if not isinstance(groups, list):
-        raise HostError("named publication effect has no selector groups")
-    from astrid.sdk.exceptions import CapabilityValidationError
-    from astrid.sdk.invocation import _validate_generation_intent
-    try:
-        projected = [{"group_key": group["group_key"], "selectors": [
-            {key: value for key, value in selector.items() if key != "output_port"}
-            for selector in group["selectors"]]} for group in groups]
-        if any(selector.get("output_port") != source.get("output_port")
-               for group in groups for selector in group["selectors"]):
-            raise HostError("named publication effect selects another port")
-        return _validate_generation_intent({"version": payload["version"], "modality": payload["modality"],
-            "partial_success_policy": payload["partial_success_policy"], "groups": projected},
-            modality=payload["modality"])
-    except (KeyError, TypeError, ValueError, CapabilityValidationError) as exc:
-        raise HostError("named publication effect has an invalid selector") from exc
 
 
-def _bind_named_parent_output(task: Mapping[str, Any], outputs: list[dict[str, Any]]) -> None:
-    spec = task.get("spec")
-    policy = spec.get("child_delegation") if isinstance(spec, Mapping) else None
-    publications = policy.get("publications") if isinstance(policy, Mapping) else None
-    if publications is None:
-        return
-    try:
-        final = publications["final"]
-        groups = final["effect"]["payload"]["groups"]
-        if len(groups) != 1 or len(groups[0]["selectors"]) != 1:
-            raise ValueError("expected one final selector")
-        group, selector = groups[0], groups[0]["selectors"][0]
-        port = final["output_port"]
-        if selector["output_port"] != port:
-            raise ValueError("final selector port differs")
-        matches = [row for row in outputs if row.get("name") == port
-                   and row.get("ordinal") == selector["ordinal"]]
-        if len(matches) != 1:
-            raise ValueError("final output missing or ambiguous")
-        matches[0].update(output_port=port, group_key=group["group_key"],
-                          variant_key=selector["variant_key"],
-                          selector={"group_key": group["group_key"], "variant_key": selector["variant_key"]})
-    except (KeyError, TypeError, ValueError) as exc:
-        raise HostError("named parent final selector cannot be bound") from exc
 
 
 def _selected_birth_matches(observed: Any, retained: Any) -> bool:
@@ -18241,6 +17765,40 @@ def _log_cli_exit_failure(error: BaseException) -> None:
         )
     else:
         _LOGGER.error("generic host CLI exiting after failure: error_type=%s", error_type)
+
+
+def _task_generation_intent(task: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    intent = task.get("generation_intent")
+    # Named child effects are frozen by Runtime from the parent's policy.
+    # Reconstruct the host's existing selector view from that effect, not
+    # from the worker or from the ordering or media type of its outputs.
+    spec = task.get("spec")
+    source = spec.get("verified_publication_source") if isinstance(spec, Mapping) else None
+    effect = task.get("expected_effect")
+    if (not isinstance(spec, Mapping) or not isinstance(spec.get("delegated_parent"), Mapping)
+            or not isinstance(source, Mapping) or source.get("publication_name") not in {"raw", "final"}):
+        return intent if isinstance(intent, Mapping) else None
+    if (not isinstance(effect, Mapping) or effect.get("effect_type") != "generation.publish_v1"
+            or not isinstance(effect.get("payload"), Mapping)):
+        raise HostError("named publication has no admitted generation effect")
+    payload = effect["payload"]
+    groups = payload.get("groups")
+    if not isinstance(groups, list):
+        raise HostError("named publication effect has no selector groups")
+    from astrid.sdk.exceptions import CapabilityValidationError
+    from astrid.sdk.invocation import _validate_generation_intent
+    try:
+        projected = [{"group_key": group["group_key"], "selectors": [
+            {key: value for key, value in selector.items() if key != "output_port"}
+            for selector in group["selectors"]]} for group in groups]
+        if any(selector.get("output_port") != source.get("output_port")
+               for group in groups for selector in group["selectors"]):
+            raise HostError("named publication effect selects another port")
+        return _validate_generation_intent({"version": payload["version"], "modality": payload["modality"],
+            "partial_success_policy": payload["partial_success_policy"], "groups": projected},
+            modality=payload["modality"])
+    except (KeyError, TypeError, ValueError, CapabilityValidationError) as exc:
+        raise HostError("named publication effect has an invalid selector") from exc
 
 
 def _cli() -> int:

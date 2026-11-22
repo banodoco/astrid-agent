@@ -1168,3 +1168,163 @@ def test_validate_repo_structure_authority_exemptions_stay_green(
 
     assert structure.validate_authority_boundaries(tmp_path) == []
     assert report.ok, report.errors
+
+
+def test_execution_size_guard_detects_required_growth() -> None:
+    import ast
+    from scripts.reshape.compare_execution_size import HOST, compare
+
+    source = (Path(__file__).resolve().parents[1] / HOST).read_text(encoding="utf-8")
+    lines = source.splitlines(keepends=True)
+    tree = ast.parse(source)
+    host = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "GenericPackHost")
+    method = next(n for n in host.body if isinstance(n, ast.FunctionDef) and n.name == "_run_task_impl")
+    nested = next(n for n in ast.walk(method) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n is not method)
+    base = {HOST: source}
+
+    def inserted(at: int, text: str) -> str:
+        return "".join(lines[:at] + [text] + lines[at:])
+
+    assert any("lines grew" in e for e in compare(base, {HOST: source + "\n"}))
+    added = inserted(host.end_lineno, "    def added_guard_method(self): pass\n")
+    assert any("added method added_guard_method" in e for e in compare(base, {HOST: added}))
+    direct = inserted(method.lineno, " " * (method.col_offset + 4) + "# added\n")
+    nested_growth = inserted(nested.lineno, " " * (nested.col_offset + 4) + "# added\n")
+    for changed in (direct, nested_growth):
+        assert any("_run_task_impl grew" in e for e in compare(base, {HOST: changed}))
+    sibling = "astrid/core/execution/new_sibling.py"
+    assert any(sibling in e and "1200" in e for e in compare(base, {HOST: source, sibling: "# line\n" * 1300}))
+    assert compare(base, {HOST: source.replace("\n\n", "\n", 1)}) == []
+    paid = direct.replace("\n\n", "\n", 2)
+    assert len(paid.splitlines()) <= len(lines)
+    assert any("_run_task_impl grew" in e for e in compare(base, {HOST: paid}))
+
+
+def test_execution_size_guard_limits_new_functions_and_method_duplicates() -> None:
+    from scripts.reshape.compare_execution_size import HOST, compare
+
+    base = {HOST: "class GenericPackHost:\n    def existing(self): pass\n"}
+    duplicate = "class GenericPackHost:\n    def existing(self): pass\n    def existing(self): pass\n"
+    assert any("added method existing" in e for e in compare(base, {HOST: duplicate}))
+    path = "astrid/core/execution/sibling.py"
+    long_function = "def long():\n" + "    pass\n" * 200
+    assert any("long grew" in e for e in compare(base, {**base, path: long_function}))
+
+
+def test_execution_size_guard_counts_class_control_flow_and_bindings() -> None:
+    from scripts.reshape.compare_execution_size import HOST, compare
+
+    base = {HOST: "class GenericPackHost:\n    def _run_task_impl(self): pass\n\n\n"}
+    additions = [
+        "    if True:\n        def probe(self): return 42\n",
+        "    probe = _run_task_impl\n",
+        "    if True:\n        async def probe(self): pass\n",
+        "    if True:\n        probe = staticmethod(_run_task_impl)\n",
+    ]
+    for addition in additions:
+        head = {HOST: "class GenericPackHost:\n    def _run_task_impl(self): pass\n" + addition}
+        assert len(head[HOST].splitlines()) <= len(base[HOST].splitlines())
+        assert any("added method probe" in error for error in compare(base, head))
+
+
+def test_execution_size_guard_ignores_nested_scope_bindings() -> None:
+    from scripts.reshape.compare_execution_size import HOST, compare
+
+    base = {HOST: "class GenericPackHost:\n    def existing(self): pass\n\n\n\n\n"}
+    head = {HOST: (
+        "class GenericPackHost:\n"
+        "    def existing(self):\n"
+        "        def probe(): pass\n"
+        "        alias = probe\n"
+        "    class Inner:\n"
+        "        def probe(self): pass\n"
+    )}
+    assert not any("added method" in error for error in compare(base, head))
+
+
+def test_execution_size_guard_counts_decorated_function_threshold() -> None:
+    from scripts.reshape.compare_execution_size import compare
+
+    path = "astrid/core/execution/sibling.py"
+    prefix = "@staticmethod\ndef decorated():\n"
+    assert compare({}, {path: prefix + "    pass\n" * 198}) == []
+    errors = compare({}, {path: prefix + "    pass\n" * 199})
+    assert any("decorated grew from 0 to 201 lines" in error for error in errors)
+
+
+def test_execution_size_guard_counts_multiline_decorators_and_nested_async() -> None:
+    from scripts.reshape.compare_execution_size import _functions
+
+    source = (
+        "def outer():\n"
+        "    @(\n"
+        "        decorator\n"
+        "    )\n"
+        "    async def inner():\n"
+        "        pass\n"
+    )
+    functions, _ = _functions(source)
+    assert functions["outer"] == [6]
+    assert functions["outer.inner"] == [5]
+
+
+def test_execution_size_guard_counts_only_trailing_suite_comments() -> None:
+    from scripts.reshape.compare_execution_size import _functions
+
+    source = (
+        "def first():\n"
+        "    text = '''\n"
+        "    # part of the string\n"
+        "    '''\n"
+        "    # trailing suite comment\n"
+        "# peer comment\n"
+        "def sibling():\n"
+        "    pass\n"
+        "    # sibling comment\n"
+    )
+    functions, _ = _functions(source)
+    assert functions["first"] == [5]
+    assert functions["sibling"] == [3]
+
+
+def test_execution_size_guard_reads_nul_tree_entries_and_binary_blobs(monkeypatch) -> None:
+    import scripts.reshape.compare_execution_size as guard
+
+    unicode_oid = b"1" * 40
+    binary_oid = b"2" * 40
+    encoded_oid = b"3" * 40
+    entries = b"\0".join((
+        b"100644 blob " + unicode_oid + b"\tastrid/core/execution/caf\xc3\xa9.py",
+        b"100644 blob " + binary_oid + b"\tastrid/core/execution/probe.bin",
+        b"100644 blob " + encoded_oid + b"\tastrid/core/execution/legacy.py",
+        b"",
+    ))
+    blobs = {
+        unicode_oid.decode(): b"value = 'caf\xc3\xa9'\n",
+        binary_oid.decode(): b"\xff\x00\n",
+        encoded_oid.decode(): b"# coding: latin-1\nvalue = 'caf\xe9'\n",
+    }
+    fetched: list[str] = []
+
+    def fake_git_bytes(*args: str) -> bytes:
+        if args[:3] == ("ls-tree", "-r", "-z"):
+            return entries
+        assert args[:2] == ("cat-file", "blob")
+        fetched.append(args[2])
+        return blobs[args[2]]
+
+    monkeypatch.setattr(guard, "_git_bytes", fake_git_bytes)
+    result = guard.sources("fixture")
+
+    assert set(result) == {
+        "astrid/core/execution/café.py",
+        "astrid/core/execution/probe.bin",
+        "astrid/core/execution/legacy.py",
+    }
+    assert fetched == [unicode_oid.decode(), binary_oid.decode(), encoded_oid.decode()]
+    assert result["astrid/core/execution/probe.bin"] == b"\xff\x00\n"
+    assert guard.compare({}, result) == []
+
+    # Byte line accounting must still enforce the existing file-size boundary.
+    oversized = {"astrid/core/execution/probe.bin": b"\xff\x00\n" * 1201}
+    assert any("newly exceeds 1200 lines (1201)" in error for error in guard.compare({}, oversized))
