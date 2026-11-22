@@ -52,6 +52,48 @@ def write_pack_element(
 
 
 class ElementRegistryTest(unittest.TestCase):
+    def test_element_schema_retries_after_element_is_installed_in_same_process(self) -> None:
+        from unittest import mock
+
+        from astrid.sdk import timeline_address
+        from astrid.core.element.registry import clear_default_registry_cache
+
+        with tempfile.TemporaryDirectory() as tmp:
+            packs = Path(tmp) / "packs"
+            element = "le2a-installed-after-miss"
+            timeline_address._SCHEMAS.pop(element, None)
+            timeline_address._SCHEMA_BINDINGS.pop(element, None)
+            with mock.patch.dict("os.environ", {"ASTRID_PACKS_PATH": str(packs)}):
+                clear_default_registry_cache()
+                try:
+                    with self.assertRaises(timeline_address.ElementPackNotInstalled):
+                        timeline_address.element_schema(element)
+                    element_root = write_pack_element(
+                        packs / "demo", "effects", element, pack_id="demo", label="Installed")
+                    rendered_element_root = packs / "demo" / "rendering" / "elements" / "effects" / element
+                    rendered_element_root.parent.mkdir(parents=True)
+                    element_root.rename(rendered_element_root)
+                    element_root = rendered_element_root
+                    (packs / "demo" / "pack.yaml").write_text(json.dumps({
+                        "schema_version": 3, "pack_api": "2.0", "id": "demo", "name": "Demo",
+                        "version": "1.0.0", "status": "active",
+                        "documentation": {"kind": "none", "reason": "Test fixture."},
+                        "rendering": {f"effects/{element}": {
+                            "type": "element",
+                            "path": f"rendering/elements/effects/{element}/element.yaml",
+                            "resources": [{"path": f"rendering/elements/effects/{element}/component.tsx",
+                                           "kind": "implementation"}],
+                        }},
+                    }))
+                    schema = timeline_address.element_schema(element)
+                finally:
+                    timeline_address._SCHEMAS.pop(element, None)
+                    timeline_address._SCHEMA_BINDINGS.pop(element, None)
+                    timeline_address._SCHEMA_PROVIDER_HINTS.pop(element, None)
+                    clear_default_registry_cache()
+
+            self.assertEqual(schema["path"], str(element_root / "element.yaml"))
+
     def test_element_public_surface_exports_dynamic_kind_registry(self) -> None:
         self.assertIs(element_module.ElementKindRegistry, type(element_module.ELEMENT_KIND_REGISTRY))
         self.assertTrue(hasattr(element_module, "ElementKindDescriptor"))
