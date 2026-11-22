@@ -6,7 +6,7 @@ qualification. The installed pack-discovery stage is about 0.5 s.
 
 ## Source identity and result
 
-- Agent: `6fcfe555a43263a758112c9179cc27f37bbe657d`
+- Agent: `6fcfe555a43263a758112c9179cc27f37bbe657d`, with the new count test and owner-test updates uncommitted at capture; no product files changed.
 - Runtime: `3c28211f3cb7ac4867ad744d8cdeeb38dd4484c5`
 - VibeComfy: `48b5fa9e45630e1bc502651975ec0ef3a5e74c4c`
 - Python: `3.13.18`
