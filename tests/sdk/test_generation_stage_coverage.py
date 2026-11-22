@@ -182,8 +182,8 @@ def test_workflow_and_image_admissions_report_generation_stage_tree(
         "capability registries": {"invocation"},
         "capability lookup": {"invocation"},
         "SDK admission preflight": {"invocation"},
-        "Workspace admission preflight": {"invocation"},
-        "Remote admission preflight": {"invocation"},
+        "Workspace admission preflight": {"task creation"},
+        "Remote admission preflight": {"task creation"},
         "ComfyUI GET /system_stats": {"target check"},
         "ComfyUI GET /object_info": {"workflow build", "target node list", "ComfyUI GET /object_info"},
     }
@@ -224,7 +224,7 @@ def test_workflow_and_image_admissions_report_generation_stage_tree(
         "capability registries": {"invocation"},
         "capability lookup": {"invocation"},
         "SDK admission preflight": {"invocation"},
-        "Workspace admission preflight": {"invocation"},
+        "Workspace admission preflight": {"task creation"},
     })
 
     # Each command created a distinct admitted Runtime task.
