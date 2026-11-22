@@ -183,6 +183,36 @@ def test_windows_large_r13_action_replacement_uses_bounded_file_payload(tmp_path
     assert len(payload_paths) == 1 and not payload_paths[0].exists()
 
 
+def test_windows_reconcile_sets_scheduled_task_by_task_name_and_path(tmp_path, monkeypatch):
+    root, data = tmp_path / "program", tmp_path / "data"
+    version_root = root / "versions" / "candidate"
+    version_root.mkdir(parents=True)
+    version = Version(version_root, tmp_path / "python.exe", tmp_path / "profile.json", {})
+    write_json(version_root / "version.json", version.document())
+    manager = Service(root, tmp_path / "log", Mock(), home=tmp_path, system="win32")
+    write_json(manager.selection, {"owner": LABEL, "program_root": str(root), "data_root": str(data)})
+    # An unbound wrapper is a recognized prior action, so reconcile generates
+    # the replacement Set-ScheduledTask operation.
+    prior = command(version, data, windows=True, log=manager.log, env_file=manager.env_file)
+    observed_action = [{"Execute": prior[0], "Arguments": subprocess.list2cmdline(prior[1:])}]
+    scripts = []
+
+    def powershell(script):
+        if "Set-ScheduledTask" in script:
+            scripts.append(script)
+            return ""
+        return json.dumps(observed_action, separators=(",", ":"))
+
+    monkeypatch.setattr(manager, "powershell", powershell)
+
+    manager.publish_launch_admission(version, data)
+
+    assert len(scripts) == 1
+    assert "Set-ScheduledTask" in scripts[0]
+    assert "-TaskName $t.TaskName" in scripts[0]
+    assert "-TaskPath $t.TaskPath" in scripts[0]
+
+
 @pytest.mark.parametrize("release,managed_by", [(0, None), (37, "pinokio")])
 def test_service_wrapper_loads_settings_before_runtime(tmp_path, monkeypatch, release, managed_by):
     settings = tmp_path / "service-env.json"
