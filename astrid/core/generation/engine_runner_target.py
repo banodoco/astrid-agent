@@ -364,7 +364,7 @@ def dispatch(operation, payload):
         "lock-inputs", "commit-lock", "install-locks", "stage-whisper-artifacts"
     }
     windows_whisper = (
-        recipe.engine == "comfyui" and recipe.platform == "windows-x86_64-cu130"
+        recipe.platform == "windows-x86_64-cu130" and recipe.engine == "comfyui"
         and operation in windows_whisper_operations
     )
     if not recipe.platform.startswith("linux-") and not windows_whisper:
