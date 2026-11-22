@@ -207,3 +207,39 @@ def test_host_wait_without_collector(tmp_path, monkeypatch, capsys):
             holder.terminate()
             holder.join()
     assert holder.exitcode == 0
+
+
+def test_outbox_cooperative_cancellation_keeps_process_holder(tmp_path):
+    from runtime_protocol import cancellation
+
+    path = tmp_path / "outbox.lock"
+    ctx = multiprocessing.get_context("spawn")
+    ready, release = ctx.Event(), ctx.Event()
+    holder = ctx.Process(target=_hold_file, args=(path, ready, release))
+    holder.start()
+    timer = None
+    try:
+        assert ready.wait(5)
+        stop = threading.Event()
+        started = time.monotonic()
+        with cancellation.startup_scope(stop):
+            timer = threading.Timer(0.2, stop.set)
+            timer.start()
+            with pytest.raises(cancellation.StartupCancelled):
+                with Outbox(tmp_path / "outbox").locked():
+                    pytest.fail("acquired another process's lock")
+        assert time.monotonic() - started < 2
+        assert holder.is_alive()
+        with path.open("a+") as probe:
+            with pytest.raises(BlockingIOError):
+                platform.lock_file(probe.fileno(), blocking=False)
+    finally:
+        if timer is not None:
+            timer.cancel()
+            timer.join()
+        release.set()
+        holder.join(5)
+        if holder.is_alive():
+            holder.terminate()
+            holder.join()
+    assert holder.exitcode == 0
