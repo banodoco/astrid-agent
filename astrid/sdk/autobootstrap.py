@@ -17,6 +17,7 @@ from typing import Any, Iterator, Mapping
 
 from runtime_protocol import platform
 from astrid.sdk.command_timing import stage
+from astrid.sdk.lock_wait import thread_lock
 
 PROFILE = "astrid"
 RECONFIGURE_ACTION = "run the Astrid install line again"
@@ -460,7 +461,13 @@ def ensure_runtime(*, start_pack_host: bool = True, data_root: str | Path | None
     locks = ExitStack()
     try:
         with stage("Runtime acquisition lock"):
-            locks.enter_context(_ACQUISITION_LOCK)
+            try:
+                locks.enter_context(thread_lock(_ACQUISITION_LOCK, "in-process Runtime acquisition lock"))
+            except TimeoutError as exc:
+                raise AutoBootstrapError(
+                    f"{exc}; {RECONFIGURE_ACTION}",
+                    code="runtime_acquisition_lock_timeout",
+                ) from exc
             locks.enter_context(_acquisition_file_lock(Path(data_root)))
     except BaseException:
         locks.close()
