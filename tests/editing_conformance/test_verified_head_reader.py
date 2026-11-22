@@ -64,7 +64,8 @@ def wire(monkeypatch):
                     "scopes": json.loads(body)["requested_scopes"], "capabilities": capabilities,
                 }
             elif path in (f"/v1/projects/{PROJECT}/timelines?limit=50", "/v1/projects/project-slug/timelines?limit=50"):
-                value = {"items": [{**scope, "slug": "film", "head_revision_id": REVISION}], "next_cursor": None}
+                value = {"items": [{**scope, "slug": "film", "head_revision_id": REVISION,
+                                    "head_publication_id": HISTORICAL_PUBLICATION}], "next_cursor": None}
             elif path == VERIFIED_HEAD:
                 assert advertised
                 if isinstance(response, Exception):
@@ -113,6 +114,24 @@ def test_current_fetch_uses_one_verified_head_and_no_history_or_revision_reads(w
     expected["base_parent"]["publication_id"] = PUBLICATION
     assert bundle == expected
     assert bundle["source_mapping"]["_runtime_document"] == document
+
+
+def test_current_fetch_observes_reused_revision_under_new_publication(wire):
+    connect, verified, calls = wire
+    verified["head"]["publication_id"] = HISTORICAL_PUBLICATION
+    with connect() as client:
+        original = store.fetch_bundle(PROJECT, TIMELINE, client=client)
+        verified["head"]["publication_id"] = PUBLICATION
+        reopened = store.fetch_bundle(PROJECT, TIMELINE, client=client)
+
+    assert calls[2:] == [
+        ("GET", f"/v1/projects/{PROJECT}/timelines?limit=50"), ("GET", VERIFIED_HEAD),
+        ("GET", f"/v1/projects/{PROJECT}/timelines?limit=50"), ("GET", VERIFIED_HEAD),
+    ]
+    assert original["base_parent"]["revision_id"] == reopened["base_parent"]["revision_id"] == REVISION
+    assert original["base_parent"]["publication_id"] == HISTORICAL_PUBLICATION
+    assert reopened["base_parent"]["publication_id"] == PUBLICATION
+    assert original["source_mapping"] == reopened["source_mapping"]
 
 
 @pytest.mark.parametrize("status,code", [
