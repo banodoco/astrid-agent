@@ -22,7 +22,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
         [
             sys.executable,
             "-c",
-            "from astrid.console import main; raise SystemExit(main())",
+            "from astrid.console import entrypoint; raise SystemExit(entrypoint())",
             "generate",
             "image",
             "--json",
@@ -132,7 +132,32 @@ def test_module_entrypoint_preserves_user_facing_generation_refusal():
     assert result.returncode == 2
     assert "prompt is required" in result.stderr
     assert "Traceback" not in result.stderr
+
+
+def test_long_lived_first_console_call_uses_command_entry_when_gateway_is_unimported():
+    script = (
+        "import sys, time\n"
+        "from astrid import console\n"
+        "assert 'astrid.core.gateway' not in sys.modules\n"
+        "console.process_started_at = lambda fallback: fallback - 1000\n"
+        "time.sleep(0.05)\n"
+        "raise SystemExit(console.main())\n"
+    )
+    env = os.environ.copy()
+    env.pop("ASTRID_CLI_START_MONO", None)
+    result = subprocess.run(
+        [sys.executable, "-c", script, "generate", "image", "--json", "--timings"],
+        cwd=REPO_ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "prompt is required" in result.stderr
     assert "command dispatch:" in result.stderr
+    assert "interpreter start:" not in result.stderr
 
 
 def test_console_process_start_uses_command_entry_when_os_probe_fails(monkeypatch):
