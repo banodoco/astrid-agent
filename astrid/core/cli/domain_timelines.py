@@ -455,6 +455,7 @@ def _configure_edit(subparser: argparse.ArgumentParser) -> None:
                            help="Timeline id or slug with a saved working copy (or use --file).")
     subparser.add_argument("--file", default=None, help="Edit a local checkout file instead of the working copy.")
     subparser.add_argument("--draft", default=None, help="Working copy name (default: current working copy).")
+    subparser.add_argument("--operations", metavar="JSON_FILE", help="Commit a JSON file of media add operations together; see docs/timelines/batch-operations.md.")
     subparser.add_argument("--clip", help="Clip by address (c30.cover), layer name, asset key, id or prefix, element, or on-screen text.")
     subparser.add_argument("--near", default=None, help="With --clip: the match nearest this word or time.")
     subparser.add_argument("--add-media", dest="add_media", default=None, metavar="FILE|HANDLE|KEY",

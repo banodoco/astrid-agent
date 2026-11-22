@@ -312,6 +312,10 @@ def ordinary_move_requested(parsed):
 
 def dispatch_ordinary_edit(parsed):
     """Dispatch the supported ordinary native edit, or leave legacy edits alone."""
+    if getattr(parsed, "operations", None) is not None:
+        from astrid.packs.timeline.cli_operations import commit_operations
+
+        return commit_edit(parsed, edit=commit_operations)
     if parsed.client is not None and not parsed.file and not parsed.draft and parsed.add_layer == 'media':
         return commit_edit(parsed, edit=commit_add_media)
     if ordinary_move_requested(parsed):
@@ -585,6 +589,11 @@ def commit_edit(parsed, *, sheet=False, edit=None, inverse=False):
                 "astrid", "timelines", "history", parsed.ref, "--project", parsed.project, "--json",
             ]))
             error = ErrorObject(error.code, error.message, details)
+        imports = getattr(exc, "_cli_batch_imports", None)
+        if imports:
+            details = dict(error.details)
+            details["imports"] = imports
+            error = ErrorObject(error.code, error.message + "; media imported before this result remains in the catalog", details)
         shown = DomainResult.failure(error, idempotency_key=parsed.idempotency_key or "")
     return print_result(shown, as_json=parsed.json,
                         human_renderer=lambda value: _render_commit_result(value, dry_run=parsed.dry_run))
