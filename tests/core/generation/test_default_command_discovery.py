@@ -52,8 +52,11 @@ def _observe_graph_loads(monkeypatch):
 
 
 def test_catalog_first_auto_command_does_not_load_ready_workflow_graphs(monkeypatch):
+    from astrid.core.generation import defaults
+
     registry = ModelRegistry.load_default()
     _configure_command(monkeypatch, registry)
+    monkeypatch.setattr(defaults, "ordered_ids", lambda *args, **kwargs: ("z-image",))
     graph_loads = _observe_graph_loads(monkeypatch)
     selected = []
 
