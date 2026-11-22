@@ -9,7 +9,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote, urlsplit
 
 if __package__:
     from .journey_matrix import (
@@ -965,25 +965,58 @@ def _fix17_reload_inflight_errors(job_id, row, candidate):
             or transition.get("build_sha256") != https.get("candidate_build_sha256")):
         errors.append(f"{job_id}: same-origin R14 build response identity is absent or mismatched")
     notice = receipt.get("notice") if isinstance(receipt.get("notice"), dict) else {}
-    if (notice.get("text") != "Editor updated · Reload" or notice.get("visible") is not True
-            or notice.get("original_document") is not True):
+    if ((receipt.get("reload") or {}).get("trigger") == "click"
+            and (notice.get("text") != "Editor updated · Reload" or notice.get("visible") is not True
+                 or notice.get("original_document") is not True)):
         errors.append(f"{job_id}: exact Reload notice was not visible in the original document")
     reload_result = receipt.get("reload") if isinstance(receipt.get("reload"), dict) else {}
-    if reload_result.get("clicked") is not True or reload_result.get("result") != "reloaded":
+    if reload_result.get("result") != "reloaded":
         errors.append(f"{job_id}: guarded Reload did not complete successfully")
+
+    # A receipt must distinguish an actual click on the original notice from a
+    # watcher-driven navigation. The latter is accepted only with independent
+    # R13 main-frame navigation evidence in the R14 audit.
+    trigger = reload_result.get("trigger")
+    records = ((receipt.get("r14_audit") or {}).get("requests")
+               if isinstance(receipt.get("r14_audit"), dict) else None)
+    main_frame_navigation = (isinstance(records, list) and any(
+        isinstance(record, dict) and record.get("source") == "R13"
+        and record.get("kind") == "navigation" and record.get("path") == "/tools/video-editor"
+        and record.get("frame") == "main"
+        and record.get("selected") is True and record.get("after_r14_switch") is True
+        for record in records))
+    click_proof = (trigger == "click" and reload_result.get("clicked") is True
+                   and reload_result.get("click_observed") is True
+                   and notice.get("text") == "Editor updated · Reload"
+                   and notice.get("visible") is True and notice.get("original_document") is True)
+    watch = reload_result.get("watcher_navigation")
+    watch_url = urlsplit(watch.get("url", "")) if isinstance(watch, dict) and isinstance(watch.get("url"), str) else None
+    watch_query = parse_qs(watch_url.query) if watch_url else {}
+    watcher_proof = (trigger == "watcher" and isinstance(watch, dict)
+                     and _nonempty_text(watch.get("frame_id")) and watch.get("reason") == "reload"
+                     and watch.get("observed_at") == "after-publication-before-commit"
+                     and watch_url is not None and watch_url.scheme == "https" and watch_url.netloc == "astrid.haus"
+                     and watch_url.path == "/tools/video-editor"
+                     and watch_query.get("project") == [config.get("projectId")]
+                     and watch_query.get("timeline") == [config.get("timelineId")]
+                     and main_frame_navigation)
+    if not (click_proof or watcher_proof):
+        errors.append(f"{job_id}: reload trigger lacks observed original-notice click or audited R13 main-frame watcher navigation")
 
     restore = receipt.get("restore") if isinstance(receipt.get("restore"), dict) else {}
     same_draft = restore.get("draft_digest") == draft.get("payloadSha256")
-    persisted = restore.get("persisted_label") == config.get("draftLabel")
-    offered = (restore.get("offered") is True and restore.get("pending") is True
-               and restore.get("draft_label") == config.get("draftLabel")
-               and restore.get("draft_id") in {draft.get("intentId"), draft.get("requestSha256")})
+    readback = restore.get("readback_label") == config.get("draftLabel")
+    recovery = restore.get("recovery") if isinstance(restore.get("recovery"), dict) else {}
     if (restore.get("app_sha") != r14_app or restore.get("document_replaced") is not True
             or not DIGEST.fullmatch(str(restore.get("index_sha256", "")))
             or restore.get("index_sha256") != https.get("candidate_index_sha256")
             or restore.get("project_id") != config.get("projectId") or restore.get("timeline_id") != config.get("timelineId")
-            or not (persisted or offered) or not same_draft):
-        errors.append(f"{job_id}: R14 did not restore the same original persisted or identified pending draft")
+            or restore.get("method") not in {"automatic", "restore", "save-them"}
+            or recovery.get("completed") is not True or recovery.get("draft_provenance") is not True
+            or recovery.get("method") != restore.get("method")
+            or (restore.get("method") in {"restore", "save-them"} and recovery.get("clicked") is not True)
+            or not readback or not same_draft):
+        errors.append(f"{job_id}: R14 did not complete recovery and read back the same original draft")
     audit = receipt.get("r14_audit") if isinstance(receipt.get("r14_audit"), dict) else {}
     records = audit.get("requests")
     if (not isinstance(records, list) or not all(isinstance(record, dict) for record in records)
