@@ -11,7 +11,7 @@ import time
 
 
 class TimingCollector:
-    def __init__(self, started=None, startup=None):
+    def __init__(self, started=None, startup=None, startup_child=None):
         self.timings = []
         self.next_occurrence_id = 1
         if started is None:
@@ -39,6 +39,21 @@ class TimingCollector:
                                      'occurrence_id': self.next_occurrence_id,
                                      'parent': None, 'parent_id': None})
                 self.next_occurrence_id += 1
+            if startup_child is not None:
+                child_name, child_start, child_end = startup_child
+                parent = next((row for row in self.timings if row['stage'] == "command dispatch"), None)
+                if parent is not None and dispatch_start <= child_start <= child_end <= cli_entry:
+                    child_seconds = child_end - child_start
+                    parent['seconds'] = max(0.0, parent['seconds'] - child_seconds)
+                    self.timings.append({
+                        'stage': child_name,
+                        'seconds': child_seconds,
+                        'total_seconds': child_seconds,
+                        'occurrence_id': self.next_occurrence_id,
+                        'parent': parent['stage'],
+                        'parent_id': parent['occurrence_id'],
+                    })
+                    self.next_occurrence_id += 1
 
     def _advance(self, now):
         if self.active:
@@ -72,6 +87,10 @@ class TimingCollector:
             self.monitor.join()
 
     def snapshot(self):
+        return self.snapshot_with_span()[0]
+
+    def snapshot_with_span(self):
+        """Return rows and collector span at one monotonic snapshot instant."""
         with self.lock:
             now = time.monotonic()
             self._advance(now)
@@ -79,7 +98,7 @@ class TimingCollector:
             rows.extend(_row(item, now) for item in self.active)
             measured = sum(row['seconds'] for row in rows)
             rows.append({'stage': 'other command work', 'seconds': max(0.0, now - self.started - measured)})
-            return rows
+            return rows, max(0.0, now - self.started)
 
 
 def command_started():
@@ -112,9 +131,10 @@ def current_timings():
 
 class TimingOutput:
     """Enrich complete JSON objects, optionally deferring successful output."""
-    def __init__(self, stream, collector, *, defer_success=False):
+    def __init__(self, stream, collector, *, defer_success=False, include_collector_span=False):
         self.stream, self.collector = stream, collector
         self.defer_success = defer_success
+        self.include_collector_span = include_collector_span
         self.pending = None
 
     def _write_pending(self):
@@ -122,8 +142,14 @@ class TimingOutput:
             return
         value, terminator = self.pending
         self.pending = None
-        value['timings'] = self.collector.snapshot()
+        self._attach_timings(value)
         self.stream.write(json.dumps(value, ensure_ascii=False) + terminator)
+
+    def _attach_timings(self, value):
+        rows, span = self.collector.snapshot_with_span()
+        value['timings'] = rows
+        if self.include_collector_span:
+            value['collector_span_seconds'] = span
 
     def write(self, text):
         if self.pending is not None:
@@ -140,7 +166,7 @@ class TimingOutput:
             if self.defer_success and value.get('ok') is True:
                 self.pending = (value, '')
                 return len(text)
-            value['timings'] = self.collector.snapshot()
+            self._attach_timings(value)
             if self.collector.start_provenance is not None:
                 value['start'] = self.collector.start_provenance
             text = json.dumps(value, ensure_ascii=False)
@@ -242,6 +268,15 @@ def stage(name, *, detail=None, report_without_collector=False):
             collector.active[:] = [active for active in collector.active if active is not item]
             collector.timings.append(_row(item, now))
             collector.changed.notify_all()
+
+
+def set_stage_detail(detail):
+    """Attach an already-computed detail to the current occurrence, if any."""
+    collector = _current.get()
+    item = _parent.get()
+    if collector is not None and item is not None and item['collector'] is collector:
+        with collector.changed:
+            item['detail'] = detail
 
 
 def timed_call(name, function, *args, **kwargs):

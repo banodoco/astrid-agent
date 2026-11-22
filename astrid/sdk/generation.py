@@ -7,7 +7,7 @@ generation method is actually invoked.
 
 from __future__ import annotations
 
-from astrid.sdk.command_timing import timed_call
+from astrid.sdk.command_timing import set_stage_detail, stage, timed_call
 
 import builtins
 import importlib
@@ -124,36 +124,42 @@ def _require_single_declared_output(*, workflow: Any, companion: Any) -> None:
         )
 
 
-def _import_generation_member(path: Path, controls: dict[str, Any]) -> dict[str, Any]:
-    import hashlib
+def _timed_generation_invocation(function, /, *args, **kwargs):
+    with stage("invocation"):
+        return function(*args, **kwargs)
 
-    from astrid.core.execution.managed_inputs import managed_file_digest
-    client = controls.get('client')
-    importer = getattr(getattr(client, 'media', None), 'import_file', None)
-    if not callable(importer):
-        raise CapabilityPreconditionError(
-            'generate with placement requires a connected Runtime client with '
-            'media.import_file; use astrid generate or pass client= explicitly')
-    invoke_out, invoke_project = _resolve_invoke_destination(
-        client=client, out=controls.get('out'), project=controls.get('project'),
-        project_root=controls.get('project_root'))
-    controls.update(out=invoke_out, project=invoke_project)
-    data = path.read_bytes()
-    sha256 = hashlib.sha256(data).hexdigest()
-    imported = importer(project=invoke_project, path=path)
-    stored = getattr(imported, 'data', None) if getattr(imported, 'ok', False) else None
-    if not isinstance(stored, Mapping):
-        error = getattr(imported, 'error', None)
-        raise CapabilityInvocationError(
-            f'could not import generated {path.name}: '
-            f"{getattr(error, 'message', None) or error or 'no result'}")
-    try:
-        actual = managed_file_digest(stored, path.name)
-    except ValueError as exc:
-        raise CapabilityInvocationError(str(exc)) from exc
-    if actual != 'sha256:' + sha256:
-        raise CapabilityInvocationError(f'imported generated {path.name} does not match its digest')
-    return {'digest': actual, 'sha256': sha256, 'bytes': len(data), 'filename': path.name}
+
+def _import_generation_member(path: Path, controls: dict[str, Any]) -> dict[str, Any]:
+    with stage("object import"):
+        import hashlib
+
+        from astrid.core.execution.managed_inputs import managed_file_digest
+        client = controls.get('client')
+        importer = getattr(getattr(client, 'media', None), 'import_file', None)
+        if not callable(importer):
+            raise CapabilityPreconditionError(
+                'generate with placement requires a connected Runtime client with '
+                'media.import_file; use astrid generate or pass client= explicitly')
+        invoke_out, invoke_project = _resolve_invoke_destination(
+            client=client, out=controls.get('out'), project=controls.get('project'),
+            project_root=controls.get('project_root'))
+        controls.update(out=invoke_out, project=invoke_project)
+        data = path.read_bytes()
+        sha256 = hashlib.sha256(data).hexdigest()
+        imported = importer(project=invoke_project, path=path)
+        stored = getattr(imported, 'data', None) if getattr(imported, 'ok', False) else None
+        if not isinstance(stored, Mapping):
+            error = getattr(imported, 'error', None)
+            raise CapabilityInvocationError(
+                f'could not import generated {path.name}: '
+                f"{getattr(error, 'message', None) or error or 'no result'}")
+        try:
+            actual = managed_file_digest(stored, path.name)
+        except ValueError as exc:
+            raise CapabilityInvocationError(str(exc)) from exc
+        if actual != 'sha256:' + sha256:
+            raise CapabilityInvocationError(f'imported generated {path.name} does not match its digest')
+        return {'digest': actual, 'sha256': sha256, 'bytes': len(data), 'filename': path.name}
 
 
 def _retain_generation_source(path: Path, controls: dict[str, Any]) -> dict[str, Any]:
@@ -168,44 +174,60 @@ def _retain_generation_source(path: Path, controls: dict[str, Any]) -> dict[str,
 @contextmanager
 def _snapshot_generation_workflow(path: Path):
     """Freeze a canonical bundle, including its declared source evidence."""
+    from contextlib import ExitStack
     from tempfile import TemporaryDirectory
-    original = path.expanduser().resolve()
-    if original.is_dir():
-        original = original / 'workflow.py'
-    with TemporaryDirectory(prefix='astrid-workflow-source-') as scratch:
-        snapshot = Path(scratch) / original.name
-        try:
-            if original.suffix.lower() == '.py':
-                from vibecomfy.security.provenance import Provenance
-                from vibecomfy.workflow_bundle import _atomic_publish_pair, load_bundle
 
-                bundle = load_bundle(original, trust=Provenance.USER_CONFIRMED)
-                bundle.require_canonical_authority('snapshot generation workflow')
-                archive = original.with_name('source.json')
-                declared = None
-                if not archive.is_file():
-                    metadata = bundle.workflow.metadata
-                    declared = (metadata.get('source_workflow_path') or metadata.get('source_path')
-                                or metadata.get('source_workflow'))
-                    if declared:
-                        archive = Path(declared)
-                        if not archive.is_absolute():
-                            if archive.parts[0] == 'ready_templates':
-                                from vibecomfy.registry.ready import repo_ready_template_root
-                                archive = repo_ready_template_root().parent / archive
-                            else:
-                                archive = original.parent / archive
-                # A declared member is required evidence, not an optional
-                # adjacent convenience file.
-                members = ({snapshot.with_name('source.json'): archive.read_bytes()}
-                           if declared or archive.is_file() else {})
-                _atomic_publish_pair(snapshot, original.read_bytes(), bundle.ui_sidecar,
-                                     expected=bundle, extra_members=members)
-            else:
-                snapshot.write_bytes(original.read_bytes())
-        except (OSError, ValueError) as exc:
-            raise GenerationInputError(f'canonical workflow bundle could not be read: {original}: {exc}') from exc
-        yield snapshot
+    class _TimedTemporaryDirectory:
+        def __init__(self):
+            self.directory = TemporaryDirectory(prefix='astrid-workflow-source-')
+
+        def __enter__(self):
+            return self.directory.__enter__()
+
+        def __exit__(self, *exc):
+            with stage("workflow snapshot cleanup"):
+                return self.directory.__exit__(*exc)
+
+    with ExitStack() as setup:
+        setup.enter_context(stage("workflow snapshot"))
+        original = path.expanduser().resolve()
+        if original.is_dir():
+            original = original / 'workflow.py'
+        with _TimedTemporaryDirectory() as scratch:
+            snapshot = Path(scratch) / original.name
+            try:
+                if original.suffix.lower() == '.py':
+                    from vibecomfy.security.provenance import Provenance
+                    from vibecomfy.workflow_bundle import _atomic_publish_pair, load_bundle
+
+                    bundle = load_bundle(original, trust=Provenance.USER_CONFIRMED)
+                    bundle.require_canonical_authority('snapshot generation workflow')
+                    archive = original.with_name('source.json')
+                    declared = None
+                    if not archive.is_file():
+                        metadata = bundle.workflow.metadata
+                        declared = (metadata.get('source_workflow_path') or metadata.get('source_path')
+                                    or metadata.get('source_workflow'))
+                        if declared:
+                            archive = Path(declared)
+                            if not archive.is_absolute():
+                                if archive.parts[0] == 'ready_templates':
+                                    from vibecomfy.registry.ready import repo_ready_template_root
+                                    archive = repo_ready_template_root().parent / archive
+                                else:
+                                    archive = original.parent / archive
+                    # A declared member is required evidence, not an optional
+                    # adjacent convenience file.
+                    members = ({snapshot.with_name('source.json'): archive.read_bytes()}
+                               if declared or archive.is_file() else {})
+                    _atomic_publish_pair(snapshot, original.read_bytes(), bundle.ui_sidecar,
+                                         expected=bundle, extra_members=members)
+                else:
+                    snapshot.write_bytes(original.read_bytes())
+            except (OSError, ValueError) as exc:
+                raise GenerationInputError(f'canonical workflow bundle could not be read: {original}: {exc}') from exc
+            setup.close()
+            yield snapshot
 
 
 def _public_input_values(values):
@@ -1051,7 +1073,7 @@ def _prepare_verified_image_recipe(*, inputs: dict[str, Any], target_client: Any
                         for key in effective if key != "count" and key in param_map}
     with TemporaryDirectory(prefix="astrid-private-image-recipe-") as scratch:
         root = Path(scratch)
-        bundle = emit_bundle(workflow, root / "workflow.py", {"operation": "authored"})
+        bundle = timed_call("workflow emission", emit_bundle, workflow, root / "workflow.py", {"operation": "authored"})
         bundle.require_canonical_authority("private verified image preparation")
         approval = bundle.compile(schema_provider=schema, models_root=bound_root.path)
         detached = approval.to_dict()
@@ -1585,13 +1607,14 @@ class GenerationFacade:
                     original_source = frozen.with_name('source.json') if frozen.suffix == '.py' else frozen
                     if not original_source.is_file():
                         original_source = frozen
-                    retained_source = _retain_generation_source(original_source, source_controls)
+                    retained_source = timed_call("source retention", _retain_generation_source, original_source, source_controls)
                     project, out = source_controls['project'], source_controls['out']
                 try:
                     # An attached ComfyUI's own schema names a saved workflow's custom-node inputs, as the run reads them.
-                    attached = placements.attached_comfy_url(placement, client=client)
-                    description, values = resolve_workflow_inputs(
-                        frozen, inputs or {}, mode=mode, **({'comfy_url': attached} if attached else {}))
+                    with stage("workflow inputs"):
+                        attached = placements.attached_comfy_url(placement, client=client)
+                        description, values = resolve_workflow_inputs(
+                            frozen, inputs or {}, mode=mode, **({'comfy_url': attached} if attached else {}))
                 except ImportError as exc:
                     from astrid.core.generation.preflight import generation_error
                     raise generation_error(exc, code='missing_dependency',
@@ -1789,27 +1812,28 @@ class GenerationFacade:
             require_entry_available,
             require_model_available,
         )
-        qualified = []
-        filtered = []
-        for source, candidate in candidates:
-            identifier = candidate.id if source == 'catalog' else candidate['id']
-            try:
-                if source == 'catalog':
-                    if automatic:
-                        require_model_available(identifier, mode, 'local')
+        with stage("candidate qualification"):
+            qualified = []
+            filtered = []
+            for source, candidate in candidates:
+                identifier = candidate.id if source == 'catalog' else candidate['id']
+                try:
+                    if source == 'catalog':
+                        if automatic:
+                            require_model_available(identifier, mode, 'local')
+                        else:
+                            _validate_catalog_target_request(registry=registry, candidate=candidate,
+                                mode=mode, modality=modality, inputs=inputs)
                     else:
-                        _validate_catalog_target_request(registry=registry, candidate=candidate,
-                            mode=mode, modality=modality, inputs=inputs)
-                else:
-                    if not automatic and (candidate['kind'] != modality or mode not in candidate['modes']):
-                        raise CapabilityValidationError(f"entry {identifier!r} does not support {modality}/{mode}")
-                    require_entry_available(candidate, mode)
-            except AstridError as exc:
-                if not automatic or exc.code != 'generation_route_unqualified':
-                    raise
-                filtered.append((identifier, exc))
-                continue
-            qualified.append((source, candidate))
+                        if not automatic and (candidate['kind'] != modality or mode not in candidate['modes']):
+                            raise CapabilityValidationError(f"entry {identifier!r} does not support {modality}/{mode}")
+                        require_entry_available(candidate, mode)
+                except AstridError as exc:
+                    if not automatic or exc.code != 'generation_route_unqualified':
+                        raise
+                    filtered.append((identifier, exc))
+                    continue
+                qualified.append((source, candidate))
         if automatic and filtered and not qualified:
             raise AstridError(
                 'No qualified generation candidate remains; filtered routes: '
@@ -1868,209 +1892,212 @@ class GenerationFacade:
 
         def retain_source(filename: str, data: bytes) -> None:
             nonlocal source_ref
-            with TemporaryDirectory(prefix='astrid-generation-source-') as scratch:
-                snapshot = Path(scratch) / filename
-                snapshot.write_bytes(data)
-                source_ref = import_member(snapshot)
+            with stage("source retention"):
+                with TemporaryDirectory(prefix='astrid-generation-source-') as scratch:
+                    snapshot = Path(scratch) / filename
+                    snapshot.write_bytes(data)
+                    source_ref = import_member(snapshot)
 
         selected = None
         failures: list[str] = []
         state = _admission_state or _WorkflowAdmissionState()
         for source, candidate in candidates:
-            if source == 'workflow':
-                candidate = discovery.complete_ready(candidate)
-            source_ref = retained_source
-            identifier = candidate.id if source == "catalog" else candidate["id"]
-            inspect_candidate = model is None and source == "workflow" and candidate.get("inspect_inputs_declared")
-            admission = None
-            if inspect_candidate:
-                admission_key = (identifier, candidate["contribution"], candidate.get("pack_root", ""))
-                admission = state.entries.get(admission_key)
-            if (admission is None and automatic and identifier != pinned and source == "workflow"
-                    and candidate.get('hooks_declared')):
-                # A contributed default may require a different public input shape. Only
-                # skip it for missing required inputs; a chosen candidate's build errors
-                # and explicitly pinned entries remain fail-closed.
-                description = discovery.describe_entry(identifier, mode=mode, _native=True)
-                names = {name for port in description['inputs']
-                         for name in (port['name'], *port.get('aliases', []))}
+            with stage("candidate preparation"):
+                if source == 'workflow':
+                    candidate = discovery.complete_ready(candidate)
+                source_ref = retained_source
+                identifier = candidate.id if source == "catalog" else candidate["id"]
+                set_stage_detail(identifier)
+                inspect_candidate = model is None and source == "workflow" and candidate.get("inspect_inputs_declared")
+                admission = None
+                if inspect_candidate:
+                    admission_key = (identifier, candidate["contribution"], candidate.get("pack_root", ""))
+                    admission = state.entries.get(admission_key)
+                if (admission is None and automatic and identifier != pinned and source == "workflow"
+                        and candidate.get('hooks_declared')):
+                    # A contributed default may require a different public input shape. Only
+                    # skip it for missing required inputs; a chosen candidate's build errors
+                    # and explicitly pinned entries remain fail-closed.
+                    description = discovery.describe_entry(identifier, mode=mode, _native=True)
+                    names = {name for port in description['inputs']
+                             for name in (port['name'], *port.get('aliases', []))}
+                    try:
+                        workflow_entries.validate_inputs(description, {k: v for k, v in inputs.items() if k in names})
+                    except workflow_entries.MissingRequiredEntryInputsError as exc:
+                        failures.append(f"{identifier}: {exc}")
+                        continue
+                candidate_inputs = inputs
+                candidate_controls = dict(controls)
+                if inspect_candidate:
+                    # The remote dry and live passes share inputs and custody from
+                    # the same selected contribution's controller admission.
+                    if admission is None:
+                        try:
+                            validated = _validate_workflow_build_inputs(candidate, inputs)
+                        except ValueError as exc:
+                            raise generation_error(
+                                exc, entry={'id': identifier, 'engine': 'comfyui', 'mode': mode},
+                                code="input_rejected") from exc
+                        admission = {"inputs": validated,
+                                     **_admit_workflow_inputs(candidate, validated, controls, _job_dirs, state)}
+                        state.entries[admission_key] = admission
+                    candidate_inputs = admission["inputs"]
+                    candidate_controls.update({key: value for key, value in admission.items() if key != "inputs"})
                 try:
-                    workflow_entries.validate_inputs(description, {k: v for k, v in inputs.items() if k in names})
-                except workflow_entries.MissingRequiredEntryInputsError as exc:
+                    assets = {}
+                    approved_files = None
+                    transport = BuildTransport()
+                    if is_remote_target:
+                        template = (None if source == "workflow" else _local_template(candidate, mode))
+                        if source == "workflow" and candidate.get('hooks_declared'):
+                            import tempfile
+                            _job_dirs.append(Path(tempfile.mkdtemp(prefix='astrid-job-')))
+                            candidate = workflow_entries.attach_hooks(candidate, candidate_inputs, _job_dirs[-1])
+                        runpod_engine = workflow_entries.runpod_engine(candidate if source == "workflow" else
+                            discovery.find_entry(template) if template else None)
+                        pending_target = {'engine': runpod_engine, 'placement': 'runpod', 'state': 'pending_host_readiness'}
+                    if source == "catalog":
+                        if is_managed_target and not dry_run:
+                            timed_call("target check", require_generation_target_readiness, candidate, mode, target_client)
+                        workflow, plan, schema, assets = timed_call("workflow build", _prepare_catalog_target_workflow,
+                            registry=registry, candidate=candidate, mode=mode, modality=modality,
+                            inputs=inputs, target_client=target_client, backend=backend,
+                            retain_source=None if dry_run else retain_source,
+                            defer_target=is_remote_target or (is_managed_target and not dry_run), align=align,
+                            reuse_default_registry=getattr(
+                                registry, '_astrid_default_generation_registry', False))
+                    else:
+                        from types import SimpleNamespace
+                        prerequisite = SimpleNamespace(id=identifier, modes={mode: SimpleNamespace(
+                            backends={"local": SimpleNamespace(template=str(candidate["bundle"]))})})
+                        if not is_remote_target:
+                            timed_call("target check", require_generation_target_readiness, prerequisite, mode, target_client)
+                        if candidate["kind"] != modality or mode not in candidate["modes"]:
+                            raise ValueError(f"entry {identifier!r} does not support {modality}/{mode}")
+                        # The selected workflow owns preparation. Its catalog association
+                        # supplies discovery/qualification metadata, not another selector.
+                        if candidate.get('hooks_declared') and 'build' in workflow_entries.entry_hooks(candidate):
+                            # A contribution with a build hook owns its graph: build (CPU, deterministic) picks it
+                            # from the request; after_outputs shares this job directory. Plan 32 T6b-3.
+                            if controls.get('wait') is False and not dry_run and not is_remote_target:
+                                # after_outputs reads the build state in this call's job directory, which is
+                                # removed when the call returns; a queued task would find it gone.
+                                raise CapabilityValidationError(
+                                    f"entry {identifier!r} runs a post-generation step on this machine; "
+                                    "it cannot run with --no-wait (the build state lives only for this call)")
+                            import tempfile
+                            job_dir = candidate.get('job_dir') or Path(tempfile.mkdtemp(prefix='astrid-job-'))
+                            if not candidate.get('job_dir'):
+                                _job_dirs.append(Path(job_dir))
+                            # Discovery checks only required ports. The selected hook must
+                            # honor the same declared-controls contract as an explicit entry.
+                            build_inputs = _validate_workflow_build_inputs(candidate, candidate_inputs)
+                            build_options: dict[str, Any] = {}
+                            published_sources: list[dict[str, Any]] = []
+                            if not dry_run and workflow_entries.publishes_source(candidate):
+                                def publish_source(path: Path, expected: str) -> tuple[Path, dict[str, Any]]:
+                                    descriptor = import_member(path)
+                                    if descriptor['sha256'] != expected:
+                                        raise CapabilityInvocationError('managed source digest mismatch during publication')
+                                    client = candidate_controls.get('client')
+                                    project = candidate_controls.get('project')
+                                    opened = client.media.open(project, descriptor['digest'], materialize=True,
+                                        cache_root=Path(job_dir) / 'published-source', preview_bytes=0,
+                                        max_bytes=max(descriptor['bytes'], 1))
+                                    if not opened.ok:
+                                        raise CapabilityInvocationError(
+                                            f"could not reopen managed source: {opened.error.message}")
+                                    published_sources.append(dict(descriptor))
+                                    return Path(opened.data['local_path']), descriptor
+                                build_options['publish_source'] = publish_source
+                            built = timed_call('workflow build', workflow_entries.build_entry,
+                                candidate, build_inputs, job_dir, check_runtime=not dry_run and not is_remote_target,
+                                **build_options)
+                            transport = build_transport(built)
+                            if transport.remote is not None:
+                                descriptor = dict(transport.remote.descriptor)
+                                published = next((source for source in published_sources if source == descriptor), None)
+                                if published is None:
+                                    raise CapabilityInvocationError(
+                                        "remote workflow source descriptor must match a source published by this build")
+                                transport = replace(transport, remote=replace(transport.remote, descriptor=published))
+                            workflow, assets = built['workflow'], dict(built.get('assets') or {})
+                            plan = {'kind': candidate['kind'], 'unbound': [], 'bindings': dict(built['bindings']),
+                                    'build_plan': built.get('plan'), 'job_dir': str(job_dir)}
+                            if not dry_run and source_ref is None:
+                                retained = Path(built['bundle']) / 'source.json'
+                                retain_source(retained.name, retained.read_bytes())
+                            schema = timed_call('target node list', workflow_entries.target_schema,candidate, workflow, target_client, engine=runpod_engine,
+                                                                    pending_target=pending_target, align=align)
+                        else:
+                            with _snapshot_generation_workflow(workflow_entries.bundle_path(candidate)) as frozen:
+                                if not dry_run and source_ref is None:
+                                    original_path = frozen
+                                    retained = frozen.with_name('source.json')
+                                    if retained.is_file():
+                                        original_path = retained
+                                    retain_source(original_path.name, original_path.read_bytes())
+                                workflow, plan, assets = timed_call("workflow build", workflow_entries.prepare,
+                                    frozen, target_client=target_client, mode=mode,
+                                    binds=candidate.get("binds"), defaults=candidate.get("defaults"), values=candidate_inputs)
+                            if plan["kind"] != modality:
+                                raise ValueError("entry kind does not match workflow output")
+                            if plan["unbound"]:
+                                raise ValueError("workflow has no binding for requested controls: " + ", ".join(plan["unbound"]))
+                            if workflow_entry is not None:
+                                from vibecomfy.entries import draft_entry
+                                needs = timed_call('entry needs', draft_entry, workflow, identifier)['needs']
+                                # A raw audio workflow may run without being saved
+                                # as one of the catalog's named audio modes.
+                                needs = [need for need in needs if need.get('ambiguity') !=
+                                         'audio mode is unknown; choose tts, music, or sfx']
+                                needs.extend(need for need in candidate.get('needs', [])
+                                             if need.get('ambiguity') and need not in needs)
+                                candidate = {**candidate, 'needs': needs}
+                            schema = timed_call('target node list', workflow_entries.target_schema,candidate, workflow, target_client, engine=runpod_engine,
+                                                                    pending_target=pending_target, align=align)
+                    from vibecomfy.workflow_bundle import load_bundle
+                    if source == "workflow":
+                        # Re-emit the edited canonical workflow before approval so
+                        # the input bindings are represented by a fresh revision.
+                        from vibecomfy.workflow_bundle import emit_bundle
+                        with TemporaryDirectory(prefix="astrid-entry-approval-") as scratch:
+                            bundle = timed_call("workflow emission", emit_bundle, workflow, Path(scratch) / "workflow.py", {"operation": "authored"})
+                            bundle.require_canonical_authority("generate on target")
+                            approval = timed_call("approval compile", bundle.compile, schema_provider=schema) if schema is not None and not assets else None
+                            approved_files = (Path(scratch, "workflow.py").read_bytes(),
+                                              Path(scratch, "workflow.vibe.json").read_bytes())
+                    else:
+                        bundle = timed_call("approval compile", load_bundle, workflow)
+                        bundle.require_canonical_authority("generate on target")
+                        approval = timed_call("approval compile", bundle.compile, schema_provider=schema) if schema is not None and not assets else None
+                except (AstridError, ValueError, KeyError, OSError, CapabilityValidationError, ProductionEngineError) as exc:
+                    if (model is not None or workflow_entry is not None or identifier in preferred
+                            or getattr(exc, "code", None) in {"COMFY_TARGET_NOT_READY", "engine_not_found"}):
+                        # A preferred default owns its failure. Never silently
+                        # replace it with another model after preparation fails.
+                        if isinstance(exc, AstridError):
+                            raise generation_error(exc) from exc
+                        if isinstance(exc, CapabilityValidationError):
+                            raise
+                        if align == 'check' and 'not present locally' in str(exc):
+                            if target_client is not None and target_client.target.kind == 'attached':
+                                remedy = 'put the missing model files in their folders on your ComfyUI, then retry'
+                            else:
+                                remedy = (f"run: astrid generate align --apply --consent user_env"
+                                          f" --entry {identifier}")
+                            exc = ValueError(
+                                f"{exc}. Fix: pass --align trust to accept the workflow's declared models as present "
+                                f"on the target (unverified), or {remedy}")
+                        raise generation_error(exc, entry={'id': identifier, 'engine': 'comfyui', 'mode': mode},
+                            target=getattr(target_client, 'generation_target', None),
+                            code='missing_dependency' if 'missing' in str(exc).lower() else 'input_rejected') from exc
                     failures.append(f"{identifier}: {exc}")
                     continue
-            candidate_inputs = inputs
-            candidate_controls = dict(controls)
-            if inspect_candidate:
-                # The remote dry and live passes share inputs and custody from
-                # the same selected contribution's controller admission.
-                if admission is None:
-                    try:
-                        validated = _validate_workflow_build_inputs(candidate, inputs)
-                    except ValueError as exc:
-                        raise generation_error(
-                            exc, entry={'id': identifier, 'engine': 'comfyui', 'mode': mode},
-                            code="input_rejected") from exc
-                    admission = {"inputs": validated,
-                                 **_admit_workflow_inputs(candidate, validated, controls, _job_dirs, state)}
-                    state.entries[admission_key] = admission
-                candidate_inputs = admission["inputs"]
-                candidate_controls.update({key: value for key, value in admission.items() if key != "inputs"})
-            try:
-                assets = {}
-                approved_files = None
-                transport = BuildTransport()
-                if is_remote_target:
-                    template = (None if source == "workflow" else _local_template(candidate, mode))
-                    if source == "workflow" and candidate.get('hooks_declared'):
-                        import tempfile
-                        _job_dirs.append(Path(tempfile.mkdtemp(prefix='astrid-job-')))
-                        candidate = workflow_entries.attach_hooks(candidate, candidate_inputs, _job_dirs[-1])
-                    runpod_engine = workflow_entries.runpod_engine(candidate if source == "workflow" else
-                        discovery.find_entry(template) if template else None)
-                    pending_target = {'engine': runpod_engine, 'placement': 'runpod', 'state': 'pending_host_readiness'}
-                if source == "catalog":
-                    if is_managed_target and not dry_run:
-                        timed_call("target check", require_generation_target_readiness, candidate, mode, target_client)
-                    workflow, plan, schema, assets = timed_call("workflow build", _prepare_catalog_target_workflow,
-                        registry=registry, candidate=candidate, mode=mode, modality=modality,
-                        inputs=inputs, target_client=target_client, backend=backend,
-                        retain_source=None if dry_run else retain_source,
-                        defer_target=is_remote_target or (is_managed_target and not dry_run), align=align,
-                        reuse_default_registry=getattr(
-                            registry, '_astrid_default_generation_registry', False))
-                else:
-                    from types import SimpleNamespace
-                    prerequisite = SimpleNamespace(id=identifier, modes={mode: SimpleNamespace(
-                        backends={"local": SimpleNamespace(template=str(candidate["bundle"]))})})
-                    if not is_remote_target:
-                        timed_call("target check", require_generation_target_readiness, prerequisite, mode, target_client)
-                    if candidate["kind"] != modality or mode not in candidate["modes"]:
-                        raise ValueError(f"entry {identifier!r} does not support {modality}/{mode}")
-                    # The selected workflow owns preparation. Its catalog association
-                    # supplies discovery/qualification metadata, not another selector.
-                    if candidate.get('hooks_declared') and 'build' in workflow_entries.entry_hooks(candidate):
-                        # A contribution with a build hook owns its graph: build (CPU, deterministic) picks it
-                        # from the request; after_outputs shares this job directory. Plan 32 T6b-3.
-                        if controls.get('wait') is False and not dry_run and not is_remote_target:
-                            # after_outputs reads the build state in this call's job directory, which is
-                            # removed when the call returns; a queued task would find it gone.
-                            raise CapabilityValidationError(
-                                f"entry {identifier!r} runs a post-generation step on this machine; "
-                                "it cannot run with --no-wait (the build state lives only for this call)")
-                        import tempfile
-                        job_dir = candidate.get('job_dir') or Path(tempfile.mkdtemp(prefix='astrid-job-'))
-                        if not candidate.get('job_dir'):
-                            _job_dirs.append(Path(job_dir))
-                        # Discovery checks only required ports. The selected hook must
-                        # honor the same declared-controls contract as an explicit entry.
-                        build_inputs = _validate_workflow_build_inputs(candidate, candidate_inputs)
-                        build_options: dict[str, Any] = {}
-                        published_sources: list[dict[str, Any]] = []
-                        if not dry_run and workflow_entries.publishes_source(candidate):
-                            def publish_source(path: Path, expected: str) -> tuple[Path, dict[str, Any]]:
-                                descriptor = import_member(path)
-                                if descriptor['sha256'] != expected:
-                                    raise CapabilityInvocationError('managed source digest mismatch during publication')
-                                client = candidate_controls.get('client')
-                                project = candidate_controls.get('project')
-                                opened = client.media.open(project, descriptor['digest'], materialize=True,
-                                    cache_root=Path(job_dir) / 'published-source', preview_bytes=0,
-                                    max_bytes=max(descriptor['bytes'], 1))
-                                if not opened.ok:
-                                    raise CapabilityInvocationError(
-                                        f"could not reopen managed source: {opened.error.message}")
-                                published_sources.append(dict(descriptor))
-                                return Path(opened.data['local_path']), descriptor
-                            build_options['publish_source'] = publish_source
-                        built = timed_call('workflow build', workflow_entries.build_entry,
-                            candidate, build_inputs, job_dir, check_runtime=not dry_run and not is_remote_target,
-                            **build_options)
-                        transport = build_transport(built)
-                        if transport.remote is not None:
-                            descriptor = dict(transport.remote.descriptor)
-                            published = next((source for source in published_sources if source == descriptor), None)
-                            if published is None:
-                                raise CapabilityInvocationError(
-                                    "remote workflow source descriptor must match a source published by this build")
-                            transport = replace(transport, remote=replace(transport.remote, descriptor=published))
-                        workflow, assets = built['workflow'], dict(built.get('assets') or {})
-                        plan = {'kind': candidate['kind'], 'unbound': [], 'bindings': dict(built['bindings']),
-                                'build_plan': built.get('plan'), 'job_dir': str(job_dir)}
-                        if not dry_run and source_ref is None:
-                            retained = Path(built['bundle']) / 'source.json'
-                            retain_source(retained.name, retained.read_bytes())
-                        schema = workflow_entries.target_schema(candidate, workflow, target_client, engine=runpod_engine,
-                                                                pending_target=pending_target, align=align)
-                    else:
-                        with _snapshot_generation_workflow(workflow_entries.bundle_path(candidate)) as frozen:
-                            if not dry_run and source_ref is None:
-                                original_path = frozen
-                                retained = frozen.with_name('source.json')
-                                if retained.is_file():
-                                    original_path = retained
-                                retain_source(original_path.name, original_path.read_bytes())
-                            workflow, plan, assets = timed_call("workflow build", workflow_entries.prepare,
-                                frozen, target_client=target_client, mode=mode,
-                                binds=candidate.get("binds"), defaults=candidate.get("defaults"), values=candidate_inputs)
-                        if plan["kind"] != modality:
-                            raise ValueError("entry kind does not match workflow output")
-                        if plan["unbound"]:
-                            raise ValueError("workflow has no binding for requested controls: " + ", ".join(plan["unbound"]))
-                        if workflow_entry is not None:
-                            from vibecomfy.entries import draft_entry
-                            needs = draft_entry(workflow, identifier)['needs']
-                            # A raw audio workflow may run without being saved
-                            # as one of the catalog's named audio modes.
-                            needs = [need for need in needs if need.get('ambiguity') !=
-                                     'audio mode is unknown; choose tts, music, or sfx']
-                            needs.extend(need for need in candidate.get('needs', [])
-                                         if need.get('ambiguity') and need not in needs)
-                            candidate = {**candidate, 'needs': needs}
-                        schema = workflow_entries.target_schema(candidate, workflow, target_client, engine=runpod_engine,
-                                                                pending_target=pending_target, align=align)
-                from vibecomfy.workflow_bundle import load_bundle
-                if source == "workflow":
-                    # Re-emit the edited canonical workflow before approval so
-                    # the input bindings are represented by a fresh revision.
-                    from vibecomfy.workflow_bundle import emit_bundle
-                    with TemporaryDirectory(prefix="astrid-entry-approval-") as scratch:
-                        bundle = emit_bundle(workflow, Path(scratch) / "workflow.py", {"operation": "authored"})
-                        bundle.require_canonical_authority("generate on target")
-                        approval = bundle.compile(schema_provider=schema) if schema is not None and not assets else None
-                        approved_files = (Path(scratch, "workflow.py").read_bytes(),
-                                          Path(scratch, "workflow.vibe.json").read_bytes())
-                else:
-                    bundle = load_bundle(workflow)
-                    bundle.require_canonical_authority("generate on target")
-                    approval = bundle.compile(schema_provider=schema) if schema is not None and not assets else None
-            except (AstridError, ValueError, KeyError, OSError, CapabilityValidationError, ProductionEngineError) as exc:
-                if (model is not None or workflow_entry is not None or identifier in preferred
-                        or getattr(exc, "code", None) in {"COMFY_TARGET_NOT_READY", "engine_not_found"}):
-                    # A preferred default owns its failure. Never silently
-                    # replace it with another model after preparation fails.
-                    if isinstance(exc, AstridError):
-                        raise generation_error(exc) from exc
-                    if isinstance(exc, CapabilityValidationError):
-                        raise
-                    if align == 'check' and 'not present locally' in str(exc):
-                        if target_client is not None and target_client.target.kind == 'attached':
-                            remedy = 'put the missing model files in their folders on your ComfyUI, then retry'
-                        else:
-                            remedy = (f"run: astrid generate align --apply --consent user_env"
-                                      f" --entry {identifier}")
-                        exc = ValueError(
-                            f"{exc}. Fix: pass --align trust to accept the workflow's declared models as present "
-                            f"on the target (unverified), or {remedy}")
-                    raise generation_error(exc, entry={'id': identifier, 'engine': 'comfyui', 'mode': mode},
-                        target=getattr(target_client, 'generation_target', None),
-                        code='missing_dependency' if 'missing' in str(exc).lower() else 'input_rejected') from exc
-                failures.append(f"{identifier}: {exc}")
-                continue
-            inputs = candidate_inputs
-            controls = candidate_controls
-            selected = (identifier, workflow, bundle, plan, schema, approval, assets, approved_files)
-            break
+                inputs = candidate_inputs
+                controls = candidate_controls
+                selected = (identifier, workflow, bundle, plan, schema, approval, assets, approved_files)
+                break
         if selected is None:
             raise AstridError(
                 f"No ready local {modality} model supports mode {mode!r} on the selected target"
@@ -2163,62 +2190,66 @@ class GenerationFacade:
             raise CapabilityInvocationError('generation did not retain its original source')
 
         with TemporaryDirectory(prefix="astrid-generate-target-") as scratch:
-            root = Path(scratch)
-            if approved_files is None:
-                emit_bundle(workflow, root / "workflow.py", {"operation": "authored"})
-            else:
-                (root / "workflow.py").write_bytes(approved_files[0])
-                (root / "workflow.vibe.json").write_bytes(approved_files[1])
-            # The native bindings sent as workflow_inputs below.
-            sent_inputs = {name: value for name, value in (plan or {}).get('bindings', {}).items()
-                           if name not in assets}
-            sent_seed = sent_inputs.get('seed')
-            asset_arguments: dict[str, Any] = {}
+            with stage("bundle materialisation"):
+                root = Path(scratch)
+                if approved_files is None:
+                    timed_call("workflow emission", emit_bundle, workflow, root / "workflow.py", {"operation": "authored"})
+                else:
+                    (root / "workflow.py").write_bytes(approved_files[0])
+                    (root / "workflow.vibe.json").write_bytes(approved_files[1])
+                # The native bindings sent as workflow_inputs below.
+                sent_inputs = {name: value for name, value in (plan or {}).get('bindings', {}).items()
+                               if name not in assets}
+                sent_seed = sent_inputs.get('seed')
+                asset_arguments: dict[str, Any] = {}
             if assets:
-                import zipfile
+                with stage("bundle materialisation"):
+                    import zipfile
 
-                from astrid.packs.vibecomfy.asset_manifest import build_asset_manifest
-                manifest = build_asset_manifest(assets, lineage=transport.lineage)
-                archive = root / "assets.zip"
-                with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zipped:
-                    zipped.writestr("manifest.json", json.dumps(manifest))
-                    for record in manifest["assets"]:
-                        zipped.write(assets[record["binding"]], record["member"])
-                asset_arguments["managed_assets"] = import_member(archive)
+                    from astrid.packs.vibecomfy.asset_manifest import build_asset_manifest
+                    manifest = build_asset_manifest(assets, lineage=transport.lineage)
+                    archive = root / "assets.zip"
+                    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zipped:
+                        zipped.writestr("manifest.json", json.dumps(manifest))
+                        for record in manifest["assets"]:
+                            zipped.write(assets[record["binding"]], record["member"])
+                    asset_arguments["managed_assets"] = import_member(archive)
             if is_remote_target and entry_id != 'workflow':
-                from astrid.core.generation.job_inputs import write_archive
-                # A requested filename_prefix is bound to the workflow's declared output
-                # (workflow_inputs). The shipped archive carries it only when the entry
-                # declares it as an input; an entry without that port must not refuse it.
-                archive_inputs = {name: value for name, value in inputs.items() if name != 'filename_prefix'}
-                remote = transport.remote
-                if remote is not None:
-                    asset_arguments['source_video'] = dict(remote.descriptor)
-                    authority = dict(controls.get('idempotency_context') or {})
-                    collisions = authority.keys() & remote.idempotency.keys()
-                    if collisions:
-                        names = ', '.join(sorted(collisions))
-                        raise CapabilityValidationError(f"reserved generation lineage keys: {names}")
-                    controls['idempotency_context'] = {**authority, **remote.idempotency}
-                    archive_inputs = dict(remote.inputs)
-                public, public_values = discovery.resolve_entry_inputs(entry_id, archive_inputs, mode=mode)
-                if 'filename_prefix' in inputs and any(
-                        'filename_prefix' in {port['name'], *port.get('aliases', [])} for port in public['inputs']):
-                    public, public_values = discovery.resolve_entry_inputs(
-                        entry_id, {**archive_inputs, 'filename_prefix': inputs['filename_prefix']}, mode=mode)
-                if 'seed' in {port['name'] for port in public['inputs']} and 'seed' in (plan or {}).get('bindings', {}):
-                    public_values['seed'] = plan['bindings']['seed']
-                archive = write_archive(root / 'entry-inputs.zip', public_values, public['inputs'])
-                asset_arguments['entry_inputs'] = import_member(archive)
+                with stage("bundle materialisation"):
+                    from astrid.core.generation.job_inputs import write_archive
+                    # A requested filename_prefix is bound to the workflow's declared output
+                    # (workflow_inputs). The shipped archive carries it only when the entry
+                    # declares it as an input; an entry without that port must not refuse it.
+                    archive_inputs = {name: value for name, value in inputs.items() if name != 'filename_prefix'}
+                    remote = transport.remote
+                    if remote is not None:
+                        asset_arguments['source_video'] = dict(remote.descriptor)
+                        authority = dict(controls.get('idempotency_context') or {})
+                        collisions = authority.keys() & remote.idempotency.keys()
+                        if collisions:
+                            names = ', '.join(sorted(collisions))
+                            raise CapabilityValidationError(f"reserved generation lineage keys: {names}")
+                        controls['idempotency_context'] = {**authority, **remote.idempotency}
+                        archive_inputs = dict(remote.inputs)
+                    public, public_values = discovery.resolve_entry_inputs(entry_id, archive_inputs, mode=mode)
+                    if 'filename_prefix' in inputs and any(
+                            'filename_prefix' in {port['name'], *port.get('aliases', [])} for port in public['inputs']):
+                        public, public_values = discovery.resolve_entry_inputs(
+                            entry_id, {**archive_inputs, 'filename_prefix': inputs['filename_prefix']}, mode=mode)
+                    if 'seed' in {port['name'] for port in public['inputs']} and 'seed' in (plan or {}).get('bindings', {}):
+                        public_values['seed'] = plan['bindings']['seed']
+                    archive = write_archive(root / 'entry-inputs.zip', public_values, public['inputs'])
+                    asset_arguments['entry_inputs'] = import_member(archive)
             hook_job = None
             if source == 'workflow' and not is_remote_target and plan and plan.get('job_dir') and 'after_outputs' in (candidate.get('hooks') or workflow_entries.entry_hooks(candidate)):
-                # The hook runs where the job runs, after the outputs are written and before they are sealed.
-                # On a rented machine the pod-side `astrid generate` rebuilds and runs it from the shipped inputs;
-                # this controller's job directory is not shipped.
-                job = workflow_entries.entry_job(candidate, inputs, plan['job_dir'], hooks={})
-                hook_job = json.dumps({'entry': candidate['id'], 'job_dir': plan['job_dir'],
-                                       'inputs': job['inputs'], 'files': job['files']}, sort_keys=True)
-            result = self.workflow(
+                with stage("bundle materialisation"):
+                    # The hook runs where the job runs, after the outputs are written and before they are sealed.
+                    # On a rented machine the pod-side `astrid generate` rebuilds and runs it from the shipped inputs;
+                    # this controller's job directory is not shipped.
+                    job = workflow_entries.entry_job(candidate, inputs, plan['job_dir'], hooks={})
+                    hook_job = json.dumps({'entry': candidate['id'], 'job_dir': plan['job_dir'],
+                                           'inputs': job['inputs'], 'files': job['files']}, sort_keys=True)
+            result = _timed_generation_invocation(self.workflow,
                 **({'after_outputs_job': hook_job} if hook_job else {}),
                 python=import_member(root / "workflow.py"),
                 companion=import_member(root / "workflow.vibe.json"),

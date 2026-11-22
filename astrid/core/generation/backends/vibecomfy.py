@@ -516,15 +516,24 @@ class VibeComfyBackend(BackendAdapter):
             client = self._model_resolution_client()
             if client is None:
                 raise ValueError("catalog model role resolution requires a selected Comfy target")
-            resolution_registry = registry if registry is not None else ModelRegistry.load_default()
+            from astrid.sdk.command_timing import stage
+
+            with stage("model registry"):
+                resolution_registry = registry if registry is not None else ModelRegistry.load_default()
             # Keep caller-provided typed entries usable, as on the historical
             # checkout path. Resolution is always captured afresh by the bound
             # client; no caller-provided plan or resolved filename is trusted.
             entries = [candidate for candidate in resolution_registry.list_all(include_closed=True)
                        if candidate.id != entry.id]
             resolution_registry = ModelRegistry([entry, *entries])
-            plan, observed = _capture_model_resolution(client, resolution_registry, entry.id, mode,
-                                                       **({"align": "trust"} if align == "trust" else {}))
+            with stage("target node list"):
+                plan, observed = _capture_model_resolution(
+                    client,
+                    resolution_registry,
+                    entry.id,
+                    mode,
+                    **({"align": "trust"} if align == "trust" else {}),
+                )
             target_schema = TargetSchemaProvider.from_object_info(
                 observed, server_url=client.http_origin, model_availability="target",
                 refresh_object_info=client.object_info,

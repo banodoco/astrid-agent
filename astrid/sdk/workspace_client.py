@@ -1039,11 +1039,14 @@ class WorkspaceClient:
                 isinstance(wire_spec.get("execution_request"), Mapping)
                 and "workflow" in wire_spec["execution_request"]
             )
-            receipt = _vibecomfy_invocation_preflight(
-                self,
-                wire_spec,
-                strict=strict,
-            )
+            from .command_timing import stage as timing_stage
+
+            with timing_stage("Workspace admission preflight"):
+                receipt = _vibecomfy_invocation_preflight(
+                    self,
+                    wire_spec,
+                    strict=strict,
+                )
             if receipt is not None:
                 wire_spec["invocation_preflight"] = receipt
         admission = {

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from astrid.core.contracts.errors import AstridError
@@ -86,11 +87,20 @@ def _dispatch_generate(args: list[str]) -> int:
     # first words go to listing, whose parser reports them.
     from astrid.core.generation.cli import main as cli_main
     from astrid.core.generation.cli import subcommand_names
-    if "--job" in args or (args and (args[0] in {"-h", "--help"} or (args[0] != "list" and args[0] in subcommand_names()))):
+    dispatch_marks = None
+    names = ()
+    if "--job" not in args and args and args[0] not in {"-h", "--help", "list"}:
+        dispatch_started = time.monotonic()
+        names = subcommand_names()
+        dispatch_ended = time.monotonic()
+        dispatch_marks = (dispatch_started, dispatch_ended)
+    if "--job" in args or (args and (args[0] in {"-h", "--help"} or (args[0] != "list" and args[0] in names))):
         main = cli_main
     else:
         from astrid.core.generation.listing import main
 
+    if main is cli_main and dispatch_marks is not None and args and args[0] in {"image", "workflow"}:
+        return main(args, dispatch_marks=dispatch_marks)
     return main(args)
 
 

@@ -39,9 +39,11 @@ def _generate_facade() -> Any:
 
 def _open_client() -> Any:
     """Acquire the Runtime connection at the explicit public CLI boundary."""
+    from astrid.sdk.command_timing import stage
     from astrid.sdk.client import AstridClient
 
-    return AstridClient.open_from_launcher()
+    with stage("Runtime connection"):
+        return AstridClient.open_from_launcher()
 
 
 def _no_generation_target(target: str, *, repo=None, client=None) -> bool:
@@ -471,7 +473,8 @@ def _workflow_command(parsed: argparse.Namespace) -> int:
     from astrid.core.generation import entries
 
     try:
-        values = _values(parsed)
+        from astrid.sdk.command_timing import timed_call
+        values = timed_call("input reads", _values, parsed)
     except (ValueError, OSError) as exc:
         from astrid.core.generation.preflight import generation_error
         raise generation_error(exc, code='input_rejected', details={'field': 'inputs'}) from exc
@@ -618,15 +621,17 @@ def _media_ref_file(parsed, ref: str, stack) -> tuple[str, str]:
 def _main_request(argv: list[str], stack) -> int:
     if '--job' in argv:
         return _job_command(argv)
-    parser = _parser(_context_description(argv))
-    def configure(parser):
-        parser.json_errors = '--json' in argv
-        for action in parser._actions:
-            if isinstance(action, argparse._SubParsersAction):
-                for child in action.choices.values():
-                    configure(child)
-    configure(parser)
-    parsed = parser.parse_args(argv)
+    from astrid.sdk.command_timing import stage
+    with stage("argument parsing"):
+        parser = _parser(_context_description(argv))
+        def configure(parser):
+            parser.json_errors = '--json' in argv
+            for action in parser._actions:
+                if isinstance(action, argparse._SubParsersAction):
+                    for child in action.choices.values():
+                        configure(child)
+        configure(parser)
+        parsed = parser.parse_args(argv)
     from astrid.core.generation.placement import is_runpod_placement
     if parsed.modality == 'list':
         from astrid.core.generation.listing import main as list_main
@@ -715,7 +720,8 @@ def _main_request(argv: list[str], stack) -> int:
     if parsed.width is not None and (parsed.width <= 0 or parsed.height <= 0):
         parser.error("--width and --height must be positive")
     try:
-        values = _values(parsed)
+        from astrid.sdk.command_timing import timed_call
+        values = timed_call("input reads", _values, parsed)
     except (ValueError, OSError) as exc:
         parser.error(str(exc))
     media_id = None
@@ -732,8 +738,9 @@ def _main_request(argv: list[str], stack) -> int:
     selector = parsed.entry or parsed.model
     discovery = None
     if selector:
+        from astrid.sdk.command_timing import timed_call
         from .entries import _EntryDiscovery
-        discovery = _EntryDiscovery()
+        discovery = timed_call("entry discovery", _EntryDiscovery)
 
     if parsed.entry or parsed.inputs_json:
         try:
@@ -950,7 +957,7 @@ def subcommand_names() -> tuple[str, ...]:
     return ()
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, dispatch_marks: tuple[float, float] | None = None) -> int:
     entry = time.monotonic()
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] not in {"image", "video", "audio", "workflow"} or any(arg in {"-h", "--help"} for arg in argv):
@@ -960,8 +967,9 @@ def main(argv: list[str] | None = None) -> int:
     marks = startup_marks()
     if marks is None:
         marks = (entry, "command entry", None, None)
-    collector = TimingCollector(started=marks[0], startup=(*marks, entry))
-    output = contextlib.redirect_stdout(TimingOutput(sys.stdout, collector)) if '--timings' in argv else contextlib.nullcontext()
+    collector = TimingCollector(started=marks[0], startup=(*marks, entry),
+                                startup_child=("dispatch", *dispatch_marks) if dispatch_marks else None)
+    output = contextlib.redirect_stdout(TimingOutput(sys.stdout, collector, include_collector_span=True)) if '--timings' in argv else contextlib.nullcontext()
     try:
         with timing_scope(collector), output:
             return _main_with_errors(argv)
