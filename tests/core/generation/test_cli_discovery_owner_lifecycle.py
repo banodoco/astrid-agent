@@ -1,9 +1,4 @@
-"""Command-local ownership resets the ContextVar but does not clear captured dicts.
-
-Copied async contexts that outlive the command can therefore retain and observe
-their original dictionary. Clearing the dictionary on exit is a possible
-Plan 82/review follow-up, outside this test-only card.
-"""
+"""Command-local ownership clears and revokes captured caches on exit."""
 from __future__ import annotations
 
 import pytest
@@ -34,7 +29,8 @@ def test_dry_run_cli_owns_fresh_pack_discovery_cache_per_invocation(monkeypatch)
 
     assert len(owners) == 2
     assert owners[0] is not owners[1]
-    assert owners == [{"invocation": 1}, {"invocation": 2}]
+    assert owners == [{}, {}]
+    assert all(not owner.active for owner in owners)
 
 
 def test_dry_run_cli_resets_pack_discovery_owner_after_command_exception(monkeypatch):
@@ -53,9 +49,8 @@ def test_dry_run_cli_resets_pack_discovery_owner_after_command_exception(monkeyp
         cli.main(["image", "a dog", "--dry-run"])
     assert isinstance(owners[0], dict)
     assert discovery._discovery_cache.get() is None
-    # The module accessor is reset; an already captured reference still sees
-    # the object, as documented above.
-    assert owners[0] == {"failed": True}
+    assert owners[0] == {}
+    assert not owners[0].active
 
 
 def test_sdk_image_owns_fresh_pack_discovery_cache_per_invocation(monkeypatch):
@@ -81,7 +76,8 @@ def test_sdk_image_owns_fresh_pack_discovery_cache_per_invocation(monkeypatch):
     assert len(owners) == 2
     assert owners[0] is not owners[1]
     assert initial_contents == [{}, {}]
-    assert owners == [{"seen": 1}, {"seen": 2}]
+    assert owners == [{}, {}]
+    assert all(not owner.active for owner in owners)
 
 
 def test_sdk_image_resets_pack_discovery_owner_after_inner_exception(monkeypatch):
@@ -100,4 +96,5 @@ def test_sdk_image_resets_pack_discovery_owner_after_inner_exception(monkeypatch
         GenerationFacade().image(prompt="a dog")
     assert isinstance(owners[0], dict)
     assert discovery._discovery_cache.get() is None
-    assert owners[0] == {"seen": True}
+    assert owners[0] == {}
+    assert not owners[0].active
