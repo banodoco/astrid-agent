@@ -11,7 +11,7 @@ import time
 
 
 class TimingCollector:
-    def __init__(self, started=None):
+    def __init__(self, started=None, startup=None):
         self.timings = []
         self.next_occurrence_id = 1
         if started is None:
@@ -23,6 +23,22 @@ class TimingCollector:
         self.monitor = None
         self.closed = False
         self.last_change = time.monotonic()
+        self.start_provenance = None
+        if startup is not None:
+            start, self.start_provenance, import_start, import_end, cli_entry = startup
+            intervals = []
+            if self.start_provenance == "process start" and import_start is not None:
+                intervals.append(("interpreter start", start, import_start))
+            if import_start is not None and import_end is not None:
+                intervals.append(("gateway imports", import_start, import_end))
+            dispatch_start = import_end if import_end is not None else start
+            intervals.append(("command dispatch", dispatch_start, cli_entry))
+            for name, begin, end in intervals:
+                seconds = max(0.0, end - begin)
+                self.timings.append({'stage': name, 'seconds': seconds, 'total_seconds': seconds,
+                                     'occurrence_id': self.next_occurrence_id,
+                                     'parent': None, 'parent_id': None})
+                self.next_occurrence_id += 1
 
     def _advance(self, now):
         if self.active:
@@ -125,6 +141,8 @@ class TimingOutput:
                 self.pending = (value, '')
                 return len(text)
             value['timings'] = self.collector.snapshot()
+            if self.collector.start_provenance is not None:
+                value['start'] = self.collector.start_provenance
             text = json.dumps(value, ensure_ascii=False)
         return self.stream.write(text)
 

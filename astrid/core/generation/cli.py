@@ -7,6 +7,7 @@ import contextlib
 import json
 import logging
 import sys
+import time
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
@@ -950,11 +951,16 @@ def subcommand_names() -> tuple[str, ...]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    entry = time.monotonic()
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] not in {"image", "video", "audio", "workflow"} or any(arg in {"-h", "--help"} for arg in argv):
         return _main_with_errors(argv)
-    from astrid.sdk.command_timing import TimingCollector, TimingOutput, command_started, print_timings, timing_scope
-    collector = TimingCollector(started=command_started())
+    from astrid.console import startup_marks
+    from astrid.sdk.command_timing import TimingCollector, TimingOutput, print_timings, timing_scope
+    marks = startup_marks()
+    if marks is None:
+        marks = (entry, "command entry", None, None)
+    collector = TimingCollector(started=marks[0], startup=(*marks, entry))
     output = contextlib.redirect_stdout(TimingOutput(sys.stdout, collector)) if '--timings' in argv else contextlib.nullcontext()
     try:
         with timing_scope(collector), output:

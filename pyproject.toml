@@ -63,7 +63,7 @@ dependencies = [
 # Dispatch engine and generation commands without importing the conversational
 # launcher; the console delegates agent commands to the named OMP agent.
 astrid-tools = "astrid.core.gateway:main"
-astrid = "astrid.console:main"
+astrid = "astrid.console:entrypoint"
 astrid-credential = "astrid.core.util.credential_store:main"
 astrid-with-credential = "astrid.core.util.credential_exec:main"
 astrid-upgrade = "astrid.sdk.upgrade:main"
