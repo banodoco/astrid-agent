@@ -12,7 +12,7 @@ def test_read_exact_pod_requests_network_volume(monkeypatch: pytest.MonkeyPatch)
 
     seen = {}
 
-    def fake_get(url, *, headers, timeout, params=None):
+    def fake_get(url, *, headers, timeout, params=None, verify=None):
         seen["params"] = params
         return httpx.Response(200, json={"id": "pod-exact", "mounts": {"network": [
             {"volumeId": "vol-persist", "path": "/workspace"}]}},

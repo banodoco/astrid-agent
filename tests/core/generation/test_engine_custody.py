@@ -244,7 +244,7 @@ class Handler(BaseHTTPRequestHandler):
    time.sleep(2)
   if setting=='redirect':
    self.send_response(302);self.send_header('Location','http://127.0.0.1:1/');self.end_headers();return
-  value={'system':{'comfyui_version':'0.36.0'}} if self.path=='/system_stats' else {'MiniMaxH3ReferenceToVideo':{},'UNETLoader':{},'VAELoader':{},'VHS_VideoCombine':{}}
+  value={'system':{'comfyui_version':'0.36.0'}} if self.path=='/system_stats' else {'MiniMaxH3ReferenceToVideo':{},'UNETLoader':{},'VAELoader':{},'VHS_VideoCombine':{},'Apply Whisper':{}}
   if self.path=='/queue': value={'queue_running':[[1,'running-work']] if setting=='busy' else [],'queue_pending':[[2,'pending-work']] if setting=='pending' else []}
   if self.path=='/system_stats': value={'system':{'comfyui_version':'0.36.0', 'ram_total':64000, 'ram_free':40000 if unloaded.is_set() else 30000},'devices':[{'vram_total':24000,'vram_free':22000 if unloaded.is_set() else 20000}]}
   if self.path.startswith('/history/'):
@@ -877,7 +877,7 @@ def test_engine_survives_two_finite_client_exits_and_uses_existing_vibe_registry
     assert (registry / "source_revision").read_text() == next(s.pin.revision for s in recipe.sources if s.name == "vibecomfy")
     expected = hashlib.sha256(b"tiny.py\0" + hashlib.sha256(b"# immutable fixture source\n").digest()).hexdigest()
     assert (registry / "source_content_digest").read_text() == "sha256:" + expected
-    nodes = {"MiniMaxH3ReferenceToVideo": {}, "UNETLoader": {}, "VAELoader": {}, "VHS_VideoCombine": {}}
+    nodes = {"MiniMaxH3ReferenceToVideo": {}, "UNETLoader": {}, "VAELoader": {}, "VHS_VideoCombine": {}, "Apply Whisper": {}}
     assert first["object_info_sha256"] == _sha(nodes)
     assert len(list(Path(client.control).glob("*.json"))) == 1
 

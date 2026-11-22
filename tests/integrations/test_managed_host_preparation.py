@@ -39,7 +39,7 @@ from PIL import Image
 port=int(sys.argv[1]); started=Path(sys.argv[3]); histories={}
 with started.open('a') as stream:stream.write(str(os.getpid())+'\n')
 (started.parent/'device-env').write_text(os.environ.get('CUDA_VISIBLE_DEVICES', '<unset>'))
-schema={name:{} for name in ('MiniMaxH3ReferenceToVideo','UNETLoader','VAELoader','VHS_VideoCombine')}
+schema={name:{} for name in ('MiniMaxH3ReferenceToVideo','UNETLoader','VAELoader','VHS_VideoCombine','Apply Whisper')}
 schema.update({
  'EmptyImage':{'input':{'required':{'width':['INT',{'default':16}],'height':['INT',{'default':16}],'batch_size':['INT',{'default':1}],'color':['INT',{'default':0}]}},'output':['IMAGE'],'output_name':['IMAGE'],'output_node':False,'python_module':'nodes'},
  'SaveImage':{'input':{'required':{'images':['IMAGE'],'filename_prefix':['STRING',{'default':'astrid'}]}},'output':[],'output_node':True,'python_module':'nodes'}})

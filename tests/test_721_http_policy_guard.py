@@ -94,6 +94,11 @@ POLICY_OPENINGS = {
         1,
         "82f434a72ba6056f740d1ee34a8219805e8450bb6722902477a5cd19367cf7ea",
     ),
+    (
+        "astrid/core/generation/engine_runner_target.py",
+        "dispatch",
+        "urllib.request.urlopen",
+    ): (1, "fbf36b9ccd73bb59e32f73d476c0a448bff30ade658921839fc146a36f642a4e"),
     ("astrid/core/hivemind/executors/_common.py", "_http_get", "urllib.request.urlopen"): (
         1,
         "65f27fb7de20ddfdfc5e1cc4afed97ecf5ba7afee2632d9f8c0c687ae006ad73",
@@ -156,7 +161,7 @@ POLICY_OPENINGS = {
     ): (1, "a99df1072704d9ab87a647d24bd08c23c7c17dc85e8ec196aad8e09144a71712"),
     ("astrid/packs/runpod/h3_release_remote.py", "download_model", "urllib.request.urlopen"): (
         1,
-        "5f9bec95f544aecbe7dca1cab570ca8cba95df5be7b350c3cce923f3aaf0aada",
+        "e102bb530922ffb88963b4cfb91b1dd44aee182bb0dc7266df29f298681df097",
     ),
     ("astrid/packs/runpod/pod_watchdog.py", "urlopen", "urllib.request.urlopen"): (
         1,
@@ -188,7 +193,7 @@ LOOPBACK_HTTP_OPENINGS = {
     ),
     ("astrid/installer/backend.py", "Backend.verify", "urllib.request.build_opener"): (
         1,
-        "aae5a363a6ceddaf529031acf53814aeafb2c5bf24eab64da8ee66c18331a7f8",
+        "014797a84da85247478835a18fcd07d21db00c833a9bf107fcfffcff362ccf1b",
     ),
     ("astrid/mcp_server.py", "_comfy_workflow_import", "urllib.request.build_opener"): (
         1,

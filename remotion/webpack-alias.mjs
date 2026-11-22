@@ -208,6 +208,17 @@ const applyAliasesForRoot = (currentConfiguration, remotionRoot) => {
   }
   return {
     ...currentConfiguration,
+    module: {
+      ...currentConfiguration.module,
+      rules: [
+        ...(currentConfiguration.module?.rules ?? []),
+        {
+          enforce: 'pre',
+          include: [path.join(remotionRoot, 'node_modules/@banodoco/timeline-composition/dist/index.js')],
+          use: [{loader: path.join(remotionRoot, 'timeline-composition-legacy-loader.cjs')}],
+        },
+      ],
+    },
     resolve: {
       ...currentConfiguration.resolve,
       alias: {

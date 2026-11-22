@@ -172,7 +172,7 @@ def test_shared_pinned_install_starts_the_owned_schema_peer(shared_pinned_instal
 
     _client, _payload, recipe, root, _started, _bootstrap = shared_pinned_install
     receipt = json.loads((root / '.astrid-engine/install.json').read_text())
-    classes = {'EmptyImage', 'SaveImage', 'MiniMaxH3ReferenceToVideo', 'UNETLoader', 'VAELoader', 'VHS_VideoCombine'}
+    classes = {'EmptyImage', 'SaveImage', 'MiniMaxH3ReferenceToVideo', 'UNETLoader', 'VAELoader', 'VHS_VideoCombine', 'Apply Whisper'}
     provider = SimpleNamespace(comfy=PodComfy(classes, lambda: []), _receipt_for=lambda engine: receipt)
     with owned_cpu_peer(provider, shared_pinned_install, monkeypatch):
         assert ensure_local_engine_server('comfyui') == 'started'

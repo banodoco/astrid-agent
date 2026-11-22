@@ -1279,7 +1279,9 @@ class _Supervisor:
                 check = lambda: self.check(channel, deadline)
                 _get_json(self.recipe.start.port, health.path, 1024 * 1024, deadline, check)
                 nodes = _get_json(self.recipe.start.port, health.object_info_path, 32 * 1024 * 1024, deadline, check)
-                if not set(health.required_nodes) <= nodes.keys():
+                # Apply Whisper belongs to the transcription workflow. Its
+                # absence must not make the shared image engine unhealthy.
+                if not set(recipes.engine_health_required_nodes(self.recipe)) <= nodes.keys():
                     raise ValueError("required engine nodes missing")
                 check()
                 if not self.engine.live() or not _listener_owned(self.engine.process, self.recipe.start.port):
