@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from runtime_protocol import platform
+from astrid.sdk.lock_wait import acquire_file_lock
 
 from astrid.core.execution.host_log import rotate_if_needed
 from astrid.core.execution.platform_helpers import signal_observed_group
@@ -2234,10 +2235,13 @@ def ensure_pack_host(
         platform.owner_only(lock_handle.fileno())
     except OSError as exc:
         raise PackHostBootstrapError(f"generic Astrid pack host lock is unavailable; {reconfigure_action}") from exc
+    acquired = False
     try:
         try:
-            with stage("pack host lifecycle lock"):
-                platform.lock_file(lock_handle.fileno())
+            acquire_file_lock(lock_handle.fileno(), "pack host lifecycle lock")
+            acquired = True
+        except TimeoutError as exc:
+            raise PackHostBootstrapError(f"{exc}; {reconfigure_action}") from exc
         except (ImportError, OSError) as exc:
             raise PackHostBootstrapError(f"generic Astrid pack host lock is unavailable; {reconfigure_action}") from exc
         current = _read_object(state_path)
@@ -2572,10 +2576,11 @@ def ensure_pack_host(
             "host_boot_manifest_hash": boot_manifest_hash,
         }
     finally:
-        try:
-            platform.unlock_file(lock_handle.fileno())
-        except (ImportError, OSError):
-            pass
+        if acquired:
+            try:
+                platform.unlock_file(lock_handle.fileno())
+            except (ImportError, OSError):
+                pass
         lock_handle.close()
 
 
