@@ -1228,7 +1228,11 @@ class RuntimeCommitService:
             marker['placement_migrations'] = placement_findings
         projected = project_runtime_parent_composition(
             parent, shot_revisions=shots, internal_timeline_revisions=internals)
-        normalize_legacy_reader_fields(projected.config, projected.registry)
+        # Runtime compares this certified projection with the SDK's capture
+        # snapshot. Keep authored transition IDs until a reader opens it.
+        normalize_legacy_reader_fields(
+            projected.config, projected.registry, preserve_transition_ids=True,
+        )
         shot_rows = []
         for row in shots:
             payload = row["payload"]
