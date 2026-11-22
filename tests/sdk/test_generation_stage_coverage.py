@@ -7,6 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from aiohttp import web
 
 from astrid import console
 from astrid.core.execution.generic_host import GenericPackHost, RuntimeProtocolClient
@@ -101,6 +102,19 @@ def test_workflow_and_image_admissions_report_generation_stage_tree(
         "--no-wait", "--json", "--timings",
     ])
     install_target(network, target_info())
+    served_target = network["handler"]
+    folder_requests = []
+
+    async def serve_target(request):
+        if request.method == "GET" and request.path == "/internal/folder_paths":
+            folder_requests.append((request.method, request.path))
+            return web.json_response({
+                "diffusion_models": ["/srv/ComfyUI/models/diffusion_models"],
+                "vae": ["/srv/ComfyUI/models/vae"],
+            })
+        return await served_target(request)
+
+    network["handler"] = serve_target
     image_rows = _stage_rows(capsys, [
         "generate", "image", "a silver paper boat", "--placement", comfy.target.url,
         "--project", project.data["project_id"], "--no-wait", "--json", "--timings",
@@ -159,6 +173,7 @@ def test_workflow_and_image_admissions_report_generation_stage_tree(
     assert [identifier for identifier, _ in attempts] == ["a-missing", "z-image"]
     assert attempts[0][1] is not None and "missing-" in str(attempts[0][1])
     assert attempts[1][1] is None
+    assert folder_requests == [("GET", "/internal/folder_paths")]
     assert all(row["seconds"] > 0 and row["total_seconds"] > 0 for row in candidate_rows)
 
     common = {
@@ -196,11 +211,36 @@ def test_workflow_and_image_admissions_report_generation_stage_tree(
     }
     image_expected = {
         **common,
-        "workflow snapshot": {None, "candidate preparation"},
-        "source retention": {None, "workflow snapshot", "candidate preparation"},
+        "availability declaration": {"candidate qualification", "workflow build"},
+        "source retention": {"workflow build"},
         "entry discovery": {None},
-        "pack discovery": {None},
     }
+    def assert_parents_and_counts(rows, name, expected):
+        actual = {}
+        for row in rows:
+            if row["stage"] == name:
+                parent = row.get("parent")
+                actual[parent] = actual.get(parent, 0) + 1
+                assert row["seconds"] > 0 and row["total_seconds"] > 0
+        assert actual == expected, (name, actual, expected)
+
+    assert_parents_and_counts(workflow_rows, "availability declaration", {"candidate qualification": 1})
+    assert_parents_and_counts(image_rows, "availability declaration", {"candidate qualification": 6, "workflow build": 1})
+    assert_parents_and_counts(entry_rows, "availability declaration", {"entry lookup": 2, "candidate qualification": 1, "workflow build": 1})
+    assert_parents_and_counts(fallback_rows, "availability declaration", {"candidate qualification": 2, "workflow build": 2})
+    assert_parents_and_counts(workflow_rows, "source retention", {None: 1})
+    for rows in (image_rows, entry_rows, fallback_rows):
+        assert_parents_and_counts(rows, "source retention", {"workflow build": 1})
+        assert_parents_and_counts(rows, "workflow snapshot", {})
+    for rows in (workflow_rows, image_rows, entry_rows, fallback_rows):
+        assert_parents_and_counts(rows, "SDK admission preflight", {"invocation": 1})
+        assert_parents_and_counts(rows, "Remote admission preflight", {"task creation": 1})
+        assert_parents_and_counts(rows, "Workspace admission preflight", {"task creation": 1})
+        assert_parents_and_counts(rows, "task creation", {"invocation": 1})
+        packs = [row for row in rows if row["stage"] == "pack discovery"]
+        assert any(row["parent"] == "model registry" and row["seconds"] > 0 for row in packs)
+        assert any(row["parent"] == "availability declaration" and row["seconds"] > 0 for row in packs)
+
     snapshots = [row for row in workflow_rows if row["stage"] == "workflow snapshot"]
     assert [row["parent"] for row in snapshots] == [None, "candidate preparation"]
     for rows in (workflow_rows, image_rows, entry_rows, fallback_rows):
@@ -230,8 +270,9 @@ def test_workflow_and_image_admissions_report_generation_stage_tree(
     # Each command created a distinct admitted Runtime task.
     tasks = client.tasks.list(project.data["project_id"])
     assert tasks.ok, tasks
-    assert len(tasks.data[0][0]) == 4
-    assert len({row["task_id"] for row in tasks.data[0][0]}) == 4
+    task_rows = tasks.data[0]
+    assert len(task_rows) == 4
+    assert len({row["task_id"] for row in task_rows}) == 4
     host.shutdown()
 
 
