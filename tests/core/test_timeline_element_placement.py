@@ -208,12 +208,14 @@ def test_commit_function_batches_occurrence_placements_and_document_edits(
     owner, ref, pin, initial = _setup(monkeypatch, tmp_path, configured)
     document = copy.deepcopy(initial['source_mapping']['_runtime_document'])
     internal = document['internal_timeline_revisions'][0]
+    internal['payload']['clips'][0]['id'] = 'effect-a'
     internal['payload']['clips'][0]['params'] = {'seed': 'ƒ(words of n05b)'}
     internal['content_digest'] = _digest(internal['payload'])
     shot = copy.deepcopy(document['shot_revisions'][0])
     shot.update(shot_id='chapter-shot-b', revision_id='shot-2')
     internal_b = copy.deepcopy(internal)
     internal_b.update(timeline_id='chapter-two', revision_id='internal-2')
+    internal_b['payload']['clips'][0]['id'] = 'effect-b'
     internal_b['payload']['clips'][0]['params'] = {'seed': 7}
     internal_b['content_digest'] = _digest(internal_b['payload'])
     shot['internal_timeline_revision_id'] = 'internal-2'
@@ -233,7 +235,8 @@ def test_commit_function_batches_occurrence_placements_and_document_edits(
     bundle = bundle_from_document(document)
     baseline = copy.deepcopy(bundle)
     placements = bundle['placements']
-    targets = [f"occurrence:{row['occurrence_id']}/clip:clip-a" for row in placements]
+    targets = [f"occurrence:{row['occurrence_id']}/clip:{'effect-a' if row['occurrence_id'] == 'occ-a' else 'effect-b'}"
+               for row in placements]
     assert len(set(row['shot_id'] for row in placements)) == 2
     assert len({bundle['source_mapping']['shots'][row['shot_id']]['internal_timeline_revision_id']
                 for row in placements}) == 2
@@ -285,15 +288,8 @@ def test_commit_function_batches_occurrence_placements_and_document_edits(
     timeline = commit_session.open('project', 'film', client=client,
                                    outbox_path=tmp_path / 'commit-outbox.json')
 
-    from astrid.sdk.timeline.model import Clip
-
     def occurrence_clip(working, occurrence_id):
-        placement = next(row for row in working.bundle['placements']
-                         if row['occurrence_id'] == occurrence_id)
-        shot_id = placement['shot_id']
-        row = next(row for row in working.bundle['shots'][shot_id]['internal_timeline']['clips']
-                   if row['id'] == 'clip-a')
-        return Clip(working, shot_id, row)
+        return working.clip('effect-a' if occurrence_id == 'occ-a' else 'effect-b')
 
     with pytest.raises(ValueError, match='re-admit pack'):
         timeline.commit(lambda working: occurrence_clip(
@@ -344,6 +340,171 @@ def test_commit_function_batches_occurrence_placements_and_document_edits(
     assert retried['receipt'] == first['receipt']
     assert owner.commit.call_count == 2
     assert len(history_state['items']) == 1
+
+
+def _scope_test_realm(realm):
+    """Match the admitted test pack's realm/project scope to DetachedRealm."""
+    from astrid.sdk.timeline.commit import _digest
+    from astrid.sdk.timeline._scalar_commands import capture_track_set
+
+    original_context = realm.context
+
+    def context(calls, **kwargs):
+        value = original_context(calls, **kwargs)
+        value['request']['project_id'] = 'project'
+        value['invocation']['body']['project_id'] = 'project'
+        value['realm_id'] = 'realm'
+        value['request_hash'] = _digest(value['invocation'])
+        return value
+
+    realm.context = context
+
+
+def test_provider_stale_placement_and_free_patch_rebases_disjoint_but_conflicts_same_key(
+        monkeypatch, tmp_path, configured):
+    """A staged admitted placement stays atomic with a free patch through stale replay."""
+    from astrid.sdk.timeline import commit_session, store
+    from astrid.sdk.timeline.commit import _digest
+    from tests.sdk.test_timeline_commit_provider import CommitRejected, DetachedRealm, detached
+
+    def public_staged_commands(owner, element_ref, starting_bundle, fps, outbox, *, place=True):
+        client = SimpleNamespace(
+            _remote=SimpleNamespace(_transport=owner._client), timelines=owner,
+            documents=configured, media=configured.media)
+        monkeypatch.setattr(store, 'fetch_bundle',
+                            lambda *a, **kw: copy.deepcopy(starting_bundle))
+        history_state = {'head': {'revision_id': 'head', 'publication_id': 'publication'},
+                         'items': [], 'next_cursor': None}
+        owner.history.side_effect = lambda *a, **kw: DomainResult.success(copy.deepcopy(history_state))
+        timeline = commit_session.open('project', 'film', client=client, outbox_path=outbox)
+        if place:
+            timeline.clip('placement-proof-clip').set_element(element_ref)
+        if fps is not None:
+            timeline.bundle['parent']['config']['output']['fps'] = {
+                'numerator': fps, 'denominator': 1}
+        else:
+            other = next(row for row in timeline.bundle['placements']
+                         if row['occurrence_id'] != 'occ-a')
+            shot = timeline.bundle['shots'][other['shot_id']]
+            shot['internal_timeline']['clips'][0]['at'] += 0.5
+        timeline._capture_free_edits()
+        commands = copy.deepcopy(timeline._commands)
+        assert [command['op'] for command in commands] == (
+            ['clip.set-element', 'doc.patch'] if place else ['doc.patch'])
+        return commands
+
+    unique_target = 'occurrence:occ-a/clip:placement-proof-clip'
+    owner, ref, pin, initial = _setup(monkeypatch, tmp_path, configured)
+    document = copy.deepcopy(initial['source_mapping']['_runtime_document'])
+    internal = document['internal_timeline_revisions'][0]
+    internal['payload']['clips'][0]['id'] = 'placement-proof-clip'
+    internal['content_digest'] = _digest(internal['payload'])
+    document['dependency_manifest']['internal_timelines'][0]['content_digest'] = internal['content_digest']
+    shot2 = copy.deepcopy(document['shot_revisions'][0])
+    shot2.update(shot_id='chapter-shot-b', revision_id='shot-2')
+    internal2 = copy.deepcopy(internal)
+    internal2.update(timeline_id='chapter-two', revision_id='internal-2')
+    internal2['payload']['clips'][0]['id'] = 'chapter-two-clip'
+    internal2['content_digest'] = _digest(internal2['payload'])
+    shot2['internal_timeline_revision_id'] = 'internal-2'
+    shot2['payload']['internal_timeline_revision_id'] = 'internal-2'
+    shot2['payload']['items'][0]['item_id'] = 'item-2'
+    shot2['content_digest'] = _digest(shot2['payload'])
+    document['shot_revisions'].append(shot2)
+    document['internal_timeline_revisions'].append(internal2)
+    second_occurrence = copy.deepcopy(document['parent_revision']['payload']['occurrences'][0])
+    second_occurrence.update(occurrence_id='occ-b', shot_id='chapter-shot-b',
+                             shot_revision_id='shot-2')
+    document['parent_revision']['payload']['occurrences'].append(second_occurrence)
+    document['parent_revision']['content_digest'] = _digest(document['parent_revision']['payload'])
+    from astrid.sdk.timeline.commit import _manifest
+    document['dependency_manifest'] = _manifest(
+        document['shot_revisions'], document['internal_timeline_revisions'],
+        document['dependency_manifest']['media'], document['dependency_manifest']['documents'])
+    bundle = bundle_from_document(document)
+    owner.open_bundle.return_value = DomainResult.success({
+        'bundle': bundle, 'project_id': 'project', 'timeline_id': 'film',
+        'head_revision_id': 'head', 'revision_id': 'head',
+    })
+    realm = DetachedRealm(document)
+    source, snapshots = owner.schema_inputs[0]
+    realm.live_sources[_digest(pin)] = detached(source)
+    realm.snapshot_objects = detached(snapshots)
+    _scope_test_realm(realm)
+    base = copy.deepcopy(realm.head)
+    stale = public_staged_commands(owner, ref, bundle, 24,
+                                   tmp_path / 'public-stage-a.json')
+    concurrent = public_staged_commands(
+        owner, ref, bundle, None, tmp_path / 'public-stage-concurrent.json', place=False)
+    realm.call(concurrent)
+    rebased = realm.call(stale, base=base)
+    final = bundle_from_document(rebased['data']['canonical_document'])
+    assert rebased['data']['status'] == 'rebased'
+    assert State(final).entity(unique_target)['elementRef'] == ref
+    assert final['parent']['config']['output']['fps'] == {'numerator': 24, 'denominator': 1}
+    other_shot_id = next(row['shot_id'] for row in final['placements']
+                        if row['occurrence_id'] == 'occ-b')
+    internal = final['shots'][other_shot_id]['internal_timeline']
+    assert internal['clips'][0]['at'] == 1.5
+    assert State(final).entity('parent/clip:clip-b')['at'] == 8.008
+
+    # Repeat from a clean base with the exact free-patch key changed by the
+    # intervening publisher. The staged element write must not partially land.
+    owner2, ref2, pin2, initial2 = _setup(monkeypatch, tmp_path / 'conflict', configured)
+    document2 = copy.deepcopy(initial2['source_mapping']['_runtime_document'])
+    internal2 = document2['internal_timeline_revisions'][0]
+    internal2['payload']['clips'][0]['id'] = 'placement-proof-clip'
+    internal2['content_digest'] = _digest(internal2['payload'])
+    document2['dependency_manifest']['internal_timelines'][0]['content_digest'] = internal2['content_digest']
+    shot_b = copy.deepcopy(document2['shot_revisions'][0])
+    shot_b.update(shot_id='chapter-shot-b', revision_id='shot-2')
+    internal_b = copy.deepcopy(internal2)
+    internal_b.update(timeline_id='chapter-two', revision_id='internal-2')
+    internal_b['payload']['clips'][0]['id'] = 'chapter-two-clip'
+    internal_b['content_digest'] = _digest(internal_b['payload'])
+    shot_b['internal_timeline_revision_id'] = 'internal-2'
+    shot_b['payload']['internal_timeline_revision_id'] = 'internal-2'
+    shot_b['payload']['items'][0]['item_id'] = 'item-2'
+    shot_b['content_digest'] = _digest(shot_b['payload'])
+    document2['shot_revisions'].append(shot_b)
+    document2['internal_timeline_revisions'].append(internal_b)
+    occurrence_b = copy.deepcopy(document2['parent_revision']['payload']['occurrences'][0])
+    occurrence_b.update(occurrence_id='occ-b', shot_id='chapter-shot-b', shot_revision_id='shot-2')
+    document2['parent_revision']['payload']['occurrences'].append(occurrence_b)
+    document2['parent_revision']['content_digest'] = _digest(document2['parent_revision']['payload'])
+    document2['dependency_manifest'] = _manifest(
+        document2['shot_revisions'], document2['internal_timeline_revisions'],
+        document2['dependency_manifest']['media'], document2['dependency_manifest']['documents'])
+    bundle2 = bundle_from_document(document2)
+    owner2.open_bundle.return_value = DomainResult.success({
+        'bundle': bundle2, 'project_id': 'project', 'timeline_id': 'film',
+        'head_revision_id': 'head', 'revision_id': 'head',
+    })
+    realm2 = DetachedRealm(document2)
+    source2, snapshots2 = owner2.schema_inputs[0]
+    realm2.live_sources[_digest(pin2)] = detached(source2)
+    realm2.snapshot_objects = detached(snapshots2)
+    _scope_test_realm(realm2)
+    base2 = copy.deepcopy(realm2.head)
+    stale2 = public_staged_commands(owner2, ref2, bundle2, 25,
+                                    tmp_path / 'public-stage-b.json')
+    competing_patch = copy.deepcopy(stale2[1])
+    competing_patch['args']['changes'][0]['value'] = {'numerator': 60, 'denominator': 1}
+    realm2.call([competing_patch])
+    before = (copy.deepcopy(realm2.head), copy.deepcopy(realm2.entries),
+              copy.deepcopy(realm2.documents))
+    accepted_count = len(realm2.accepted)
+    with pytest.raises(CommitRejected) as error:
+        realm2.call(stale2, base=base2)
+    assert error.value.failure['details']['status'] == 'conflict'
+    assert any(conflict['ref'] == 'parent'
+               and conflict['path'] == ['config', 'output', 'fps']
+               for conflict in error.value.failure['details']['conflicts'])
+    assert (realm2.head, realm2.entries, realm2.documents) == before
+    assert len(realm2.accepted) == accepted_count
+    landed = bundle_from_document(realm2.documents[realm2.head['revision_id']])
+    assert State(landed).entity(unique_target)['elementRef'] is None
+    assert landed['parent']['config']['output']['fps'] == {'numerator': 60, 'denominator': 1}
 
 
 # --- pointing an existing built-in effect clip at an admitted project effect ---------------------------------
