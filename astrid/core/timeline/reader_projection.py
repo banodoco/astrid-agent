@@ -171,6 +171,22 @@ def translate_media_selectors(
     return normalized_config, normalized_registry
 
 
+def normalize_legacy_reader_fields(config: dict[str, Any], registry: dict[str, Any]) -> None:
+    """Adapt detached reader copies and leave authored fields for exact comparison."""
+    tracks = config.get("tracks")
+    if isinstance(tracks, list):
+        for track in tracks:
+            track_id = track.get("id") if isinstance(track, dict) else None
+            if isinstance(track_id, str) and track_id:
+                track.setdefault("label", track_id)
+
+    if "meta" in registry:
+        from .validators.meta import validate_meta
+
+        validate_meta(registry["meta"], path="registry.meta")
+        del registry["meta"]
+
+
 def reader_view(config: Mapping[str, Any], registry: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     """Return what render reads from a projection, without importing the renderer.
 

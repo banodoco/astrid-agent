@@ -15,7 +15,7 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any, Callable
 
-from astrid.core.path_utils import has_url_scheme
+from astrid.core.path_utils import has_url_scheme, is_network_share_path
 from astrid.core.subprocess_env import build_child_subprocess_env
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
@@ -286,6 +286,7 @@ def _ffprobe_metadata(
     *,
     timeout: float,
     strict: bool,
+    local_only: bool = False,
 ) -> MediaProbe:
     ffprobe_exe = shutil.which("ffprobe")
     if ffprobe_exe is None:
@@ -303,6 +304,7 @@ def _ffprobe_metadata(
                 "json",
                 "-show_format",
                 "-show_streams",
+                *(["-protocol_whitelist", "file,pipe"] if local_only else []),
                 str(file_path),
             ],
             stdin=subprocess.DEVNULL,
@@ -351,16 +353,25 @@ def ffprobe_metadata_strict(
     file_path: str | Path,
     *,
     timeout: float = 30.0,
+    local_only: bool = False,
 ) -> MediaProbe:
     """Return ffprobe metadata or raise :class:`MediaProbeError`.
 
     Unlike :func:`ffprobe_metadata`, this entry point never converts an
     unavailable binary, failed command, timeout, or malformed payload into an
     all-``None`` probe.  Callers still decide which streams and fields their
-    particular artifact contract requires.
+    particular artifact contract requires. With ``local_only``, require a local
+    regular file and restrict nested demuxer protocols to file and pipe.
     """
 
-    return _ffprobe_metadata(file_path, timeout=timeout, strict=True)
+    if local_only:
+        if is_network_share_path(file_path):
+            raise MediaProbeError("media input is not a local regular file: network share")
+        path = Path(file_path)
+        if path.is_symlink() or not path.is_file():
+            raise MediaProbeError(f"media input is not a local regular file: {file_path}")
+        file_path = path.resolve()
+    return _ffprobe_metadata(file_path, timeout=timeout, strict=True, local_only=local_only)
 
 
 # ---------------------------------------------------------------------------

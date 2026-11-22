@@ -19,8 +19,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from .shot_composition import prepare_shot_composition, validate_shot_composition
 from .asset_dimensions import canonicalize_asset_dimensions
+from .shot_composition import prepare_shot_composition, validate_shot_composition
 
 MIGRATION_SCHEMA_VERSION = 1
 MIGRATION_RECEIPT_TYPE = "astrid.shot-composition-migration.v1"

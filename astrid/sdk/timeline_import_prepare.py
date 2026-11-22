@@ -10,8 +10,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from astrid.core.timeline.authoring_bundle import compile_authoring_candidate
 from astrid.core.timeline.asset_dimensions import canonicalize_asset_dimensions
+from astrid.core.timeline.authoring_bundle import compile_authoring_candidate
 from astrid.sdk.timeline._common import TimelineEditError
 from astrid.sdk.timeline_duplicate import _copy_source, copy_content, id_map
 from astrid.sdk.timeline_restructure import STRUCTURE_KEY

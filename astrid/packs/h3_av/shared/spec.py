@@ -10,8 +10,9 @@ from dataclasses import dataclass, field, replace
 from fractions import Fraction
 from typing import Any, Mapping, NoReturn
 
+from .generation import DEFAULT_SIZE
 from .request import H3Request, H3RequestError, _nonblank
-from .request_v2 import FPS, _fraction, _interval, json_times
+from .request_v2 import FPS, SAMPLE_RATE, _fraction, _interval, json_times
 
 
 class H3SpecError(H3RequestError):
@@ -26,12 +27,21 @@ def _fail(code: str, message: str, path: str, fix: str) -> NoReturn:
 class Source:
     asset: str
     range: tuple[Fraction, Fraction]
+    occurrence_id: str | None = field(default=None, compare=False)
+    name: str = field(default="__source__", compare=False)
+    modality: str = field(default="video", compare=False)
 
 
 @dataclass(frozen=True)
 class Reference:
     name: str
     asset: str
+    modality: str = "image"
+    range: tuple[Fraction, Fraction] | None = None
+    audio: bool | None = None
+    use: str | None = None
+    occurrence_id: str | None = field(default=None, compare=False)
+    authored_id: str | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
@@ -39,6 +49,8 @@ class Region:
     name: str
     mask_asset: str | None = None
     box: tuple[float, float, float, float] | None = None
+    canvas: tuple[int, int] | None = None
+    threshold: int | None = None
 
 
 @dataclass(frozen=True)
@@ -71,6 +83,7 @@ class H3Spec:
     regions: tuple[Region, ...] = ()
     ops: tuple[Operation, ...] = ()
     settings: Mapping[str, Any] = field(default_factory=dict)
+    allow_v2_audio_regeneration: bool = field(default=False, compare=False, repr=False)
 
     @property
     def capabilities(self) -> dict[str, dict[str, Any]]:
@@ -83,7 +96,7 @@ class H3Spec:
         """Planning dependencies only; later editable pixels win after verification."""
         spec = normalize_spec(self)
         constraints = tuple(op for op in spec.ops if op.op == "preserve")
-        result = []
+        result: list[SamplingPass] = []
         for op in spec.ops:
             if op.op == "preserve":
                 continue
@@ -118,7 +131,16 @@ def _mask(region: Region, path: str) -> dict[str, Any]:
             "Supply mask_asset or box [x, y, width, height]",
         )
     if region.mask_asset is not None:
-        return {"asset": _nonblank(region.mask_asset, f"{path}.mask_asset")}
+        if region.canvas is not None:
+            _fail("region", "canvas is only valid on a box", path, "Remove canvas from the image mask")
+        value = {"asset": _nonblank(region.mask_asset, f"{path}.mask_asset")}
+        if region.threshold is not None:
+            value["threshold"] = region.threshold
+        from .request_v2 import _mask as normalize_mask
+        normalized = normalize_mask(value, path, None)
+        return {key: normalized[key] for key in ("asset", "threshold") if key in normalized}
+    if region.threshold is not None:
+        _fail("region", "threshold is only valid on an image mask", path, "Remove threshold from the box")
     box = region.box
     if not isinstance(box, (tuple, list)) or len(box) != 4:
         _fail("region", "box must be [x, y, width, height]", path, "Supply four pixel coordinates")
@@ -126,16 +148,19 @@ def _mask(region: Region, path: str) -> dict[str, Any]:
     # permission constraint (a zero or negative box cannot authorize pixels).
     from .request_v2 import _mask as normalize_mask
 
-    mask = normalize_mask({"rectangle": list(box)}, path, None)
+    if region.canvas is not None and (not isinstance(region.canvas, (tuple, list)) or len(region.canvas) != 2 or any(type(n) is not int or n <= 0 for n in region.canvas)):
+        _fail("region", "canvas must contain two positive integers", path, "Correct the authored canvas")
+    mask = normalize_mask({"rectangle": list(box), **({"canvas": list(region.canvas)} if region.canvas is not None else {})}, path, None)
     x, y, width, height = mask["rectangle"]
-    if min(x, y) < 0 or min(width, height) <= 0:
+    canvas_w, canvas_h = mask.get("canvas", DEFAULT_SIZE)
+    if min(x, y) < 0 or min(width, height) <= 0 or x + width > canvas_w or y + height > canvas_h:
         _fail(
             "region",
             "box needs nonnegative origin and positive size",
             path,
             "Correct the box coordinates",
         )
-    return {"rectangle": mask["rectangle"]}
+    return {"rectangle": mask["rectangle"], **({"canvas": mask["canvas"]} if "canvas" in mask else {})}
 
 
 def _overlap(a: Operation, b: Operation, regions: Mapping[str, Region]) -> bool:
@@ -149,6 +174,10 @@ def _overlap(a: Operation, b: Operation, regions: Mapping[str, Region]) -> bool:
     if left.box is not None and right.box is not None:
         x, y, w, h = left.box
         xx, yy, ww, hh = right.box
+        lw, lh = left.canvas or DEFAULT_SIZE
+        rw, rh = right.canvas or DEFAULT_SIZE
+        x, y, w, h = x / lw, y / lh, w / lw, h / lh
+        xx, yy, ww, hh = xx / rw, yy / rh, ww / rw, hh / rh
         return max(x, xx) < min(x + w, xx + ww) and max(y, yy) < min(y + h, yy + hh)
     # No pixel inspection in normalization: distinct files are not proof of
     # disjointness. Refuse ambiguous edit/preserve permission combinations.
@@ -178,7 +207,8 @@ def _normalize_spec(
     spec = replace(spec, duration=_fraction(spec.duration, "duration"))
     if spec.source is not None:
         source_range, _ = _interval(spec.source.range, "source.range", FPS)
-        spec = replace(spec, source=replace(spec.source, range=tuple(map(Fraction, source_range))))
+        normalized_range = (Fraction(source_range[0]), Fraction(source_range[1]))
+        spec = replace(spec, source=replace(spec.source, range=normalized_range))
     refs = _names(spec.refs, "refs")
     regions = _names(spec.regions, "regions")
     masks = {name: _mask(region, f"regions.{name}") for name, region in regions.items()}
@@ -223,8 +253,10 @@ def _normalize_spec(
             _fail(
                 "unsupported_op", "Unsupported stream", f"{path}.stream", "Use video, audio, or av"
             )
-        during, _ = _interval(op.during, f"{path}.during", FPS)
-        op = replace(op, during=tuple(map(Fraction, during)))
+        clock = Fraction(SAMPLE_RATE) if spec.allow_v2_audio_regeneration and op.stream == "audio" else FPS
+        during, _ = _interval(op.during, f"{path}.during", clock)
+        normalized_during = (Fraction(during[0]), Fraction(during[1]))
+        op = replace(op, during=normalized_during)
         if op.region is not None and op.region not in regions:
             _fail(
                 "dangling_region",
@@ -287,7 +319,12 @@ def _normalize_spec(
                 path,
                 "Use generate without a source; extend with a source",
             )
-        if op.op == "regenerate" and op.stream != "video" and not (op.stream == "audio" and op.replacement_asset):
+        supported_audio = op.stream == "audio" and (
+            op.replacement_asset is not None
+            or spec.allow_v2_audio_regeneration
+            or (bool(op.refs) and all(refs[name].use == "replacement" for name in op.refs))
+        )
+        if op.op == "regenerate" and op.stream != "video" and not supported_audio:
             _fail(
                 "unsupported_op",
                 "Only video regeneration is supported",
@@ -318,26 +355,33 @@ def _normalize_spec(
         ops.append(op)
         if op.op in {"regenerate", "preserve"}:
             for stream in ("video", "audio") if op.stream == "av" else (op.stream,):
-                edit = {
+                edit: dict[str, Any] = {
                     "stream": stream,
                     "during": list(during),
                     "action": "preserve" if op.op == "preserve" else "generate",
                 }
                 if stream == "video":
                     edit["mask"] = masks[op.region] if op.region else {"full_frame": True}
-                if op.op == "regenerate" and stream == "audio":
+                if op.op == "regenerate" and stream == "audio" and op.replacement_asset is not None:
                     # Replacement audio becomes a named audio reference that the edit guides.
                     name = f"replacement-{len(replacements) + 1}"
                     replacements.append({"id": name, "asset": op.replacement_asset, "role": "reference",
                                          "modality": "audio", "range": list(op.replacement_range)})
                     edit["guides"] = [name]
                 elif op.op == "regenerate":
-                    edit["guides"] = list(op.refs)
+                    edit["guides"] = [refs[name].authored_id or name for name in op.refs]
                     if op.strength != 1:
                         edit["strength"] = op.strength
                     if op.seed is not None:
                         edit["seed"] = op.seed
                 edits.append(edit)
+    if spec.source is not None and spec.source.modality == "image":
+        expected_ops = [Operation("regenerate", (Fraction(1, 24), spec.duration),
+                              refs=tuple(ref.name for ref in refs.values() if ref.use != "replacement"), stream="video"),
+                    Operation("regenerate", (Fraction(0), spec.duration), stream="audio")]
+        if spec.source.range != (0, spec.duration) or ops != expected_ops:
+            _fail("unsupported_source", "timeline image requires its joint implicit video and audio grants",
+                  "ops", "Use the frame-zero timeline image without explicit edits")
     generators = [op for op in ops if op.op in {"generate", "extend"}]
     if generators and (len(generators) != 1 or any(op.op == "regenerate" for op in ops)):
         _fail(
@@ -364,13 +408,15 @@ def _normalize_spec(
             "duration",
             "Use an explicit extend operation",
         )
-    if len(refs) > 9:
-        _fail(
-            "unsupported_reference",
-            "Single-window requests support at most nine image references",
-            "refs",
-            "Use at most nine references",
-        )
+    from .generation import LIMITS
+    conditioning = [ref for ref in refs.values() if ref.use != "replacement"]
+    slot_limits = LIMITS["builder_slots"]["value"]
+    for modality, limit in slot_limits.items():
+        if sum(ref.modality == modality for ref in conditioning) > limit:
+            _fail("unsupported_reference", f"builder slots: at most {limit} {modality} references", "refs", "Reduce references for this modality")
+    file_limit = LIMITS["conditioning_files"]["value"]
+    if len(conditioning) > file_limit:
+        _fail("unsupported_reference", f"conditioning files: at most {file_limit} references", "refs", "Reduce the number of conditioning occurrences")
     for index, op in enumerate(ops):
         for other in ops[index + 1 :]:
             if (op.op == "preserve") != (other.op == "preserve") and _overlap(op, other, regions):
@@ -384,7 +430,9 @@ def _normalize_spec(
 
     generation_timing(spec.duration)  # Existing single-window bound; no splitting.
     media = [
-        {"id": name, "asset": ref.asset, "role": "reference", "modality": "image"}
+        {"id": ref.authored_id or name, "asset": ref.asset, "role": "reference", "modality": ref.modality,
+         **({"range": list(ref.range)} if ref.range is not None else {}),
+         **({"audio": ref.audio} if ref.audio is not None else {})}
         for name, ref in refs.items()
     ]
     media.extend(replacements)
@@ -392,15 +440,19 @@ def _normalize_spec(
         media.insert(
             0,
             {
-                "id": "__source__",
+                "id": spec.source.name,
                 "asset": spec.source.asset,
                 "role": "timeline",
-                "modality": "video",
+                "modality": spec.source.modality,
                 "at": {"frame": 0},
-                "range": list(spec.source.range),
-                "edit": edits,
+                **({} if spec.source.modality == "image" else {"range": list(spec.source.range), "edit": edits}),
             },
         )
+    positions = {ref.authored_id or ref.name: ref.occurrence_id for ref in refs.values()}
+    if spec.source is not None:
+        positions[spec.source.name] = spec.source.occurrence_id
+    if all(positions.get(item["id"]) for item in media):
+        media.sort(key=lambda item: int(positions[item["id"]].rsplit("-", 1)[1]))
     from .request import normalize_request
 
     document = {
@@ -415,7 +467,8 @@ def _normalize_spec(
     if request_document is not None:
         request_document.update(json_times(document))
     result = _from_v2(request)
-    return replace(result, prompt=spec.prompt)  # v1's prompt bytes remain significant.
+    return replace(result, prompt=spec.prompt, refs=spec.refs if spec.allow_v2_audio_regeneration else result.refs,
+                   allow_v2_audio_regeneration=spec.allow_v2_audio_regeneration)  # v1's prompt bytes remain significant.
 
 
 def normalize_spec(spec: H3Spec, *, asset_modalities: Mapping[str, str] | None = None) -> H3Spec:
@@ -443,22 +496,61 @@ def sampling_request_document(
     already composed output timelines, so their source window starts at zero.
     """
     spec = canonical_spec(request)
+    if spec.source is not None and spec.source.modality == "image":
+        _fail("unsupported_op", "timeline image grants are atomic and cannot be split into derived passes",
+              "ops", "Plan the complete timeline image request")
     sampling_pass = spec.sampling_passes()[index]
     source = spec.source
     if previous_verified_output and source is not None:
-        source = replace(source, range=(0, spec.duration))
+        source = replace(source, range=(Fraction(0), spec.duration))
     document: dict[str, Any] = {}
     _normalize_spec(
         replace(spec, source=source, ops=(sampling_pass.operation, *sampling_pass.preserves)),
         None, request_document=document,
     )
+    canvas = request.value.get("canvas")
+    if canvas is not None and (canvas["width"], canvas["height"]) != DEFAULT_SIZE:
+        document.setdefault("output", {})["size"] = [canvas["width"], canvas["height"]]
+    selected = set(sampling_pass.operation.refs) if sampling_pass.operation.stream == "audio" else set()
+    if any(ref.use == "replacement" and ref.name not in selected for ref in spec.refs):
+        document["_derived_pass_view"] = "contains unselected replacement audio; rebuild from the full request"
     return document
+
+
+def sampling_request(request: H3Request, index: int, *, previous_verified_output: bool = False) -> H3Request:
+    """Build an internal pass while preserving the parent's classified occurrences."""
+    import hashlib
+    import json
+
+    from .request import normalize_request
+    from .request_v2 import _identity_value
+
+    document = sampling_request_document(request, index, previous_verified_output=previous_verified_output)
+    if request.value.get("version") != 2:
+        return normalize_request(document)
+    document.pop("_derived_pass_view", None)
+    derived = normalize_request(document)
+    parent = {item["occurrence_id"]: item for item in request.value["media"]}
+    for item in derived.value["media"]:
+        original = parent[item["occurrence_id"]]
+        if original.get("use") is not None:
+            inferred = item.get("use")
+            # An unselected replacement is expected to appear as conditioning in
+            # the isolated raw document; selected contradictory guides are not.
+            selected = any(item.get("id", item["occurrence_id"]) in edit.get("guides", [])
+                           for row in derived.value["media"] for edit in row.get("edit", []))
+            if selected and inferred != original["use"]:
+                _fail("unsupported_reference", "Derived pass conflicts with the original audio use", "media", "Rebuild from the full request")
+            item["use"] = original["use"]
+    encoded = json.dumps(json_times(_identity_value(derived.value)), ensure_ascii=False,
+                         sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    return H3Request(value=derived.value, digest=hashlib.sha256(encoded).hexdigest())
 
 
 def _region(mask: Mapping, regions: list[Region]) -> str | None:
     if mask.get("full_frame") is True and set(mask) <= {"full_frame", "polarity"}:
         return None
-    if set(mask) - {"asset", "rectangle", "polarity", "edge"} or mask.get("edge", {}) not in (
+    if set(mask) - {"asset", "rectangle", "polarity", "edge", "canvas", "threshold"} or mask.get("edge", {}) not in (
         {},
         {"dilate": 0, "feather": 0},
     ):
@@ -472,6 +564,8 @@ def _region(mask: Mapping, regions: list[Region]) -> str | None:
         "",
         mask_asset=mask.get("asset"),
         box=tuple(mask["rectangle"]) if "rectangle" in mask else None,
+        canvas=tuple(mask["canvas"]) if "canvas" in mask else None,
+        threshold=mask.get("threshold"),
     )
     for region in regions:
         if replace(region, name="") == candidate:
@@ -483,40 +577,37 @@ def _region(mask: Mapping, regions: list[Region]) -> str | None:
 
 def _from_v2(request: H3Request) -> H3Spec:
     value = request.value
+    from .request_v2 import timeline_image_limit_error
+    still_error = timeline_image_limit_error(value)
+    if still_error:
+        _fail("unsupported_source", still_error, "media", "Use a frame-zero timeline image without explicit controls")
     timelines = [item for item in value["media"] if item["role"] == "timeline"]
     if len(timelines) > 1:
         _fail("source_count", "At most one source is supported", "media", "Use one timeline source")
-    refs = []
+    refs: list[Reference] = []
     names = {}
-    audio_refs = {}
-    used_audio = set()
     for item in value["media"]:
         if item["role"] != "reference":
             continue
-        if item.get("modality") == "audio":
-            audio_refs[item["occurrence_id"]] = item
-            continue
-        if item.get("modality") != "image" or any(key in item for key in ("range", "audio")):
-            _fail(
-                "unsupported_reference",
-                "Only untimed image references are representable",
-                "media",
-                "Use image references",
-            )
         name = f"ref-{len(refs) + 1}"
-        names[item["occurrence_id"]] = name
-        refs.append(Reference(name, item["asset"]))
+        authored_id = item.get("id", item["occurrence_id"])
+        names[authored_id] = name
+        refs.append(Reference(name, item["asset"], item.get("modality", "image"),
+                              (_fraction(item["range"][0], "media.range"),
+                               _fraction(item["range"][1], "media.range")) if "range" in item else None,
+                              item.get("audio"), item.get("use"), item["occurrence_id"], authored_id))
     source = None
-    ops = []
+    ops: list[Operation] = []
     regions: list[Region] = []
     if timelines:
         item = timelines[0]
+        is_still = item.get("modality") == "image" and item["resolved_at"]["value"] == 0
         if (
-            item.get("modality") != "video"
+            not is_still and (item.get("modality") != "video"
             or item["resolved_at"]["value"] != 0
             or "range" not in item
             or item.get("hard")
-            or "latent_pin" in item
+            or "latent_pin" in item)
         ):
             _fail(
                 "unsupported_source",
@@ -524,7 +615,28 @@ def _from_v2(request: H3Request) -> H3Spec:
                 "media",
                 "Use one bounded video without hard anchors",
             )
-        source = Source(item["asset"], tuple(_fraction(t, "media.range") for t in item["range"]))
+        source_range: tuple[Fraction, Fraction] = (
+            (Fraction(0), _fraction(value["duration"], "duration"))
+            if is_still
+            else (
+                _fraction(item["range"][0], "media.range"),
+                _fraction(item["range"][1], "media.range"),
+            )
+        )
+        source = Source(
+            item["asset"], source_range, item["occurrence_id"],
+            item.get("id", item["occurrence_id"]), "image" if is_still else "video",
+        )
+        if is_still:
+            duration = _fraction(value["duration"], "duration")
+            ops.extend([
+                Operation(
+                    "regenerate", (Fraction(1, 24), duration),
+                    refs=tuple(ref.name for ref in refs if ref.use != "replacement"),
+                    stream="video",
+                ),
+                Operation("regenerate", (Fraction(0), duration), stream="audio"),
+            ])
         for edit in item["edit"]:
             if (
                 set(edit) - {"stream", "during", "resolved", "action", "mask", "guides", "channels", "strength", "seed"}
@@ -536,31 +648,15 @@ def _from_v2(request: H3Request) -> H3Spec:
                     "media.edit",
                     "Use video edits or whole-stream preservation",
                 )
-            if edit["stream"] == "audio" and edit["action"] != "preserve" and edit.get("guides"):
-                # Replacement audio: the single audio reference named by guides.
-                guide = edit["guides"][0]
-                used_audio.add(guide)
-                ops.append(
-                    Operation(
-                        "regenerate",
-                        tuple(_fraction(t, "media.edit.during") for t in edit["during"]),
-                        None,
-                        (),
-                        "audio",
-                        1.0,
-                        None,
-                        replacement_asset=audio_refs[guide]["asset"],
-                        replacement_range=tuple(_fraction(t, "media.range") for t in audio_refs[guide]["range"]),
-                    )
-                )
-                continue
             region = _region(edit["mask"], regions) if edit["stream"] == "video" else None
-            default_guides = names if edit["action"] != "preserve" else ()
+            default_guides = (tuple(ref.authored_id for ref in refs if ref.use != "replacement")
+                              if edit["action"] != "preserve" and edit["stream"] == "video" else ())
             guides = tuple(names[name] for name in edit.get("guides", default_guides))
             ops.append(
                 Operation(
                     "preserve" if edit["action"] == "preserve" else "regenerate",
-                    tuple(_fraction(t, "media.edit.during") for t in edit["during"]),
+                    (_fraction(edit["during"][0], "media.edit.during"),
+                     _fraction(edit["during"][1], "media.edit.during")),
                     region,
                     guides,
                     edit["stream"],
@@ -568,8 +664,6 @@ def _from_v2(request: H3Request) -> H3Spec:
                     edit.get("seed"),
                 )
             )
-    if any(key not in used_audio for key in audio_refs):
-        _fail("unsupported_reference", "Only untimed image references are representable", "media", "Use image references")
     if source is None:
         ops = [
             Operation("generate", (Fraction(0), _fraction(value["duration"], "duration")), refs=tuple(names.values()), stream="av")
@@ -598,6 +692,7 @@ def _from_v2(request: H3Request) -> H3Spec:
         tuple(regions),
         tuple(ops),
         value["settings"],
+        allow_v2_audio_regeneration=True,
     )
 
 
@@ -618,7 +713,7 @@ def canonical_spec(
             if value["source"]
             else None
         )
-        refs = []
+        refs: list[Reference] = []
         for ref in value["references"]:
             if ref["purpose"] != "appearance":
                 _fail(
@@ -629,7 +724,7 @@ def canonical_spec(
                 )
             refs.append(Reference(f"ref-{len(refs) + 1}", ref["asset"]))
         regions: list[Region] = []
-        ops = []
+        ops: list[Operation] = []
         for stream in ("video", "audio"):
             for change in value["changes"][stream]:
                 if set(change) - ({"during", "action", "area", "mask_asset"} if stream == "video"
@@ -648,7 +743,7 @@ def canonical_spec(
                 ops.append(
                     Operation(
                         "preserve" if change["action"] == "preserve" else "regenerate",
-                        tuple(change["during"]),
+                        (Fraction(change["during"][0]), Fraction(change["during"][1])),
                         region,
                         tuple(ref.name for ref in refs) if change["action"] != "preserve" else (),
                         stream,
@@ -662,10 +757,13 @@ def canonical_spec(
         if value["operation"] == "generate":
             ops = [
                 Operation(
-                    "generate", (0, duration), refs=tuple(ref.name for ref in refs), stream="av"
+                    "generate", (Fraction(0), _fraction(duration, "output.duration")),
+                    refs=tuple(ref.name for ref in refs), stream="av"
                 )
             ]
         elif value["operation"] == "continue":
+            if source is None:
+                _fail("source_count", "Continuation requires a source", "source", "Supply a bounded source")
             start = source.range[1] - source.range[0]
             edits = [op for op in ops if op.op != "preserve"]
             if (

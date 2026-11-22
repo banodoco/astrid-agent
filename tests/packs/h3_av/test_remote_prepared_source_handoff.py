@@ -12,7 +12,7 @@ import pytest
 from astrid.core.generation import entries
 from astrid.core.generation.engine_facts import comfyui_facts
 from astrid.core.generation.job_inputs import read_archive, write_archive
-from astrid.sdk.generation import _h3_remote_handoff
+from astrid.packs.h3_av.shared.handoff import _h3_remote_handoff
 from astrid.packs.h3_av.shared import engine_facts
 from astrid.packs.h3_av.shared.request import normalize_request
 from astrid.packs.vibecomfy.local_job import _validate_h3_prepared_handoff

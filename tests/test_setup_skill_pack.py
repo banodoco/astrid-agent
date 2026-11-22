@@ -37,10 +37,12 @@ def test_generic_sync_name_preserves_existing_targets(tmp_path):
     adapters = [ClaudeAdapter(tmp_path / 'claude'), CodexAdapter(tmp_path / 'codex'), HermesAdapter(tmp_path / 'hermes')]
     mains = list_skills()
     units = [d for d in [*mains, *list_extras(mains)] if d.pack_id != "setup"]
+    # Plan 59 declared the six added skills (01ced7b73, b2fe72bbe, 22b75ed34).
     expected_ids = {"_core", "developer", "developer-fast-iteration",
-                    "developer-releasing", "generation", "h3_av", "local", "rendering",
-                    "runpod", "timeline", "timeline-narrated", "timeline-review",
-                    "timeline-series", "timeline-shots", "training", "vibecomfy", "wan2gp"}
+                    "developer-releasing", "generation", "h3_av", "h3_av-recast-scene", "local", "rendering",
+                    "runpod", "timeline", "timeline-editing", "timeline-narrated", "timeline-review",
+                    "timeline-series", "timeline-shots", "timeline-show", "timeline-transcripts",
+                    "timeline-visualize", "timeline-visualize-advanced", "training", "vibecomfy", "wan2gp"}
     assert {d.skill_id for d in units} == expected_ids
     for adapter in adapters:
         for unit in units:

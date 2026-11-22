@@ -43,12 +43,12 @@ def test_v1_continuation_binds_explicit_strength_and_sampler(tmp_path: Path, wit
 
 
 def test_default_builder_and_disabled_turbo_requirements():
-    from astrid.packs.h3_av.shared.generation import build_generation_workflow
+    from astrid.packs.h3_av.shared.generation import build_generation_workflow, generation_inputs_from_bindings
 
     args = dict(references=['reference.png'], prompt='A scene.', frames=24,
                 model='minimax_h3_ref2va_pruned_int8_convrot.safetensors', steps=8, seed=1)
-    enabled = build_generation_workflow(**args)
-    disabled = build_generation_workflow(**args, turbo_enabled=False)
+    enabled = build_generation_workflow(generation_inputs_from_bindings(**args))
+    disabled = build_generation_workflow(generation_inputs_from_bindings(**args, turbo_enabled=False))
     enabled_loras = [row['name'] for row in enabled.requirements.models if row['subdir'] == 'loras']
     disabled_loras = [row['name'] for row in disabled.requirements.models if row['subdir'] == 'loras']
     assert enabled_loras == ['pika_h3_flex_turbo_8step_hd_ref2va.safetensors']

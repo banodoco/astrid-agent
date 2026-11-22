@@ -89,3 +89,14 @@ def test_a_declared_fade_in_is_a_dip_not_a_gap():
     assert not _advice(report, "GAP")
     assert any("DIP" in line and "c02" in line and "0.50" in line for line in report.problems), report.problems
 
+
+
+def test_unresolved_local_media_coverage_is_advisory():
+    media = {
+        "id": "b-media", "clipType": "media", "track": "plate", "asset": "P",
+        "at": 0.0, "hold": 4.0, "app": {"cut": "c02", "layer": "field"},
+    }
+
+    report = Checkout(bundle([], [media])).check()
+
+    assert _advice(report, "scene   UNKNOWN") == ["scene   UNKNOWN 4.000–8.000 s"]

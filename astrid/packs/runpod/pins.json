@@ -3,7 +3,7 @@
   "sources": {
     "lifecycle": {
       "repository": "https://github.com/banodoco/runpod-lifecycle.git",
-      "revision": "7f0b025e9391baac9f5c2fb7393617ea6fef0704",
+      "revision": "9f88ef7640bc664f697112d966ecefa123d44340",
       "version": "0.3.1.dev0"
     },
     "comfyui": {
@@ -12,7 +12,7 @@
     },
     "vibecomfy": {
       "repository": "https://github.com/banodoco/VibeComfy.git",
-      "revision": "b83db46e2694ac87a3985d7543b74ac60b7e8677"
+      "revision": "799d90f619a6723d0b376b7e77aef09c244a0821"
     },
     "h3-motion-context": {
       "repository": "https://github.com/seitanism/ComfyUI-H3-Motion-Context-MultiRef.git",
@@ -29,6 +29,10 @@
     "comfyui-qwentts": {
       "repository": "https://github.com/1038lab/ComfyUI-QwenTTS.git",
       "revision": "d8122a8ba835b65fd65c113d2b273b1ad1579293"
+    },
+    "comfyui-whisper": {
+      "repository": "https://github.com/yuvraj108c/ComfyUI-Whisper.git",
+      "revision": "006a709848259ed3d69e2f9fcfd7a75f6c860ddd"
     }
   }
 }

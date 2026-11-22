@@ -32,9 +32,9 @@ def test_index_roundtrips_windows_and_linux_recipes_with_immutable_values():
         ("torch", "2.8.0+cu128"), ("torchvision", "0.23.0+cu128"), ("torchaudio", "2.8.0+cu128")]
     assert len(windows.environments[0].final_wheels) == 3
     assert windows.environments[0].requirements.mode == "resolve-once"
-    assert {source.name for source in windows.sources} == {"comfyui", "vibecomfy", "h3-motion-context", "videohelpersuite"}
+    assert {source.name for source in windows.sources} == {"comfyui", "vibecomfy", "h3-motion-context", "videohelpersuite", "comfyui-whisper"}
     models = recipes.load_recipe_model_lock(linux.engine, linux.platform).models
-    assert len(models) == 36
+    assert len(models) == 38  # 4a89391f and 2c58a6b2 extend the inventory
     # The original five H3 models remain the leading locked inventory.
     assert [model.bytes for model in models[:5]] == [
         20970379616, 27141342152, 2811065184, 605254808, 1956193000,
@@ -125,6 +125,7 @@ def test_runpod_linux_recipe_binds_vibecomfy_to_h3_pin():
         "h3-motion-context": ("https://github.com/seitanism/ComfyUI-H3-Motion-Context-MultiRef.git", "361624fb406b63eb6694442eac6c895fc1533a70"),
         "videohelpersuite": ("https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git", "4ee72c065db22c9d96c2427954dc69e7b908444b"),
         "comfyui-hunyuanvideo-foley": ("https://github.com/BobRandomNumber/ComfyUI-HunyuanVideo_Foley.git", "b94f7aca877ff2be5bc264b057abee3dac682c1b"),
+        "comfyui-whisper": ("https://github.com/yuvraj108c/ComfyUI-Whisper.git", "006a709848259ed3d69e2f9fcfd7a75f6c860ddd"),  # 4a89391f
         "comfyui-qwentts": ("https://github.com/1038lab/ComfyUI-QwenTTS.git", "d8122a8ba835b65fd65c113d2b273b1ad1579293"),
     }
     assert {s.name: (s.pin.repository, s.pin.revision) for s in recipe.sources} == expected_sources
