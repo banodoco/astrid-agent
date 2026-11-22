@@ -70,6 +70,17 @@ def _no_generation_target(target: str, *, repo=None, client=None) -> bool:
         return False
 
 
+class _TimingAction(argparse._HelpAction):
+    """A CLI-only store-true option omitted by parser-derived tool schemas."""
+
+    def __init__(self, option_strings, dest, default=False, required=False, help=None):
+        argparse.Action.__init__(self, option_strings, dest, nargs=0, const=True,
+                                 default=default, required=required, help=help)
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, self.const)
+
+
 class _Once(argparse.Action):
     """Reject repeated convenience flags instead of silently keeping the last."""
 
@@ -251,7 +262,7 @@ def _parser(contextual: dict[str, Any] | None = None) -> _GenerationParser:
                                   "check: judge models against the target's inventory, fetch nothing (local default); "
                                   "trust: accept the workflow's declared models as present on the target, unverified.")
         command.add_argument("--json", action="store_true", help="Print the SDK result as JSON.")
-        command.add_argument("--timings", action="store_true", help="Print command stage timings.")
+        command.add_argument("--timings", action=_TimingAction, help="Print command stage timings.")
         _common_options(command)
         if 'audio_modes' in spec:
             command.add_argument('--resume', action='store_true', help='Resume from the admission receipt.')
@@ -291,7 +302,7 @@ def _parser(contextual: dict[str, Any] | None = None) -> _GenerationParser:
     command.add_argument("--cfg", '--guidance-scale', dest="guidance_scale", action=_Once, type=float)
     command.add_argument("--dry-run", action="store_true")
     command.add_argument("--json", action="store_true")
-    command.add_argument("--timings", action="store_true", help="Print command stage timings.")
+    command.add_argument("--timings", action=_TimingAction, help="Print command stage timings.")
     _common_options(command)
     command = sub.add_parser('align', help='Inspect locked managed assets; apply with explicit user_env consent.')
     selection = command.add_mutually_exclusive_group()
