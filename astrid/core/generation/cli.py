@@ -40,10 +40,9 @@ def _generate_facade() -> Any:
 def _open_client() -> Any:
     """Acquire the Runtime connection at the explicit public CLI boundary."""
     from astrid.sdk.command_timing import stage
+    from astrid.sdk.client import AstridClient
 
     with stage("Runtime connection"):
-        from astrid.sdk.client import AstridClient
-
         return AstridClient.open_from_launcher()
 
 

@@ -179,18 +179,13 @@ def test_workflow_and_image_admissions_report_generation_stage_tree(
     common = {
         "argument parsing": {None},
         "Runtime connection": {None},
-        "placement": {None},
-        "generation settings": {None},
-        "default selection": {None},
         "candidate qualification": {None},
-        "availability declaration": {"candidate qualification"},
         "candidate preparation": {None},
         "workflow build": {"candidate preparation"},
         "model registry": {None, "workflow build"},
         "target node list": {"candidate preparation", "workflow build"},
         "workflow emission": {"candidate preparation", "bundle materialisation"},
         "approval compile": {"candidate preparation"},
-        "readiness description": {None},
         "bundle materialisation": {None},
         "object import": {"source retention", None, "bundle materialisation"},
         "invocation": {None},
@@ -199,8 +194,6 @@ def test_workflow_and_image_admissions_report_generation_stage_tree(
         "SDK admission preflight": {"invocation"},
         "Workspace admission preflight": {"task creation"},
         "Remote admission preflight": {"task creation"},
-        "ComfyUI GET /system_stats": {"target check"},
-        "ComfyUI GET /object_info": {"workflow build", "target node list", "ComfyUI GET /object_info"},
     }
     workflow_expected = {
         **common,
@@ -211,7 +204,6 @@ def test_workflow_and_image_admissions_report_generation_stage_tree(
     }
     image_expected = {
         **common,
-        "availability declaration": {"candidate qualification", "workflow build"},
         "source retention": {"workflow build"},
         "entry discovery": {None},
     }
@@ -224,10 +216,6 @@ def test_workflow_and_image_admissions_report_generation_stage_tree(
                 assert row["seconds"] > 0 and row["total_seconds"] > 0
         assert actual == expected, (name, actual, expected)
 
-    assert_parents_and_counts(workflow_rows, "availability declaration", {"candidate qualification": 1})
-    assert_parents_and_counts(image_rows, "availability declaration", {"candidate qualification": 6, "workflow build": 1})
-    assert_parents_and_counts(entry_rows, "availability declaration", {"entry lookup": 2, "candidate qualification": 1, "workflow build": 1})
-    assert_parents_and_counts(fallback_rows, "availability declaration", {"candidate qualification": 2, "workflow build": 2})
     assert_parents_and_counts(workflow_rows, "source retention", {None: 1})
     for rows in (image_rows, entry_rows, fallback_rows):
         assert_parents_and_counts(rows, "source retention", {"workflow build": 1})
@@ -239,7 +227,7 @@ def test_workflow_and_image_admissions_report_generation_stage_tree(
         assert_parents_and_counts(rows, "task creation", {"invocation": 1})
         packs = [row for row in rows if row["stage"] == "pack discovery"]
         assert any(row["parent"] == "model registry" and row["seconds"] > 0 for row in packs)
-        assert any(row["parent"] == "availability declaration" and row["seconds"] > 0 for row in packs)
+        assert any(row["parent"] == "candidate qualification" and row["seconds"] > 0 for row in packs)
 
     snapshots = [row for row in workflow_rows if row["stage"] == "workflow snapshot"]
     assert [row["parent"] for row in snapshots] == [None, "candidate preparation"]

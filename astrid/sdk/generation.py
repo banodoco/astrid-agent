@@ -174,15 +174,26 @@ def _retain_generation_source(path: Path, controls: dict[str, Any]) -> dict[str,
 @contextmanager
 def _snapshot_generation_workflow(path: Path):
     """Freeze a canonical bundle, including its declared source evidence."""
+    from contextlib import ExitStack
     from tempfile import TemporaryDirectory
-    import sys
-    with stage("workflow snapshot"):
+
+    class _TimedTemporaryDirectory:
+        def __init__(self):
+            self.directory = TemporaryDirectory(prefix='astrid-workflow-source-')
+
+        def __enter__(self):
+            return self.directory.__enter__()
+
+        def __exit__(self, *exc):
+            with stage("workflow snapshot cleanup"):
+                return self.directory.__exit__(*exc)
+
+    with ExitStack() as setup:
+        setup.enter_context(stage("workflow snapshot"))
         original = path.expanduser().resolve()
         if original.is_dir():
             original = original / 'workflow.py'
-        directory = TemporaryDirectory(prefix='astrid-workflow-source-')
-        scratch = directory.__enter__()
-        try:
+        with _TimedTemporaryDirectory() as scratch:
             snapshot = Path(scratch) / original.name
             try:
                 if original.suffix.lower() == '.py':
@@ -215,20 +226,8 @@ def _snapshot_generation_workflow(path: Path):
                     snapshot.write_bytes(original.read_bytes())
             except (OSError, ValueError) as exc:
                 raise GenerationInputError(f'canonical workflow bundle could not be read: {original}: {exc}') from exc
-        except BaseException:
-            directory.__exit__(*sys.exc_info())
-            raise
-    try:
-        yield snapshot
-    except BaseException:
-        with stage("workflow snapshot cleanup"):
-            suppress = directory.__exit__(*sys.exc_info())
-        if not suppress:
-            raise
-    else:
-        with stage("workflow snapshot cleanup"):
-            directory.__exit__(None, None, None)
-
+            setup.close()
+            yield snapshot
 
 
 def _public_input_values(values):
@@ -1662,10 +1661,9 @@ class GenerationFacade:
                 kwargs["_admission_state"] = state
             if not kwargs.get("dry_run") and kwargs.get("placement") is not None:
                 from astrid.core.generation import placement as placements
-                with stage("placement"):
-                    resolved = placements.validate_placement(placements.resolve_placement(
-                        placements.request_from_selector(kwargs["placement"]),
-                        client=kwargs.get("client"), repo=kwargs.get("project_root")))
+                resolved = placements.validate_placement(placements.resolve_placement(
+                    placements.request_from_selector(kwargs["placement"]),
+                    client=kwargs.get("client"), repo=kwargs.get("project_root")))
                 if resolved.kind not in placements.BUILTIN_KINDS:
                     # A remote request is refused locally, with the same dry-run preflight,
                     # before the claimed-machine requirement below can apply.
@@ -1740,9 +1738,9 @@ class GenerationFacade:
         if discovery is None:
             scoped = controls.get('project_root') is not None or controls.get('extra_pack_roots')
             discovery = workflow_entries._EntryDiscovery(load_registry=None if scoped else lambda: registry)
-        settings_snapshot = timed_call('generation settings', generation_settings.read, controls.get('client'))
+        settings_snapshot = generation_settings.read(controls.get('client'))
         automatic = model is None and workflow_entry is None
-        pinned, preferred = timed_call('default selection', generation_defaults.dispatch_ids,
+        pinned, preferred = generation_defaults.dispatch_ids(
             modality, mode, settings_snapshot, discovery=discovery, automatic=automatic,
         )
         def rank(candidate: Any) -> tuple[int, str]:
@@ -1814,10 +1812,9 @@ class GenerationFacade:
         default_id = (candidates[0][1].id if candidates[0][0] == 'catalog'
                       else candidates[0][1]['id']) if candidates else None
         # Qualify every candidate before the placement resolver can probe discovery.
-        with stage("placement"):
-            placement = placements.validate_placement(placements.resolve_placement(
-                placements.request_from_selector(placement), client=controls.get('client'),
-                repo=controls.get('project_root')))
+        placement = placements.validate_placement(placements.resolve_placement(
+            placements.request_from_selector(placement), client=controls.get('client'),
+            repo=controls.get('project_root')))
         is_managed_target = placement.kind == 'local'
         is_remote_target = placement.kind not in placements.BUILTIN_KINDS
         if is_remote_target and not dry_run:
@@ -2074,39 +2071,38 @@ class GenerationFacade:
         entry_id, workflow, bundle, plan, schema, approval, assets, approved_files = selected
         if is_remote_target and placement_policy is not None:
             placement_policy["engine"] = runpod_engine
-        with stage("readiness description"):
-            target_record = getattr(target_client, 'generation_target', None)
-            from astrid.core.generation.targets import TargetRecord
-            if target_record is None:
-                target_record = TargetRecord(owner='human' if target_client else 'astrid',
-                    endpoint=target_client.target.url if target_client else None)
-            # Recorded versions are provenance; only known differences warn.
-            requirements = getattr(workflow, 'requirements', None)
-            recorded = getattr(workflow, 'recorded_versions', None) or {}
-            runtime = getattr(requirements, 'runtime', None)
-            if not recorded and runtime is not None:
-                recorded = {'comfyui': runtime.comfy_version, 'python': runtime.python_version}
-            observed = {**(target_record.facts.get('versions') or {})}
-            system = target_record.facts.get('system') or {}
-            observed.setdefault('comfyui', system.get('comfyui_version'))
-            observed.setdefault('python', system.get('python_version'))
-            if not isinstance(recorded, dict):
-                recorded = {}
-            inventory_entry = candidate if source == 'workflow' else {'binds': {}, 'defaults': {}}
-            inventory = workflow_entries.input_inventory(workflow_entries._workflow_inputs(
-                inventory_entry, mode, workflow=workflow))
-            effective_values = {row['name']: workflow.inputs[row['name']].value for row in inventory
-                                if row['name'] in workflow.inputs}
-            effective_values.update((plan or {}).get('bindings', inputs))
-            description = {'id': entry_id, 'engine': 'comfyui', 'mode': mode, 'kind': modality,
-                           'inputs': inventory,
-                           'effective_values': effective_values,
-                           'accepted_inputs': sorted(inputs), 'rejected_inputs': []}
-            if source == 'workflow' and candidate.get('license_notice'):
-                description['license_notice'] = candidate['license_notice']
-            readiness = readiness_envelope(entry=description, target=(
-                pending_target if is_remote_target else target_record),
-                                          issues=compare_versions(recorded, observed))
+        target_record = getattr(target_client, 'generation_target', None)
+        from astrid.core.generation.targets import TargetRecord
+        if target_record is None:
+            target_record = TargetRecord(owner='human' if target_client else 'astrid',
+                endpoint=target_client.target.url if target_client else None)
+        # Recorded versions are provenance; only known differences warn.
+        requirements = getattr(workflow, 'requirements', None)
+        recorded = getattr(workflow, 'recorded_versions', None) or {}
+        runtime = getattr(requirements, 'runtime', None)
+        if not recorded and runtime is not None:
+            recorded = {'comfyui': runtime.comfy_version, 'python': runtime.python_version}
+        observed = {**(target_record.facts.get('versions') or {})}
+        system = target_record.facts.get('system') or {}
+        observed.setdefault('comfyui', system.get('comfyui_version'))
+        observed.setdefault('python', system.get('python_version'))
+        if not isinstance(recorded, dict):
+            recorded = {}
+        inventory_entry = candidate if source == 'workflow' else {'binds': {}, 'defaults': {}}
+        inventory = workflow_entries.input_inventory(workflow_entries._workflow_inputs(
+            inventory_entry, mode, workflow=workflow))
+        effective_values = {row['name']: workflow.inputs[row['name']].value for row in inventory
+                            if row['name'] in workflow.inputs}
+        effective_values.update((plan or {}).get('bindings', inputs))
+        description = {'id': entry_id, 'engine': 'comfyui', 'mode': mode, 'kind': modality,
+                       'inputs': inventory,
+                       'effective_values': effective_values,
+                       'accepted_inputs': sorted(inputs), 'rejected_inputs': []}
+        if source == 'workflow' and candidate.get('license_notice'):
+            description['license_notice'] = candidate['license_notice']
+        readiness = readiness_envelope(entry=description, target=(
+            pending_target if is_remote_target else target_record),
+                                      issues=compare_versions(recorded, observed))
         if dry_run:
             preview = dict(plan or {"model": entry_id, "mode": mode})
             preview.update(model=entry_id, mode=mode, reason=("explicitly selected workflow entry" if model is not None or workflow_entry is not None else "highest-ranked ready local entry for the requested kind and mode on the selected target"))
