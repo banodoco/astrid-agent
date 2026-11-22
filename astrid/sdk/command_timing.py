@@ -244,6 +244,15 @@ def stage(name, *, detail=None, report_without_collector=False):
             collector.changed.notify_all()
 
 
+def set_stage_detail(detail):
+    """Attach an already-computed detail to the current occurrence, if any."""
+    collector = _current.get()
+    item = _parent.get()
+    if collector is not None and item is not None and item['collector'] is collector:
+        with collector.changed:
+            item['detail'] = detail
+
+
 def timed_call(name, function, *args, **kwargs):
     with stage(name):
         return function(*args, **kwargs)

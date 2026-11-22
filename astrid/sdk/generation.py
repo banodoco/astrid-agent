@@ -7,7 +7,7 @@ generation method is actually invoked.
 
 from __future__ import annotations
 
-from astrid.sdk.command_timing import stage, timed_call
+from astrid.sdk.command_timing import set_stage_detail, stage, timed_call
 
 import builtins
 import importlib
@@ -1867,11 +1867,12 @@ class GenerationFacade:
         failures: list[str] = []
         state = _admission_state or _WorkflowAdmissionState()
         for source, candidate in candidates:
-            with stage("candidate preparation", detail=(candidate.id if source == "catalog" else candidate["id"])):
+            with stage("candidate preparation"):
                 if source == 'workflow':
                     candidate = discovery.complete_ready(candidate)
                 source_ref = retained_source
                 identifier = candidate.id if source == "catalog" else candidate["id"]
+                set_stage_detail(identifier)
                 inspect_candidate = model is None and source == "workflow" and candidate.get("inspect_inputs_declared")
                 admission = None
                 if inspect_candidate:
