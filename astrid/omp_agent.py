@@ -704,6 +704,13 @@ def _exec_omp_with_packaged_profile(
 def main(argv: list[str] | None = None) -> int:
     rest = list(sys.argv[1:] if argv is None else argv)
 
+    if __name__ == "__main__" and argv is None and rest and rest[0] == "generate":
+        # The installer launches this module directly. Use the console's fresh
+        # process path so generation retains its startup timing attribution.
+        from .console import entrypoint
+
+        return entrypoint()
+
     if rest and rest[0] == "machines":
         from .core.machines_cli import main as machines_main
 
