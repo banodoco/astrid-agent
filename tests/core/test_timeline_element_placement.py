@@ -255,7 +255,7 @@ def test_commit_function_batches_occurrence_placements_and_document_edits(
         plan = execute(bundle, body['commands'], schema_inputs=owner.schema_inputs,
                        realm_id='realm', commit_request=body, evaluated_head=evaluated_head)
         owner.last_plan = plan
-        data = {'base_revision_id': 'head', 'base_publication_id': 'publication',
+        data = {'status': 'accepted', 'base_revision_id': 'head', 'base_publication_id': 'publication',
                 'accepted_revision_id': 'committed', 'commands': copy.deepcopy(body['commands']),
                 'canonical_document': document_from_bundle(plan.bundle)}
         result_receipt = CommandReceipt('accepted-receipt', 'timeline.commit', kwargs['idempotency_key'],
