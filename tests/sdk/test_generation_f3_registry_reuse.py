@@ -30,7 +30,7 @@ def _stub_catalog_helper(monkeypatch):
 
 
 @pytest.mark.parametrize("backend_kind", ["kwargs", "keyword_only", "legacy", "opaque"])
-def test_catalog_helper_dispatches_registry_only_when_supported(
+def test_catalog_helper_keeps_substitute_backend_on_legacy_call_path(
     monkeypatch, backend_kind,
 ):
     _stub_catalog_helper(monkeypatch)
@@ -80,12 +80,35 @@ def test_catalog_helper_dispatches_registry_only_when_supported(
     )
 
     assert len(calls) == 1
-    if backend_kind in {"kwargs", "keyword_only"}:
-        assert calls[0][1]["registry"] is registry
-    else:
-        assert "registry" not in calls[0][1]
+    assert "registry" not in calls[0][1]
     assert result[1]["roles"] == {"vae": "exact.vae"}
     assert result[1]["bindings"] == {"seed": 7}
+
+
+def test_catalog_helper_passes_registry_to_builtin_backend(monkeypatch):
+    _stub_catalog_helper(monkeypatch)
+    registry = SimpleNamespace(_astrid_default_generation_registry=True)
+    calls = []
+
+    def prepare(*args, **kwargs):
+        calls.append((args, kwargs))
+        return "workflow", {}, None
+
+    backend = VibeComfyBackend()
+    backend.prepare_catalog_workflow = prepare
+    generation._prepare_catalog_target_workflow(
+        registry=registry,
+        candidate=object(),
+        mode="t2i",
+        modality="image",
+        inputs={},
+        target_client=None,
+        backend=backend,
+        defer_target=True,
+        reuse_default_registry=True,
+    )
+    assert len(calls) == 1
+    assert calls[0][1]["registry"] is registry
 
 
 def test_catalog_helper_does_not_retry_backend_type_error(monkeypatch):
@@ -97,6 +120,8 @@ def test_catalog_helper_does_not_retry_backend_type_error(monkeypatch):
         calls.append(kwargs)
         raise TypeError("backend implementation failed")
 
+    backend = VibeComfyBackend()
+    backend.prepare_catalog_workflow = prepare
     with pytest.raises(TypeError, match="backend implementation failed"):
         generation._prepare_catalog_target_workflow(
             registry=registry,
@@ -105,7 +130,7 @@ def test_catalog_helper_does_not_retry_backend_type_error(monkeypatch):
             modality="image",
             inputs={},
             target_client=None,
-            backend=SimpleNamespace(prepare_catalog_workflow=prepare),
+            backend=backend,
             defer_target=True,
             reuse_default_registry=True,
         )
@@ -233,6 +258,127 @@ def test_facade_reuses_default_registry_within_each_command_only(network, monkey
     assert len(loads) == 2
     assert first == second
     assert first["entry"]["approval"]["api_digest"]
+
+
+def test_scoped_project_root_retains_legacy_backend_load(network, monkeypatch):
+    from pathlib import Path
+
+    from astrid.core.generation import preflight
+    from astrid.sdk.generation import GenerationFacade
+
+    client, _requests = install_target(network, target_info())
+    monkeypatch.setattr(preflight, "_module_available", lambda name: name == "vibecomfy")
+    monkeypatch.setattr(
+        preflight, "_comfyui_runtime_available",
+        Mock(side_effect=AssertionError("managed installation probed")),
+    )
+    real_loader = ModelRegistry.load_default
+    loads = []
+
+    def counted_loader(*args, **kwargs):
+        loads.append(kwargs)
+        return real_loader(*args, **kwargs)
+
+    backend_calls = []
+    real_prepare = VibeComfyBackend.prepare_catalog_workflow
+
+    def record_prepare(self, *args, **kwargs):
+        backend_calls.append(kwargs)
+        return real_prepare(self, *args, **kwargs)
+
+    monkeypatch.setattr(VibeComfyBackend, "prepare_catalog_workflow", record_prepare)
+    monkeypatch.setattr(ModelRegistry, "load_default", counted_loader)
+    repo_root = Path(__file__).resolve().parents[2]
+    result = GenerationFacade().image(
+        model="z-image", mode="t2i", placement=client.target.url,
+        prompt="a red kite", seed=19, dry_run=True, project_root=repo_root,
+    )
+    assert result["entry"]["approval"]["api_digest"]
+    assert any(kwargs.get("project_root") == repo_root for kwargs in loads)
+    assert any(kwargs == {} for kwargs in loads)
+    assert len(backend_calls) == 1
+    assert "registry" not in backend_calls[0]
+
+
+def test_private_shipped_only_producer_retains_legacy_backend_load(
+    network, monkeypatch, tmp_path,
+):
+    from astrid.core.generation import model_root
+    from astrid.core.generation.backends.comfy_target import ComfyTargetClient
+    from astrid.core.generation.model_root import ModelRootBinding
+    from astrid.core.model_catalog import schema as catalog_schema
+    from astrid.sdk.exceptions import CapabilityValidationError
+
+    client, _requests = install_target(network, target_info())
+    candidate = ModelRegistry.load_default().get("z-image")
+    binding = ModelRootBinding(
+        path=tmp_path,
+        inventory=(),
+        inventory_digest="sha256:" + "0" * 64,
+        qualification_identity=None,
+    )
+    monkeypatch.setattr(catalog_schema, "validate_registry_with_backends", lambda *a, **k: [candidate])
+    monkeypatch.setattr(model_root, "validate_model_root_binding", lambda *a, **k: binding)
+    monkeypatch.setattr(generation, "_referenced_model_values", lambda workflow: [])
+    real_loader = ModelRegistry.load_default
+    loads = []
+
+    def counted_loader(*args, **kwargs):
+        loads.append(kwargs)
+        return real_loader(*args, **kwargs)
+
+    backend_calls = []
+    real_prepare = VibeComfyBackend.prepare_catalog_workflow
+
+    def record_prepare(self, *args, **kwargs):
+        backend_calls.append(kwargs)
+        return real_prepare(self, *args, **kwargs)
+
+    monkeypatch.setattr(VibeComfyBackend, "prepare_catalog_workflow", record_prepare)
+    monkeypatch.setattr(ModelRegistry, "load_default", counted_loader)
+    with pytest.raises(CapabilityValidationError, match="producer has no verifiable model references"):
+        generation._prepare_verified_image_recipe(
+            inputs={"prompt": "a red kite", "seed": 19},
+            target_client=client,
+            model_root=binding,
+        )
+    assert type(client) is ComfyTargetClient
+    assert len(loads) == 1
+    assert loads[0] == {}
+    assert len(backend_calls) == 1
+    assert "registry" not in backend_calls[0]
+
+
+def test_catalog_helper_skips_role_resolution_when_target_is_omitted(monkeypatch):
+    _stub_catalog_helper(monkeypatch)
+    registry = SimpleNamespace(_astrid_default_generation_registry=True)
+    backend = VibeComfyBackend()
+    calls = []
+    real_prepare = backend.prepare_catalog_workflow
+
+    def record_prepare(*args, **kwargs):
+        calls.append(kwargs)
+        return real_prepare(*args, **kwargs)
+
+    backend.prepare_catalog_workflow = record_prepare
+    candidate = ModelRegistry.load_default().get("z-image")
+    with pytest.MonkeyPatch.context() as local:
+        local.setattr(ModelRegistry, "load_default", Mock(side_effect=AssertionError("targetless path loaded registry")))
+        result = generation._prepare_catalog_target_workflow(
+            registry=registry,
+            candidate=candidate,
+            mode="t2i",
+            modality="image",
+            inputs={"prompt": "a red kite", "seed": 19},
+            target_client=None,
+            backend=backend,
+            defer_target=True,
+            reuse_default_registry=True,
+        )
+    assert len(calls) == 1
+    assert calls[0]["resolve_target"] is False
+    assert calls[0]["registry"] is registry
+    assert result[2] is None
 
 
 def test_explicit_none_registry_uses_legacy_load(network, monkeypatch):

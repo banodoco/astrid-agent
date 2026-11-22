@@ -915,7 +915,9 @@ def _prepare_catalog_target_workflow(*, registry: Any, candidate: Any, mode: str
         **({'retain_source': retain_source} if retain_source is not None else {}),
         **({'align': 'trust'} if align == 'trust' else {}),
     )
-    if (reuse_default_registry
+    from astrid.core.generation.backends.vibecomfy import VibeComfyBackend
+    if (type(backend) is VibeComfyBackend
+            and reuse_default_registry
             and getattr(registry, '_astrid_default_generation_registry', False)
             and _backend_accepts_keyword(prepare, 'registry')):
         kwargs['registry'] = registry
