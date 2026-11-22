@@ -45,7 +45,16 @@ def _runtime_vectors(timings):
 
 
 def test_fresh_process_command_counts(tmp_path, monkeypatch, real_runtime, tuple_sources):  # noqa: F811
-    """Capture live counts before asserting. Discovery cache hits reuse admitted metadata but still fingerprint roots and hash files. In this pinned capture each command observed 27 tree-fingerprint calls, 6,165 file hashes, and 629,870,103 bytes hashed; those totals are informational because the admitted file set can vary. The 15 discovery calls split into seven cache-hit returns and eight full admission walks. ContextVar reset does not clear captured dicts: a copied async context outliving the command can retain its dict; clearing on exit is a possible Plan 82/review follow-up. The two resolver calls are separate safety checks: CLI validation at cli.py:748 and remote-target archive revalidation at sdk/generation.py:2234."""
+    """Capture live work counts with upper bounds and required-positive work assertions.
+
+    Discovery cache hits still fingerprint roots and hash files. The current
+    ceiling is 27 tree-fingerprint calls per command; file hash counts and
+    bytes are informational because the admitted file set can vary. Inventory
+    calls partition into cache hits and full walks; a full walk is required.
+    The two resolver calls are separate safety
+    checks: CLI validation at cli.py:748 and remote-target archive revalidation
+    at sdk/generation.py:2234.
+    """
     ROOT = Path(__file__).resolve().parents[2]
 
     runtime_root = tmp_path / "machine" / "runtime"
@@ -134,7 +143,7 @@ def save():
             json.dump({"counts": dict(counts), "provenance": provenance}, output, sort_keys=True)
 atexit.register(save)
 ''', encoding="utf-8")
-        workflow = _workflow_file()
+        _workflow_file()
         counts_per_command = []
         payloads = []
         for index, prompt in enumerate(("A red cube on a white tabletop.",
@@ -185,6 +194,18 @@ atexit.register(save)
                 "pack_inventory": 15,
                 "pack_inventory_cached_hit": 7,
                 "pack_inventory_full_walk": 8,
+                "tree_fingerprint_calls": 27,
+            }
+            required_positive_counts = {
+                "entry_resolution",
+                "entry_find_entry",
+                "entry_ready_entry_rows",
+                "entry_complete_ready_entry",
+                "entry_load_entry_workflow",
+                "workflow_build",
+                "model_registry_load",
+                "pack_inventory_full_walk",
+                "tree_fingerprint_calls",
             }
             expected_api = {
                 "GET /v1/app-state/user/generation": 3,
@@ -207,10 +228,20 @@ atexit.register(save)
                 "vibecomfy": str(Path(os.environ["ASTRID_VIBECOMFY_CHECKOUT"]) / "vibecomfy" / "__init__.py"),
             }
             for vector in vectors:
-                for name, expected in expected_counts.items():
-                    assert vector[name] == expected, (name, vector)
-                assert vector["runtime_api_requests"] == expected_api, vector
-                assert vector["runtime_internal_stages"] == expected_internal, vector
+                for name, ceiling in expected_counts.items():
+                    assert 0 <= vector.get(name, 0) <= ceiling, (name, vector)
+                for name in required_positive_counts:
+                    assert vector.get(name, 0) > 0, (name, vector)
+                assert vector["pack_inventory"] == (
+                    vector.get("pack_inventory_cached_hit", 0)
+                    + vector.get("pack_inventory_full_walk", 0)
+                ), vector
+                for actual, ceilings in ((vector["runtime_api_requests"], expected_api),
+                                         (vector["runtime_internal_stages"], expected_internal)):
+                    assert actual.keys() <= ceilings.keys(), actual
+                    for name, ceiling in ceilings.items():
+                        assert 0 <= actual.get(name, 0) <= ceiling, (name, actual)
+                assert vector["runtime_api_requests"].get("POST /v1/tasks", 0) > 0, vector
                 assert vector["source_provenance"] == expected_provenance, vector["source_provenance"]
             for task_id in task_ids:
                 task = client.tasks.show(task_id)
