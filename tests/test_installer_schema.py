@@ -438,8 +438,9 @@ def test_d72_runtime_and_composition_pins_have_no_obsolete_externals():
     canonical_schema = ROOT / "astrid/core/timeline/schema/timeline-config.schema.json"
     assert schema_pin["from"] == "contract/schemas/timeline-config.schema.json"
     assert schema_pin["sha256"] == "sha256:" + hashlib.sha256(canonical_schema.read_bytes()).hexdigest()
+    # Runtime appearance contract refresh, 5fb14bc27; F7 option B.
     assert schema_pin["sha256"] == (
-        "sha256:f870150ffd0e42365c048965e2f7c08efc959c36db76ed4cba59de2e58ab4e08"
+        "sha256:599f6fc2ff76a3385f99427f5861a81f3eb1b5c4232a5017fc143f0a154741cf"
     )
 
     assert not _contains_obsolete_external(package)

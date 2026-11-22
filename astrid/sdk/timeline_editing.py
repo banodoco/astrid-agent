@@ -162,7 +162,6 @@ def add_track(container: MutableMapping[str, Any], *, kind: str = "video", name:
     """Add and return a valid empty track in a main timeline or shot."""
 
     from astrid.core.timeline.track_appearance import stamp_new_track_appearance
-
     from astrid.sdk.timeline.native_checkout import AttachedCheckout
 
     attached = container if isinstance(container, AttachedCheckout) else None

@@ -27,7 +27,8 @@ from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 
 from astrid.core.generation.engine_contracts import TransportError
-from astrid.core.path_utils import has_url_scheme, is_native_absolute_path
+from astrid.core.media import MediaProbeError, ffprobe_metadata_strict
+from astrid.core.path_utils import has_url_scheme, is_native_absolute_path, is_network_share_path
 from astrid.core.util.http import os_trust_ssl_context, request_error_host
 
 MAX_JSON_BYTES = 32 * 1024 * 1024
@@ -46,6 +47,28 @@ _MANAGED_KIND_RULES: dict[str, dict[str, Any]] = {
     "video": {"hash_required": True},
     "audio": {"hash_required": True},
 }
+
+
+def managed_media_type(source: Path, kind: str) -> str:
+    """Validate a managed workflow input and retain its upload content type."""
+    if is_network_share_path(source):
+        raise ValueError(f"managed {kind} is not a local regular file: network share")
+    source = Path(source)
+    if source.is_symlink() or not source.is_file():
+        raise ValueError(f"managed {kind} is not a local regular file: {source}")
+    media_type = mimetypes.guess_type(source.name)[0] or ""
+    if media_type.startswith(f"{kind}/"):
+        return media_type
+    if kind == "audio" and media_type.startswith("video/"):
+        try:
+            probe = ffprobe_metadata_strict(source, local_only=True)
+        except MediaProbeError as exc:
+            raise ValueError(f"could not inspect {source.name} for an audio stream: {exc}") from exc
+        if probe.has_audio_stream:
+            return media_type
+        raise ValueError(f"video {source.name} has no audio stream for the audio input")
+    raise ValueError(_MANAGED_KIND_RULES[kind].get("media_error")
+                     or f"local_server managed {kind} asset must have a {kind}/* media type")
 
 
 def validate_attached_url(value: str) -> str:
@@ -328,13 +351,12 @@ class ComfyTargetClient:
         if kind not in _MANAGED_KIND_RULES:
             raise ValueError(f"unsupported local_server managed asset kind: {kind}")
         rule = _MANAGED_KIND_RULES[kind]
+        if is_network_share_path(source):
+            raise ValueError(f"managed {kind} is not a local regular file: network share")
         source = Path(source)
         subfolder = f"astrid/{validate_identity(task_id)}"
         if source.is_symlink() or not source.is_file():
             raise ValueError(f"managed {kind} is not a regular file: {source}")
-        media_type = mimetypes.guess_type(source.name)[0] or ""
-        if not media_type.startswith(f"{kind}/"):
-            raise ValueError(rule.get("media_error") or f"local_server managed {kind} asset must have a {kind}/* media type")
         with source.open("rb") as handle:
             data = handle.read(MAX_UPLOAD_BYTES + 1)
         if len(data) > MAX_UPLOAD_BYTES:
@@ -343,6 +365,11 @@ class ComfyTargetClient:
         if (rule["hash_required"] or expected_sha256 is not None) and (
                 expected_sha256 is None or digest != _digest_hex(expected_sha256)):
             raise ValueError(f"managed {kind} failed hash verification: {source.name}")
+        # Inspect the same bounded bytes that passed custody verification and will be uploaded.
+        with tempfile.TemporaryDirectory(prefix="astrid-media-probe-") as staging:
+            frozen = Path(staging) / source.name
+            frozen.write_bytes(data)
+            media_type = managed_media_type(frozen, kind)
         filename = source.name.replace('"', "_").replace("\r", "_").replace("\n", "_")
         if self.endpoint_transport is not None:
             root = self._pod_directory("input_directory")

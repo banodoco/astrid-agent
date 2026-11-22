@@ -4,10 +4,10 @@
 """Auto-generated ready_template — use python -m vibecomfy.cli copy-to-recipe <id> for hand-editing."""
 from __future__ import annotations
 
-from vibecomfy.templates import InputSpec, ModelAsset, OutputSpec, ReadyMetadata, new_workflow, node as raw_call, ref
-from vibecomfy.workflow import VibeWorkflow
 from vibecomfy.nodes.core import LoadAudio
-
+from vibecomfy.templates import InputSpec, ModelAsset, OutputSpec, ReadyMetadata, new_workflow, ref
+from vibecomfy.templates import node as raw_call
+from vibecomfy.workflow import VibeWorkflow
 
 MODEL_NAME = 'large-v3-turbo'
 DEFAULT_AUDIO_REF = 'input.wav'

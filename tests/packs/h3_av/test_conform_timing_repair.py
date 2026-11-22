@@ -322,3 +322,103 @@ def test_internal_audio_timestamp_gap_over_one_frame_is_rejected_despite_full_st
 
     with pytest.raises(PreparationError, match="decoded source audio has a timestamp gap or overlap"):
         _prepare(tmp_path, source, 0.5, 2.5)
+
+
+@pytest.mark.ffmpeg
+@pytest.mark.parametrize("video_duration,audio_duration,expected_error", [
+    (1, 1, None),
+    (1, 0.5, "audio shortfall exceeds"),
+    (0.5, 1, "source streams must cover"),
+])
+def test_matroska_missing_stream_durations_measures_each_stream(
+    tmp_path: Path, video_duration: float, audio_duration: float, expected_error: str | None,
+) -> None:
+    source = tmp_path / "source.mkv"
+    _ffmpeg(
+        "-f", "lavfi", "-i", f"color=c=black:s=320x180:r=24:d={video_duration}",
+        "-f", "lavfi", "-i", f"sine=frequency=440:sample_rate=48000:duration={audio_duration}",
+        "-map", "0:v:0", "-map", "1:a:0", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        "-c:a", "pcm_s16le", str(source),
+    )
+    info = _probe(source)
+    assert all("duration" not in row and "duration_ts" not in row for row in info["streams"])
+    assert float(info["format"]["duration"]) == pytest.approx(1)
+    if expected_error:
+        with pytest.raises(PreparationError, match=expected_error):
+            _prepare(tmp_path, source, 0, 1)
+    else:
+        result = _prepare(tmp_path, source, 0, 1)["source_conform"]
+        assert result["output"]["frames"] == 24
+        # Matroska's 1 ms timestamp clock rounds the last PCM frame start;
+        # the reported repair accounts for the resulting 16-sample shortfall.
+        assert result["timing"]["tail_pad_samples"] == 16
+        assert result["timing"]["audio_offset_samples"] == 0
+
+
+@pytest.mark.ffmpeg
+def test_matroska_video_gap_is_rejected(tmp_path: Path) -> None:
+    source = tmp_path / "gap.mkv"
+    _ffmpeg(
+        "-f", "lavfi", "-i", "color=c=black:s=320x180:r=24:d=1",
+        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=1",
+        "-vf", "select='not(between(t,0.4,0.8))'", "-fps_mode:v", "passthrough",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "pcm_s16le", str(source),
+    )
+    with pytest.raises(PreparationError, match="video has a timestamp gap"):
+        _prepare(tmp_path, source, 0, 1)
+
+
+@pytest.mark.ffmpeg
+def test_coverage_probe_fails_closed_when_output_limit_exceeded(tmp_path: Path, monkeypatch) -> None:
+    from astrid.packs.h3_av.shared import conform
+
+    source = _source(tmp_path / "source.mov", duration=Fraction(1))
+    monkeypatch.setattr(conform, "_MAX_PROBE_BYTES", 256)
+    with pytest.raises(PreparationError, match="cannot verify decoded source audio coverage"):
+        _prepare(tmp_path, source, 0, 1)
+    assert not (tmp_path / "prepared" / "conformed-source").exists()
+
+
+@pytest.mark.ffmpeg
+def test_source_change_during_coverage_inspection_is_rejected(tmp_path: Path, monkeypatch) -> None:
+    from astrid.packs.h3_av.shared import conform
+
+    source = _source(tmp_path / "source.mov", duration=Fraction(1))
+    original = conform._decoded_audio_coverage
+
+    def mutate_after_probe(*args):
+        result = original(*args)
+        with source.open("ab") as changed:
+            changed.write(b"changed")
+        return result
+
+    monkeypatch.setattr(conform, "_decoded_audio_coverage", mutate_after_probe)
+    with pytest.raises(PreparationError, match="source changed while inspecting coverage"):
+        _prepare(tmp_path, source, 0, 1)
+    assert not (tmp_path / "prepared" / "conformed-source").exists()
+
+
+def test_video_duplicate_packet_timestamps_are_rejected(monkeypatch, tmp_path: Path) -> None:
+    from astrid.packs.h3_av.shared import conform
+
+    monkeypatch.setattr(conform, "_bounded_probe", lambda args: {
+        "packets": [{"pts": 0, "duration": 1000}, {"pts": 0, "duration": 1000}],
+    })
+    with pytest.raises(PreparationError, match="video has overlapping timestamps"):
+        conform._video_packet_end(tmp_path / "source.mkv", {"time_base": "1/1000"}, Fraction(0), Fraction(1))
+
+
+def test_bounded_probe_discards_stderr_and_propagates_failure(monkeypatch, tmp_path: Path) -> None:
+    from astrid.packs.h3_av.shared import conform
+
+    calls = []
+
+    def failed_probe(*args, **kwargs):
+        calls.append(args[0])
+        assert kwargs["stderr"] is subprocess.DEVNULL
+        raise subprocess.CalledProcessError(1, args[0])
+
+    monkeypatch.setattr(conform.subprocess, "Popen", failed_probe)
+    with pytest.raises(PreparationError, match="cannot verify source video coverage"):
+        conform._video_packet_end(tmp_path / "source.mkv", {"time_base": "1/1000"}, Fraction(0), Fraction(1))
+    assert len(calls) == 1

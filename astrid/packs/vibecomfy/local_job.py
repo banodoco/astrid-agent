@@ -213,6 +213,7 @@ def _run_owned_action(workflow: Path, out: Path, *, task_identity: str, attempt_
 def _validate_h3_prepared_handoff(inputs: dict[str, Any], files: dict[str, str]) -> None:
     """Refuse a remote H3 source unless both managed copies match its sealed digest."""
     import hashlib
+
     from astrid.packs.h3_av.shared.request import load_request_document, normalize_request
     from astrid.packs.h3_av.shared.stages import _authoritative_source_asset_id
 

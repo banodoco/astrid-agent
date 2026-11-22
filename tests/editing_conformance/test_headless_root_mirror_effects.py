@@ -175,6 +175,30 @@ def test_nested_registry_and_clip_aliases_keep_synchronized_mirrors(mounted):
         ['config', 'clips']]
 
 
+    projected = create_runtime_commit_service().project_capture(
+        result['data']['canonical_document'], normalize_appearance=False)
+    assert projected['registry'] == {'assets': {}}
+    assert document(mounted) == result['data']['canonical_document']
+
+
+@pytest.mark.parametrize(('registry', 'message'), [
+    pytest.param({'meta': None}, 'meta: must be an object', id='invalid-meta'),
+    pytest.param({'meta': {'org.example.notes': {}}, 'unknown': {}},
+                 "unknown key 'unknown'", id='unknown-registry-key'),
+])
+def test_registry_meta_projection_does_not_admit_invalid_registry(mounted, registry, message):
+    from runtime_protocol.errors import RuntimeErrorBase
+
+    service, _ = mounted
+    config = document(mounted)['parent_revision']['payload']['config']
+    call = patch(change(['config'], present(config), {**config, 'registry': registry}))
+    before = tuple(service.store.conn.iterdump())
+    with pytest.raises(RuntimeErrorBase, match=message) as error:
+        commit(mounted, request(mounted, call))
+    assert error.value.details['reason'] == 'unreadable_result'
+    assert tuple(service.store.conn.iterdump()) == before
+
+
 @pytest.mark.parametrize('damage', ['before', 'created-missing', 'created-extra', 'submitted-step'])
 def test_invalid_submitted_claims_cannot_use_effect_completion(mounted, damage):
     from runtime_protocol.errors import RuntimeErrorBase
