@@ -249,7 +249,14 @@ def test_commit_function_batches_occurrence_placements_and_document_edits(
                      'items': [], 'next_cursor': None}
     owner.history.side_effect = lambda *a, **kw: DomainResult.success(copy.deepcopy(history_state))
 
+    accepted_requests = {}
+
     def commit(project, timeline_id, body, **kwargs):
+        key = kwargs['idempotency_key']
+        if key in accepted_requests:
+            saved_body, saved_result = accepted_requests[key]
+            assert body == saved_body
+            return saved_result
         evaluated_head = {'revision_id': body['base_revision_id'],
                           'publication_id': body['base_publication_id']}
         plan = execute(bundle, body['commands'], schema_inputs=owner.schema_inputs,
@@ -264,7 +271,9 @@ def test_commit_function_batches_occurrence_placements_and_document_edits(
         history_state['items'].append({'revision_id': 'committed', 'publication_id': 'accepted-receipt',
                                        'publisher': 'author', 'receipt': result_receipt.as_dict()})
         history_state['head'] = {'revision_id': 'committed', 'publication_id': 'accepted-receipt'}
-        return DomainResult.success(data, receipt=result_receipt, idempotency_key=kwargs['idempotency_key'])
+        result = DomainResult.success(data, receipt=result_receipt, idempotency_key=key)
+        accepted_requests[key] = (copy.deepcopy(body), result)
+        return result
 
     owner.commit.side_effect = commit
     def commit_timeline(project, timeline_id, body, *, idempotency_key):
@@ -333,7 +342,8 @@ def test_commit_function_batches_occurrence_placements_and_document_edits(
     retried = timeline.commit(lambda _working: pytest.fail('same-key retry must reuse its receipt'),
                               key='mixed-key')
     assert retried['receipt'] == first['receipt']
-    assert owner.commit.call_count == 1
+    assert owner.commit.call_count == 2
+    assert len(history_state['items']) == 1
 
 
 # --- pointing an existing built-in effect clip at an admitted project effect ---------------------------------
