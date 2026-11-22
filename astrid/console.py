@@ -76,18 +76,34 @@ def process_started_at(fallback: float) -> float:
 
 def entrypoint() -> int:
     """Start a fresh installed or module process invocation."""
-    return main(_process_entry=True)
+    return _run_console(start_provenance="process start")
 
 
-def main(argv: list[str] | None = None, *, _process_entry: bool = False) -> int:
+def main(argv: list[str] | None = None) -> int:
+    """Keep the historical console-script entrypoint as a command-entry call."""
+    return _run_console(argv, start_provenance="command entry")
+
+
+def _run_console(
+    argv: list[str] | None = None,
+    *,
+    start_provenance: str,
+) -> int:
     started_at = time.monotonic()
     rest = list(sys.argv[1:] if argv is None else argv)
     if argv is None and rest and rest[0] == "timelines":
         started_at = process_started_at(started_at)
     if rest and rest[0] == "generate":
-        process_start = (process_started_at(started_at)
-                         if _process_entry else started_at)
-        provenance = "process start" if process_start < started_at else "command entry"
+        process_start = (
+            process_started_at(started_at)
+            if start_provenance == "process start"
+            else started_at
+        )
+        provenance = (
+            "process start"
+            if start_provenance == "process start" and process_start < started_at
+            else "command entry"
+        )
         import_start = time.monotonic()
         from .core.gateway import main as gateway_main
         import_end = time.monotonic()
