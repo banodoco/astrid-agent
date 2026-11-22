@@ -153,6 +153,7 @@ def test_host_probe_subprocess_calls_explicitly_close_stdin():
         root / "astrid/sdk/host_bootstrap.py",
         root / "astrid/core/runtime/log_capture.py",
         root / "astrid/core/rendering/node_pin.py",
+        root / "astrid/core/foundation/renderer_toolchain.py",
     )
     for source in sources:
         tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
