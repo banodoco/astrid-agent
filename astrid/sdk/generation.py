@@ -1589,7 +1589,7 @@ class GenerationFacade:
                     project, out = source_controls['project'], source_controls['out']
                 try:
                     # An attached ComfyUI's own schema names a saved workflow's custom-node inputs, as the run reads them.
-                    attached = placements.attached_comfy_url(placement)
+                    attached = placements.attached_comfy_url(placement, client=client)
                     description, values = resolve_workflow_inputs(
                         frozen, inputs or {}, mode=mode, **({'comfy_url': attached} if attached else {}))
                 except ImportError as exc:

@@ -621,7 +621,7 @@ class TimelineSession:
     def commit_many(
         self, commands, *, idempotency_key=None, dry_run=False, via="python", base=None,
         verified_media=(), label=None, steps=None, merge="fields", reads=None,
-        _omit_empty_reads=False,
+        _omit_empty_reads=False, _captured=None,
     ):
         """Capture and flush a batch, or retry its exact flight before a suffix."""
         from astrid.sdk.timeline._command_state import equal
@@ -664,9 +664,19 @@ class TimelineSession:
                               and 'source_ref' in command['args'] for command in commands)
         # Foreign child authority is available only inside Runtime's request port.
         # Freeze the submitted intent; its ordinary provider captures every guard.
-        self._stage(lambda state: copy.deepcopy(commands) if runtime_capture else execute(
-                        self._capture_bundle(state, commands), commands, verified_media=verified_media
-                    ).commands,
+        def capture(state):
+            if _captured is not None:
+                captured_state, captured_bundle = _captured
+                if not equal(state, captured_state):
+                    raise TimelineEditError("outbox changed during capture; original intent was not queued")
+                if runtime_capture:
+                    return copy.deepcopy(commands)
+                return execute(captured_bundle, commands, verified_media=verified_media).commands
+            return copy.deepcopy(commands) if runtime_capture else execute(
+                self._capture_bundle(state, commands), commands, verified_media=verified_media
+            ).commands
+
+        self._stage(capture,
                     lambda pending: len(pending) == len(commands) and all(
                         all(equal(saved.get(key), value) for key, value in command.items() if key != "intent")
                         and all(equal(saved.get("intent", {}).get(key), value)
