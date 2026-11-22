@@ -40,6 +40,24 @@ def pod_watchdog_transport(request: pytest.FixtureRequest, monkeypatch: pytest.M
     return token
 
 
+@pytest.fixture
+def acknowledged_watchdog(monkeypatch, pod_watchdog_transport):
+    from runpod_lifecycle import https
+
+    class Transport:
+        def __init__(self, pod_id, https_token, *, deadline=None):
+            assert pod_id and https_token == pod_watchdog_transport
+
+        def execute_command(self, command, timeout):
+            assert command.startswith("python3 -c ")
+            return 0, "", ""
+
+        def disconnect(self):
+            pass
+
+    monkeypatch.setattr(https, "HttpsPodTransport", Transport)
+
+
 @pytest.fixture(autouse=True)
 def lease_https_transport(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch):
     """Complete the small lease's fake provider with its HTTPS command edge."""

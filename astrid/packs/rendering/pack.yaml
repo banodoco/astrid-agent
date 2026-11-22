@@ -1448,6 +1448,15 @@ rendering:
   transitions/fade:
     type: element
     path: rendering/elements/transitions/fade/element.yaml
+  transitions/slide-push:
+    type: element
+    path: rendering/elements/transitions/slide-push/element.yaml
+  transitions/wipe:
+    type: element
+    path: rendering/elements/transitions/wipe/element.yaml
+  transitions/zoom-through:
+    type: element
+    path: rendering/elements/transitions/zoom-through/element.yaml
 ui:
   video-editor:
     type: tool

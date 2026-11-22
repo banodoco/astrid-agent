@@ -1,0 +1,17 @@
+{
+  "source": {
+    "repository": "banodoco/astrid-app",
+    "revision": "de7dd1e6",
+    "transitions": "src/tools/video-editor/effects/transitions.ts",
+    "phaseEffects": "src/tools/video-editor/effects/index.tsx"
+  },
+  "transitionIds": ["wipe", "slide-push", "zoom-through"],
+  "phaseEffectIds": {
+    "entrance": [
+      "slide-up", "slide-down", "slide-left", "slide-right", "zoom-in", "zoom-spin",
+      "pulse", "fade", "flip", "bounce", "meteorite"
+    ],
+    "exit": ["slide-down", "zoom-out", "flip", "fade-out", "shrink", "dissolve"],
+    "continuous": ["ken-burns", "float", "glitch", "slow-zoom", "drift"]
+  }
+}

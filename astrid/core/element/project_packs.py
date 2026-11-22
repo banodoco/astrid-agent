@@ -286,7 +286,10 @@ def _build_receipt(selection: dict[str,Any]) -> dict[str,Any]:
     data = (json.dumps(selection,indent=2,sort_keys=True)+'\n').encode('utf-8')
     return {'schema':'astrid.element-build/v1','selectionDigest':'sha256:'+hashlib.sha256(data).hexdigest(),
             'elements':[{'projectId':e['projectId'],**{k:e['descriptor'][k] for k in ('packId','id','kind','revision')}}
-                        for e in selection['elements']]}
+                        for e in selection['elements']],
+            'compiledBindings':[{'projectId':e['projectId'],**{k:e['descriptor'][k] for k in ('packId','id','kind','revision')},
+                                 'componentPath':e['snapshot']['componentPath'],'compiled':e['compiled']}
+                                for e in selection['elements']]}
 
 
 def init_project_pack(realm: str, project: str, *, client=None, collection='default') -> dict[str, Any]:
@@ -788,6 +791,18 @@ def _admitted_snapshot_descriptor(project, reference, content, admission, files,
     if len(exact) != 1 or any(exact[0].get(k) != reference[k] for k in required):
         raise ValueError("Admitted source does not match canonical revision")
     descriptor = exact[0]
+    if 'compiledBindings' in build:
+        bindings = build['compiledBindings']
+        if not isinstance(bindings, list):
+            raise ValueError('Invalid compiled binding receipt')
+        matches = [b for b in bindings if isinstance(b, dict) and all(b.get(k) == v for k, v in identity.items())]
+        component = descriptor['componentPath']
+        compiled_path = _compiled_path(component)
+        expected_compiled = {'path': compiled_path, 'sha256': hashlib.sha256(files[compiled_path]).hexdigest()} if compiled_path in files else None
+        if (len(matches) != 1 or expected_compiled is None
+                or matches[0] != {**identity, 'componentPath': component, 'compiled': expected_compiled}
+                or admission.get('compiled') != expected_compiled):
+            raise ValueError('Selected compiled binding does not match admitted source')
     descriptor["componentPath"] = (
         f"external/{owner}/{admission['snapshot_digest']}/{descriptor['componentPath']}"
     )

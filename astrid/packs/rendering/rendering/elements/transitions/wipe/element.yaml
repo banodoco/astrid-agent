@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "defaults": {
+    "durationFrames": 8
+  },
+  "dependencies": {
+    "js_packages": [],
+    "python_requirements": []
+  },
+  "description": "Wipe transition that reveals the incoming clip from left to right.",
+  "id": "wipe",
+  "keywords": [
+    "wipe",
+    "transition",
+    "reveal",
+    "left-to-right"
+  ],
+  "kind": "transition",
+  "inputs": [
+    {
+      "name": "from_clip",
+      "type": "clip",
+      "required": true,
+      "artifact_type": "clip/visual"
+    },
+    {
+      "name": "to_clip",
+      "type": "clip",
+      "required": true,
+      "artifact_type": "clip/visual"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "clip",
+      "type": "clip",
+      "artifact_type": "clip/visual"
+    }
+  ],
+  "metadata": {
+    "label": "Wipe",
+    "pack_id": "rendering"
+  },
+  "pack_id": "rendering",
+  "runtime": {
+    "adapter": "remotion"
+  },
+  "schema": {
+    "properties": {
+      "durationFrames": {
+        "minimum": 1,
+        "type": "number"
+      }
+    },
+    "type": "object"
+  },
+  "short_description": "Wipe transition revealing the incoming clip from left to right."
+}

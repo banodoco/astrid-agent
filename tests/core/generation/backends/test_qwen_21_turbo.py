@@ -58,7 +58,7 @@ def object_info(workflow):
 
 
 @pytest.mark.parametrize('model,mode,template', ROUTES)
-def test_catalog_route_compiles_against_fake_comfy(model, mode, template, monkeypatch):
+def test_catalog_route_compiles_against_fake_comfy(model, mode, template, monkeypatch, tmp_path):
     entry = ModelRegistry.load_default().get(model)
     spec = entry.modes[mode].backends['local']
     assert spec.template == template
@@ -80,7 +80,13 @@ def test_catalog_route_compiles_against_fake_comfy(model, mode, template, monkey
     try:
         client = ComfyTargetClient(ComfyTarget(f'http://127.0.0.1:{server.server_port}', 'attached'))
         params = {'prompt': 'A blue lighthouse', 'seed': 42}
-        if mode == 'edit': params['image_ref'] = 'input.png'
+        if mode == 'edit':
+            from PIL import Image
+
+            input_image = tmp_path / 'input.png'
+            Image.new('RGB', (2, 2), 'blue').save(input_image, format='PNG')
+            monkeypatch.chdir(tmp_path)
+            params['image_ref'] = input_image.name
         else: params['size'] = '512x384'
         prepared, plan, schema = VibeComfyBackend(target_client=client).prepare_catalog_workflow(entry, mode, params, resolve_target=True)
         projection = load_bundle(prepared).compile(schema_provider=schema).to_dict()['api_projection']
@@ -106,6 +112,9 @@ def test_catalog_route_compiles_against_fake_comfy(model, mode, template, monkey
         from astrid.sdk.generation import GenerationFacade
         monkeypatch.setattr(entries, 'user_entries', lambda: [])
         monkeypatch.setattr(entries, 'ready_entries', lambda: [])
+        if mode == 'edit':
+            input_image.parent.mkdir(parents=True, exist_ok=True)
+            Image.new('RGB', (2, 2), 'blue').save(input_image, format='PNG')
         selected = GenerationFacade()._generate_on_target(
             registry=ModelRegistry.load_default(), model=None, mode=mode, modality='image',
             placement=client.target.url, execution='local', inputs=params, dry_run=True,
