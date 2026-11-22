@@ -1,0 +1,15 @@
+--- a/remotion/node_modules/@banodoco/timeline-composition/dist/chunk-H45I4MWH.js
++++ b/remotion/node_modules/@banodoco/timeline-composition/dist/chunk-H45I4MWH.js
+@@ -72,9 +72,10 @@
+       throw new Error(`Animation '${ref.id}' must resolve to a non-negative durationFrames value`);
+     }
+     const params = animationEasingParams(defaults, ref.params, ref.easing);
+-    const easing = ref.easing ?? (typeof ref.params.easing === "string" ? normalizeAnimationEasing(ref.params.easing) : void 0);
++    let easing = ref.easing ?? (typeof ref.params.easing === "string" ? normalizeAnimationEasing(ref.params.easing) : void 0);
+     if (easing !== void 0 && meta.supportsEasing !== true) {
+-      throw new Error(`Animation '${ref.id}' cannot consume explicit easing progress`);
++      // R6 STOPGAP (not for merge): the editor previews such a clip; render it with the animation's own curve instead of failing the whole render.
++      easing = void 0;
+     }
+     return {
+       ...ref,
