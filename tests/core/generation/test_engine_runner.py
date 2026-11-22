@@ -4,6 +4,7 @@ import base64
 import copy
 import hashlib
 import importlib.metadata as metadata
+import io
 import json
 import posixpath
 import re
@@ -1323,6 +1324,47 @@ def test_linux_lock_inputs_do_not_require_nonexistent_h3_requirements(resolve_on
         target.dispatch("lock-inputs", payload)
 
 
+def test_windows_lock_inputs_do_not_require_nonexistent_h3_requirements(tmp_path):
+    recipe = recipes.load_recipe("comfyui", "windows-x86_64-cu130")
+    h3 = next(source for source in recipe.sources if source.name == "h3-motion-context")
+    h3_requirements = tmp_path / h3.relative_path / "requirements.txt"
+    assert not h3_requirements.exists()
+    assert [(path.source, path.path) for path in recipe.environments[0].requirements.input_paths] == [
+        ("comfyui", "requirements.txt"),
+        ("vibecomfy", "pyproject.toml"),
+        ("videohelpersuite", "requirements.txt"),
+    ]
+    plan = runner.plan_install(recipe, root=r"C:\target", placement="local")
+    adapter = FakeAdapter()
+    adapter.key = recipe.platform
+    adapter.venv_python = lambda root: posixpath.join(root, "python.exe")
+    context = FakeContext()
+    context.recipe, context.adapter, context.platform = recipe, adapter, recipe.platform
+    context.ensure_dir = lambda *args, **kwargs: None
+    active = object.__new__(runner._Runner)
+    active.recipe, active.plan, active.context, active.adapter = recipe, plan, context, adapter
+    active.deadline, active.step_id, active.env, active.locks = time.monotonic() + 45, None, {}, {}
+    commands = []
+    lock_hash = "a" * 64
+    active.environment_state = lambda env: (None, FileFact(False, False, False, None, None))
+    active.verify_uv = lambda *args: None
+    active.helper = lambda operation, **kwargs: {"lock_exists": False} if operation == "lock-inputs" else {}
+    facts = iter((FileFact(False, False, False, None, None), FileFact(True, True, False, 1, lock_hash)))
+    active.fact = lambda *args, **kwargs: next(facts)
+    active.write = lambda *args, **kwargs: None
+    active.run = lambda argv, **kwargs: commands.append(tuple(argv))
+    active.write_install_receipts = lambda *args, **kwargs: None
+    active.environment_probe = lambda *args, **kwargs: True
+    active.environment(recipe.environments[0])
+    compile_command = next(command for command in commands if "compile" in command)
+    for source_name, relative_path in (("comfyui", "requirements.txt"),
+                                       ("vibecomfy", "pyproject.toml"),
+                                       ("videohelpersuite", "requirements.txt")):
+        source = next(source for source in recipe.sources if source.name == source_name)
+        assert plan.root + "/" + source.relative_path + "/" + relative_path in compile_command
+    assert not any("h3-motion-context" in argument for argument in compile_command)
+
+
 @pytest.mark.parametrize("declared", [False, True])
 def test_target_helper_persists_and_reuses_bound_hash_lock_before_install(resolve_once, tmp_path, monkeypatch, declared):
     recipe = recipes.load_recipe("comfyui", PLATFORM)
@@ -1979,6 +2021,211 @@ def test_runner_installs_packaged_linux_lock_with_no_compile_step(setup):
     assert not any("compile" in command for command in commands)
     assert any("commit-lock" in command for command in commands)
     assert result.requirements_locks == {"comfy": "b" * 64}
+
+
+def test_windows_resolve_once_compile_and_sync_only_allow_whisper_source_builds(monkeypatch):
+    recipe = recipes.load_recipe("comfyui", "windows-x86_64-cu130")
+    plan = runner.plan_install(recipe, root=r"C:\target", placement="local")
+    adapter = FakeAdapter()
+    adapter.key = "windows-x86_64-cu130"
+    adapter.venv_python = lambda root: posixpath.join(root, "python.exe")
+    context = FakeContext()
+    context.recipe = recipe
+    context.adapter = adapter
+    context.platform = adapter.key
+    context.ensure_dir = lambda *args, **kwargs: None
+    active = object.__new__(runner._Runner)
+    active.recipe, active.plan, active.context, active.adapter = recipe, plan, context, adapter
+    active.deadline, active.step_id, active.env = time.monotonic() + 45, None, {}
+    active.locks = {}
+    commands = []
+    lock_hash = "a" * 64
+    monkeypatch.setattr(active, "environment_state", lambda env: (None, FileFact(False, False, False, None, None)))
+    monkeypatch.setattr(active, "verify_uv", lambda *args: None)
+    monkeypatch.setattr(active, "helper", lambda operation, **kwargs: {"lock_exists": False} if operation == "lock-inputs" else {})
+    facts = iter((FileFact(False, False, False, None, None), FileFact(True, True, False, 1, lock_hash)))
+    monkeypatch.setattr(active, "fact", lambda *args, **kwargs: next(facts))
+    monkeypatch.setattr(active, "write", lambda *args, **kwargs: None)
+    monkeypatch.setattr(active, "run", lambda argv, **kwargs: commands.append(tuple(argv)))
+    monkeypatch.setattr(active, "write_install_receipts", lambda *args, **kwargs: None)
+    monkeypatch.setattr(active, "environment_probe", lambda *args, **kwargs: True)
+    active.environment(recipe.environments[0])
+    compile_command = next(command for command in commands if "compile" in command)
+    sync_command = next(command for command in commands if "sync" in command)
+    for command in (compile_command, sync_command):
+        assert command[command.index("--only-binary") + 1] == ":all:"
+        assert command[command.index("--no-binary") + 1] == "openai-whisper"
+        assert command.count("--no-binary") == 1
+
+
+def test_windows_whisper_resolution_and_isolated_build_are_hash_constrained(tmp_path, monkeypatch):
+    """Windows lock setup keeps build constraints separate from sync inputs."""
+    recipe = recipes.load_recipe("comfyui", "windows-x86_64-cu130")
+    _helper_sources(tmp_path, recipe)
+    payload = _helper_payload(tmp_path, recipe, environment="comfy")
+    monkeypatch.setattr(target, "_root", lambda root, platform: str(tmp_path))
+    target.dispatch("lock-inputs", payload)
+    directory = tmp_path / ".astrid-engine/environments/comfy"
+    assert not (directory / "support.lock").exists()
+    build_constraints = target._WHISPER_BUILD_CONSTRAINTS
+    assert "setuptools-84.0.0-py3-none-any.whl#sha256=51a52592b3b99e102b609654876bd65f19f999935166d1352678931132b0c670" in build_constraints
+    assert "#sha256=" + target._WHISPER_WHEEL_SHA256 in build_constraints
+    constraint_path = directory / "whisper-build-constraints.lock"
+    assert constraint_path.read_text() == build_constraints
+    # lock-inputs is called again when a repair retries; it must restore the
+    # dedicated build pin even if another step changed the generated files.
+    constraint_path.write_text("setuptools==80.9.0\n")
+    target.dispatch("lock-inputs", payload)
+    assert constraint_path.read_text() == build_constraints
+    assert not (directory / "support.lock").exists()
+
+
+def test_windows_whisper_stage_digest_rejects_altered_artifact(tmp_path):
+    artifact = tmp_path / "openai_whisper-20250625.tar.gz"
+    artifact.write_bytes(b"altered archive")
+    with pytest.raises(IntegrityError):
+        target._verify_digest(artifact, target._WHISPER_SDIST_SHA256)
+    artifact.write_bytes(b"verified archive")
+    digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    target._verify_digest(artifact, digest)
+
+
+def test_windows_whisper_stage_creates_fresh_artifact_directory(tmp_path, monkeypatch):
+    recipe = recipes.load_recipe("comfyui", "windows-x86_64-cu130")
+    _helper_sources(tmp_path, recipe)
+    payload = _helper_payload(tmp_path, recipe, environment="comfy")
+    monkeypatch.setattr(target, "_root", lambda root, platform: str(tmp_path))
+    target.dispatch("lock-inputs", payload)
+    directory = tmp_path / ".astrid-engine/environments/comfy/whisper-artifacts"
+    assert not directory.exists()
+    sdist, wheel = b"test sdist", b"test wheel"
+    monkeypatch.setattr(target, "_WHISPER_SDIST_SHA256", hashlib.sha256(sdist).hexdigest())
+    monkeypatch.setattr(target, "_WHISPER_WHEEL_SHA256", hashlib.sha256(wheel).hexdigest())
+    monkeypatch.setattr(target, "urlopen", lambda url, timeout: io.BytesIO(
+        sdist if "openai_whisper" in url else wheel))
+    result = target.dispatch("stage-whisper-artifacts", payload)
+    assert directory.is_dir()
+    assert (directory / "openai_whisper-20250625.tar.gz").read_bytes() == sdist
+    assert (directory / "setuptools-84.0.0-py3-none-any.whl").read_bytes() == wheel
+    assert result["facts"]["sdist_sha256"] == hashlib.sha256(sdist).hexdigest()
+
+
+def test_windows_whisper_staging_pins_exact_sdist_bytes_and_repairs_tampering(tmp_path, monkeypatch):
+    assert target._WHISPER_SDIST.endswith("#sha256=" + target._WHISPER_SDIST_SHA256)
+    recipe = recipes.load_recipe("comfyui", "windows-x86_64-cu130")
+    _helper_sources(tmp_path, recipe)
+    payload = _helper_payload(tmp_path, recipe, environment="comfy")
+    monkeypatch.setattr(target, "_root", lambda root, platform: str(tmp_path))
+    target.dispatch("lock-inputs", payload)
+    sdist, wheel = b"pinned sdist bytes", b"pinned build wheel bytes"
+    monkeypatch.setattr(target, "_WHISPER_SDIST_SHA256", hashlib.sha256(sdist).hexdigest())
+    monkeypatch.setattr(target, "_WHISPER_WHEEL_SHA256", hashlib.sha256(wheel).hexdigest())
+    monkeypatch.setattr(target, "urlopen", lambda url, timeout: io.BytesIO(
+        sdist if "openai_whisper" in url else wheel))
+
+    target.dispatch("stage-whisper-artifacts", payload)
+    directory = tmp_path / ".astrid-engine/environments/comfy"
+    requirements = (directory / "requirements.in").read_text()
+    artifact = directory / "whisper-artifacts/openai_whisper-20250625.tar.gz"
+    assert f"openai-whisper @ {artifact.as_uri()}#sha256={hashlib.sha256(sdist).hexdigest()}" in requirements
+    assert artifact.read_bytes() == sdist
+
+    artifact.write_bytes(b"tampered sdist bytes")
+    target.dispatch("stage-whisper-artifacts", payload)
+    assert artifact.read_bytes() == sdist
+
+
+def test_windows_whisper_build_constraints_reach_compile_and_sync(monkeypatch):
+    recipe = recipes.load_recipe("comfyui", "windows-x86_64-cu130")
+    plan = runner.plan_install(recipe, root=r"C:\target", placement="local")
+    adapter = FakeAdapter()
+    adapter.key = "windows-x86_64-cu130"
+    adapter.venv_python = lambda root: posixpath.join(root, "python.exe")
+    context = FakeContext()
+    context.recipe, context.adapter, context.platform = recipe, adapter, adapter.key
+    context.ensure_dir = lambda *args, **kwargs: None
+    active = object.__new__(runner._Runner)
+    active.recipe, active.plan, active.context, active.adapter = recipe, plan, context, adapter
+    active.deadline, active.step_id, active.env = time.monotonic() + 45, None, {}
+    active.locks = {}
+    commands = []
+    lock_hash = "a" * 64
+    monkeypatch.setattr(active, "environment_state", lambda env: (None, FileFact(False, False, False, None, None)))
+    monkeypatch.setattr(active, "verify_uv", lambda *args: None)
+    monkeypatch.setattr(active, "helper", lambda operation, **kwargs: {"lock_exists": False} if operation == "lock-inputs" else {})
+    facts = iter((FileFact(False, False, False, None, None), FileFact(True, True, False, 1, lock_hash)))
+    monkeypatch.setattr(active, "fact", lambda *args, **kwargs: next(facts))
+    monkeypatch.setattr(active, "write", lambda *args, **kwargs: None)
+    monkeypatch.setattr(active, "run", lambda argv, **kwargs: commands.append(tuple(argv)))
+    monkeypatch.setattr(active, "write_install_receipts", lambda *args, **kwargs: None)
+    monkeypatch.setattr(active, "environment_probe", lambda *args, **kwargs: True)
+
+    active.environment(recipe.environments[0])
+    compile_command = next(command for command in commands if "compile" in command)
+    sync_command = next(command for command in commands if "sync" in command)
+    compile_constraints = compile_command[compile_command.index("--build-constraints") + 1]
+    sync_constraints = sync_command[sync_command.index("--build-constraints") + 1]
+    assert compile_constraints.endswith("whisper-compile-build-constraints.txt")
+    assert sync_constraints.endswith("whisper-build-constraints.lock")
+    assert sync_constraints != compile_constraints
+
+
+def test_windows_whisper_sync_constraint_and_canonical_lock_survive_resolution_retry(tmp_path):
+    """Blocker 2: sync keeps URL hashes; committed lock is exact and portable."""
+    candidate = (
+        "# generated by uv pip compile\n"
+        "anyio==4.8.0 \\\n    --hash=sha256:" + "a" * 64 + "\n"
+        "openai-whisper @ file:///C:/target/openai_whisper-20250625.tar.gz#sha256="
+        + target._WHISPER_SDIST_SHA256 + " \\\n    --hash=sha256:" + target._WHISPER_SDIST_SHA256 + "\n"
+    )
+    portable = target._canonicalize_whisper_lock(candidate)
+    entries = target._entries(portable)
+    whisper = next(row for row in entries if "openai-whisper" in row[0])
+    assert whisper[0] == target._WHISPER_SDIST
+    assert whisper[1] == [target._WHISPER_SDIST_SHA256]
+    assert "file:" not in portable.lower() and "C:/target" not in portable
+    assert "anyio==4.8.0 \\\n    --hash=sha256:" + "a" * 64 in portable
+    with pytest.raises(IntegrityError):
+        target._canonicalize_whisper_lock(
+            "openai-whisper @ file:///altered.tar.gz#sha256=" + target._WHISPER_SDIST_SHA256
+            + " --hash=sha256:" + target._WHISPER_SDIST_SHA256)
+    with pytest.raises(IntegrityError):
+        target._canonicalize_whisper_lock(candidate.replace(target._WHISPER_SDIST_SHA256, "0" * 64, 1))
+    with pytest.raises(IntegrityError):
+        target._canonicalize_whisper_lock(portable + portable.splitlines()[0] + "\n")
+    stable = target._WHISPER_BUILD_CONSTRAINTS
+    assert "setuptools @ https://files.pythonhosted.org/" in stable
+    assert "#sha256=" + target._WHISPER_WHEEL_SHA256 in stable
+    before_retry = stable
+    # Retry code reuses this separately named file; generated support.lock may change.
+    assert before_retry == target._WHISPER_BUILD_CONSTRAINTS
+
+
+def test_whisper_canonicalizes_uv_multiline_lock_and_rejects_bad_identity():
+    generated = (
+        "# generated by uv pip compile\n"
+        "anyio==4.8.0 \\\n    --hash=sha256:" + "a" * 64 + "\n"
+        "openai-whisper @ file:///C:/staged/openai_whisper-20250625.tar.gz#sha256="
+        + target._WHISPER_SDIST_SHA256 + " \\\n    --hash=sha256:" + target._WHISPER_SDIST_SHA256 + "\n"
+        "packaging==24.2 \\\n    --hash=sha256:" + "b" * 64 + "\n"
+    )
+    portable = target._canonicalize_whisper_lock(generated)
+    before = target._entries(generated)
+    after = target._entries(portable)
+    assert len(before) == len(after) == 3
+    before_other = [row for row in before if "openai-whisper" not in row[0].lower()]
+    after_other = [row for row in after if "openai-whisper" not in row[0].lower()]
+    assert before_other == after_other
+    assert sum("openai-whisper" in row[0].lower() for row in after) == 1
+    assert "\\\n" in portable
+    assert "file:" not in portable.lower()
+    altered = generated.replace(target._WHISPER_SDIST_SHA256, "0" * 64, 1)
+    with pytest.raises(IntegrityError):
+        target._canonicalize_whisper_lock(altered)
+    duplicate = generated + "\n" + next(line for line in generated.splitlines()
+                                           if line.lower().startswith("openai-whisper"))
+    with pytest.raises(IntegrityError):
+        target._canonicalize_whisper_lock(duplicate)
 
 
 def test_h3_packaged_sync_allows_only_three_source_builds_and_uses_support_lock(setup, tmp_path):

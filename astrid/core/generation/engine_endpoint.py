@@ -418,6 +418,7 @@ def _probe_prepared_endpoint(endpoint, recipe, *, agent_port, deadline):
     import time
 
     from .engine_contracts import DeadlineExceeded, EndpointHealthError
+    from .engine_recipe import engine_health_required_nodes
     from .engine_runner import _object_info_sha256
     from .engine_transport import EngineEndpointTransport
 
@@ -427,7 +428,10 @@ def _probe_prepared_endpoint(endpoint, recipe, *, agent_port, deadline):
     finally:
         transport.close()
     digest = _object_info_sha256(objects)
-    if digest != endpoint.attestation.object_info_sha256 or not all(node in objects for node in recipe.health.required_nodes):
+    # Whisper is a workflow dependency, not a shared engine dependency. The
+    # transcription readiness check owns its requirement.
+    required_nodes = engine_health_required_nodes(recipe)
+    if digest != endpoint.attestation.object_info_sha256 or not all(node in objects for node in required_nodes):
         raise EndpointHealthError("claimed engine object_info differs from readiness")
     if time.monotonic() >= deadline:
         raise DeadlineExceeded("endpoint ensure deadline exceeded")

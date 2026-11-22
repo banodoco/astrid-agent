@@ -94,6 +94,11 @@ POLICY_OPENINGS = {
         1,
         "82f434a72ba6056f740d1ee34a8219805e8450bb6722902477a5cd19367cf7ea",
     ),
+    (
+        "astrid/core/generation/engine_runner_target.py",
+        "dispatch",
+        "urllib.request.urlopen",
+    ): (1, "fbf36b9ccd73bb59e32f73d476c0a448bff30ade658921839fc146a36f642a4e"),
     ("astrid/core/hivemind/executors/_common.py", "_http_get", "urllib.request.urlopen"): (
         1,
         "65f27fb7de20ddfdfc5e1cc4afed97ecf5ba7afee2632d9f8c0c687ae006ad73",
