@@ -242,7 +242,13 @@ def _pack_root_state(root: Path) -> tuple:
 
 
 def _default_registry_state(project_root: Path, extra_pack_roots: tuple[str, ...] = ()) -> tuple:
-    """Fingerprint collection membership without reading or validating manifests."""
+    """Fingerprint collection membership without reading or validating manifests.
+
+    The key tracks collection publication and removal, not edits nested inside
+    installed packs or external mutation of an active managed root. The Node
+    Composition membership cache has its own key and does not track in-place
+    package replacement.
+    """
     env_roots = tuple(filter(None, os.environ.get(ASTRID_PACKS_PATH_ENV, "").split(os.pathsep)))
     personal_root = resolve_personal_packs_root()
     roots = (packs_root(), project_root / "astrid" / "packs", *extra_pack_roots, *env_roots)
