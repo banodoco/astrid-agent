@@ -276,7 +276,8 @@ def test_source_free_generate_never_probes_a_source(
         return real_run(argv, *args, **kwargs)
 
     reference = tmp_path / "reference.png"
-    reference.write_bytes(b"reference-image")
+    from PIL import Image
+    Image.new("RGB", (32, 32)).save(reference)
     monkeypatch.setattr(prepare_module.subprocess, "run", spy)
     v1 = prepare_request(_v1("generate"), asset_map={"image-0": str(reference)})
     v2 = prepare_request(_v2_source_free(), asset_map={"look.png": str(reference)})

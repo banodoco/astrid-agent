@@ -5,7 +5,7 @@ comfyui engine for the ``vibecomfy.workflows`` hooks, or the CLI) calls
 ``install`` with an object carrying: ``comfy_commit()``, ``locked_models()``,
 ``bind_model_root(model_root)``, ``build_asset_manifest(...)``, ``read_archive(path)``,
 ``write_json_atomic(path, value)``, ``assert_no_unresolved_placeholders(bindings)`` and
-``measure_source_av(path)``.
+``measure_source_av(path)`` and ``custom_node_sources()``.
 """
 from __future__ import annotations
 

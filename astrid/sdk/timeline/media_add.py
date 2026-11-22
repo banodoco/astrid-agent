@@ -7,12 +7,13 @@ import uuid
 from collections.abc import Mapping
 from pathlib import Path
 
+from astrid.core.timeline.track_appearance import stamp_new_track_appearance
+
 from ._command_state import State
 from ._common import TimelineEditError
 from ._recording import active
 from .capture import number
 from .outbox import request_bytes
-from astrid.core.timeline.track_appearance import stamp_new_track_appearance
 
 
 def existing_selectors(transport, project, digest):

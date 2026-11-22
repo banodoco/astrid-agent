@@ -1,8 +1,8 @@
 {
  "pill": {
   "bounded-mask.mkv": "3413ad030aebbae5f861f51a840445b86c2f4a4fe03bf2b7a4409a848ceab58d",
-  "compilation.json": "108b471de87a8a92405dec191fb8fa9b41652d66a61b4c85ea1a0fc7cee3cb33",
-  "managed-assets.zip": "ea571639303a0d22f1856a9b979f16b4fab3bb6c64d8ff1cd9fd87c009ba1c0c",
+  "compilation.json": "a37397175c532eaf4f10b688c4361b38f349af47b6b09c9df28205f83ebd5561",
+  "managed-assets.zip": "d1e6052eeb23d73cf5a6b4cc49fcee8d6a4582b0de315bfa2d702e25dfe057a2",
   "native-masked-edit-bundle/.workflow.py.vibe.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "native-masked-edit-bundle/source.json": "7b2369a260e81bb58e97f2d511d645b82e7b31f18abe9b3f18fdf78f3e3741b5",
   "native-masked-edit-bundle/workflow.py": "49cfb15d654d9422c409fdf9cabdd76201c38f614c4fa55ad4bc53ac5934d5ae",
@@ -14,8 +14,8 @@
  },
  "two_refs": {
   "bounded-mask.mkv": "3413ad030aebbae5f861f51a840445b86c2f4a4fe03bf2b7a4409a848ceab58d",
-  "compilation.json": "448718b9d88931375412d2f19538bb4d95fc1369ec0a135142e19236ae4875ee",
-  "managed-assets.zip": "d170337ccbde21909fe2721d78b578494435f0988853b69818a53952bdd756ab",
+  "compilation.json": "71b071b04a5d15ac696948700457173d73e3da8b2007998f9f665475a6e8c3be",
+  "managed-assets.zip": "9d8acc737ceb687dc6e0e0990d0cef8576d9b5222cb8e82f60da8b3ed6dfec2a",
   "native-masked-edit-bundle/.workflow.py.vibe.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "native-masked-edit-bundle/source.json": "7b2369a260e81bb58e97f2d511d645b82e7b31f18abe9b3f18fdf78f3e3741b5",
   "native-masked-edit-bundle/workflow.py": "83df9128432d6f8dddeed1dea2fb3d5fb3e2336693c1480b4f91b66366b8c060",
@@ -26,8 +26,8 @@
   "workflow-bundle/workflow.vibe.json": "1dd9598f65ab4279f7b72851d7eb9cfba409fb874f7cbf620c17ce890f98e60b"
  },
  "watermark": {
-  "compilation.json": "b3e124a57c0f0307e4a2f78a8b42a04f8c9d76d97ed393a2c9006d084bf4da18",
-  "managed-assets.zip": "9c3f30173c53d91d73820f27aec9c4ef23c537938b0b408cb0598a5d78b6ee61",
+  "compilation.json": "f70ff70b9f26f8a1962fd5f4e620bb6ff6e402a5e2bb87a3b9930802865d9367",
+  "managed-assets.zip": "a812b9548da16017f3b9d739abefca52bfeede7d9b679330d5fe74c7e118ac17",
   "native-masked-edit-bundle/.workflow.py.vibe.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "native-masked-edit-bundle/source.json": "7b2369a260e81bb58e97f2d511d645b82e7b31f18abe9b3f18fdf78f3e3741b5",
   "native-masked-edit-bundle/workflow.py": "d812eb6b147008a50eff4b990a56392b1245cad1b0ea32b63a71c1ed4f475285",

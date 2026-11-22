@@ -2,6 +2,7 @@
   "branch": "source_backed_v2v",
   "capabilities": {
     "audio_binding": "source_audio_from_source_video, audio_strength=0",
+    "conditioning": [],
     "connected_model_assets": [
       "minimax_h3_audio_vae_fp32.safetensors",
       "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
@@ -19,6 +20,9 @@
       "seed": 123456789,
       "strength": 1.0
     },
+    "effective_audio_tags": [],
+    "effective_reference_count": 0,
+    "effective_reference_order": [],
     "generation_timing": {
       "duration": 12.0,
       "fps": 24,
@@ -54,8 +58,14 @@
         }
       ]
     },
+    "reference_modality_counts": {
+      "audio": 0,
+      "image": 0,
+      "video": 0
+    },
     "reference_order": [],
     "references": 0,
+    "sampler_mask_precision": "native",
     "source_binding": "source_video",
     "source_frame_fit": {
       "audio_tail": "silence",
@@ -65,7 +75,7 @@
       "video_tail": "repeat_last_selected_frame"
     }
   },
-  "compilation_digest": "76bd7bc49ff5b755bbbd4b5ebcd60bc6b03da375f4e161f92b3758a9dc3ea0b2",
+  "compilation_digest": "154b7ac926c3d5f8f0b8cffe2f2b4bbd9ba3c597b33178b9e6e0ec55eace53e6",
   "effective_settings": {
     "audio_shift": 3.0,
     "cfg": 1.0,
@@ -84,10 +94,9 @@
   "kind": "h3_av_compilation",
   "limitations": [
     "native masked edit is CPU-verified only; spatial mode on ref2va plus Turbo is unproven on GPU",
-    "one modifying video operation per request; static boxes, image masks or per-frame mask video",
-    "audio regeneration, polygon masks and per-operation adapters are unsupported",
-    "box-only regions bind in the graph; end-to-end execution still needs resolved mask propagation for composition paste-back",
-    "windows are limited to 15 s with no automatic chunking",
+    "static boxes, image masks or per-frame mask video; active regions share one reference set and one seed",
+    "polygon masks and per-operation adapters are unsupported",
+    "long windows use one pass without automatic chunking",
     "zero-reference requests assume MiniMaxH3ReferenceToVideo accepts no ref images (unverified)"
   ],
   "managed_assets": {
@@ -95,6 +104,17 @@
       "assets": [
         {
           "binding": "mask_0",
+          "lineage": {
+            "filename": "resolved-mask.png",
+            "kind": "source_bytes",
+            "sha256": "sha256:60f587d2d6d543eac9de231150413e55bfafc1ce8362b95325abf3b40f3e7f9f"
+          },
+          "member": "assets/60f587d2d6d543ea-resolved-mask.png",
+          "sha256": "60f587d2d6d543eac9de231150413e55bfafc1ce8362b95325abf3b40f3e7f9f",
+          "size": 1379
+        },
+        {
+          "binding": "permission_mask_0",
           "lineage": {
             "filename": "resolved-mask.png",
             "kind": "source_bytes",
@@ -131,11 +151,15 @@
       }
     },
     "path": "<D>/out/managed-assets.zip",
-    "sha256": "8776ee7add5c9a888565841e7348c1167fa5e0340f94632c0fac344dec47c040"
+    "sha256": "3c0678d135bdf92ad4136ef7ea503996db3f3b8d58ea3b9eec4760ec12c2cce8"
   },
   "profile": "h3_av.native.v2",
-  "request_digest": "9ce80a6a5c92e587f2ed950e1acad32460226583780d3d7aa6bac3b687fa763b",
+  "request_digest": "23887bff97f61cf2a4937883ccb3f1c04d9554a8d7e1e47ab32f2c7385649fbc",
   "schema_version": 1,
+  "size": {
+    "height": 576,
+    "width": 1024
+  },
   "status": "compiled",
   "workflow": {
     "source.json": {

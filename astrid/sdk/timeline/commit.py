@@ -1128,6 +1128,7 @@ class RuntimeCommitService:
         ``normalize_appearance=False`` skips the Node placement package, which
         only resolves canvas geometry; the commit-time reader check uses it.
         """
+        from astrid.core.timeline.reader_projection import normalize_legacy_reader_fields
         from astrid.core.timeline.shot_composition_projection import (
             project_runtime_parent_composition,
         )
@@ -1222,15 +1223,20 @@ class RuntimeCommitService:
                               index[row["internal_timeline_revision_id"]] for row in shots}.values())
         # Capture admission and SDK capture must project the same normalized
         # copies of the verified immutable closure.
-        from ._appearance import normalize_revision_closure
+        from ._appearance import normalize_revision_closure, omit_legacy_placement_markers
         if normalize_appearance:
-            parent, internals, placement_findings = normalize_revision_closure(parent, internals)
+            parent, internals, placement_findings = normalize_revision_closure(
+                parent, internals, legacy_reader=authoring_preview is None,
+            )
         else:
+            if authoring_preview is None:
+                omit_legacy_placement_markers(parent, internals)
             placement_findings = []
         if marker is not None:
             marker['placement_migrations'] = placement_findings
         projected = project_runtime_parent_composition(
             parent, shot_revisions=shots, internal_timeline_revisions=internals)
+        normalize_legacy_reader_fields(projected.config, projected.registry)
         shot_rows = []
         for row in shots:
             payload = row["payload"]
@@ -1498,16 +1504,26 @@ class RuntimeCommitService:
                 from astrid.sdk.timeline.validation import validate_final_candidate
 
                 validation_bundle = plan.bundle
-                if ('_copy_manifest' in plan.bundle['source_mapping']
+                shared_inverse = (
+                    len(plan.records) == 1
+                    and plan.records[0]['command']['op'] == 'timeline.inverse'
+                    and isinstance(inverse_records, AcceptedRecords)
+                    and bool(inverse_records)
+                    and all(record['command']['op'] == 'occurrence.place-shared'
+                            for record in inverse_records)
+                )
+                if ('_copy_manifest' in plan.bundle['source_mapping'] or shared_inverse
                         or len({row['shot_id'] for row in plan.bundle['placements']})
                         != len(plan.bundle['placements'])):
-                    # Validate shared physical roots through main's canonical
-                    # per-occurrence adapter; the accepted closure stays shared.
+                    # Reopen shared roots under canonical per-occurrence identities.
+                    # A share inverse may collapse to one occurrence while its
+                    # compiler input still holds an unplaced physical shadow.
                     validation_bundle = bundle_from_document(document_from_bundle(plan.bundle))
                     validation_bundle['source_mapping']['pinned_documents'] = copy.deepcopy(
                         plan.bundle['source_mapping'].get('pinned_documents', []))
                 validate_final_candidate(
                     validation_bundle,
+                    before_canonical_reopen=plan.bundle if validation_bundle is not plan.bundle else None,
                     # A source copy is Runtime-authenticated content; it is checked for shape only.
                     authenticated_copy=bool(plan.records) and all(
                         record['command']['op'] == 'timeline.duplicate' for record in plan.records),

@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
+from astrid.core.path_utils import is_network_share_path
+
 
 class AssetManifestError(ValueError):
     """A managed-assets archive or its resolved input bindings are invalid."""
@@ -116,6 +118,8 @@ def build_asset_manifest(
     for binding, source in sorted(bindings.items()):
         if not isinstance(binding, str) or not binding.strip():
             raise AssetManifestError("managed asset binding names must be non-empty strings")
+        if is_network_share_path(source):
+            raise AssetManifestError(f"managed asset {binding!r} is not a local regular file: network share")
         path = Path(source).expanduser().resolve(strict=True)
         if path.is_symlink() or not path.is_file():
             raise AssetManifestError(f"managed asset {binding!r} is not a regular file")

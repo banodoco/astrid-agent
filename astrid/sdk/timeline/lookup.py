@@ -22,7 +22,7 @@ from astrid.sdk.timeline._common import (
     _num,
     _r,
 )
-from astrid.sdk.timeline.doc import _read_words, _row_start
+from astrid.sdk.timeline.doc import _row_start
 from astrid.sdk.timeline.model import Clip, Cut, StepSequence, Voice, Word
 from astrid.sdk.timeline.selection import Selection
 
@@ -30,7 +30,10 @@ from astrid.sdk.timeline.selection import Selection
 class _LookupMixin:
     """Checkout: clocks, looking things up (cuts, clips, words), and reading the document's shots and cut groups."""
 
-    bundle: dict[str, Any]  # set by Checkout.__init__; declared so this mixin's readers are typed
+    # Initialized by Checkout.__init__.
+    bundle: dict[str, Any]
+    fps: float
+    notes: list[str]
 
     # ---- clocks -----------------------------------------------------------
     def quantize(self, seconds: float) -> float:
@@ -154,7 +157,10 @@ class _LookupMixin:
 
     def track(self, track: str, *, above: str | None = None, kind: str = "visual"):
         """Select or create a parent output track, optionally placing it above another track."""
-        from astrid.core.timeline.track_appearance import label_track_with_id, stamp_new_track_appearance
+        from astrid.core.timeline.track_appearance import (
+            label_track_with_id,
+            stamp_new_track_appearance,
+        )
         if not isinstance(track, str) or not track.strip():
             raise TimelineEditError("track requires a nonempty ID")
         track = track.strip()

@@ -19,7 +19,7 @@ REQUEST = Path(__file__).resolve().parents[2] / "fixtures" / "h3_cpu" / "request
 
 
 def _video(path, *, seconds=3, size="1024x576", frames=None):
-    command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", f"color=c=blue:s={size}:r=24",
+    command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", f"color=c=blue:s={size}:r=24:d={seconds}",
                "-f", "lavfi", "-i", f"sine=frequency=440:duration={seconds}"]
     if frames:
         command += ["-frames:v", str(frames)]
