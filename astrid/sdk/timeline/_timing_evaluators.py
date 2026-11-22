@@ -335,8 +335,17 @@ def evaluate(bundle, sources, bindings, policy, legacy_declarations=(), collect=
                                    else resolved_cuts.setdefault(text, resolve_cut(text)))
     by_clip = {(owner[1], owner[2]): owner for owner in clips if owner[1]}
     bases, local_groups, local_bases = {}, {}, {}
+    # A shot's cut identity digests its whole internal timeline and depends only on the fixed bundle,
+    # so compute it once per shot rather than once per clip.
+    identities: dict[str, Any] = {}
+
+    def cut_identity(shot_id):
+        if shot_id not in identities:
+            identities[shot_id] = _cut_identity(bundle, shot_id)
+        return identities[shot_id]
+
     for group in groups:
-        if len({_cut_identity(bundle, c.shot_id) for c in group["clips"]}) != 1:
+        if len({cut_identity(c.shot_id) for c in group["clips"]}) != 1:
             raise TimingCompileError("ambiguous cut identity across occurrences")
         base = group["picture"] or min(group["clips"], key=lambda c: (c.start, c.id))
         bases[group["id"]] = by_clip[base.shot_id, base.id]

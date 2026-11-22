@@ -103,6 +103,24 @@ class _BasisReader:
             self._text[name] = json.dumps(value, sort_keys=True, default=str)
         return self._text[name]
 
+    def _signature_parts(self, key: tuple[Any, ...], clip: Mapping[str, Any], declaration: str) -> list[tuple[Any, str]]:
+        """The texts a signature is made of, each with the cache name of a part shared across declarations."""
+        basis = self.basis(key, clip, declaration)
+        own = {"clip": basis["clip"]}
+        parts: list[tuple[Any, str]] = [
+            (None, json.dumps(own, sort_keys=True, default=str)),
+            ("documents", self._json("documents", basis["documents"]))]
+        if "word_sources" in basis:
+            words = self._word_inputs()
+            if key[0] != "parent":  # a shot's own placements replace the whole-film list in a basis
+                words = {name: item for name, item in words.items() if name != "placements"}
+            name = ("words", key[0] != "parent")
+            parts.append((name, self._json(name, words)))
+        owner = self._owner_inputs(key[0], key[1])
+        name = ("owner", key[0], key[1])
+        parts.append((name, self._json(name, owner)))
+        return parts
+
     def signature(self, key: tuple[Any, ...], clip: Mapping[str, Any], declaration: str) -> str:
         """The basis as text, assembled from per-bundle parts so each declaration adds only its own."""
         try:
@@ -110,23 +128,33 @@ class _BasisReader:
         except (TypeError, ValueError, moments.MomentError):
             word = False
         if word and key[0] != "parent":
-            # A shot clip's word declaration never has an authorized binding, whatever its siblings,
-            # placements or other shots say: the finding depends on this clip's timing alone, not on
-            # which element it shows or its params.
+            # Preserve the existing shot-word basis: these bindings are never authorized.
             timing = {name: clip[name] for name in _WORD_TIMING_FIELDS if name in clip}
             anchors = intent._app(clip).get("word_anchors")
             return json.dumps({"clip": timing, "word_anchors": anchors}, sort_keys=True, default=str)
-        basis = self.basis(key, clip, declaration)
-        own = {"clip": basis["clip"]}
-        parts = [json.dumps(own, sort_keys=True, default=str), self._json("documents", basis["documents"])]
-        if "word_sources" in basis:
-            words = self._word_inputs()
-            if key[0] != "parent":  # a shot's own placements replace the whole-film list in a basis
-                words = {name: item for name, item in words.items() if name != "placements"}
-            parts.append(self._json(("words", key[0] != "parent"), words))
-        owner = self._owner_inputs(key[0], key[1])
-        parts.append(self._json(("owner", key[0], key[1]), owner))
-        return json.dumps(parts)
+        return json.dumps([text for _, text in self._signature_parts(key, clip, declaration)])
+
+    def signed(self, key: tuple[Any, ...], clip: Mapping[str, Any], declaration: str) -> str:
+        """Exactly ``json.dumps([declaration, self.signature(...)])``, without re-escaping shared parts.
+
+        JSON string escaping works one character at a time, so the doubly-escaped form of each shared
+        part is built once per bundle and the declaration only joins them.
+        """
+        try:
+            word = moments.parse(declaration).kind == "word"
+        except (TypeError, ValueError, moments.MomentError):
+            word = False
+        if word and key[0] != "parent":
+            return json.dumps([declaration, self.signature(key, clip, declaration)])
+        escaped = []
+        for name, text in self._signature_parts(key, clip, declaration):
+            if name is None:
+                escaped.append(json.dumps(json.dumps(text))[1:-1])
+                continue
+            if ("escaped", name) not in self._text:
+                self._text["escaped", name] = json.dumps(json.dumps(text))[1:-1]
+            escaped.append(self._text["escaped", name])
+        return f'[{json.dumps(declaration)}, "[{", ".join(escaped)}]"]'
 
     def _word_inputs(self) -> dict[str, Any]:
         # Legacy text lookup searches every occurrence. An unresolved word has
@@ -395,7 +423,7 @@ def _signed_failures(
     signed = {}
     for key, field in _declaration_failures(bundle, source_bundles):
         value = _legacy_declarations(rows[key])[field]
-        signed[(key, field)] = json.dumps([value, reader.signature(key, rows[key], value)])
+        signed[(key, field)] = reader.signed(key, rows[key], value)
     return signed
 
 
