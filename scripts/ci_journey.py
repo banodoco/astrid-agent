@@ -86,7 +86,7 @@ JOURNEY_EVIDENCE_NAMES = frozenset({
     "service-manager-prerequisite.log", "direct-service-ownership.log",
     "preflight-scheduled-task.txt", "refusal-update-bootstrap.log",
     "update-job-journal.log", "update-job-record.json", "update-transaction.json",
-    "update-button.json", "update-button.png",
+    "update-button.json", "update-button.png", "reload-inflight-timeout.jpg",
     "update-transaction-status.json", "runtime-data-runtime.log", "runtime-data-service-pack-host.log",
     "runtime-real-home-service-pack-host.log",
     "runtime-real-home-runtime.log", "macos-file-listing.txt",

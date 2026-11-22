@@ -965,7 +965,7 @@ def _fix17_reload_inflight_errors(job_id, row, candidate):
             or transition.get("build_sha256") != https.get("candidate_build_sha256")):
         errors.append(f"{job_id}: same-origin R14 build response identity is absent or mismatched")
     notice = receipt.get("notice") if isinstance(receipt.get("notice"), dict) else {}
-    if ((receipt.get("reload") or {}).get("trigger") == "click"
+    if ((receipt.get("reload") or {}).get("trigger") in {"click", "selected-navigation"}
             and (notice.get("text") != "Editor updated · Reload" or notice.get("visible") is not True
                  or notice.get("original_document") is not True)):
         errors.append(f"{job_id}: exact Reload notice was not visible in the original document")
@@ -1000,21 +1000,95 @@ def _fix17_reload_inflight_errors(job_id, row, candidate):
                      and watch_query.get("project") == [config.get("projectId")]
                      and watch_query.get("timeline") == [config.get("timelineId")]
                      and main_frame_navigation)
-    if not (click_proof or watcher_proof):
+    selected = reload_result.get("selected_navigation")
+    selected_url = urlsplit(selected.get("url", "")) if isinstance(selected, dict) \
+        and isinstance(selected.get("url"), str) else None
+    selected_query = parse_qs(selected_url.query) if selected_url else {}
+    selected_navigation_proof = (trigger == "selected-navigation" and reload_result.get("clicked") is True
+        and isinstance(selected, dict) and selected.get("selected") is True
+        and selected.get("committed") is True and selected.get("after_click_initiated") is True
+        and selected.get("frame") == "main" and reload_result.get("selected_url") == selected.get("url")
+        and selected_url is not None and selected_url.scheme == "https" and selected_url.netloc == "astrid.haus"
+        and selected_url.path == "/tools/video-editor"
+        and selected_query.get("project") == [config.get("projectId")]
+        and selected_query.get("timeline") == [config.get("timelineId")]
+        and main_frame_navigation and notice.get("text") == "Editor updated · Reload"
+        and notice.get("visible") is True and notice.get("original_document") is True)
+    if not (click_proof or watcher_proof or selected_navigation_proof):
         errors.append(f"{job_id}: reload trigger lacks observed original-notice click or audited R13 main-frame watcher navigation")
 
     restore = receipt.get("restore") if isinstance(receipt.get("restore"), dict) else {}
     same_draft = restore.get("draft_digest") == draft.get("payloadSha256")
     readback = restore.get("readback_label") == config.get("draftLabel")
     recovery = restore.get("recovery") if isinstance(restore.get("recovery"), dict) else {}
+    retry_attempts = recovery.get("retry_attempts")
+    allowed_retry_attempts = ([item for item in retry_attempts if isinstance(item, dict)
+                               and item.get("disposition") == "allowed"]
+                              if isinstance(retry_attempts, list) else [])
+    retry_proof = (isinstance(retry_attempts, list) and len(allowed_retry_attempts) == 1
+                   and allowed_retry_attempts[0].get("body_sha256") == draft.get("requestSha256")
+                   and allowed_retry_attempts[0].get("key_sha256") == draft.get("keySha256")
+                   and all(isinstance(item, dict)
+                           and DIGEST.fullmatch(str(item.get("body_sha256", "")))
+                           and DIGEST.fullmatch(str(item.get("key_sha256", "")))
+                           for item in retry_attempts))
+    accepted_receipt = recovery.get("accepted_receipt") if isinstance(recovery.get("accepted_receipt"), dict) else {}
+    queue_removal = recovery.get("queue_removal") if isinstance(recovery.get("queue_removal"), dict) else {}
+    fresh_navigation = recovery.get("fresh_navigation") if isinstance(recovery.get("fresh_navigation"), dict) else {}
+    fresh_url = urlsplit(fresh_navigation.get("url", "")) if isinstance(fresh_navigation.get("url"), str) else None
+    fresh_query = parse_qs(fresh_url.query) if fresh_url else {}
+    retry_receipt_proof = (
+        _nonempty_text(accepted_receipt.get("receipt_id"))
+        and accepted_receipt.get("status") == "accepted"
+        and accepted_receipt.get("response_status") == 200
+        and accepted_receipt.get("accepted_revision_id") == recovery.get("accepted_revision_id")
+        and accepted_receipt.get("key_sha256") == draft.get("keySha256")
+        and "idempotency_key" not in accepted_receipt
+        and "request" not in accepted_receipt and "body" not in accepted_receipt
+        and queue_removal.get("empty_after_acceptance") is True
+        and queue_removal.get("receipt_id") == accepted_receipt.get("receipt_id")
+        and queue_removal.get("accepted_revision_id") == accepted_receipt.get("accepted_revision_id")
+        and queue_removal.get("key_sha256") == draft.get("keySha256")
+        and "idempotency_key" not in queue_removal
+        and "request" not in queue_removal and "body" not in queue_removal
+    )
+    fresh_navigation_proof = (
+        fresh_navigation.get("selected") is True and fresh_navigation.get("main_frame") is True
+        and fresh_navigation.get("index_sha256") == https.get("candidate_index_sha256")
+        and fresh_url is not None and fresh_url.scheme == "https" and fresh_url.netloc == "astrid.haus"
+        and fresh_url.path == "/tools/video-editor"
+        and fresh_query.get("project") == [config.get("projectId")]
+        and fresh_query.get("timeline") == [config.get("timelineId")]
+    )
+    slot_proof = recovery.get("recovery_slot_proof") if isinstance(recovery.get("recovery_slot_proof"), dict) else {}
+    slot_proof_valid = (
+        slot_proof.get("projectId") == config.get("projectId")
+        and slot_proof.get("timelineId") == config.get("timelineId")
+        and slot_proof.get("ownerId") == draft.get("ownerId")
+        and slot_proof.get("outboxOwnerId") == draft.get("ownerId")
+        and slot_proof.get("markerMatch") is True
+        and DIGEST.fullmatch(str(slot_proof.get("payloadSha256", "")))
+    )
+    # A recovery slot can stand in for the outbox only for the user-driven
+    # Restore/Save them action, and its proof must retain the original owner.
+    slot_is_sole_provenance = (restore.get("pending") is False
+                               and restore.get("method") in {"restore", "save-them"})
     if (restore.get("app_sha") != r14_app or restore.get("document_replaced") is not True
             or not DIGEST.fullmatch(str(restore.get("index_sha256", "")))
             or restore.get("index_sha256") != https.get("candidate_index_sha256")
             or restore.get("project_id") != config.get("projectId") or restore.get("timeline_id") != config.get("timelineId")
-            or restore.get("method") not in {"automatic", "restore", "save-them"}
+            or restore.get("method") not in {"automatic", "restore", "save-them", "try-again"}
             or recovery.get("completed") is not True or recovery.get("draft_provenance") is not True
             or recovery.get("method") != restore.get("method")
-            or (restore.get("method") in {"restore", "save-them"} and recovery.get("clicked") is not True)
+            or (slot_is_sole_provenance and not slot_proof_valid)
+            or (restore.get("method") == "try-again" and restore.get("pending") is not True)
+            or (restore.get("method") in {"restore", "save-them", "try-again"} and recovery.get("clicked") is not True)
+            or (restore.get("method") == "try-again" and (recovery.get("queue_removed") is not True
+                or not _nonempty_text(recovery.get("accepted_revision_id"))
+                or not retry_proof
+                or not retry_receipt_proof
+                or not fresh_navigation_proof
+                or recovery.get("fresh_label_readback") != config.get("draftLabel")))
             or not readback or not same_draft):
         errors.append(f"{job_id}: R14 did not complete recovery and read back the same original draft")
     audit = receipt.get("r14_audit") if isinstance(receipt.get("r14_audit"), dict) else {}

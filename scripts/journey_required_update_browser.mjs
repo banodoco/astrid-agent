@@ -201,6 +201,7 @@ export async function findDraft(page, config) {
       realmId: row.scope.realmId, actorId: row.scope.actorId, projectId: row.scope.projectId,
       timelineId: row.scope.timelineId, ownerId: row.ownerId, intentId: intent.id,
       payloadSha256: sha256(JSON.stringify(intent.payload)), requestSha256: sha256(pending.body), keySha256: sha256(pending.key),
+      intentPayloadShape: Object.keys(intent.payload ?? {}).sort().join(','),
     };
     if (!config.expectedDraft || Object.keys(draft).every((key) => draft[key] === config.expectedDraft[key])) {
       matches.push({ draft, pending });

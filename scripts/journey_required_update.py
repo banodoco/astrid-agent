@@ -147,6 +147,7 @@ def _reload_inflight(config, *, app, old_app, expected_app, old_dist, new_dist, 
                               secondary_routes=new_routes, activate=published) as server:
             payload = {**config, "origin": hosted.ORIGIN, "result": str(result_path),
                        "spki": server.leaf_spki, "manifestSha256": gate.digest(old_manifest),
+                       "diagnosticScreenshot": str(evidence / "reload-inflight-timeout.jpg"),
                        "expectedApp": expected_app, "initialApp": jumps.RELEASE13_APP_COMMIT,
                        "initialBuildSha256": gate.digest(old_dist / "build.json"),
                        "candidateBuildSha256": gate.digest(new_dist / "build.json"),
