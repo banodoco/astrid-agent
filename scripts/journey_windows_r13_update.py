@@ -60,6 +60,11 @@ DRY_RUN_OUTPUT = "windows-r13-dry-run-output.txt"
 WAIT_FLOOR_SECONDS = 600
 OUTPUT_TAIL_LINES = 40
 OUTPUT_LINE_LIMIT = 400
+CHECKPOINT_STAGING_POLL_SECONDS = 0.02
+CHECKPOINT_ACTIVE_POLL_SECONDS = 0.001
+CHECKPOINT_SEQUENCE_LIMIT = 8
+CHECKPOINT_PHASES = {"staged", "stopping", "stopped", "backed_up", "migrated", "switched",
+                     "verified", "complete", "rollback_selected", "rolled_back"}
 
 # The dry-run generation: the documented SDK preview of an executor capability. dry_run=True builds the
 # preview from the capability's manifest and admits nothing: no task, no run, no provider and no GPU.
@@ -124,6 +129,8 @@ def step(result: dict, result_path: Path, key: str):
         record.update(status="fail", ended_at=_now(), error=f"{type(exc).__name__}: {exc}",
                       child_exit_code=getattr(exc, "child_exit_code", None),
                       child_stderr_tail=output_tail(getattr(exc, "child_stderr", "")))
+        if hasattr(exc, "checkpoint_phase_sequence"):
+            record["observed_phase_sequence"] = exc.checkpoint_phase_sequence
         journey.write_json(result_path, result)
         print(f"[windows-r13] {label}: FAILED: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
         if isinstance(exc, WindowsR13StepError):
@@ -341,6 +348,14 @@ def check_dry_run(report) -> dict:
             "command": raw.get("command"), "preview_inputs": preview.get("inputs")}
 
 
+def _read_checkpoint(path: Path) -> dict:
+    try:
+        value = json.loads(path.read_bytes())
+    except (OSError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
 def kill_update_at_owned_checkpoint(app: Path, candidate_manifest: Path, shell: str,
                                     evidence: Path, root: Path, data: Path) -> dict:
     """Kill only this row's newly spawned installer, after observing its durable journal.
@@ -360,31 +375,37 @@ def kill_update_at_owned_checkpoint(app: Path, candidate_manifest: Path, shell: 
     stderr_path = evidence / "killed-update-bootstrap.stderr.txt"
     evidence.mkdir(parents=True, exist_ok=True)
     caught = None
+    phase_sequence = []
+    previous_operation_id = _read_checkpoint(journal_path).get("operation_id")
     with log_path.open("wb") as log, stderr_path.open("wb") as stderr:
         process = subprocess.Popen([str(item) for item in argv], env=env,
                                    stdout=log, stderr=stderr)
         try:
             until = time.monotonic() + 180
-            while time.monotonic() < until:
-                if process.poll() is not None:
-                    break
-                if journal_path.is_file():
-                    try:
-                        value = journey.read_json(journal_path)
-                    except (OSError, ValueError):
-                        value = None
-                    if (isinstance(value, dict) and value.get("step") in {"stopped", "backed_up"}
-                            and isinstance(value.get("operation_id"), str) and value["operation_id"]):
-                        caught = {"phase": value["step"], "operation_id": value["operation_id"],
-                                  "installer_pid": process.pid}
+            while time.monotonic() < until and process.poll() is None:
+                value = _read_checkpoint(journal_path)
+                phase, operation_id, data_root = (value.get(key) for key in ("step", "operation_id", "data_root"))
+                if (value.get("format") == "astrid-install-update/v1"
+                        and isinstance(phase, str) and phase in CHECKPOINT_PHASES
+                        and isinstance(operation_id, str) and re.fullmatch(r"[0-9a-f]{32}", operation_id)
+                        and operation_id != previous_operation_id
+                        and isinstance(data_root, str) and Path(data_root) == data):
+                    if not phase_sequence or phase_sequence[-1] != phase:
+                        phase_sequence.append(phase)
+                        del phase_sequence[:-CHECKPOINT_SEQUENCE_LIMIT]
+                    if phase in {"stopped", "backed_up"}:
+                        caught = {"phase": phase, "operation_id": operation_id, "installer_pid": process.pid}
                         break
-                time.sleep(0.02)
-            if caught is None:
+                # Once this invocation publishes its journal, its recoverable
+                # stages may only be observable between two disk writes.
+                time.sleep(CHECKPOINT_ACTIVE_POLL_SECONDS if phase_sequence else CHECKPOINT_STAGING_POLL_SECONDS)
+            if caught is None or process.poll() is not None:
                 code = process.poll()
                 error = RuntimeError("Updater completed before a killable durable checkpoint" if code is not None
                                      else "No durable stopped/backed_up update checkpoint before deadline")
                 error.child_exit_code = code
                 error.child_stderr = stderr_path.read_text(encoding="utf-8", errors="replace")
+                error.checkpoint_phase_sequence = phase_sequence
                 raise error
             # taskkill /T acts on the just-created process and its children,
             # not on a journal PID or a guessed process name.
@@ -396,9 +417,11 @@ def kill_update_at_owned_checkpoint(app: Path, candidate_manifest: Path, shell: 
                 error = RuntimeError("Owned update process was not demonstrably terminated")
                 error.child_exit_code = exit_code
                 error.child_stderr = stderr_path.read_text(encoding="utf-8", errors="replace")
+                error.checkpoint_phase_sequence = phase_sequence
                 raise error
             return {**caught, "taskkill_exit_code": killed.returncode,
-                    "installer_exit_code": exit_code, "killed": True}
+                    "installer_exit_code": exit_code, "killed": True,
+                    "observed_phase_sequence": phase_sequence}
         finally:
             if process.poll() is None:
                 process.kill()
