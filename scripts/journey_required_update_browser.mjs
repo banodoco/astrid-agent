@@ -90,17 +90,25 @@ export function selectedEditorUrl(url, config) {
     && url.searchParams.get('timeline') === config.timelineId;
 }
 
-export async function clickAndObserveEditorNavigation(page, button, config, refusalSignal = null) {
+export async function clickAndObserveEditorNavigation(page, button, config, refusalSignal = null, timeout = PROMPT_TIMEOUT) {
   // waitForNavigation is armed before the click and resolves at document commit.
   // Do not require the App's incidental query parameters to match.
   const navigation = waitAt('wait-for-r14-navigation', 'main-frame editor document commit',
-    () => page.waitForNavigation({ waitUntil: 'commit', timeout: PROMPT_TIMEOUT }))
+    () => page.waitForNavigation({ waitUntil: 'commit', timeout }))
     .then((response) => ({ response }));
   const outcome = refusalSignal
     ? Promise.race([navigation, refusalSignal.then((refused) => refused || navigation)])
     : navigation;
-  const [result] = await Promise.all([outcome, waitAt('click-guarded-reload', 'button[name="Reload"]',
-    () => button.click({ timeout: PROMPT_TIMEOUT, noWaitAfter: true }))]);
+  // The click can start a real navigation while its Playwright acknowledgement
+  // is still pending. Let the observed transition or refusal decide the outcome.
+  const clickError = waitAt('click-guarded-reload', 'button[name="Reload"]',
+    () => button.click({ timeout, noWaitAfter: true })).then(() => null, (error) => error);
+  let result;
+  try {
+    result = await outcome;
+  } catch (error) {
+    throw (await clickError) ?? error;
+  }
   if (result.refused) return result;
   const response = result.response;
   check(response?.request()?.isNavigationRequest() && response.frame() === page.mainFrame()

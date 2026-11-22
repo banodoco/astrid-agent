@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { clickAndObserveEditorNavigation, promptTitleFromSummary, selectedEditorUrl, waitAt } from './journey_required_update_browser.mjs';
+import { clickAndObserveGuardedReload } from './journey_reload_inflight_browser.mjs';
 
 test('required prompt title omits summary controls from actual summary text', () => {
   assert.equal(promptTitleFromSummary('Update Astrid Required Show how'), 'Update Astrid');
@@ -60,4 +61,57 @@ test('reload rejects a committed navigation to a different selected editor', asy
   const page = { mainFrame: () => 'main-frame', waitForNavigation: () => Promise.resolve(response) };
   await assert.rejects(clickAndObserveEditorNavigation(page, { click: async () => {} }, config),
     /selected editor did not commit/);
+});
+
+function guardedReloadHarness({ navigation, clickError, trusted = true }) {
+  const config = { origin: 'https://astrid.haus', projectId: 'p1', timelineId: 't1' };
+  const response = (url) => ({ ok: () => true, url: () => url,
+    request: () => ({ isNavigationRequest: () => true }), frame: () => 'main-frame' });
+  let binding;
+  let commit;
+  let navigationError;
+  const page = {
+    mainFrame: () => 'main-frame',
+    exposeBinding: async (_name, callback) => { binding = callback; },
+    waitForNavigation: () => new Promise((resolve, reject) => {
+      commit = resolve;
+      navigationError = reject;
+    }),
+  };
+  const button = {
+    evaluate: async () => {},
+    click: async () => {
+      if (trusted) binding({ frame: page.mainFrame() });
+      setImmediate(() => {
+        if (navigation) commit(response(navigation));
+        else navigationError(new Error('navigation timeout'));
+      });
+      if (clickError) throw clickError;
+    },
+  };
+  return { page, button, config };
+}
+
+test('guarded reload accepts pinned commit when click acknowledgement times out after trusted click', async () => {
+  const h = guardedReloadHarness({ navigation: 'https://astrid.haus/tools/video-editor?project=p1&timeline=t1', clickError: new Error('ack timeout') });
+  const outcome = await clickAndObserveGuardedReload(h.page, h.button, h.config);
+  assert.equal(outcome.click_observed, true);
+  assert.equal(outcome.response.url(), 'https://astrid.haus/tools/video-editor?project=p1&timeline=t1');
+});
+
+test('guarded reload rejects click acknowledgement failure without navigation', async () => {
+  const h = guardedReloadHarness({ clickError: new Error('ack timeout') });
+  await assert.rejects(clickAndObserveGuardedReload(h.page, h.button, h.config), /ack timeout/);
+});
+
+test('guarded reload rejects wrong navigation despite click acknowledgement failure', async () => {
+  const h = guardedReloadHarness({ navigation: 'https://astrid.haus/tools/video-editor?project=p2&timeline=t1', clickError: new Error('ack timeout') });
+  await assert.rejects(clickAndObserveGuardedReload(h.page, h.button, h.config), /selected editor did not commit/);
+});
+
+test('guarded reload requires a trusted click even when the selected document commits', async () => {
+  const h = guardedReloadHarness({
+    navigation: 'https://astrid.haus/tools/video-editor?project=p1&timeline=t1', trusted: false,
+  });
+  await assert.rejects(clickAndObserveGuardedReload(h.page, h.button, h.config), /did not observe a trusted Reload click/);
 });
