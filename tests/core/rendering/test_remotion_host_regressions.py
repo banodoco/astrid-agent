@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import os
 import pickle
+import ast
+import inspect
 import subprocess
 import sys
 import tempfile
@@ -76,9 +78,13 @@ def test_render_launch_projection_matches_runtime_selected_worker_pythonpath(tmp
     assert generic_host._record_may_render(record)
 
     package_parent = str(Path(generic_host.__file__).resolve().parents[3])
+    # Build the readiness-side path from stable inputs rather than the helper
+    # under test. Source-mode readiness adds the selected Runtime checkout,
+    # while dependency_pythonpath filters the host's approved dependencies.
     expected_path = os.pathsep.join(dict.fromkeys((
         package_parent,
-        *generic_host._dependency_pythonpath(environment),
+        str(runtime_root),
+        *generic_host.dependency_pythonpath(environment),
         *generic_host._admitted_python_roots(record.source_root, record.definition),
     )))
     expected_roots = os.pathsep.join(str(root) for root in host.pack_roots)
@@ -115,9 +121,11 @@ def test_render_launch_projection_uses_host_personal_collection_roots(tmp_path, 
     record = next(record for record in host.discover() if record.id == "rendering.render")
 
     expected_roots = os.pathsep.join(str(root) for root in host.pack_roots)
+    runtime_root = str(Path(__import__("runtime_protocol").__file__).resolve().parent.parent)
     expected_path = os.pathsep.join(dict.fromkeys((
         str(Path(generic_host.__file__).resolve().parents[3]),
-        *generic_host._dependency_pythonpath(environment),
+        runtime_root,
+        *generic_host.dependency_pythonpath(environment),
         *generic_host._admitted_python_roots(record.source_root, record.definition),
     )))
     stale_candidates = generic_host._launch_worker_probe_environments(
@@ -136,6 +144,26 @@ def test_render_launch_projection_uses_host_personal_collection_roots(tmp_path, 
         candidate.get("ASTRID_PACKS_PATH") == expected_roots
         and candidate.get("PYTHONPATH") == expected_path
         for candidate in launch_candidates
+    )
+
+    # The actual deferred launch call must pass the expanded host roots. This
+    # guards the callsite that used to pass the raw CLI roots, even though a
+    # manually projected call with host.pack_roots would pass on old code.
+    tree = ast.parse(inspect.getsource(generic_host._cli_impl))
+    validation_calls = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_prepare_render_validation"
+    ]
+    assert validation_calls
+    assert any(
+        len(node.args) >= 5
+        and isinstance(node.args[4], ast.Attribute)
+        and isinstance(node.args[4].value, ast.Name)
+        and node.args[4].value.id == "host"
+        and node.args[4].attr == "pack_roots"
+        for node in validation_calls
     )
 
 

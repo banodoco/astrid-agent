@@ -10735,6 +10735,10 @@ class GenericPackHost:
         PreparedTimelineInputs.handoff_source(prepared_inputs, env)
         if os.environ.get('ASTRID_HOST_EXECUTION_PROFILE') != 'installed':
             env['PYTHONPATH'] = _command_worker_pythonpath(record, env.get('PYTHONPATH', ''))
+            # A source-mode command worker discovers packs like a native one:
+            # through the host's effective roots (including the personal
+            # collection), which launch validation already qualified.
+            env[ASTRID_PACKS_PATH] = os.pathsep.join(str(root) for root in self.pack_roots)
         cwd = _confined_cwd(
             binding.cwd,
             attempt=attempt,
