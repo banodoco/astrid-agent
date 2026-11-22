@@ -286,11 +286,14 @@ def test_commit_function_batches_occurrence_placements_and_document_edits(
                    if row['id'] == 'clip-a')
         return Clip(working, shot_id, row)
 
-    with pytest.raises(ValueError, match='not admitted'):
+    with pytest.raises(ValueError, match='re-admit pack'):
         timeline.commit(lambda working: occurrence_clip(
             working, 'occ-a').set_element({**ref, 'revision': 'sha256:' + '0' * 64}),
             key='wrong-revision')
     assert owner.commit.call_count == 0
+    assert history_state['head'] == {'revision_id': 'head', 'publication_id': 'publication'}
+    assert history_state['items'] == []
+    assert bundle == baseline
 
     def edit(working):
         # Remove a formula before retargeting its clip, then place on both
