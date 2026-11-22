@@ -87,6 +87,10 @@ class TimingCollector:
             self.monitor.join()
 
     def snapshot(self):
+        return self.snapshot_with_span()[0]
+
+    def snapshot_with_span(self):
+        """Return rows and collector span at one monotonic snapshot instant."""
         with self.lock:
             now = time.monotonic()
             self._advance(now)
@@ -94,7 +98,7 @@ class TimingCollector:
             rows.extend(_row(item, now) for item in self.active)
             measured = sum(row['seconds'] for row in rows)
             rows.append({'stage': 'other command work', 'seconds': max(0.0, now - self.started - measured)})
-            return rows
+            return rows, max(0.0, now - self.started)
 
 
 def command_started():
@@ -127,9 +131,10 @@ def current_timings():
 
 class TimingOutput:
     """Enrich complete JSON objects, optionally deferring successful output."""
-    def __init__(self, stream, collector, *, defer_success=False):
+    def __init__(self, stream, collector, *, defer_success=False, include_collector_span=False):
         self.stream, self.collector = stream, collector
         self.defer_success = defer_success
+        self.include_collector_span = include_collector_span
         self.pending = None
 
     def _write_pending(self):
@@ -137,8 +142,14 @@ class TimingOutput:
             return
         value, terminator = self.pending
         self.pending = None
-        value['timings'] = self.collector.snapshot()
+        self._attach_timings(value)
         self.stream.write(json.dumps(value, ensure_ascii=False) + terminator)
+
+    def _attach_timings(self, value):
+        rows, span = self.collector.snapshot_with_span()
+        value['timings'] = rows
+        if self.include_collector_span:
+            value['collector_span_seconds'] = span
 
     def write(self, text):
         if self.pending is not None:
@@ -155,7 +166,7 @@ class TimingOutput:
             if self.defer_success and value.get('ok') is True:
                 self.pending = (value, '')
                 return len(text)
-            value['timings'] = self.collector.snapshot()
+            self._attach_timings(value)
             if self.collector.start_provenance is not None:
                 value['start'] = self.collector.start_provenance
             text = json.dumps(value, ensure_ascii=False)

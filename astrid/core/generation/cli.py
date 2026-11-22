@@ -970,7 +970,7 @@ def main(argv: list[str] | None = None, *, dispatch_marks: tuple[float, float] |
         marks = (entry, "command entry", None, None)
     collector = TimingCollector(started=marks[0], startup=(*marks, entry),
                                 startup_child=("dispatch", *dispatch_marks) if dispatch_marks else None)
-    output = contextlib.redirect_stdout(TimingOutput(sys.stdout, collector)) if '--timings' in argv else contextlib.nullcontext()
+    output = contextlib.redirect_stdout(TimingOutput(sys.stdout, collector, include_collector_span=True)) if '--timings' in argv else contextlib.nullcontext()
     try:
         with timing_scope(collector), output:
             return _main_with_errors(argv)
