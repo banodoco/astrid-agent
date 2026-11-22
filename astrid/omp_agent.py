@@ -15,11 +15,20 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
+
+
+_OMP_MAIN_STARTED_AT: float | None = None
+if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "timelines":
+    # The installer enters this module directly, before the gateway is imported.
+    from .console import process_started_at
+
+    _OMP_MAIN_STARTED_AT = process_started_at(time.monotonic())
 
 from .core.auth import AUTH_COMMANDS, contributor_auth_system_notice, run_auth
 from .core.util.http import os_trust_ssl_context, request_error_host
@@ -182,6 +191,18 @@ def _dispatch_toolkit(rest: list[str]) -> int:
     # Delayed import keeps the interactive launcher usable in a minimal OMP
     # installation and makes ``astrid --help`` independent of runtime deps.
     from astrid.core.gateway import main as gateway_main
+
+    if rest and rest[0] == "timelines":
+        # The installed console captures process start before this module;
+        # installer module launches capture it before gateway imports. Keep
+        # direct in-process OMP calls on the legacy gateway timing path.
+        from astrid.console import cli_started_at
+
+        started_at = cli_started_at()
+        if started_at is None:
+            started_at = _OMP_MAIN_STARTED_AT
+        if started_at is not None:
+            return int(gateway_main(rest, started_at=started_at))
 
     return int(gateway_main(rest))
 

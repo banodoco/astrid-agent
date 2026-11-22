@@ -1444,6 +1444,9 @@ class _parser_TimelinesParser(argparse.ArgumentParser):
     """``show TL --project P c41.mink``: a positional after the flags fills the verb's open positional
     (address, word, query, sheet file, asset key) instead of failing with "unrecognized arguments"."""
 
+    def format_help(self) -> str:
+        return super().format_help() + "\n  --timings  Print client stage timings to stderr.\n"
+
     def parse_args(self, args: Any = None, namespace: Any = None) -> argparse.Namespace:
         args = list(sys.argv[1:] if args is None else args)
         parsed, extras = self.parse_known_args(args, namespace)

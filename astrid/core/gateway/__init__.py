@@ -69,9 +69,15 @@ SPRINT1_UNBOUND_ALLOWLIST_CONTRACT: tuple[tuple[str, ...], ...] = (
 )
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, started_at: float | None = None) -> int:
     global _MAIN_CALLS
-    os.environ["ASTRID_CLI_START_MONO"] = str(_GATEWAY_IMPORTED_MONO if _MAIN_CALLS == 0 else time.monotonic())
+    # The installed console may provide its earlier process-entry timestamp,
+    # captured before importing OMP and the gateway. Always overwrite the
+    # environment marker so embedded calls cannot inherit a stale value.
+    start = started_at if started_at is not None else (
+        _GATEWAY_IMPORTED_MONO if _MAIN_CALLS == 0 else time.monotonic()
+    )
+    os.environ["ASTRID_CLI_START_MONO"] = str(start)
     _MAIN_CALLS += 1
     raw = sys.argv[1:] if argv is None else list(argv)
     try:

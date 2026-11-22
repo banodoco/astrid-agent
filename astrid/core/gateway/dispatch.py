@@ -589,6 +589,31 @@ def _dispatch_pack(pack: str, args: list[str]) -> int:
 
 
 def _dispatch_product(args: list[str]) -> int:
+    if not args or args[0] != "timelines" or any(arg in {"-h", "--help"} for arg in args[1:]):
+        return _dispatch_product_inner(args)
+
+    from astrid.sdk.command_timing import TimingCollector, TimingOutput, command_started, timing_scope
+    import contextlib
+    import sys
+
+    collector = TimingCollector(started=command_started())
+    show_timings = "--timings" in args
+    # Verification already owns a --timings flag; preserve its behavior.
+    verify_timings = len(args) > 1 and ((args[1] == "check" and any(arg == "--at" or arg.startswith("--at=") for arg in args)) or (args[1] == "edit" and "--verify" in args))
+    forwarded = args if verify_timings else [arg for arg in args if arg != "--timings"]
+    output = TimingOutput(sys.stdout, collector, defer_success=True)
+    try:
+        with timing_scope(collector), contextlib.redirect_stdout(output):
+            result = _dispatch_product_inner(forwarded)
+    finally:
+        output.finalize()
+    if show_timings:
+        for item in collector.snapshot():
+            print(f"{item['stage']}: {item['seconds']:.3f}s", file=sys.stderr)
+    return result
+
+
+def _dispatch_product_inner(args: list[str]) -> int:
     """Run one product-family command through the remote SDK boundary."""
     from astrid.core.cli.domain_product import PRODUCT_FAMILY_SET, run_product_family
 

@@ -2166,8 +2166,10 @@ def ensure_pack_host(
     )
 
     try:
-        source_digest = source_checkout_digest(source_path)
-        source_closure_digest = source_checkout_closure_digest(source_path)
+        from astrid.sdk.command_timing import stage
+        with stage("pack host source identity"):
+            source_digest = source_checkout_digest(source_path)
+            source_closure_digest = source_checkout_closure_digest(source_path)
     except (OSError, ValueError) as exc:
         raise PackHostBootstrapError(
             f"generic Astrid pack source tree is not a safe checkout; {reconfigure_action}"
@@ -2224,8 +2226,9 @@ def ensure_pack_host(
     if not _foreground:
         # Wait outside the registration lock: the supervised host writes its ready
         # record without this lock, and the locked section re-reads it afterwards.
-        _await_supervised_startup(state_path, ready_path,
-                                  lambda: _supervised_service_rows(runtime_client.health()))
+        with stage("pack host readiness"):
+            _await_supervised_startup(state_path, ready_path,
+                                      lambda: _supervised_service_rows(runtime_client.health()))
     try:
         lock_handle = lock_path.open("a+")
         platform.owner_only(lock_handle.fileno())
@@ -2233,7 +2236,8 @@ def ensure_pack_host(
         raise PackHostBootstrapError(f"generic Astrid pack host lock is unavailable; {reconfigure_action}") from exc
     try:
         try:
-            platform.lock_file(lock_handle.fileno())
+            with stage("pack host lifecycle lock"):
+                platform.lock_file(lock_handle.fileno())
         except (ImportError, OSError) as exc:
             raise PackHostBootstrapError(f"generic Astrid pack host lock is unavailable; {reconfigure_action}") from exc
         current = _read_object(state_path)
@@ -2489,34 +2493,35 @@ def ensure_pack_host(
         exit_status = None
         hung = False
         try:
-            while True:
-                now = time.monotonic()
-                if now >= next_probe:
-                    token = _host_progress_token(process, log_path, ready_path)
-                    if token != last_token:
-                        last_token = token
-                        deadline = now + startup_idle_seconds
-                    next_probe = now + _PROGRESS_PROBE_INTERVAL_SECONDS
-                if now >= deadline:
-                    hung = True
-                    break
-                ready = _read_object(ready_path)
-                if ready and str(ready.get("status")) == "ready":
-                    break
-                if (
-                    ready
-                    and str(ready.get("status")) == "failed"
-                    and ready.get("terminal") is True
-                    and str(ready.get("pid")) == str(process.pid)
-                    and str(ready.get("process_birth_id"))
-                    == str(process_state["process_birth_id"])
-                ):
-                    terminal_failure = ready
-                    break
-                exit_status = process.poll()
-                if exit_status is not None:
-                    break
-                time.sleep(0.05)
+            with stage("pack host readiness"):
+                while True:
+                    now = time.monotonic()
+                    if now >= next_probe:
+                        token = _host_progress_token(process, log_path, ready_path)
+                        if token != last_token:
+                            last_token = token
+                            deadline = now + startup_idle_seconds
+                        next_probe = now + _PROGRESS_PROBE_INTERVAL_SECONDS
+                    if now >= deadline:
+                        hung = True
+                        break
+                    ready = _read_object(ready_path)
+                    if ready and str(ready.get("status")) == "ready":
+                        break
+                    if (
+                        ready
+                        and str(ready.get("status")) == "failed"
+                        and ready.get("terminal") is True
+                        and str(ready.get("pid")) == str(process.pid)
+                        and str(ready.get("process_birth_id"))
+                        == str(process_state["process_birth_id"])
+                    ):
+                        terminal_failure = ready
+                        break
+                    exit_status = process.poll()
+                    if exit_status is not None:
+                        break
+                    time.sleep(0.05)
         except BaseException:
             _abandon()
             raise
