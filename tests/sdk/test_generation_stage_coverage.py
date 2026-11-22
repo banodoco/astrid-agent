@@ -208,6 +208,10 @@ def test_workflow_and_image_admissions_report_generation_stage_tree(
         assert len(imports) == 2, imports
         assert len({row["occurrence_id"] for row in imports}) == 2
         assert all(row["seconds"] > 0 for row in imports)
+        retained = [row for row in rows if row["stage"] == "object import"
+                    and row["parent"] == "source retention"]
+        assert retained and all(row["seconds"] > 0 for row in retained), retained
+        assert len([row for row in rows if row["stage"] == "invocation" and row["parent"] is None]) == 1
 
     _assert_stage_parents(workflow_rows, workflow_expected)
     _assert_stage_parents(image_rows, image_expected)
