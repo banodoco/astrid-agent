@@ -408,10 +408,13 @@ def _renderer_compiler() -> tuple[Path,Path]:
     finds its own native binary, so a JS shim at ``bin/esbuild`` or a Windows ``.exe`` layout both work.
     Its version is checked against the project's exact pin. No separate lock, no PATH.
     """
-    from astrid.core.env_vars import ASTRID_NODE_EXECUTABLE
-    from astrid.core.rendering.node_pin import resolve_pinned_node
-    from astrid.core.rendering.remotion_runtime import resolve_remotion_project_dir
-    project = resolve_remotion_project_dir()
+    from astrid.core.env_vars import ASTRID_NODE_EXECUTABLE, ASTRID_REMOTION_PROJECT_DIR
+    from astrid.core.foundation.renderer_toolchain import (
+        resolve_pinned_node,
+        resolve_remotion_project_dir,
+    )
+
+    project = resolve_remotion_project_dir(ASTRID_REMOTION_PROJECT_DIR, repo_root=REPO_ROOT)
     node = resolve_pinned_node(project,override=(os.environ.get(ASTRID_NODE_EXECUTABLE) or '').strip() or None)
     if not node.ok:
         raise ValueError(f'Project element admission needs the renderer Node: {node.problem}')

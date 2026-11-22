@@ -37,6 +37,9 @@ from astrid.core.env_vars import (
 )
 from astrid.core.execution.platform_helpers import owned_by_current_user
 from astrid.core.foundation.paths import PACKAGE_ROOT, REPO_ROOT
+from astrid.core.foundation.renderer_toolchain import (
+    resolve_remotion_project_dir as _resolve_remotion_project_dir,
+)
 from astrid.core.rendering import _local_schema, _registry_origin, _remotion_package
 
 REMOTION_PROJECT_DIR_ENV = ASTRID_REMOTION_PROJECT_DIR
@@ -1408,17 +1411,9 @@ def resolve_remotion_project_dir(*, environment: Mapping[str, str] | None = None
     Only process configuration is consulted; renderer requests cannot select a
     runtime. Invalid explicit configuration must never fall back to the checkout.
     """
-    source = os.environ if environment is None else environment
-    raw = source.get(REMOTION_PROJECT_DIR_ENV, "").strip()
-    if raw:
-        candidate = Path(raw).expanduser()
-        if not candidate.is_absolute():
-            raise ValueError(f"{REMOTION_PROJECT_DIR_ENV} must be an absolute path")
-        return candidate.resolve()
-    # Development source checkouts may use the conventional location.  A
-    # wheel install has no sibling remotion/ tree, so this correctly fails
-    # closed until deployment supplies the trusted runtime configuration.
-    return (REPO_ROOT / "remotion").resolve()
+    return _resolve_remotion_project_dir(
+        REMOTION_PROJECT_DIR_ENV, repo_root=REPO_ROOT, environment=environment,
+    )
 
 
 def remotion_install_problem(project: Path) -> str | None:
