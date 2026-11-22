@@ -1619,6 +1619,18 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         stage_runtime_launcher(version)
         return version
 
+    def install_defaults(self, version: Version, manifest: dict) -> None:
+        """Publish defaults with the candidate's Agent and installed dependencies."""
+        try:
+            self.run([version.python, "-X", "utf8", "-I", "-m",
+                      "astrid.installer.default_packs", version.root / "manifest.json"],
+                     extra_env=version.env)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            raise RuntimeError(
+                "Default pack installation failed; publication may have occurred. "
+                f"See the installer log at {self.log} for recovery details."
+            ) from exc
+
     def validate_candidate(self, version: Version, data: Path, realm: dict) -> None:
         """Admit the staged package against the live workspace without changing it."""
         from .core import inspect_schema

@@ -168,3 +168,193 @@ def test_multi_archive_manifest_preserves_digest_order():
     pins = manifest(value)
     assert tools.validate_manifest(pins) is pins
     assert tools.asset_downloads(value) == list(zip(value["urls"], value["sha256"]))
+
+
+MOTION_PACK_PIN = {
+    "repo": "https://github.com/banodoco/poms_packs",
+    "commit": "2379ab54aca522019ff4f869cfdf9375bdb56dfc",
+    "digest_rule": "pack-tree-v1",
+    "digest": "75234c10217e67ec0f111a4cb6be4a6252e172a9cd382506498d07ce1d241029",
+}
+
+
+def _manifest_with_pack_pins(packs):
+    value, _ = asset()
+    pins = manifest(value)
+    pins["packs"] = packs
+    return pins
+
+
+def test_manifest_accepts_the_approved_astrid_motion_pack_pin():
+    pins = _manifest_with_pack_pins({"astrid_motion": MOTION_PACK_PIN.copy()})
+    assert tools.validate_manifest(pins) is pins
+
+
+@pytest.mark.parametrize("changes", [
+    {"commit": "2379ab54"},
+    {"digest_rule": "sha256"},
+    {"digest": None},
+])
+def test_manifest_rejects_invalid_astrid_motion_pack_pin(changes):
+    pin = MOTION_PACK_PIN.copy()
+    pin.update(changes)
+    if changes == {"digest": None}:
+        del pin["digest"]
+    with pytest.raises(ValueError, match="pack|manifest|commit|digest"):
+        tools.validate_manifest(_manifest_with_pack_pins({"astrid_motion": pin}))
+
+
+@pytest.mark.parametrize("second_pin", [
+    {**MOTION_PACK_PIN, "repo": "https://github.com/another/packs"},
+    {**MOTION_PACK_PIN, "commit": "b" * 40},
+])
+def test_manifest_rejects_default_packs_from_different_repository_or_commit(second_pin):
+    with pytest.raises(ValueError, match="pack|manifest|repository|commit"):
+        tools.validate_manifest(_manifest_with_pack_pins({
+            "astrid_motion": MOTION_PACK_PIN.copy(),
+            "another_default": second_pin,
+        }))
+
+
+@pytest.mark.parametrize("mode", ["install", "update"])
+def test_installer_installs_candidate_defaults_after_stage_before_activation(
+        tmp_path, monkeypatch, mode):
+    """The candidate's pinned defaults are installed before its version is selected."""
+    from astrid.installer import core, r0_stop
+
+    monkeypatch.setattr(r0_stop, "is_r0_installation", lambda *_args: False)
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    monkeypatch.setenv("HOME", str(home))
+    root, data = tmp_path / "program", tmp_path / "workspace"
+    events = []
+    pins = _manifest_with_pack_pins({"astrid_motion": MOTION_PACK_PIN.copy()})
+    candidate = core.Version(root / "versions" / "v20", root / "versions" / "v20" / "bin/python",
+                             root / "versions" / "v20" / "profile", {}, release=20)
+    old_python = tmp_path / "old" / "bin" / "python"
+    old_python.parent.mkdir(parents=True)
+    old_python.touch()
+    old = core.Version(tmp_path / "old", old_python,
+                       tmp_path / "old/profile", {}, release=19)
+
+    class Backend:
+        service = None
+
+        def existing(self, _data):
+            return old if mode == "update" else None
+
+        def stage(self, selected_manifest, _root, _data):
+            assert selected_manifest is pins
+            events.append("stage")
+            return candidate
+
+        def install_defaults(self, selected_candidate, selected_manifest):
+            assert selected_candidate is candidate
+            assert selected_manifest is pins
+            events.append("defaults")
+
+        def has_workspace(self, _data):
+            return False
+
+        def create(self, _candidate, _data):
+            events.append("create")
+            return {"realm_id": "realm-test"}
+
+        def validate_candidate(self, *_args):
+            events.append("validate")
+
+        def workspace(self, *_args):
+            return {"realm_id": "realm-test"}
+
+        def register(self, *_args):
+            events.append("register")
+
+        def start(self, *_args):
+            events.append("start")
+
+        def verify(self, *_args, **_kwargs):
+            events.append("verify")
+
+        def sync_skills(self, *_args):
+            return {"ok": True}
+
+        def stop(self, *_args):
+            events.append("stop")
+
+        def finish(self, *_args):
+            events.append("finish")
+
+        def open(self):
+            events.append("open")
+
+    backend = Backend()
+    monkeypatch.setattr(core.Installer, "_recover_update", lambda _self: None)
+    monkeypatch.setattr(core.Installer, "_observe_autostart", lambda _self: None)
+    monkeypatch.setattr(core, "install_launcher", lambda _root: None)
+    monkeypatch.setattr(core, "switch", lambda _root, version: events.append("switch"))
+
+    installer = core.Installer(root, data, backend, say=lambda _line: None)
+    if mode == "update":
+        monkeypatch.setattr(core, "schema_unchanged", lambda *_args: True)
+
+        def update_transaction(_self, _old, _realm, *, prepare, switch_candidate, activate,
+                               **_kwargs):
+            staged = prepare()
+            switch_candidate(staged)
+            activate(staged, data, {"realm_id": "realm-test"})
+
+        monkeypatch.setattr(core.Installer, "_run_update_transaction", update_transaction)
+
+    installer.run(mode, pins)
+
+    assert events.index("stage") < events.index("defaults")
+    assert events.index("defaults") < events.index("switch")
+    assert events.index("defaults") < events.index("register")
+    assert events.index("defaults") < events.index("start")
+
+
+def test_default_packs_main_uses_explicit_personal_root_and_transaction_inputs(
+        tmp_path, monkeypatch):
+    from astrid.installer import default_packs
+
+    personal_root = tmp_path / "user" / "Astrid" / "packs"
+    selected_roots = (personal_root, tmp_path / "discovered-packs")
+    core_root = tmp_path / "installed-core"
+    packages = {"numpy": "2.0"}
+    release_pins = {"astrid_motion": MOTION_PACK_PIN["commit"]}
+    builds = {"astrid_motion": {"target": "installed-python"}}
+    toolchain = {"version": "pinned-toolchain"}
+    calls = {}
+
+    monkeypatch.setattr(default_packs, "load_release_manifest", lambda _path: {"packs": {"astrid_motion": {}}})
+    monkeypatch.setattr(default_packs, "_default_pins", lambda _manifest: (
+        "https://example.invalid/packs", "a" * 40, {"astrid_motion": "astrid_motion"}, {}))
+    monkeypatch.setattr(default_packs, "_selected_root", lambda override: (
+        calls.setdefault("override", override), personal_root)[1])
+    monkeypatch.setattr(default_packs, "_validation_snapshot", lambda: (packages, release_pins))
+    monkeypatch.setattr(default_packs, "_build_inputs", lambda source, revision, packs, selected: (
+        calls.setdefault("build_inputs", (source, revision, packs, selected)), (builds, toolchain))[1])
+    monkeypatch.setattr(default_packs, "_composition_roots", lambda root, *, include_default: (
+        calls.setdefault("composition", (root, include_default)), selected_roots)[1])
+    monkeypatch.setattr(default_packs, "_core_root", lambda: core_root)
+
+    def install(manifest_value, **options):
+        calls["install"] = (manifest_value, options)
+
+    monkeypatch.setattr(default_packs, "install_defaults", install)
+    default_packs.main(str(tmp_path / "candidate" / "manifest.json"))
+
+    assert calls["override"] is None
+    assert calls["build_inputs"] == (
+        "https://example.invalid/packs", "a" * 40,
+        {"astrid_motion": "astrid_motion"}, None)
+    assert calls["composition"] == (personal_root, True)
+    assert calls["install"] == ({"packs": {"astrid_motion": {}}}, {
+        "packs_root": personal_root,
+        "python_packages": packages,
+        "selected_roots": selected_roots,
+        "core_root": core_root,
+        "release_pins": release_pins,
+        "builds": builds,
+        "toolchain": toolchain,
+    })
