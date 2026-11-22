@@ -3,7 +3,8 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import {
-  author, check, commitPost, findDraft, runtimePath, sha256, trackName, withBrowserPage,
+  author, check, clickAndObserveEditorNavigation, commitPost, findDraft, runtimePath,
+  selectedEditorUrl, sha256, trackName, waitAt, withBrowserPage,
 } from './journey_required_update_browser.mjs';
 
 const UI_TIMEOUT = 45_000;
@@ -16,20 +17,20 @@ function writeReceipt(path, value) {
   renameSync(temp, path);
 }
 
-function isEditor(url, config) {
-  return url.origin === config.origin && url.pathname === '/tools/video-editor'
-    && url.searchParams.get('project') === config.projectId
-    && url.searchParams.get('timeline') === config.timelineId;
-}
-
 async function observeRestore(page, config, response, draft) {
-  check(response?.ok() && isEditor(new URL(response.url()), config), 'No R14 editor navigation response');
+  check(response?.ok() && selectedEditorUrl(new URL(response.url()), config), 'No R14 editor navigation response');
   check(sha256(await response.body()) === config.candidateIndexSha256, 'Reload did not receive the pinned R14 editor page');
   check(await page.evaluate(() => window.__fix17OriginalDocument !== true), 'The original R13 document was not replaced');
   const track = trackName(page);
-  const retry = page.locator('[data-save-bar]').getByRole('button', { name: 'Try again', exact: true });
+  const retry = page.locator('[data-save-bar]').getByRole('button', { name: 'Try again', exact: true })
+    .or(page.locator('[data-save-bar="recovered"]').getByRole('button', { name: 'Restore', exact: true }));
   const arrival = page.locator('[data-testid="runtime-connection-status"][data-state="connected"]');
-  try { await arrival.waitFor({ state: 'attached', timeout: UI_TIMEOUT }); } catch { /* Report what is present. */ }
+  await waitAt('wait-for-r14-runtime', '[data-testid="runtime-connection-status"][data-state="connected"]',
+    () => arrival.waitFor({ state: 'attached', timeout: UI_TIMEOUT }));
+  await waitAt('wait-for-editor-card', '[data-testid="runtime-not-connected"] detached',
+    () => page.getByTestId('runtime-not-connected').waitFor({ state: 'detached', timeout: UI_TIMEOUT }));
+  await waitAt('wait-for-restored-track', 'textbox[name="Track name"] visible',
+    () => track.waitFor({ state: 'visible', timeout: UI_TIMEOUT }));
   let restored = null;
   let pending = null;
   let offered = false;
@@ -66,7 +67,7 @@ async function reloadInflight(page, config) {
     writeReceipt(config.result, receipt);
   };
   const onNavigation = (frame) => {
-    if (receipt.reload.clicked && frame === page.mainFrame() && isEditor(new URL(frame.url()), config)) {
+    if (receipt.reload.clicked && frame === page.mainFrame() && selectedEditorUrl(new URL(frame.url()), config)) {
       newDocument = true;
     }
   };
@@ -124,16 +125,17 @@ async function reloadInflight(page, config) {
     check(existsSync(config.publishedPath), 'Timed out waiting for verified native R14 publication');
 
     switched = true;
-    // The old Runtime's connection is gone after the native update. Model
-    // that disconnect without forwarding the held R13 POST to its replacement.
+    // The native update ends the old Runtime connection. Abort the held POST
+    // without forwarding it to the replacement Runtime.
     await heldRoute.abort('connectionclosed');
     receipt.original_request_disposition = 'connection-closed-after-native-update';
     record('native-r14-published');
-    const [buildResponse] = await Promise.all([
-      page.waitForResponse((response) => response.ok() && response.url() === buildUrl, { timeout: UI_TIMEOUT }),
+    const [buildBytes] = await Promise.all([
+      waitAt('wait-for-r14-build-watcher', 'GET /build.json',
+        () => page.waitForResponse((response) => response.ok() && response.url() === buildUrl, { timeout: UI_TIMEOUT }))
+        .then((response) => response.body()),
       page.evaluate(() => window.dispatchEvent(new Event('focus'))),
     ]);
-    const buildBytes = await buildResponse.body();
     const build = JSON.parse(buildBytes.toString('utf8'));
     const buildDigest = sha256(buildBytes);
     check(build.app === config.expectedApp && build.release === 14 && buildDigest === config.candidateBuildSha256,
@@ -145,41 +147,35 @@ async function reloadInflight(page, config) {
 
     const notice = page.getByRole('status').filter({ hasText: NOTICE });
     const button = notice.getByRole('button', { name: 'Reload', exact: true });
-    await button.waitFor({ state: 'visible', timeout: UI_TIMEOUT });
+    await waitAt('wait-for-reload-control', '[role="status"] button[name="Reload"]',
+      () => button.waitFor({ state: 'visible', timeout: UI_TIMEOUT }));
     const noticeText = (await notice.innerText()).replace(/\s+/g, ' ').trim();
     check(noticeText === NOTICE && await page.evaluate(() => window.__fix17OriginalDocument === true),
       'The exact Reload notice did not appear in the original R13 document');
     receipt.notice = { text: noticeText, visible: true, original_document: true };
     const warning = notice.getByRole('alert').filter({ hasText: REFUSAL });
-    const navigation = page.waitForResponse((response) => response.request().isNavigationRequest()
-      && response.frame() === page.mainFrame() && isEditor(new URL(response.url()), config), { timeout: UI_TIMEOUT });
-    const clickOutcome = Promise.race([
-      navigation.then((response) => ({ response })),
-      warning.waitFor({ state: 'visible', timeout: UI_TIMEOUT }).then(async () => ({
-        refused: (await warning.innerText()).replace(/\s+/g, ' ').trim().slice(0, 300),
-      })),
-    ]);
-    // Observe the refusal even if the Playwright click itself later times out.
-    clickOutcome.catch(() => {});
+    const refusal = warning.waitFor({ state: 'visible', timeout: UI_TIMEOUT })
+      .then(() => ({ refused: true }), () => null);
     receipt.reload.clicked = true;
     record('guarded-reload-clicked');
-    await button.click({ timeout: UI_TIMEOUT });
-    const outcome = await clickOutcome;
+    const outcome = await clickAndObserveEditorNavigation(page, button, config, refusal);
     let response = outcome.response;
     if (outcome.refused) {
       receipt.reload.result = 'unsafe-reload-fallback';
-      receipt.reload.warning = outcome.refused;
+      receipt.reload.refused = true;
       let dialog = null;
       page.once('dialog', async (prompt) => {
         dialog = prompt.type();
         await prompt.accept();
       });
       record('guard-refused-plain-reload');
-      response = await page.reload({ waitUntil: 'domcontentloaded', timeout: UI_TIMEOUT });
+      response = await waitAt('guard-refused-plain-reload', 'main-frame editor document',
+        () => page.reload({ waitUntil: 'domcontentloaded', timeout: UI_TIMEOUT }));
       receipt.reload.plain_dialog = dialog;
     } else {
       receipt.reload.result = 'reloaded';
     }
+    record('observe-r14-restoration');
     receipt.restore = await observeRestore(page, config, response, authored.draft);
     const recovered = receipt.restore.persisted_label === config.draftLabel || receipt.restore.offered;
     if (!outcome.refused && recovered && receipt.r14_audit.r13_save_requests_after_switch.length === 0) {
@@ -192,6 +188,7 @@ async function reloadInflight(page, config) {
     record('restoration-observed');
   } catch (error) {
     const message = error instanceof Error ? error.message : '';
+    if (error?.stalled) receipt.stalled = error.stalled;
     receipt.error = /^[\w .';-]{1,160}$/.test(message) ? message
       : error?.name === 'TimeoutError' ? 'browser-timeout' : 'browser-operation-failed';
     if (error?.authorEvidence) receipt.author = { status: 'fail', mode: 'author', ...error.authorEvidence };

@@ -691,7 +691,7 @@ def _browser_step_matches(step, mode, app, manifest_hash):
 
 def _required_notice_matches(notice, reason):
     return (isinstance(notice, dict) and bool(reason)
-            and re.fullmatch(r"(Update Astrid|Release 14 is ready)\s+Required\s+Show how",
+            and re.fullmatch(r"(?:Update Astrid|Release 14 is ready)(?:\s+Required\s+Show how)?",
                              str(notice.get("title", ""))) is not None
             and notice.get("reason") == "This update is required: " + reason
             and notice.get("action") in ("Update now", "Run it yourself"))

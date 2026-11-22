@@ -41,25 +41,72 @@ export function trackName(page) {
   return page.getByRole('textbox', { name: 'Track name' }).first();
 }
 
+// Keep timeout receipts actionable without copying browser supplied text.
+export async function waitAt(stage, selector, action) {
+  try { return await action(); }
+  catch (error) {
+    if (error?.name === 'TimeoutError') {
+      const wrapped = new Error(`Timed out at ${stage} (${selector})`);
+      wrapped.name = 'TimeoutError';
+      wrapped.stalled = { step: stage, selector };
+      throw wrapped;
+    }
+    throw error;
+  }
+}
+
+export function promptTitleFromSummary(text) {
+  return text.replace(/\s+Required\s+Show how\s*$/, '').trim();
+}
+
 async function openEditor(page, config, onPhase = () => {}) {
   const url = new URL('/tools/video-editor', config.origin);
   url.searchParams.set('project', config.projectId);
   url.searchParams.set('timeline', config.timelineId);
   onPhase('open-editor');
-  await page.goto(url.toString(), { waitUntil: 'domcontentloaded' });
+  await waitAt('open-editor', 'editor document navigation',
+    () => page.goto(url.toString(), { waitUntil: 'domcontentloaded' }));
   onPhase('wait-for-runtime-connection');
-  await page.locator('[data-testid="runtime-connection-status"][data-state="connected"]')
-    .waitFor({ state: 'attached' });
+  await waitAt('wait-for-runtime-connection', '[data-testid="runtime-connection-status"][data-state="connected"]',
+    () => page.locator('[data-testid="runtime-connection-status"][data-state="connected"]')
+      .waitFor({ state: 'attached' }));
   onPhase('wait-for-selected-project');
-  await page.waitForFunction(({ name }) => [...document.querySelectorAll('[role="combobox"][aria-label="Select project"]')]
-    .some((combobox) => combobox.textContent?.trim() === name), { name: config.projectName });
-  const current = new URL(page.url());
-  check(current.searchParams.get('project') === config.projectId
-    && current.searchParams.get('timeline') === config.timelineId, 'The App opened a different project or timeline');
+  await waitAt('wait-for-selected-project', '[role="combobox"][aria-label="Select project"]',
+    () => page.waitForFunction(({ name }) => [...document.querySelectorAll('[role="combobox"][aria-label="Select project"]')]
+      .some((combobox) => combobox.textContent?.trim() === name), { name: config.projectName }));
+  check(selectedEditorUrl(new URL(page.url()), config), 'The App opened a different project or timeline');
   onPhase('wait-for-track');
   const track = trackName(page);
-  await track.waitFor({ state: 'visible' });
+  await waitAt('wait-for-track', 'textbox[name="Track name"]', () => track.waitFor({ state: 'visible' }));
+  onPhase('wait-for-editor-card');
+  await waitAt('wait-for-editor-card', '[data-testid="runtime-not-connected"] detached',
+    () => page.getByTestId('runtime-not-connected').waitFor({ state: 'detached', timeout: PROMPT_TIMEOUT }));
   return track;
+}
+
+export function selectedEditorUrl(url, config) {
+  return url.origin === config.origin && url.pathname === '/tools/video-editor'
+    && url.searchParams.get('project') === config.projectId
+    && url.searchParams.get('timeline') === config.timelineId;
+}
+
+export async function clickAndObserveEditorNavigation(page, button, config, refusalSignal = null) {
+  // waitForNavigation is armed before the click and resolves at document commit.
+  // Do not require the App's incidental query parameters to match.
+  const navigation = waitAt('wait-for-r14-navigation', 'main-frame editor document commit',
+    () => page.waitForNavigation({ waitUntil: 'commit', timeout: PROMPT_TIMEOUT }))
+    .then((response) => ({ response }));
+  const outcome = refusalSignal
+    ? Promise.race([navigation, refusalSignal.then((refused) => refused || navigation)])
+    : navigation;
+  const [result] = await Promise.all([outcome, waitAt('click-guarded-reload', 'button[name="Reload"]',
+    () => button.click({ timeout: PROMPT_TIMEOUT, noWaitAfter: true }))]);
+  if (result.refused) return result;
+  const response = result.response;
+  check(response?.request()?.isNavigationRequest() && response.frame() === page.mainFrame()
+    && selectedEditorUrl(new URL(response.url()), config),
+    'The selected editor did not commit a main-frame document navigation');
+  return result;
 }
 
 async function editTrack(page, track, label) {
@@ -210,9 +257,6 @@ export async function author(page, config, { onQueuedAttempt, onPhase, newDocume
   page.on('requestfailed', onSaveFailure);
   try {
     const track = await openEditor(page, config, onPhase);
-    onPhase?.('wait-for-editor-card');
-    // The mounted field remains inert until the connection card has left.
-    await page.getByTestId('runtime-not-connected').waitFor({ state: 'detached', timeout: PROMPT_TIMEOUT });
     onPhase?.('accept-r13-edit');
     evidence.initialLabelMatches = await track.inputValue() === config.initialLabel;
     check(evidence.initialLabelMatches, 'R13 did not open the seeded composition');
@@ -312,7 +356,7 @@ async function notice(page, config) {
     .or(required.getByText('Run it yourself', { exact: true })).first();
   await reason.waitFor({ state: 'visible' });
   await action.waitFor({ state: 'visible' });
-  return { title: (await summary.innerText()).trim(), reason: (await reason.innerText()).trim(),
+  return { title: promptTitleFromSummary(await summary.innerText()), reason: (await reason.innerText()).trim(),
     action: (await action.innerText()).trim() };
 }
 
@@ -353,7 +397,10 @@ async function publication(page, context, browser, config, onPhase) {
     headers: { 'cache-control': 'no-store' },
   }));
   const requests = observeRequests(page, config.origin);
-  const authored = await author(page, config, { onPhase });
+  // The Runtime is still on R13 here. Keep the deliberately intercepted save
+  // held until this context closes so an injected disconnect cannot create a
+  // retry during the warm-tab observation.
+  const authored = await author(page, config, { onPhase, onQueuedAttempt: () => {} });
   await page.evaluate(() => { window.__astridFix17OriginalDocument = true; });
   const initialAttempt = requests.saveAttempts.length;
   published = true;
@@ -364,13 +411,14 @@ async function publication(page, context, browser, config, onPhase) {
     await tab.goto(config.origin + '/tools/video-editor', { waitUntil: 'domcontentloaded' });
     return { ...await visitReceipt(tab, config, 'fresh-visit', freshRequests), freshProfile: true };
   });
+  const retainedDraft = (await findDraft(page, { ...config, expectedDraft: authored.draft }))?.draft ?? null;
   const warm = {
     kind: 'already-open-edited-tab',
     sameDocument: await page.evaluate(() => window.__astridFix17OriginalDocument === true),
     initialManifestSha256: sha256(oldManifest),
     manifestResponseSha256: (await Promise.all(requests.manifestReads)).filter(Boolean),
     saveAttempts: requests.saveAttempts.slice(initialAttempt),
-    draft: (await findDraft(page, { ...config, expectedDraft: authored.draft }))?.draft ?? null,
+    draft: retainedDraft,
   };
   // The published R13 document caches the release status. The unchanged page
   // proves draft retention while the fresh R13 page proves the required prompt.
@@ -403,21 +451,23 @@ async function reopen(page, browser, config, onPhase) {
   });
   const track = await openEditor(page, config, onPhase);
   onPhase?.('read-prior-draft');
-  const original = await waitForDraft(page, config);
+  const original = await waitAt('read-prior-draft', 'astrid.command-outbox scoped pending request',
+    () => waitForDraft(page, config));
   pending = original.pending;
-  const label = await track.inputValue();
+  const label = await waitAt('read-selected-track-label', 'textbox[name="Track name"]',
+    () => track.inputValue({ timeout: PROMPT_TIMEOUT }));
   check(label === config.draftLabel || label === config.savedLabel, 'The App opened a different composition');
   const button = page.locator('[data-save-bar]').getByRole('button', { name: 'Try again', exact: true });
-  await button.waitFor({ state: 'visible', timeout: PROMPT_TIMEOUT });
+  const retrySelector = '[data-save-bar] button[name="Try again"]';
+  await waitAt('wait-for-retry-ready', retrySelector,
+    () => button.click({ trial: true, timeout: TIMEOUT }));
   onPhase?.('retry-prior-draft');
-  const accepted = page.waitForResponse((response) => allowed.has(response.request()),
-    { timeout: PROMPT_TIMEOUT }).catch(() => null);
+  const accepted = waitAt('wait-for-retry-response', 'response for the original queued request',
+    () => page.waitForResponse((response) => allowed.has(response.request()), { timeout: TIMEOUT }))
+    .then(async (response) => ({ response, body: await response.json() }));
   clicked = true;
-  await button.click();
-  const response = await accepted;
-  if (!response) return { status: 'fail', error: 'Try again sent no matching original queued request',
-    draft: original.draft, retry: { clicked }, saveAttempts: attempts };
-  const body = await response.json();
+  const [{ response, body }] = await Promise.all([accepted, waitAt('click-retry-prior-draft', retrySelector,
+    () => button.click({ timeout: PROMPT_TIMEOUT }))]);
   if (!response.ok() || body.data?.status !== 'accepted' || !body.data.accepted_revision_id
     || !body.receipt?.receipt_id || body.receipt.idempotency_key !== pending.key) {
     const code = typeof body.error?.code === 'string' && /^[a-zA-Z0-9_.-]{1,80}$/.test(body.error.code)
@@ -434,10 +484,12 @@ async function reopen(page, browser, config, onPhase) {
   }
   const retry = { clicked, name: 'Try again', responseStatus: response.status(), revision: body.data.accepted_revision_id,
     publication: body.receipt.receipt_id, removedFromQueue: true, idempotencyKeyMatches: true };
+  onPhase?.('fresh-r14-reopen');
   const reopenedLabel = await freshContext(browser, config, async (freshPage) => {
     await freshPage.route('**/*', (route) => commitPost(route.request()) ? route.abort('internetdisconnected') : route.continue());
-    const freshTrack = await openEditor(freshPage, config);
-    return freshTrack.inputValue();
+    const freshTrack = await openEditor(freshPage, config, (step) => onPhase?.('fresh-r14-' + step));
+    return waitAt('read-reopened-track-label', 'textbox[name="Track name"]',
+      () => freshTrack.inputValue({ timeout: PROMPT_TIMEOUT }));
   });
   return { status: reopenedLabel === config.draftLabel ? 'pass' : 'fail',
     draft: original.draft, beforeRetryLabel: label, reopenedLabel, draftVisible: reopenedLabel === config.draftLabel,
@@ -484,6 +536,7 @@ async function main() {
     const code = error?.name === 'TimeoutError' ? 'browser-timeout' : 'browser-operation-failed';
     const safe = typeof error?.message === 'string' && /^[a-zA-Z0-9 .'-]{1,175}$/.test(error.message);
     result = { status: 'fail', mode: config.mode, stage, error: safe ? error.message : code,
+      ...(error?.stalled ? { stalled: error.stalled } : {}),
       ...(error?.authorEvidence ? { author: { status: 'fail', mode: 'author', ...error.authorEvidence } } : {}) };
   }
   writeFileSync(config.result, JSON.stringify(result, null, 2) + '\n');

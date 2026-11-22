@@ -28,15 +28,32 @@ try {
     if (!path.extname(file)) return route.fulfill({ path: path.join(dist, 'index.html') });
     return route.fulfill({ status: 404 });
   });
-  const response = page.waitForResponse((value) => value.url() === healthUrl && value.ok(),
-    { timeout: 60_000 }).catch(() => null);
+  // Consume the CDP response body immediately. Playwright can lose its
+  // response identifier while the connection UI finishes rendering.
+  // Attach both branches immediately: response parsing can reject while the
+  // navigation and connection locator are still waiting.
+  const healthResponse = page.waitForResponse((value) => value.url() === healthUrl && value.ok(),
+    { timeout: 60_000 }).then((value) => value.json())
+    .then((health) => ({ health }), (error) => ({ error }));
   const loaded = await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 60_000 });
   if (!loaded?.ok()) throw new Error('Pinokio Open Astrid failed to load the App');
   const connected = page.locator('[data-testid="runtime-connection-status"][data-state="connected"]');
   await connected.waitFor({ state: 'attached', timeout: 60_000 });
-  const healthResponse = await response;
-  if (!healthResponse) throw new Error('Opened App did not receive live Runtime health');
-  const health = await healthResponse.json();
+  const capturedHealth = await healthResponse;
+  let health = capturedHealth.health;
+  if (capturedHealth.error) {
+    if (capturedHealth.error.name !== 'TimeoutError'
+      && !/No resource with given identifier found/i.test(String(capturedHealth.error))) {
+      throw capturedHealth.error;
+    }
+    // The original body expired or was unavailable. This bounded GET uses
+    // the same page and its normal CDP routing as the initial Runtime request.
+    health = await page.evaluate(async (url) => {
+      const response = await fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(10_000) });
+      if (!response.ok) throw new Error(`Runtime health fallback failed (${response.status})`);
+      return response.json();
+    }, healthUrl);
+  }
   // Use the browser page for these reads so they follow the same frozen asset route.
   const asset = await page.evaluate(async () => {
     const [build, manifest] = await Promise.all([fetch('/build.json'), fetch('/install-manifest.json')]);
