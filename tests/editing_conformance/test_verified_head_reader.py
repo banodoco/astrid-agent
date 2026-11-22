@@ -154,13 +154,15 @@ def test_capable_runtime_timeout_surfaces_without_fallback(wire):
 
 
 @pytest.mark.parametrize("damage", [
-    "project", "timeline", "head", "publication", "document-project", "document-timeline", "revision", "digest",
+    "envelope", "project", "timeline", "head", "publication", "document-project", "document-timeline", "revision", "digest",
 ])
 def test_capable_runtime_requires_exact_scope_pin_and_closure(wire, damage):
     connect, verified, calls = wire
     response = copy.deepcopy(verified)
     document = response["canonical_document"]
-    if damage == "project":
+    if damage == "envelope":
+        response = {"data": response, "receipt": None}
+    elif damage == "project":
         response["project_id"] = "foreign"
     elif damage == "timeline":
         response["timeline_id"] = "foreign"
