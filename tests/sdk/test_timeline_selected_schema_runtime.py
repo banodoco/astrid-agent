@@ -943,6 +943,7 @@ def test_native_provider_refuses_unavailable_or_wrong_retained_basis(retained_pa
         elif damage == 'legacy':
             for admission in content['admissions']:
                 del admission['snapshot_object']
+                admission.pop('compiled', None)
         updated = case.service.update_document(
             case.project, row['document_id'], {'expected_version': row['version'], 'content': content},
             idempotency_key='changed-admission')['data']

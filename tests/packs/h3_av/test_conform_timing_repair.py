@@ -411,10 +411,14 @@ def test_video_duplicate_packet_timestamps_are_rejected(monkeypatch, tmp_path: P
 def test_bounded_probe_discards_stderr_and_propagates_failure(monkeypatch, tmp_path: Path) -> None:
     from astrid.packs.h3_av.shared import conform
 
+    calls = []
+
     def failed_probe(*args, **kwargs):
+        calls.append(args[0])
         assert kwargs["stderr"] is subprocess.DEVNULL
         raise subprocess.CalledProcessError(1, args[0])
 
-    monkeypatch.setattr(conform.subprocess, "run", failed_probe)
+    monkeypatch.setattr(conform.subprocess, "Popen", failed_probe)
     with pytest.raises(PreparationError, match="cannot verify source video coverage"):
         conform._video_packet_end(tmp_path / "source.mkv", {"time_base": "1/1000"}, Fraction(0), Fraction(1))
+    assert len(calls) == 1

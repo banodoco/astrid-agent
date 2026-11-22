@@ -20,7 +20,7 @@ from runtime_protocol.util import new_id
 
 
 ROOT = Path(__file__).resolve().parents[1]
-RUNTIME_PIN = "8a18168a3e99226009aeaff71a84aeddd51283fa"
+RUNTIME_PIN = "0bb855c364285b15828bbc9cd99dd6389dc54b36"
 VIBECOMFY_PIN = "799d90f619a6723d0b376b7e77aef09c244a0821"
 RUNTIME_LONGEST_FILE = "diagnostics/readiness-auth/readiness-native21-66e943bd/authenticated-state.json"
 RUNTIME_LONGEST_DIRECTORY = "diagnostics/readiness-auth/readiness-native21-66e943bd"

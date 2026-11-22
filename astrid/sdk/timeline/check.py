@@ -232,6 +232,8 @@ class _CheckMixin:
 
     def _scene_problems(self, spans: list) -> list[str]:
         """Advisory scene findings, retaining cut addresses and deliberate-hold classification."""
+        from astrid.core.timeline.onscreen import Span
+
         warning_spans = self._scene_warning_spans(spans)
         sustained, incidental = self.empty_cuts(warning_spans)
         out = [f"picture {line}" for line in self.picture_gaps(warning_spans)]
@@ -240,8 +242,9 @@ class _CheckMixin:
             if span.cls not in {"UNKNOWN", "UNAVAILABLE"} and span.content != "UNKNOWN":
                 continue
             kind = span.cls if span.cls in {"UNKNOWN", "UNAVAILABLE"} else "CONTENT UNKNOWN"
+            findings = () if isinstance(span, Span) else span.findings
             out.append(f"scene   {kind} {span.start_frame / self.fps:.3f}–{span.end_frame / self.fps:.3f} s"
-                       + (f": {', '.join(span.findings)}" if span.findings else ""))
+                       + (f": {', '.join(findings)}" if findings else ""))
         return out
 
     def _managed_scene_spans(self: Checkout) -> list | None:

@@ -1014,8 +1014,12 @@ class Timeline(Checkout):
         if isinstance(document, Mapping):
             after_bundle = bundle_from_document(document)
             changes = []
-            for ref, before, after in _root_pairs(before_bundle, after_bundle):
-                _diff(_payload_for_emit(ref, before), _payload_for_emit(ref, after), ref, (), changes)
+            # Canonical reopening may replace local shot IDs (for example when
+            # a shared occurrence introduces aliases). The strict emitter needs
+            # matching identities; in that case disclose the semantic commands.
+            if before_bundle["shots"].keys() == after_bundle["shots"].keys():
+                for ref, before, after in _root_pairs(before_bundle, after_bundle):
+                    _diff(_payload_for_emit(ref, before), _payload_for_emit(ref, after), ref, (), changes)
             if not changes:
                 changes = [{"op": command["op"], "ref": command.get("select"),
                             "args": copy.deepcopy(command["args"])}

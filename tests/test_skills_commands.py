@@ -114,9 +114,16 @@ def _commands(text):
     code.extend(m[2] for m in re.finditer(r"(`+)(.*?)\1", "".join(prose), re.DOTALL))
     for snippet in code:
         for line in snippet.splitlines():
-            quoted = line.lstrip().startswith("'") and "' -m astrid" in line
-            if quoted or re.match(r"\s*python3? -m astrid\b", line):
-                yield line.strip().removesuffix("\\").rstrip()
+            line = line.strip().removesuffix("\\").rstrip()
+            quoted = line.startswith("'") and "' -m astrid" in line
+            launcher = re.search(r"\brun-astrid (timelines visualize\b.*)", line)
+            if launcher:
+                # The visualize skills use the installed launcher. Normalize that
+                # public spelling to the same clean-terminal Python invocation
+                # used by this check, so each documented command still gets help.
+                yield f"{shlex.quote(sys.executable)} -m astrid {launcher[1]}"
+            elif quoted or re.match(r"python3? -m astrid\b", line):
+                yield line
 
 
 @pytest.mark.parametrize("harness", ["claude", "codex", "hermes"])
@@ -153,7 +160,9 @@ def test_every_synced_command_has_help_in_a_clean_terminal(tmp_path, monkeypatch
     assert not (view / "packs/video_editing").is_symlink()
     assert (home / f".{harness}/skills/astrid").resolve() == view
     commands = [command for p in iter_markdown_files(view) for command in _commands(p.read_text())]
-    assert len(commands) >= 90
+    # Six complete launcher examples in the visualize skills raise the audited
+    # candidate inventory from 86 to 92; prose-only flag fragments are not commands.
+    assert len(commands) == 92
     assert not any("python3 -m astrid" in command for command in commands)
     record_property("commands_checked", len(commands))
     for command in commands:

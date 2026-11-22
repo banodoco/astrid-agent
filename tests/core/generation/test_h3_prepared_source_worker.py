@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import shutil
+import subprocess
+from types import SimpleNamespace
 
 import pytest
 
@@ -123,16 +126,34 @@ def test_h3_worker_refuses_managed_source_descriptor_mismatch(
 def test_h3_worker_trusts_sealed_measurement_without_probing_again(
     frozen_source: dict[str, object], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from astrid.packs.h3_av.shared.prepare import _validate_frozen_source
+    from astrid.packs.h3_av.shared import engine_facts, prepare
 
-    def unexpected_probe(*_args, **_kwargs):
-        pytest.fail("worker re-probed an already measured prepared source")
+    run = subprocess.run
+    calls = []
+    source_path = Path(frozen_source["source_path"])
+    expected_command = [shutil.which("ffprobe"), "-v", "error", "-select_streams", "v:0",
+                        "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x",
+                        str(source_path)]
+    expected_kwargs = {"check": True, "capture_output": True, "text": True, "timeout": 30}
 
-    monkeypatch.setattr("subprocess.run", unexpected_probe)
+    def geometry_probe(*args, **kwargs):
+        calls.append((args, kwargs))
+        assert args == (expected_command,)
+        assert kwargs == expected_kwargs
+        return run(*args, **kwargs)
+
+    def unexpected_measurement(*_args, **_kwargs):
+        pytest.fail("worker repeated decoded audio/video rate measurement")
+
+    monkeypatch.setattr(subprocess, "run", geometry_probe)
+    monkeypatch.setattr(prepare, "_check_source_av_rate", unexpected_measurement)
+    monkeypatch.setattr(engine_facts, "facts", lambda: SimpleNamespace(measure_source_av=unexpected_measurement))
     request = frozen_source["request"]
     source = request.value["media"][0]
-    result = _validate_frozen_source(request, source, Path(frozen_source["source_path"]),
-                                     frozen_source["envelope"])
+    canvas = request.value["canvas"]
+    result = prepare._validate_frozen_source(request, source, source_path, frozen_source["envelope"],
+                                             canvas=(canvas["width"], canvas["height"]))
+    assert calls == [((expected_command,), expected_kwargs)]
     assert result["decoded_av"] == frozen_source["conform"]["decoded_av"]
 
 
@@ -144,16 +165,17 @@ def test_controller_checks_conformed_source_rate_once(
     calls = []
     check = prepare._check_source_av_rate
 
-    def counted(asset, path):
-        calls.append(Path(path))
-        return check(asset, path)
+    def counted(asset, path, *, expected_size=None):
+        calls.append((Path(path), expected_size))
+        return check(asset, path, expected_size=expected_size)
 
     monkeypatch.setattr(prepare, "_check_source_av_rate", counted)
     monkeypatch.setattr(conform, "_check_source_av_rate", counted)
     prepare.prepare_request(frozen_source["request"], asset_map={"source": str(frozen_source["source"])},
                             out_dir=tmp_path / "second-controller-build")
     assert len(calls) == 1
-    assert calls[0].name == "source.mp4"
+    assert calls[0][0].name == "source.mp4"
+    assert calls[0][1] == (1024, 576)
 
 
 def test_h3_worker_build_consumes_frozen_source_without_reconforming(

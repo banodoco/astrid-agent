@@ -221,6 +221,22 @@ def test_raw_invalid_scale_marker_refused_before_render_normalization(marker):
     assert child == original
 
 
+@pytest.mark.parametrize('payload', [{}, {'config': None}, {'config': []}])
+def test_closure_rejects_missing_or_invalid_parent_config_without_inventing_it(payload):
+    from astrid.sdk.timeline._appearance import normalize_revision_closure
+    from astrid.sdk.timeline._command_state import CommandError
+
+    parent = {'payload': copy.deepcopy(payload)}
+    with pytest.raises(CommandError, match=r'parent payload\.config must be an object') as error:
+        normalize_revision_closure(parent, [])
+    assert error.value.to_json()['kind'] == 'invalid_revision'
+    assert error.value.to_json()['ref'] == 'parent'
+    assert error.value.to_json()['path'] == ['payload', 'config']
+    assert parent == {'payload': payload}
+    normalized, _, _ = normalize_revision_closure({'payload': {'config': {}}}, [])
+    assert normalized['payload']['config'] == {'clips': []}
+
+
 def test_rect_alias_is_exposed_before_normalization_for_parent_and_child():
     from astrid.sdk.timeline._appearance import normalize_revision_closure
     config = {'output': {'resolution': '1280x720', 'fps': 24, 'file': 'output.mp4'},
