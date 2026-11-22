@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import ast
 import io
+import os
 import subprocess
 import tokenize
 from bisect import bisect_right
@@ -102,21 +103,37 @@ def _functions(source: str) -> tuple[dict[str, list[int]], Counter[str]]:
     return functions, methods
 
 
-def compare(base: dict[str, str], head: dict[str, str]) -> list[str]:
+Source = str | bytes
+
+
+def _line_count(source: Source) -> int:
+    """Count physical lines without decoding Git blobs."""
+    return len(source.splitlines())
+
+
+def _python_source(source: Source) -> str:
+    """Decode Python source with the encoding declared by its source header."""
+    if isinstance(source, str):
+        return source
+    encoding, _ = tokenize.detect_encoding(io.BytesIO(source).readline)
+    return source.decode(encoding)
+
+
+def compare(base: dict[str, Source], head: dict[str, Source]) -> list[str]:
     errors: list[str] = []
-    old_host = len(base.get(HOST, "").splitlines())
-    new_host = len(head.get(HOST, "").splitlines())
+    old_host = _line_count(base.get(HOST, ""))
+    new_host = _line_count(head.get(HOST, ""))
     if new_host > old_host:
         errors.append(f"{HOST}: lines grew from {old_host} to {new_host}")
     for path, source in sorted(head.items()):
         old_source = base.get(path, "")
-        old_lines, new_lines = len(old_source.splitlines()), len(source.splitlines())
+        old_lines, new_lines = _line_count(old_source), _line_count(source)
         if new_lines > 1200 and old_lines <= 1200:
             errors.append(f"{path}: file newly exceeds 1200 lines ({new_lines})")
         if not path.endswith(".py"):
             continue
-        old_functions, old_methods = _functions(old_source)
-        new_functions, new_methods = _functions(source)
+        old_functions, old_methods = _functions(_python_source(old_source))
+        new_functions, new_methods = _functions(_python_source(source))
         if path == HOST:
             for name, count in sorted((new_methods - old_methods).items()):
                 errors.append(f"{HOST}: GenericPackHost added method {name} ({count})")
@@ -129,13 +146,27 @@ def compare(base: dict[str, str], head: dict[str, str]) -> list[str]:
     return errors
 
 
+def _git_bytes(*args: str) -> bytes:
+    return subprocess.run(["git", *args], cwd=ROOT, check=True, stdout=subprocess.PIPE).stdout
+
+
 def _git(*args: str) -> str:
-    return subprocess.run(["git", *args], cwd=ROOT, check=True, stdout=subprocess.PIPE).stdout.decode("utf-8")
+    return _git_bytes(*args).decode("utf-8")
 
 
-def sources(revision: str) -> dict[str, str]:
-    paths = _git("ls-tree", "-r", "--name-only", revision, "--", PACKAGE).splitlines()
-    return {path: _git("show", f"{revision}:{path}") for path in paths}
+def sources(revision: str) -> dict[str, bytes]:
+    entries = _git_bytes("ls-tree", "-r", "-z", revision, "--", PACKAGE).split(b"\0")
+    result: dict[str, bytes] = {}
+    for entry in entries:
+        if not entry:
+            continue
+        metadata, raw_path = entry.split(b"\t", 1)
+        _mode, object_type, object_id = metadata.split()
+        if object_type != b"blob":
+            continue
+        path = os.fsdecode(raw_path)
+        result[path] = _git_bytes("cat-file", "blob", object_id.decode("ascii"))
+    return result
 
 
 def main() -> int:
