@@ -99,6 +99,8 @@ else:
 
 SHA = re.compile(r"^[0-9a-f]{40}$")
 DIGEST = re.compile(r"^[0-9a-f]{64}$")
+HOSTED_UPDATE_COMPLETION = re.compile(
+    r"^(?:Astrid updated: Release \d+ → Release \d+|Astrid updated\. Reload to continue\.)$")
 ARTIFACTS = ("public/install", "public/install.sh", "public/install.ps1")
 RELEASE0_SUMS_SHA256 = "58221a50aa7940e3121d6239ddeb92d6409df3711096aac1161c7ec130b755c0"
 RELEASE9_APP_COMMIT = "546c91b7aaf90835445136eb6e93459385ffe21c"
@@ -328,6 +330,7 @@ def _hosted_button_errors(job_id, hosted):
     page = hosted.get("page") if isinstance(hosted.get("page"), dict) else {}
     request = hosted.get("request") if isinstance(hosted.get("request"), dict) else {}
     headers = request.get("headers")
+    live_result = page.get("live_result") if isinstance(page.get("live_result"), dict) else {}
     errors = []
     if hosted.get("driver") != "app-button" or page.get("offered") is not True or page.get("clicked") is not True:
         errors.append(f"{job_id}: hosted Update was not the page's Update now clicked in a browser")
@@ -335,6 +338,8 @@ def _hosted_button_errors(job_id, hosted):
         errors.append(f"{job_id}: the page did not read the stand-in release it offered")
     if not DIGEST.fullmatch(str(page.get("build_sha256", ""))):
         errors.append(f"{job_id}: the hosted App build identity is absent")
+    if not isinstance(live_result.get("text"), str) or not HOSTED_UPDATE_COMPLETION.fullmatch(live_result["text"]):
+        errors.append(f"{job_id}: hosted Update completion message is absent or unrecognized")
     if (not isinstance(headers, list) or "origin" not in headers
             or {"authorization", "cookie"} & set(headers)):
         errors.append(f"{job_id}: the page's Update request headers are absent or carry a credential")

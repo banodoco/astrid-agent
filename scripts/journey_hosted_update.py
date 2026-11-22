@@ -675,6 +675,7 @@ def door_origin(door_base: str) -> str:
 # The open page must show the finished update ("Astrid updated: Release N → Release M") this soon after the
 # status route reports it terminal, with no reload and no click from the journey (UR-15k).
 LIVE_RESULT_SECONDS = 30
+LIVE_RESULT_LINE = re.compile(r"^(?:Astrid updated: Release \d+ → Release \d+|Astrid updated\. Reload to continue\.)$")
 
 
 class LiveResult:
@@ -777,6 +778,8 @@ def live_result(live: "LiveResult", terminal_at: float) -> dict:
     if not seen or not isinstance(seen.get("seen_at"), (int, float)):
         raise RuntimeError("The open page never showed the update's result by itself: "
                            + str(final.get("live_error") or final.get("error") or "no result")[:400])
+    if not isinstance(seen.get("text"), str) or not LIVE_RESULT_LINE.fullmatch(seen["text"]):
+        raise RuntimeError("The open page showed an unrecognized update completion message")
     after = seen["seen_at"] / 1000 - terminal_at
     if after > LIVE_RESULT_SECONDS:
         raise RuntimeError(f"The open page showed the update's result {after:.0f}s after it finished, "

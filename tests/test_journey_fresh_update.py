@@ -16,7 +16,9 @@ HOSTED = {"route": "hosted-button", "request": {"method": "POST", "path": "/api/
 BUTTON = {**HOSTED, "driver": "app-button",
           "request": {**HOSTED["request"], "headers": ["accept", "content-length", "host", "origin", "user-agent"]},
           "page": {"entry": "/tools/video-editor?settings=updates", "offered": True, "clicked": True,
-                   "progress_shown": True, "build_sha256": "b" * 64, "served_manifest": 1}}
+                   "progress_shown": True, "build_sha256": "b" * 64, "served_manifest": 1,
+                   "live_result": {"text": "Astrid updated: Release 1 → Release 2", "seconds_after_terminal": 1,
+                                   "journey_reloads": 0, "page_navigations": 1}}}
 
 
 def test_standin_preserves_pins_and_canonical_bytes(tmp_path):
@@ -212,6 +214,20 @@ def test_only_the_fresh_linux_row_must_be_the_clicked_button():
 def test_the_button_receipt_needs_every_piece_of_the_click(change, message):
     errors = gate.fresh_update_errors("direct-linux-fresh", fresh_receipt({**BUTTON, **change}))
     assert any(message in error for error in errors), errors
+
+
+@pytest.mark.parametrize("message", ["Astrid updated: Release 1 → Release 2", "Astrid updated. Reload to continue."])
+def test_the_button_gate_accepts_the_versioned_and_release14_completion_messages(message):
+    receipt = fresh_receipt({**BUTTON, "page": {**BUTTON["page"], "live_result": {
+        "text": message, "seconds_after_terminal": 1, "journey_reloads": 0, "page_navigations": 1}}})
+    assert not gate.fresh_update_errors("direct-linux-fresh", receipt)
+
+
+def test_the_button_gate_rejects_unrecognized_completion_text():
+    hosted = {**BUTTON, "page": {**BUTTON["page"], "live_result": {
+        "text": "Update complete", "seconds_after_terminal": 1, "journey_reloads": 0, "page_navigations": 1}}}
+    assert any("completion message" in error for error in
+               gate.fresh_update_errors("direct-linux-fresh", fresh_receipt(hosted)))
 
 
 def test_the_linux_row_needs_the_hosted_build_and_macos_does_not(tmp_path, monkeypatch):
