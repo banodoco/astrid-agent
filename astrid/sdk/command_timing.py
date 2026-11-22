@@ -11,7 +11,7 @@ import time
 
 
 class TimingCollector:
-    def __init__(self, started=None, startup=None):
+    def __init__(self, started=None, startup=None, startup_child=None):
         self.timings = []
         self.next_occurrence_id = 1
         if started is None:
@@ -39,6 +39,21 @@ class TimingCollector:
                                      'occurrence_id': self.next_occurrence_id,
                                      'parent': None, 'parent_id': None})
                 self.next_occurrence_id += 1
+            if startup_child is not None:
+                child_name, child_start, child_end = startup_child
+                parent = next((row for row in self.timings if row['stage'] == "command dispatch"), None)
+                if parent is not None:
+                    child_seconds = max(0.0, child_end - child_start)
+                    parent['seconds'] = max(0.0, parent['seconds'] - child_seconds)
+                    self.timings.append({
+                        'stage': child_name,
+                        'seconds': child_seconds,
+                        'total_seconds': child_seconds,
+                        'occurrence_id': self.next_occurrence_id,
+                        'parent': parent['stage'],
+                        'parent_id': parent['occurrence_id'],
+                    })
+                    self.next_occurrence_id += 1
 
     def _advance(self, now):
         if self.active:
