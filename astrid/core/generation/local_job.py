@@ -26,6 +26,25 @@ class JobInputError(JobFileError):
     """An explicitly rejected public generation input."""
 
 
+class _CommandRegistry:
+    """Load the default registry at most once, and only when this command needs it."""
+
+    def __init__(self) -> None:
+        self._registry = None
+
+    def _get_registry(self):
+        if self._registry is None:
+            from astrid.core.model_catalog.registry import ModelRegistry
+            self._registry = ModelRegistry.load_default()
+        return self._registry
+
+    def get(self, entry_id):
+        return self._get_registry().get(entry_id)
+
+    def list_all(self, *args, **kwargs):
+        return self._get_registry().list_all(*args, **kwargs)
+
+
 def read_job(path: str | Path) -> dict[str, Any]:
     try:
         body = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -91,6 +110,7 @@ def _run_job(entry: str, job: dict[str, Any], out: str | Path, *, mode: str | No
     write_progress("prepare")
     if align is not None and align not in ALIGN_MODES:
         raise JobFileError(f"align must be one of {', '.join(ALIGN_MODES)}")
+    registry = _CommandRegistry()
     inputs = dict(job["inputs"])
     execution = job.get("execution")
     if execution is not None:
@@ -106,14 +126,14 @@ def _run_job(entry: str, job: dict[str, Any], out: str | Path, *, mode: str | No
         if not isinstance(bindings, dict):
             raise JobFileError("job entry bindings must be an object")
         return run_prepared_job(entry, inputs, execution, bindings, Path(out), task=task, attempt=attempt,
-                               mode=mode or job.get("mode"), align=align or job["align"])
+                               mode=mode or job.get("mode"), align=align or job["align"], registry=registry)
     if entry == "workflow":
         shipped = next((inputs.pop(name) for name in _WORKFLOW_INPUTS if name in inputs), None)
         if shipped is None:
             raise JobFileError("a workflow-file job must ship its workflow")
         workflow, named = Path(str(shipped)), None
     else:
-        described = entries.find_entry(entry)
+        described = entries.find_entry(entry, registry=registry)
         if described is None:
             raise JobFileError(f"entry {entry!r} is not available on this machine")
         workflow, named = entries.bundle_path(described), entry
@@ -127,4 +147,4 @@ def _run_job(entry: str, job: dict[str, Any], out: str | Path, *, mode: str | No
     if described is None:
         raise JobFileError(f"entry {entry!r} is not available on this machine")
     return run_named_entry(described, named, inputs, files, Path(out), task=task, attempt=attempt,
-                           mode=mode or job.get("mode"), align=align or job["align"])
+                           mode=mode or job.get("mode"), align=align or job["align"], registry=registry)

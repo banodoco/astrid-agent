@@ -92,7 +92,7 @@ def contributed_entries(*, exclude: Any = ()) -> list[dict[str, Any]]:
     return rows
 
 
-def _ready_entries_for(entry_id: str | None = None) -> list[dict[str, Any]]:
+def _ready_entries_for(entry_id: str | None = None, *, registry: Any = None) -> list[dict[str, Any]]:
     """Project repository metadata, leaving unclassified modes explicit."""
     try:
         # vibecomfy is an optional install (not in the wheel's runtime lock):
@@ -121,7 +121,7 @@ def _ready_entries_for(entry_id: str | None = None) -> list[dict[str, Any]]:
     from astrid.core.model_catalog.registry import ModelRegistry
     discovery = _discover_ready_templates(include_dynamic=False, include_json_references=False)
     catalog_by_template = {}
-    for model in ModelRegistry.load_default().list_all(include_closed=True):
+    for model in (registry if registry is not None else ModelRegistry.load_default()).list_all(include_closed=True):
         for mode, spec in model.modes.items():
             local = spec.backends.get('local')
             if local and local.template:
@@ -177,9 +177,8 @@ def _ready_entries_for(entry_id: str | None = None) -> list[dict[str, Any]]:
     return rows
 
 
-@lru_cache(maxsize=1)
-def ready_entries() -> list[dict[str, Any]]:
-    return _ready_entries_for()
+def ready_entries(*, registry: Any = None) -> list[dict[str, Any]]:
+    return _ready_entries_for(registry=registry) if registry is not None else _ready_entries_for()
 
 
 def action_entries(discovery: Any | None = None) -> list[dict[str, Any]]:
@@ -233,14 +232,15 @@ def bundle_path(entry: dict[str, Any]) -> Path:
     return path / 'workflow.py' if path.is_dir() else path
 
 
-def find_entry(entry_id: str) -> dict[str, Any] | None:
+def find_entry(entry_id: str, *, registry: Any = None) -> dict[str, Any] | None:
     matches = [entry for entry in user_entries() if entry['id'] == entry_id]
     actions = [entry for entry in action_entries() if entry['id'] == entry_id]
     if actions:
-        ready = _ready_entries_for(entry_id)
+        ready = (_ready_entries_for(entry_id, registry=registry) if registry is not None
+                 else _ready_entries_for(entry_id))
         from astrid.core.model_catalog.registry import ModelRegistry
         try:
-            ModelRegistry.load_default().get(entry_id)
+            (registry if registry is not None else ModelRegistry.load_default()).get(entry_id)
         except KeyError:
             catalog_match = False
         else:
@@ -252,7 +252,8 @@ def find_entry(entry_id: str) -> dict[str, Any] | None:
         raise ValueError(f'ambiguous workflow entry {entry_id!r}')
     if matches:
         return {**matches[0], 'source': 'user-entry'}
-    return next(iter(_ready_entries_for(entry_id)), None)
+    return next(iter(_ready_entries_for(entry_id, registry=registry) if registry is not None
+                     else _ready_entries_for(entry_id)), None)
 
 
 def _input_type(value: Any) -> str:
@@ -517,7 +518,7 @@ def _declared_inputs(entry: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 
 def describe_entry(entry_id: str, mode: str | None = None, *, registry: Any = None,
-                   _native: bool = False) -> dict[str, Any]:
+                   _native: bool = False, _ready_registry: Any = None) -> dict[str, Any]:
     """Project the shared entry contract using local declarations only.
 
     No target inventory, readiness checks, Runtime client, provider or installer
@@ -544,7 +545,8 @@ def describe_entry(entry_id: str, mode: str | None = None, *, registry: Any = No
         schemas = {name: [{**port, 'type': _input_type(port.get('type'))} for port in entry['inputs']]
                    for name in modes}
     elif users or catalog is None:
-        matches = users or _ready_entries_for(entry_id)
+        matches = users or (_ready_entries_for(entry_id, registry=_ready_registry) if _ready_registry is not None
+                            else _ready_entries_for(entry_id))
         if len(matches) != 1:
             raise ValueError(f'unknown generation entry {entry_id!r}')
         entry = {**matches[0], 'source': 'user-entry' if users else 'ready-template'}
@@ -785,8 +787,10 @@ def validate_inputs(description: dict[str, Any], inputs: Mapping[str, Any], *, r
 
 
 def resolve_entry_inputs(entry_id: str, inputs: Mapping[str, Any], *, mode: str | None = None,
-                         kind: str | None = None, registry: Any = None) -> tuple[dict[str, Any], dict[str, Any]]:
-    description = describe_entry(entry_id, mode=mode, registry=registry, _native=True)
+                         kind: str | None = None, registry: Any = None,
+                         _description: dict[str, Any] | None = None,
+                         _ready_registry: Any = None) -> tuple[dict[str, Any], dict[str, Any]]:
+    description = _description if _description is not None else describe_entry(entry_id, mode=mode, registry=registry, _native=True, _ready_registry=_ready_registry)
     if kind is not None and description['kind'] != kind:
         raise ValueError(f'entry {entry_id!r} does not support {kind}')
     if description['mode'] is None:
