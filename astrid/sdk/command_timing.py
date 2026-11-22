@@ -92,22 +92,46 @@ def current_timings():
 
 
 class TimingOutput:
-    """Enrich complete JSON objects as they are written, without buffering output."""
-    def __init__(self, stream, collector):
+    """Enrich complete JSON objects, optionally deferring successful output."""
+    def __init__(self, stream, collector, *, defer_success=False):
         self.stream, self.collector = stream, collector
+        self.defer_success = defer_success
+        self.pending = None
+
+    def _write_pending(self):
+        if self.pending is None:
+            return
+        value, terminator = self.pending
+        self.pending = None
+        value['timings'] = self.collector.snapshot()
+        self.stream.write(json.dumps(value, ensure_ascii=False) + terminator)
 
     def write(self, text):
+        if self.pending is not None:
+            if not text.strip('\r\n'):
+                value, terminator = self.pending
+                self.pending = (value, terminator + text)
+                return len(text)
+            self._write_pending()
         try:
             value = json.loads(text)
         except (ValueError, TypeError):
             return self.stream.write(text)
         if isinstance(value, dict):
+            if self.defer_success and value.get('ok') is True:
+                self.pending = (value, '')
+                return len(text)
             value['timings'] = self.collector.snapshot()
             text = json.dumps(value, ensure_ascii=False)
         return self.stream.write(text)
 
     def flush(self):
+        self._write_pending()
         return self.stream.flush()
+
+    def finalize(self):
+        """Write a deferred successful result at the end of command dispatch."""
+        self._write_pending()
 
     def __getattr__(self, name):
         return getattr(self.stream, name)

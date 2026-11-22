@@ -601,8 +601,12 @@ def _dispatch_product(args: list[str]) -> int:
     # Verification already owns a --timings flag; preserve its behavior.
     verify_timings = len(args) > 1 and ((args[1] == "check" and any(arg == "--at" or arg.startswith("--at=") for arg in args)) or (args[1] == "edit" and "--verify" in args))
     forwarded = args if verify_timings else [arg for arg in args if arg != "--timings"]
-    with timing_scope(collector), contextlib.redirect_stdout(TimingOutput(sys.stdout, collector)):
-        result = _dispatch_product_inner(forwarded)
+    output = TimingOutput(sys.stdout, collector, defer_success=True)
+    try:
+        with timing_scope(collector), contextlib.redirect_stdout(output):
+            result = _dispatch_product_inner(forwarded)
+    finally:
+        output.finalize()
     if show_timings:
         for item in collector.snapshot():
             print(f"{item['stage']}: {item['seconds']:.3f}s", file=sys.stderr)
