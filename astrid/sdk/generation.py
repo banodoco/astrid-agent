@@ -2261,10 +2261,21 @@ class GenerationFacade:
             ready_registry = _CommandRegistry()
             if options.get("project_root") is None and not options.get("extra_pack_roots", ()):
                 ready_registry._registry = registry
-            description = describe_entry(
-                entry, mode=options.get("mode"), registry=registry, _native=True,
-                _ready_registry=ready_registry,
+            # A subclass may implement a typed alias as its own public entry point.
+            # Keep its original discovery and dispatch contract intact.
+            has_overridden_alias = any(
+                getattr(type(self), name) is not getattr(GenerationFacade, name)
+                for name in ("image", "video", "audio")
             )
+            if has_overridden_alias:
+                description = describe_entry(
+                    entry, mode=options.get("mode"), registry=registry, _native=True,
+                )
+            else:
+                description = describe_entry(
+                    entry, mode=options.get("mode"), registry=registry, _native=True,
+                    _ready_registry=ready_registry,
+                )
             kind = description["kind"]
         except (KeyError, ValueError) as exc:
             raise CapabilityValidationError(str(exc)) from exc
