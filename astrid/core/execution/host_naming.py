@@ -231,38 +231,6 @@ def _named_raw_publication_port(task: Mapping[str, Any]) -> str | None:
     return port if isinstance(port, str) and port else None
 
 
-def _task_generation_intent(task: Mapping[str, Any]) -> Mapping[str, Any] | None:
-    intent = task.get("generation_intent")
-    # Named child effects are frozen by Runtime from the parent's policy.
-    # Reconstruct the host's existing selector view from that effect, not
-    # from the worker or from the ordering or media type of its outputs.
-    spec = task.get("spec")
-    source = spec.get("verified_publication_source") if isinstance(spec, Mapping) else None
-    effect = task.get("expected_effect")
-    if (not isinstance(spec, Mapping) or not isinstance(spec.get("delegated_parent"), Mapping)
-            or not isinstance(source, Mapping) or source.get("publication_name") not in {"raw", "final"}):
-        return intent if isinstance(intent, Mapping) else None
-    if (not isinstance(effect, Mapping) or effect.get("effect_type") != "generation.publish_v1"
-            or not isinstance(effect.get("payload"), Mapping)):
-        raise HostError("named publication has no admitted generation effect")
-    payload = effect["payload"]
-    groups = payload.get("groups")
-    if not isinstance(groups, list):
-        raise HostError("named publication effect has no selector groups")
-    from astrid.sdk.exceptions import CapabilityValidationError
-    from astrid.sdk.invocation import _validate_generation_intent
-    try:
-        projected = [{"group_key": group["group_key"], "selectors": [
-            {key: value for key, value in selector.items() if key != "output_port"}
-            for selector in group["selectors"]]} for group in groups]
-        if any(selector.get("output_port") != source.get("output_port")
-               for group in groups for selector in group["selectors"]):
-            raise HostError("named publication effect selects another port")
-        return _validate_generation_intent({"version": payload["version"], "modality": payload["modality"],
-            "partial_success_policy": payload["partial_success_policy"], "groups": projected},
-            modality=payload["modality"])
-    except (KeyError, TypeError, ValueError, CapabilityValidationError) as exc:
-        raise HostError("named publication effect has an invalid selector") from exc
 
 
 def _bind_named_parent_output(task: Mapping[str, Any], outputs: list[dict[str, Any]]) -> None:

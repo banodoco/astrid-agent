@@ -30,7 +30,7 @@ from astrid.core.execution.host_naming import (
     _RUNTIME_OUTPUT_NAMESPACES, _managed_input_staging_name, _managed_asset_identity,
     _settlement_media_type, _runtime_output_filename, _generation_output_port,
     _generation_selector_declarations as _naming_generation_selector_declarations,
-    _named_raw_publication_port, _task_generation_intent, _bind_named_parent_output,
+    _named_raw_publication_port, _bind_named_parent_output,
 )
 
 import argparse
@@ -17750,6 +17750,40 @@ def _log_cli_exit_failure(error: BaseException) -> None:
         )
     else:
         _LOGGER.error("generic host CLI exiting after failure: error_type=%s", error_type)
+
+
+def _task_generation_intent(task: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    intent = task.get("generation_intent")
+    # Named child effects are frozen by Runtime from the parent's policy.
+    # Reconstruct the host's existing selector view from that effect, not
+    # from the worker or from the ordering or media type of its outputs.
+    spec = task.get("spec")
+    source = spec.get("verified_publication_source") if isinstance(spec, Mapping) else None
+    effect = task.get("expected_effect")
+    if (not isinstance(spec, Mapping) or not isinstance(spec.get("delegated_parent"), Mapping)
+            or not isinstance(source, Mapping) or source.get("publication_name") not in {"raw", "final"}):
+        return intent if isinstance(intent, Mapping) else None
+    if (not isinstance(effect, Mapping) or effect.get("effect_type") != "generation.publish_v1"
+            or not isinstance(effect.get("payload"), Mapping)):
+        raise HostError("named publication has no admitted generation effect")
+    payload = effect["payload"]
+    groups = payload.get("groups")
+    if not isinstance(groups, list):
+        raise HostError("named publication effect has no selector groups")
+    from astrid.sdk.exceptions import CapabilityValidationError
+    from astrid.sdk.invocation import _validate_generation_intent
+    try:
+        projected = [{"group_key": group["group_key"], "selectors": [
+            {key: value for key, value in selector.items() if key != "output_port"}
+            for selector in group["selectors"]]} for group in groups]
+        if any(selector.get("output_port") != source.get("output_port")
+               for group in groups for selector in group["selectors"]):
+            raise HostError("named publication effect selects another port")
+        return _validate_generation_intent({"version": payload["version"], "modality": payload["modality"],
+            "partial_success_policy": payload["partial_success_policy"], "groups": projected},
+            modality=payload["modality"])
+    except (KeyError, TypeError, ValueError, CapabilityValidationError) as exc:
+        raise HostError("named publication effect has an invalid selector") from exc
 
 
 def _cli() -> int:
