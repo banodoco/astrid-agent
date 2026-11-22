@@ -3,8 +3,12 @@ from __future__ import annotations
 
 import argparse
 import ast
+import io
 import subprocess
+import tokenize
+from bisect import bisect_right
 from collections import Counter
+from itertools import islice
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -14,6 +18,31 @@ HOST = PACKAGE + "generic_host.py"
 
 def _functions(source: str) -> tuple[dict[str, list[int]], Counter[str]]:
     tree = ast.parse(source)
+    tokens = list(tokenize.generate_tokens(io.StringIO(source).readline))
+    lines = source.splitlines()
+    token_lines = [token.start[0] for token in tokens]
+
+    def span(node: ast.FunctionDef | ast.AsyncFunctionDef) -> int:
+        start = node.lineno
+        if node.decorator_list:
+            # The expression of a parenthesized decorator can begin after its @.
+            first = node.decorator_list[0].lineno
+            start = max(
+                token.start[0] for token in tokens
+                if token.type == tokenize.OP and token.string == "@"
+                and token.start[1] == node.col_offset and token.start[0] <= first
+            )
+        end = node.end_lineno
+        indent = len(lines[node.lineno - 1][:node.col_offset].expandtabs(8))
+        for token in islice(tokens, bisect_right(token_lines, end), None):
+            if token.type == tokenize.COMMENT:
+                comment_indent = len(token.line[:token.start[1]].expandtabs(8))
+                if comment_indent <= indent:
+                    break
+                end = token.start[0]
+            elif token.type not in (tokenize.NL, tokenize.NEWLINE, tokenize.INDENT, tokenize.DEDENT):
+                break
+        return end - start + 1
     functions: dict[str, list[int]] = {}
     methods: Counter[str] = Counter()
 
@@ -62,7 +91,7 @@ def _functions(source: str) -> tuple[dict[str, list[int]], Counter[str]]:
 
         def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
             name = ".".join([*self.scope, node.name])
-            functions.setdefault(name, []).append(node.end_lineno - node.lineno + 1)
+            functions.setdefault(name, []).append(span(node))
             self.scope.append(node.name)
             self.generic_visit(node)
             self.scope.pop()
