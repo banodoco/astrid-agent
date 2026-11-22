@@ -120,7 +120,7 @@ def test_policy_readiness_can_finish_after_thirty_seconds(case, tmp_path, monkey
 
     async def launch(config, *, name, **kwargs):
         allocated = await original_launch(config, name=name, **kwargs)
-        config.transport, config.https_token = "https", "fake-token"
+        config.transport = "https"
         return pod_module.Pod(allocated.id, name, config)
 
     def status(*_):
@@ -158,7 +158,7 @@ def _fresh_acquisition(tmp_path):
     preparation.write_target_record(path, attempt)
     config = SimpleNamespace(api_key="fake", gpu_type_candidates=("gpu",),
                              ram_tiers_enabled=False, storage_volumes=(), storage_name=None,
-                             network_volume_id=None, worker_image="fake-image")
+                             network_volume_id=None, worker_image="fake-image", terminate_after=None)
     kwargs = dict(handle_path=path, attempt=attempt, volume={"size": 0}, pod_id=None,
                   max_wait_seconds=600, capacity_window_seconds=60,
                   retry_interval_seconds=15, ready_timeout_seconds=1)
