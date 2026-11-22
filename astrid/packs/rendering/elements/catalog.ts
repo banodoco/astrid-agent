@@ -2006,6 +2006,148 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
     },
     "shortDescription": "Fade-through-black transition.",
     "source": "pack:rendering"
+  },
+  {
+    "componentPath": "packs/rendering/rendering/elements/transitions/slide-push/component.tsx",
+    "defaults": {
+      "durationFrames": 8
+    },
+    "description": "Slide-push transition that slides the incoming clip over the outgoing clip from the right.",
+    "id": "slide-push",
+    "keywords": [
+      "slide-push",
+      "transition",
+      "slide",
+      "push",
+      "right"
+    ],
+    "kind": "transition",
+    "label": "Slide Push",
+    "packId": "rendering",
+    "parameters": [
+      {
+        "default": 8,
+        "description": "",
+        "label": "Duration Frames",
+        "min": 1,
+        "name": "durationFrames",
+        "type": "number"
+      }
+    ],
+    "renderability": {
+      "browserExport": "blocked",
+      "preview": "supported",
+      "workerExport": "supported"
+    },
+    "revision": "sha256:206eb19b07baf6c8d8278aadec24192f277d5b7e2d02b49af31071ad2e4bda8c",
+    "runtime": {
+      "adapter": "remotion"
+    },
+    "schema": {
+      "properties": {
+        "durationFrames": {
+          "minimum": 1,
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "shortDescription": "Slide-push transition with the incoming clip entering from the right.",
+    "source": "pack:rendering"
+  },
+  {
+    "componentPath": "packs/rendering/rendering/elements/transitions/wipe/component.tsx",
+    "defaults": {
+      "durationFrames": 8
+    },
+    "description": "Wipe transition that reveals the incoming clip from left to right.",
+    "id": "wipe",
+    "keywords": [
+      "wipe",
+      "transition",
+      "reveal",
+      "left-to-right"
+    ],
+    "kind": "transition",
+    "label": "Wipe",
+    "packId": "rendering",
+    "parameters": [
+      {
+        "default": 8,
+        "description": "",
+        "label": "Duration Frames",
+        "min": 1,
+        "name": "durationFrames",
+        "type": "number"
+      }
+    ],
+    "renderability": {
+      "browserExport": "blocked",
+      "preview": "supported",
+      "workerExport": "supported"
+    },
+    "revision": "sha256:6c92bfcc45c8da4a065901c7b754289ee803de2a8a481b6a7a7fa984c2f21d08",
+    "runtime": {
+      "adapter": "remotion"
+    },
+    "schema": {
+      "properties": {
+        "durationFrames": {
+          "minimum": 1,
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "shortDescription": "Wipe transition revealing the incoming clip from left to right.",
+    "source": "pack:rendering"
+  },
+  {
+    "componentPath": "packs/rendering/rendering/elements/transitions/zoom-through/component.tsx",
+    "defaults": {
+      "durationFrames": 8
+    },
+    "description": "Zoom-through transition that scales the incoming clip from 1.12 while blending between clips.",
+    "id": "zoom-through",
+    "keywords": [
+      "zoom-through",
+      "transition",
+      "zoom",
+      "blend"
+    ],
+    "kind": "transition",
+    "label": "Zoom Through",
+    "packId": "rendering",
+    "parameters": [
+      {
+        "default": 8,
+        "description": "",
+        "label": "Duration Frames",
+        "min": 1,
+        "name": "durationFrames",
+        "type": "number"
+      }
+    ],
+    "renderability": {
+      "browserExport": "blocked",
+      "preview": "supported",
+      "workerExport": "supported"
+    },
+    "revision": "sha256:f94e5ab87b77b03a96527e9ac000ec582ae5788317e8fe29ace61d913ba210c9",
+    "runtime": {
+      "adapter": "remotion"
+    },
+    "schema": {
+      "properties": {
+        "durationFrames": {
+          "minimum": 1,
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "shortDescription": "Zoom-through transition scaling the incoming clip from 1.12 while blending.",
+    "source": "pack:rendering"
   }
 ]
 );

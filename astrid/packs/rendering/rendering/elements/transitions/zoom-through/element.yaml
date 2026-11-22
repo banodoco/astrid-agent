@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "defaults": {
+    "durationFrames": 8
+  },
+  "dependencies": {
+    "js_packages": [],
+    "python_requirements": []
+  },
+  "description": "Zoom-through transition that scales the incoming clip from 1.12 while blending between clips.",
+  "id": "zoom-through",
+  "keywords": [
+    "zoom-through",
+    "transition",
+    "zoom",
+    "blend"
+  ],
+  "kind": "transition",
+  "inputs": [
+    {
+      "name": "from_clip",
+      "type": "clip",
+      "required": true,
+      "artifact_type": "clip/visual"
+    },
+    {
+      "name": "to_clip",
+      "type": "clip",
+      "required": true,
+      "artifact_type": "clip/visual"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "clip",
+      "type": "clip",
+      "artifact_type": "clip/visual"
+    }
+  ],
+  "metadata": {
+    "label": "Zoom Through",
+    "pack_id": "rendering"
+  },
+  "pack_id": "rendering",
+  "runtime": {
+    "adapter": "remotion"
+  },
+  "schema": {
+    "properties": {
+      "durationFrames": {
+        "minimum": 1,
+        "type": "number"
+      }
+    },
+    "type": "object"
+  },
+  "short_description": "Zoom-through transition scaling the incoming clip from 1.12 while blending."
+}

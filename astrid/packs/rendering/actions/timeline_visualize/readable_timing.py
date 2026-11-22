@@ -13,7 +13,7 @@ import math
 
 from astrid.core.timeline.duration import clip_start_frame, clip_end_frame, clip_source_duration
 from .model import (ClipModel, IntervalFrames, IntervalSeconds, ModelExtents,
-                    TimelineInspectionModel, TrackModel, _transition_interval_maps)
+                    TimelineInspectionModel, TrackModel, _inspection_transition, _transition_interval_maps)
 
 _FIELDS = ("x", "y", "width", "height", "opacity")
 
@@ -90,13 +90,12 @@ def _schedule(context):
     raw_clips = _normalize_pinned_element_references({"clips": context["clips"]})["clips"]
     for row in raw_clips:
         frames = IntervalFrames(clip_start_frame(row, fps), clip_end_frame(row, fps), fps)
-        transition = row.get("transition")
-        transition = {"id": transition} if isinstance(transition, str) else transition
+        transition, legacy_incoming = _inspection_transition(row.get("transition"))
         clips.append(ClipModel(row["id"], row.get("track"),
                                IntervalSeconds(row["at"], row["at"] + clip_source_duration(row)),
                                frames, frames.as_seconds(), row.get("speed", 1),
-                               transition if isinstance(transition, Mapping) else None,
-                               None, row.get("clipType", "media")))
+                               transition, None, row.get("clipType", "media"),
+                               legacy_incoming_transition=legacy_incoming))
     clips.sort(key=lambda c: (str(c.track_id), c.authored.start))
     end = max((c.frames.end_frame for c in clips), default=1)
     model = TimelineInspectionModel("inspection", "inspection", None, fps, tracks, tuple(clips),
@@ -280,9 +279,10 @@ def project_readable_timing(clips, context=None):
                         except ValueError as exc:
                             unknowns.append(str(exc))
             for declaration in declarations:
-                if declaration["from_clip_id"] != timing["id"]:
+                if declaration.get("owner_clip_id", declaration["from_clip_id"]) != timing["id"]:
                     continue
                 record = dict(declaration)
+                record.pop("owner_clip_id", None)
                 record["from_target"] = identities.get(record["from_clip_id"], {"render_clip_id": record["from_clip_id"]})
                 record["to_target"] = identities.get(record["to_clip_id"], {"render_clip_id": record["to_clip_id"]})
                 if record["status"] == "resolved":

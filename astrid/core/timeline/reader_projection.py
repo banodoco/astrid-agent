@@ -171,8 +171,32 @@ def translate_media_selectors(
     return normalized_config, normalized_registry
 
 
-def normalize_legacy_reader_fields(config: dict[str, Any], registry: dict[str, Any]) -> None:
+def _normalize_legacy_transitions(config: dict[str, Any]) -> None:
+    from .legacy_elements import normalize_legacy_transition_id
+
+    clips = config.get("clips")
+    if isinstance(clips, list):
+        for clip in clips:
+            if not isinstance(clip, dict):
+                continue
+            transition = clip.get("transition")
+            if isinstance(transition, str):
+                clip["transition"] = normalize_legacy_transition_id(transition)
+            elif isinstance(transition, dict):
+                # The validator selects id over type, so normalize that same field.
+                field = "id" if "id" in transition else "type"
+                value = transition.get(field)
+                if isinstance(value, str):
+                    transition[field] = normalize_legacy_transition_id(value)
+
+
+def normalize_legacy_reader_fields(
+    config: dict[str, Any], registry: dict[str, Any], *, preserve_transition_ids: bool = False,
+) -> None:
     """Adapt detached reader copies and leave authored fields for exact comparison."""
+    if not preserve_transition_ids:
+        _normalize_legacy_transitions(config)
+
     tracks = config.get("tracks")
     if isinstance(tracks, list):
         for track in tracks:
@@ -190,13 +214,13 @@ def normalize_legacy_reader_fields(config: dict[str, Any], registry: dict[str, A
 def reader_view(config: Mapping[str, Any], registry: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     """Return what render reads from a projection, without importing the renderer.
 
-    Media selectors are translated, editor-only registry metadata is dropped,
-    and the ``rect`` placement alias becomes ordinary clip geometry. Anything
-    that cannot be normalized is left as written for the strict check.
+    Media selectors, legacy transition spelling, editor registry metadata,
+    and ``rect`` placement are translated for the strict reader check.
     """
     from .banodoco_schema import EDITOR_ASSET_METADATA_KEYS
 
     view_config, view_registry = translate_media_selectors(config, registry, strict=False)
+    _normalize_legacy_transitions(view_config)
     assets = view_registry.get("assets")
     if isinstance(assets, dict):
         for entry in assets.values():

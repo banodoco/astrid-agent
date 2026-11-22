@@ -77,7 +77,13 @@ def _check_collisions(roots: tuple[Path, ...], *, selected=None, verified_reloca
             validate_selected_pack_map(selected, verified_relocations=relocations)
         except (OSError, ValueError) as exc:
             raise ImportError(f"refusing astrid.packs: invalid verified relocation: {exc}") from exc
-    owners = {root.name: root for root in _core_pack_roots()}
+    # Keep the published namespace reservations as well as declared first-party
+    # pack IDs. If both inventories contain an ID, the importable namespace
+    # directory is the established owner for collision diagnostics and the
+    # verified relocation comparison.
+    owners = {name: _CORE_ROOT / name for name in _child_directory_names(_CORE_ROOT)}
+    for root in _core_pack_roots():
+        owners.setdefault(root.name, root)
     for root in roots:
         for name in _child_directory_names(root):
             path = root / name

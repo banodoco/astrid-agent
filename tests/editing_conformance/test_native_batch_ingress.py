@@ -36,6 +36,10 @@ class MemorySocket:
     def sendall(self, data):
         self.output.extend(data)
 
+    def send(self, data):
+        self.output.extend(data)
+        return len(data)
+
     def settimeout(self, timeout):
         pass
 

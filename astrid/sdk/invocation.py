@@ -1221,6 +1221,7 @@ def _render_reuse_toolchain_digest() -> str | None:
     remotion_parts = (
         "src", "public", "scripts", "patches", "package.json", "package-lock.json",
         "tsconfig.json", "remotion.config.ts", "webpack-alias.mjs",
+        "native-scene.mjs", "timeline-composition-legacy-loader.cjs",
         "stream-frames.ts", "pcm-aac-stitch.ts",
     )
     if any(not (remotion / part).exists() for part in remotion_parts):

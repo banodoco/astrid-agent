@@ -26,7 +26,14 @@ def isolated_home(tmp_path, monkeypatch):
 
 def _runtime_args(command):
     source = command[command.index("-c") + 1]
-    return ast.literal_eval(ast.parse(source).body[-1].value.args[0].args[0])
+    tree = ast.parse(source)
+    for statement in tree.body:
+        if isinstance(statement, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "_args"
+            for target in statement.targets
+        ):
+            return ast.literal_eval(statement.value)
+    raise AssertionError("service command does not assign Runtime arguments to _args")
 
 
 def _installation(tmp_path: Path, name: str = "v1") -> tuple[Path, Path, Version]:

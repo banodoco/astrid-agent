@@ -60,7 +60,8 @@ def host_project(tmp_path_factory, request):
     package = modules / "@banodoco/timeline-composition"
     package.parent.mkdir(parents=True)
     (project / "package").rename(package)
-    for name in ("scene-query.mjs", "native-scene.mjs", "webpack-alias.mjs", "package.json"):
+    for name in ("scene-query.mjs", "native-scene.mjs", "webpack-alias.mjs",
+                 "timeline-composition-legacy-loader.cjs", "package.json"):
         shutil.copyfile(REMOTION / name, project / name)
     for name in ("host-scene.ts", "host-registries.ts"):
         shutil.copyfile(REMOTION / "src" / name, project / "src" / name)

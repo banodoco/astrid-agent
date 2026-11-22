@@ -71,7 +71,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/system_stats":
             value = {"system": {"comfyui_version": "0.36.0"}, "devices": [{"vram_total": 24000, "vram_free": 20000}]}
         else:
-            value = {"MiniMaxH3ReferenceToVideo": {}, "VHS_VideoCombine": {}, "UNETLoader": {}, "VAELoader": {}}
+            value = {"MiniMaxH3ReferenceToVideo": {}, "VHS_VideoCombine": {}, "UNETLoader": {}, "VAELoader": {}, "Apply Whisper": {}}
         data = json.dumps(value).encode()
         self.send_response(200)
         self.send_header("Content-Length", str(len(data)))
