@@ -101,6 +101,42 @@ def test_child_audio_track_collision_uses_parent_visual_dispatch_without_gain_fa
     assert project_readable_timing([clip], context)[0]['timed_changes'] == []
 
 
+@pytest.mark.parametrize('identity', ['crossfade', 'wipe', 'slide-push', 'zoom-through'])
+def test_r13_transition_ids_are_readable_without_rewriting_authored_data(identity):
+    source = _clip('source', at=0, hold=2, kind='media')
+    destination = _clip('destination', at=2, hold=2, kind='media',
+                        transition={'type': identity, 'duration': .4})
+    authored = deepcopy(destination['authored_fields']['transition'])
+    first, second = _project([source, destination])
+    assert 'transition_projection' not in first
+    projection = second['transition_projection']
+    assert projection['status'] == 'resolved'
+    assert (projection['from_clip_id'], projection['to_clip_id']) == ('source', 'destination')
+    assert (projection['start_frame'], projection['end_frame']) == (48, 60)
+    assert second['timing_projection']['mounted']['start_frame'] == 48
+    assert second['timing_projection']['mounted']['end_frame'] == 120
+    assert second['authored_fields']['transition'] == destination['authored_fields']['transition'] == authored
+    assert projection['transition']['type'] == ('cross-fade' if identity == 'crossfade' else identity)
+
+
+def test_r13_unknown_transition_spelling_remains_unresolved():
+    source = _clip('source', at=0, hold=2, kind='media', transition={'type': 'crossfadee', 'duration': .4})
+    destination = _clip('destination', at=1.6, hold=2, kind='media')
+    result = _project([source, destination])
+    assert result[0]['transition_projection']['status'] == 'unresolved'
+    assert "unknown transition id 'crossfadee'" in result[0]['transition_projection']['reason']
+
+
+def test_r13_first_clip_still_applies_transition_on_its_own_frames():
+    first = _clip('first', at=0, hold=2, kind='media', transition={'type': 'zoom-through', 'duration': .4})
+    alone = _project([first])[0]
+    projection = alone['transition_projection']
+    assert projection['transition']['type'] == 'zoom-through'
+    assert projection['status'] == 'resolved' and projection['from_clip_id'] is None
+    assert (projection['start_frame'], projection['end_frame']) == (0, 12)
+    assert alone['timing_projection']['mounted']['end_frame'] == 60
+
+
 @pytest.mark.parametrize('muted, volume, expected_gain', [(False, .4, .2), (True, .4, 0), (False, -2, 0)])
 def test_parent_audio_dispatch_overrides_child_visual_contract_and_inherits_gain(muted, volume, expected_gain):
     clip = _clip(kind='media', volume=.5, params={'fadeIn': .5}, effects={'fade_in': 2})

@@ -62,10 +62,16 @@ def expand_shot_clips(
     # The legacy expander cannot carry child track groups. Normalize the
     # source copy first, then refuse children whose context would be lost.
     config = deepcopy(dict(config))
+    source_tracks = config.get("tracks")
     normalized = normalize_for_read(config, parent_canvas=True)
-    if normalized['findings']:
-        _LOGGER.warning('Parent placement migrations: %s', normalized['findings'])
+    findings = normalized['findings']
+    if findings:
+        _LOGGER.warning('Parent placement migrations: %s', findings)
     config = normalized['config']
+    # Legacy results retain authored track rows when normalization only adds
+    # bookkeeping. A baked transform still needs its normalization marker.
+    if source_tracks is not None and all(finding.get('kind') in {'canvas', 'markers'} for finding in findings):
+        config["tracks"] = source_tracks
     raw_clips = config.get("clips", [])
     if not isinstance(raw_clips, list):
         raise ShotExpansionError("timeline clips must be a list")
@@ -167,21 +173,25 @@ def expand_shot_clips(
 
         sub_config = deepcopy(dict(sub_config))
         sub_config, _ = canonicalize_rect_aliases(sub_config)
+        child_tracks = sub_config.get('tracks', [])
         normalized = package_query({'operation': 'normalize', 'config': sub_config})
-        if normalized['findings']:
-            _LOGGER.warning('Shot %s placement migrations: %s', clip.get('id', '?'), normalized['findings'])
+        findings = normalized['findings']
+        if findings:
+            _LOGGER.warning('Shot %s placement migrations: %s', clip.get('id', '?'), findings)
         sub_config = normalized['config']
-        if not any(finding.get('kind') == 'canvas-not-required' for finding in normalized['findings']):
+        child_has_no_canvas = any(finding.get('kind') == 'canvas-not-required' for finding in findings)
+        if not child_has_no_canvas:
             canvas(sub_config, f"shot {clip.get('id', '?')}")
         raw_sub_clips = sub_config.get("clips", [])
-        has_visual_track = any(
+        loses_child_track_context = any(
             isinstance(track, Mapping) and track.get('kind') == 'visual'
-            for track in sub_config.get('tracks', [])
+            and (not child_has_no_canvas or set(track) - {'id', 'kind', 'label'})
+            for track in child_tracks
         )
         for source_clip in raw_sub_clips if isinstance(raw_sub_clips, list) else []:
             if (isinstance(source_clip, Mapping)
                     and source_clip.get('clipType', 'media') in ('media', 'image', 'video')
-                    and has_visual_track):
+                    and loses_child_track_context):
                 raise ShotExpansionError(
                     f"Shot clip {clip.get('id', '?')} child clip {source_clip.get('id', '?')} "
                     "property track cannot be preserved by legacy expansion"

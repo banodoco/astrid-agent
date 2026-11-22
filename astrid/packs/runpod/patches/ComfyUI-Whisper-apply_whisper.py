@@ -1,7 +1,7 @@
 import whisper
 import os
+import tempfile
 import folder_paths
-import uuid
 import torch
 import logging
 import hashlib
@@ -125,75 +125,83 @@ class ApplyWhisperNode:
         # save audio bytes from VHS to file
         temp_dir = folder_paths.get_temp_directory()
         os.makedirs(temp_dir, exist_ok=True)
-        audio_save_path = os.path.join(temp_dir, f"{uuid.uuid1()}.wav")
-        waveform = audio['waveform'].squeeze(0).cpu().numpy()
+        temp_file = tempfile.NamedTemporaryFile(suffix=".wav", dir=temp_dir, delete=False)
+        audio_save_path = temp_file.name
+        temp_file.close()
+        try:
+            waveform = audio['waveform'].squeeze(0).cpu().numpy()
 
-        if waveform.ndim == 2:
-            waveform = waveform.T
+            if waveform.ndim == 2:
+                waveform = waveform.T
 
-        soundfile.write(
-            audio_save_path,
-            waveform,
-            int(audio["sample_rate"])
-        )
-
-        cache_key = model
-        if cache_key not in WHISPER_PATCHER_CACHE:
-            load_device = mm.get_torch_device()
-            # Astrid provisions the locked model under this exact Comfy root.
-            # Ignore alternate folder mappings so a different file cannot be
-            # selected and the upstream loader cannot initiate a download.
-            download_root = os.path.join(folder_paths.models_dir, WHISPER_MODEL_SUBDIR)
-
-            logger.info(f"Creating Whisper ModelPatcher for {model} on device {load_device}")
-
-            model_wrapper = WhisperModelWrapper(model, download_root)
-            patcher = WhisperPatcher(
-                model=model_wrapper,
-                load_device=load_device,
-                offload_device=mm.unet_offload_device(),
-                size=0  # Will be set when model loads
+            soundfile.write(
+                audio_save_path,
+                waveform,
+                int(audio["sample_rate"])
             )
-            WHISPER_PATCHER_CACHE[cache_key] = patcher
 
-        patcher = WHISPER_PATCHER_CACHE[cache_key]
+            cache_key = model
+            if cache_key not in WHISPER_PATCHER_CACHE:
+                load_device = mm.get_torch_device()
+                # Astrid provisions the locked model under this exact Comfy root.
+                # Ignore alternate folder mappings so a different file cannot be
+                # selected and the upstream loader cannot initiate a download.
+                download_root = os.path.join(folder_paths.models_dir, WHISPER_MODEL_SUBDIR)
 
-        mm.load_model_gpu(patcher)
-        whisper_model = patcher.model.whisper_model
+                logger.info(f"Creating Whisper ModelPatcher for {model} on device {load_device}")
 
-        if whisper_model is None:
-            logger.error("Whisper model failed to load. Please check logs for errors.")
-            raise RuntimeError(f"Failed to load Whisper model: {model}")
+                model_wrapper = WhisperModelWrapper(model, download_root)
+                patcher = WhisperPatcher(
+                    model=model_wrapper,
+                    load_device=load_device,
+                    offload_device=mm.unet_offload_device(),
+                    size=0  # Will be set when model loads
+                )
+                WHISPER_PATCHER_CACHE[cache_key] = patcher
 
-        transcribe_args = {"initial_prompt": prompt}
+            patcher = WHISPER_PATCHER_CACHE[cache_key]
 
-        if language != "auto":
-            if ApplyWhisperNode.languages_by_name is None:
-                ApplyWhisperNode.languages_by_name = {v.lower(): k for k, v in whisper.tokenizer.LANGUAGES.items()}
-            transcribe_args['language'] = ApplyWhisperNode.languages_by_name[language.lower()]
+            mm.load_model_gpu(patcher)
+            whisper_model = patcher.model.whisper_model
 
-        result = whisper_model.transcribe(audio_save_path, word_timestamps=True, **transcribe_args)
+            if whisper_model is None:
+                logger.error("Whisper model failed to load. Please check logs for errors.")
+                raise RuntimeError(f"Failed to load Whisper model: {model}")
 
-        segments = result['segments']
-        segments_alignment = []
-        words_alignment = []
+            transcribe_args = {"initial_prompt": prompt}
 
-        for segment in segments:
-            # create segment alignments
-            segment_dict = {
-                'value': segment['text'].strip(),
-                'start': segment['start'],
-                'end': segment['end']
-            }
-            segments_alignment.append(segment_dict)
+            if language != "auto":
+                if ApplyWhisperNode.languages_by_name is None:
+                    ApplyWhisperNode.languages_by_name = {v.lower(): k for k, v in whisper.tokenizer.LANGUAGES.items()}
+                transcribe_args['language'] = ApplyWhisperNode.languages_by_name[language.lower()]
 
-            # create word alignments
-            for word in segment["words"]:
-                word_dict = {
-                    'value': word["word"].strip(),
-                    'start': word["start"],
-                    'end': word['end']
+            result = whisper_model.transcribe(audio_save_path, word_timestamps=True, **transcribe_args)
+
+            segments = result['segments']
+            segments_alignment = []
+            words_alignment = []
+
+            for segment in segments:
+                # create segment alignments
+                segment_dict = {
+                    'value': segment['text'].strip(),
+                    'start': segment['start'],
+                    'end': segment['end']
                 }
-                words_alignment.append(word_dict)
+                segments_alignment.append(segment_dict)
 
-        return (result["text"].strip(), segments_alignment, words_alignment)
+                # create word alignments
+                for word in segment["words"]:
+                    word_dict = {
+                        'value': word["word"].strip(),
+                        'start': word["start"],
+                        'end': word['end']
+                    }
+                    words_alignment.append(word_dict)
+
+            return (result["text"].strip(), segments_alignment, words_alignment)
+        finally:
+            try:
+                os.unlink(audio_save_path)
+            except FileNotFoundError:
+                pass

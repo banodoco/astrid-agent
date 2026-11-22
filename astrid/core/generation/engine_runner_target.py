@@ -14,6 +14,7 @@ import re
 import shutil
 import sys
 import tomllib
+from urllib.request import urlopen
 from pathlib import Path
 
 from . import engine_recipe as recipes
@@ -26,11 +27,29 @@ from .engine_contracts import (
 from .engine_runner import _HELPER_SCHEMA, _json, _object_info_sha256, _root, _sha, helper_manifest
 
 _OPERATIONS = {"identity", "empty-source", "node-lock", "lock-inputs", "commit-lock",
+               "stage-whisper-artifacts",
                "install-locks", "environment-spec", "cleanup-legacy-model-links",
                "declared-source-modifications", "apply-source-patches", "verify-source-patches",
                "reset-environment"}
 _ENV_OPERATIONS = {"node-lock", "lock-inputs", "commit-lock", "install-locks", "environment-spec",
+                   "stage-whisper-artifacts",
                    "reset-environment"}
+
+# Audited from https://pypi.org/pypi/openai-whisper/20250625/json. Keep the
+# sdist URL and digest together so resolution cannot choose another artifact.
+_WHISPER_SDIST = ("openai-whisper @ https://files.pythonhosted.org/packages/35/8e/"
+                  "d36f8880bcf18ec026a55807d02fe4c7357da9f25aebd92f85178000c0dc/"
+                  "openai_whisper-20250625.tar.gz#sha256="
+                  "37a91a3921809d9f44748ffc73c0a55c9f366c85a3ef5c2ae0cc09540432eb96")
+_WHISPER_BUILD_CONSTRAINTS = ("setuptools @ https://files.pythonhosted.org/packages/95/9c/"
+                              "c510029fc6ef33a6275cd2c5d3cecd6613dfd6aa401d57c54f1c18852ccf/"
+                              "setuptools-84.0.0-py3-none-any.whl#sha256="
+                              "51a52592b3b99e102b609654876bd65f19f999935166d1352678931132b0c670\n")
+_WHISPER_SDIST_URL = _WHISPER_SDIST.split(" @ ", 1)[1].split("#", 1)[0]
+_WHISPER_SDIST_SHA256 = _WHISPER_SDIST.rsplit("=", 1)[1]
+_WHISPER_WHEEL_URL = ("https://files.pythonhosted.org/packages/95/9c/c510029fc6ef33a6275cd2c5d3cecd6613dfd6aa401d57c54f1c18852ccf/"
+                      "setuptools-84.0.0-py3-none-any.whl")
+_WHISPER_WHEEL_SHA256 = _WHISPER_BUILD_CONSTRAINTS.rsplit("=", 1)[1].splitlines()[0]
 
 
 def _models_base(root, models_root):
@@ -87,6 +106,11 @@ def _hash(path):
     return digest.hexdigest()
 
 
+def _verify_digest(path, expected):
+    if not path.is_file() or _hash(path) != expected:
+        raise IntegrityError("pinned Whisper artifact hash mismatch")
+
+
 def _health_facts(health, object_info, required_nodes):
     """Pure evidence projection for A2 AFTER owned same-origin HTTP probes.
 
@@ -126,6 +150,58 @@ def _entries(text):
         result.append((requirement, hashes, value))
     if pending or not result:
         raise IntegrityError("requirements lock is empty or incomplete")
+    return result
+
+
+def _canonicalize_whisper_lock(text):
+    """Replace uv's staged local source reference with the portable pinned identity."""
+    lines = text.splitlines()
+    entries, spans = [], []
+    start, pending = None, ""
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if start is None:
+            start = index
+        pending += " " + stripped.removesuffix("\\").strip()
+        if stripped.endswith("\\"):
+            continue
+        entries.append(pending.strip())
+        spans.append((start, index))
+        start, pending = None, ""
+    if start is not None:
+        raise IntegrityError("requirements lock is empty or incomplete")
+
+    whisper = [(i, entry) for i, entry in enumerate(entries)
+               if re.match(r"openai[-_]whisper\s*(?:@|==)", entry, re.I)]
+    if len(whisper) != 1:
+        raise IntegrityError("compiled lock lacks the pinned Whisper entry")
+    entry_index, entry = whisper[0]
+    parsed = _entries(entry)
+    if len(parsed) != 1:
+        raise IntegrityError("compiled lock has an invalid Whisper entry")
+    _, hashes, _ = parsed[0]
+    source = re.search(r"^openai[-_]whisper\s*@\s*(\S+)", entry, re.I)
+    expected_local = re.compile(r"^file:///.+openai_whisper-20250625\.tar\.gz#sha256=([0-9a-f]{64})$", re.I)
+    local = expected_local.fullmatch(source.group(1)) if source else None
+    if (not local or local.group(1).lower() != _WHISPER_SDIST_SHA256
+            or hashes != [_WHISPER_SDIST_SHA256]):
+        raise IntegrityError("compiled lock has an altered Whisper source or hash")
+    first, last = spans[entry_index]
+    lines[first:last + 1] = [_WHISPER_SDIST + " --hash=sha256:" + _WHISPER_SDIST_SHA256]
+    result = "\n".join(lines) + "\n"
+    final_entries = _entries(result)
+    names = []
+    for requirement, _, _ in final_entries:
+        match = re.match(r"^([A-Za-z0-9][A-Za-z0-9._-]*)", requirement)
+        if not match:
+            raise IntegrityError("portable Whisper lock contains an invalid requirement")
+        names.append(match.group(1).lower().replace("_", "-").replace(".", "-"))
+    if len(names) != len(set(names)):
+        raise IntegrityError("portable Whisper lock contains duplicate requirements")
+    if re.search(r"(?im)^\s*\S+\s*@\s*(?:file:|[A-Za-z]:[\\/]|/)", result):
+        raise IntegrityError("portable Whisper lock contains a local path")
     return result
 
 
@@ -284,7 +360,14 @@ def dispatch(operation, payload):
     if not isinstance(payload, dict) or set(payload) != keys or payload["schema"] != _HELPER_SCHEMA:
         raise RecipeValidationError("invalid engine helper request")
     recipe = recipes.load_recipe(payload["engine"], payload["platform"])
-    if not recipe.platform.startswith("linux-"):
+    windows_whisper_operations = {
+        "lock-inputs", "commit-lock", "install-locks", "stage-whisper-artifacts"
+    }
+    windows_whisper = (
+        recipe.platform == "windows-x86_64-cu130" and recipe.engine == "comfyui"
+        and operation in windows_whisper_operations
+    )
+    if not recipe.platform.startswith("linux-") and not windows_whisper:
         raise RecipeValidationError("Linux helper requires a Linux recipe")
     digest = _sha(helper_manifest(recipe))
     if payload["recipe_sha256"] != recipes.recipe_digest(recipe) or payload["helper_sha256"] != digest:
@@ -412,6 +495,10 @@ def dispatch(operation, payload):
                 _atomic(_safe(root, str(directory.relative_to(root)), "requirements.lock.tmp"), data)
             else:
                 lines = list(req.constraints)
+                if (recipe.engine == "comfyui" and recipe.platform == "windows-x86_64-cu130"
+                        and req.mode == "resolve-once"):
+                    lines = [line for line in lines if not line.lower().startswith("openai-whisper==")]
+                    lines.append(_WHISPER_SDIST)
                 lines += [f"{w.name} @ {w.url}" for w in environment.final_wheels]
                 for source_path in req.input_paths:
                     source = next(s for s in recipe.sources if s.name == source_path.source)
@@ -422,6 +509,10 @@ def dispatch(operation, payload):
                         lines += tomllib.loads(path.read_text()).get("build-system", {}).get("requires", [])
                 _atomic(_safe(root, str(directory.relative_to(root)), "requirements.in"),
                         ("\n".join(lines) + "\n").encode())
+        if (recipe.engine == "comfyui" and recipe.platform == "windows-x86_64-cu130"
+                and environment.requirements.mode == "resolve-once"):
+            _atomic(_safe(root, str(directory.relative_to(root)), "whisper-build-constraints.lock"),
+                    _WHISPER_BUILD_CONSTRAINTS.encode())
         facts = {"lock_exists": lock.exists()}
     elif operation == "commit-lock":
         directory, lock = _paths(root, environment)
@@ -429,7 +520,15 @@ def dispatch(operation, payload):
             _validate_lock(recipe, environment, root)
         else:
             temporary = _safe(root, str(directory.relative_to(root)), "requirements.lock.tmp")
-            payload_bytes = temporary.read_bytes()
+            payload_text = temporary.read_text(encoding="utf-8")
+            if recipe.engine == "comfyui" and recipe.platform == "windows-x86_64-cu130" and environment.requirements.mode == "resolve-once":
+                path = _safe(root, str(directory.relative_to(root)), "whisper-artifacts", "openai_whisper-20250625.tar.gz")
+                _verify_digest(path, _WHISPER_SDIST_SHA256)
+                payload_text = _canonicalize_whisper_lock(payload_text)
+                payload_bytes = payload_text.encode()
+                _atomic(temporary, payload_bytes)
+            else:
+                payload_bytes = temporary.read_bytes()
             _entries(payload_bytes.decode())
             if environment.requirements.mode == "packaged" and hashlib.sha256(payload_bytes).hexdigest() != environment.requirements.packaged_lock.sha256:
                 raise IntegrityError("packaged requirements lock mismatch")
@@ -443,6 +542,52 @@ def dispatch(operation, payload):
                                         digest=hashlib.sha256(payload_bytes).hexdigest())).encode())
             _atomic(lock, payload_bytes)
         facts = {"requirements_lock_sha256": _hash(lock)}
+    elif operation == "stage-whisper-artifacts":
+        if not (recipe.engine == "comfyui" and recipe.platform == "windows-x86_64-cu130"
+                and environment.requirements.mode == "resolve-once"):
+            raise RecipeValidationError("Whisper artifact staging is Windows resolve-once only")
+        directory = _safe(root, ".astrid-engine", "environments", environment.name)
+        directory.mkdir(parents=True, exist_ok=True)
+        artifacts_dir = _safe(root, str(directory.relative_to(root)), "whisper-artifacts")
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+        artifacts = (("openai_whisper-20250625.tar.gz", _WHISPER_SDIST_URL, _WHISPER_SDIST_SHA256),
+                     ("setuptools-84.0.0-py3-none-any.whl", _WHISPER_WHEEL_URL, _WHISPER_WHEEL_SHA256))
+        staged = []
+        for filename, url, expected in artifacts:
+            path = _safe(root, str(directory.relative_to(root)), "whisper-artifacts", filename)
+            try:
+                _verify_digest(path, expected)
+            except IntegrityError:
+                temporary = path.with_name(path.name + ".download")
+                if temporary.is_symlink():
+                    raise UnsafePathError("unsafe Whisper artifact temporary file")
+                digest = hashlib.sha256()
+                try:
+                    with urlopen(url, timeout=30) as response, temporary.open("wb") as output:
+                        while True:
+                            chunk = response.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            digest.update(chunk)
+                            output.write(chunk)
+                        output.flush()
+                        os.fsync(output.fileno())
+                    if digest.hexdigest() != expected:
+                        raise IntegrityError("pinned Whisper artifact hash mismatch")
+                    temporary.replace(path)
+                finally:
+                    if temporary.exists():
+                        temporary.unlink()
+            staged.append(path)
+        sdist, wheel = staged
+        requirements = _safe(root, str(directory.relative_to(root)), "requirements.in")
+        original = requirements.read_text(encoding="utf-8").splitlines()
+        original = [line for line in original if not line.lower().startswith("openai-whisper")]
+        original.append(f"openai-whisper @ {sdist.as_uri()}#sha256={_WHISPER_SDIST_SHA256}")
+        _atomic(requirements, ("\n".join(original) + "\n").encode())
+        local_constraint = _safe(root, str(directory.relative_to(root)), "whisper-compile-build-constraints.txt")
+        _atomic(local_constraint, (f"setuptools @ {wheel.as_uri()}#sha256={_WHISPER_WHEEL_SHA256}\n").encode())
+        facts = {"sdist_sha256": _hash(sdist), "setuptools_sha256": _hash(wheel)}
     elif operation == "install-locks":
         directory, lock = _validate_lock(recipe, environment, root)
         entries = _entries(lock.read_text())

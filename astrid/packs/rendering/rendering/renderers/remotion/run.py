@@ -647,6 +647,15 @@ def _resolve_timeline_element_references(
     if registry is None:
         del theme_path
         registry = _load_render_element_registry()
+    # Release 13's editor persisted these built-in animation phases directly
+    # into timeline clips. They are renderer-owned references, not contributed
+    # Agent elements, so the R14 catalog lookup below is not their authority.
+    # Keep the allowlist explicit and keep every other unknown id fail-closed.
+    from astrid.core.timeline.legacy_elements import (
+        LEGACY_PHASE_EFFECT_IDS,
+        normalize_legacy_transition_id,
+    )
+
     clips = timeline_data.get("clips")
     if not isinstance(clips, list):
         return {"animations": [], "transitions": []}
@@ -673,17 +682,26 @@ def _resolve_timeline_element_references(
             ("animations", "animations"),
             ("transition", "transitions"),
         ):
-            for element_id in _element_reference_ids(clip.get(slot_name)):
+            slot = clip.get(slot_name)
+            for element_id in _element_reference_ids(slot):
                 owner = (
                     ref.get("packId") if isinstance(ref, Mapping)
                     and ref.get("id") == element_id
                     and str(ref.get("kind")) == kind[:-1] else None
                 )
+                lookup_id = element_id
+                if owner is None and slot_name == "transition":
+                    lookup_id = normalize_legacy_transition_id(element_id)
+                elif (owner is None and slot_name in LEGACY_PHASE_EFFECT_IDS
+                      and isinstance(slot, Mapping) and "id" not in slot
+                      and slot.get("type") == element_id
+                      and element_id in LEGACY_PHASE_EFFECT_IDS[slot_name]):
+                    continue
                 revision = ref.get("revision") if owner is not None else None
-                key = (kind, element_id, owner, revision)
+                key = (kind, lookup_id, owner, revision)
                 if key in seen:
                     for item in resolved[kind]:
-                        if item.get("element_id") == element_id and (owner is None or (
+                        if item.get("element_id") == lookup_id and (owner is None or (
                             item.get("source_pack_id") == owner and item.get("revision") == revision
                         )):
                             if clip_id and clip_id not in item["clip_ids"]:
@@ -692,14 +710,14 @@ def _resolve_timeline_element_references(
                     continue
                 seen.add(key)
                 try:
-                    element = registry.get(kind, element_id, pack_id=owner, revision=revision) if owner is not None else registry.get(kind, element_id)
+                    element = registry.get(kind, lookup_id, pack_id=owner, revision=revision) if owner is not None else registry.get(kind, lookup_id)
                 except (KeyError, ValueError) as exc:
                     raise ValueError(
                         f"timeline uses unregistered {kind[:-1]} {element_id!r}"
                     ) from exc
                 resolved[kind].append(
                     {
-                        "element_id": element_id,
+                        "element_id": lookup_id,
                         "source_pack_id": _source_pack_id(element),
                         **({"revision": revision} if revision else {}),
                         "source": element.source,

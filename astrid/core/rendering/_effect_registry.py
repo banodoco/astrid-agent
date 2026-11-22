@@ -19,6 +19,7 @@ from astrid.core.element.registry import ElementRegistry, load_default_registry
 from astrid.core.element.schema import ELEMENT_MANIFEST_NAMES, ElementDefinition
 from astrid.core.env_vars import ASTRID_NODE_EXECUTABLE, ASTRID_REMOTION_PROJECT_DIR
 from astrid.core.foundation.paths import REPO_ROOT
+from astrid.core.timeline.legacy_elements import is_r13_host_transition
 
 TOOLS_DIR = REPO_ROOT
 
@@ -108,6 +109,10 @@ def discover_plugins(
             if element.source != "pack:local"
         )
     for element in elements:
+        # The Remotion host applies these incoming presentations itself.
+        # Composition's callable registry contains its own components.
+        if is_r13_host_transition(element.kind, element.id, element.source):
+            continue
         # The public Composition package owns the bundled wrapper
         # implementations. Their descriptors remain in the normal element
         # registry so authored defaults, metadata and validation stay

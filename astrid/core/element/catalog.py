@@ -298,6 +298,11 @@ def _renderability(definition: Any, *, files=None) -> dict[str, str]:
     adapter = definition.runtime.get("adapter") if isinstance(definition.runtime, dict) else None
     supported = adapter == "remotion" and (definition.component.is_file() if files is None
                                            else definition.component.as_posix() in files)
+    if adapter == "remotion" and not supported:
+        from astrid.core.timeline.legacy_elements import is_r13_host_transition
+
+        if is_r13_host_transition(definition.kind, definition.id, definition.source):
+            return {"preview": "supported", "browserExport": "blocked", "workerExport": "supported"}
     status = "supported" if supported else "unknown"
     return {
         "preview": status,

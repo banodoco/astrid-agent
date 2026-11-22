@@ -190,6 +190,7 @@ import importlib, importlib.abc, json, os, sys
 # Initialize host stdlib dependencies before removing POSIX capabilities. Do not
 # lie to pathlib/ctypes/subprocess about the kernel executing this simulation.
 import asyncio, ctypes, multiprocessing, platform, shutil, ssl, subprocess, tempfile
+import numpy  # NumPy initialization consults host os.uname(); load it before simulation.
 import runtime_protocol.dirfd as dirfd
 # Use the real Windows adapter's import surface; no Win32 call occurs at import.
 dirfd.filesystem = dirfd._WindowsFilesystem()

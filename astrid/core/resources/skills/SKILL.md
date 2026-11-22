@@ -73,3 +73,17 @@ Use Runtime-owned storage for outputs. Alternate exports need an explicit
 request. Preserve project/run evidence. Do not commit source media, rendered
 videos, local environments or secrets. Preview public writes and obtain the
 user's explicit publication authorization before submitting them.
+
+## If something goes wrong
+
+- If you hit a bug, a confusing step or a failure in Astrid, tell the user plainly what happened.
+- Offer to fix it. With the user's OK, try to fix it and keep their work and data safe.
+- With the user's OK, file an issue at https://github.com/banodoco/astrid-dev/issues/new
+  with what happened, the exact steps, the release and the version
+  (run the launcher with `--version`), the OS, and the error output.
+- Remove credentials, tokens and personal data (names, home paths) from everything
+  you share, logs included. Show the user the text before you post it.
+- If you fixed it, offer to open a PR against the Astrid repo that owns the code
+  (under github.com/banodoco), from a fork or branch the user can push to, and link it
+  from the issue. Never push to a repo without the user's OK.
+- If you can't fix it, the issue alone is still valuable. Don't give up silently.
