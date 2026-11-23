@@ -111,6 +111,7 @@ def test_only_concrete_agent_commands_become_recovery_commands(who, placeholders
     {"argv": ["astrid", "--dry-run"]}, {"argv": "astrid generate list"},
     {"instruction": {"step": "Both actions are invalid", "then_argv": ["astrid"]}},
     {"placeholders": {"UNUSED": "unused"}}, {"argv": ["astrid", "<UNDECLARED>"]},
+    {"argv": ["astrid", "<undeclared>"]},
     {"unrecognized_action": "shell"},
 ])
 def test_malformed_fixes_are_rejected(change):
@@ -165,3 +166,11 @@ def test_legacy_envelopes_remain_unchanged_until_their_mapping_card():
     assert result == {"entry": None, "target": None, "status": "blocked", "issues": [issue], "fixes": [fix]}
     assert "argv" not in json.dumps(result)
     assert "argv" not in json.dumps(GenerationReadinessError(copy.deepcopy(result)).to_envelope())
+
+
+def test_generic_service_conflict_is_not_a_node_install_conflict():
+    error = generation_error({"code": "conflict", "message": "A service write conflicted"})
+    result = error.to_envelope()
+    assert result["issues"][0]["code"] == "conflict"
+    assert result["fixes"] == []
+    assert "attempt_count" not in result

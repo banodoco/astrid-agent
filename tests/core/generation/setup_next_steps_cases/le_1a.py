@@ -20,6 +20,6 @@ def _contract_case(code):
 
 CASES = [(code, code, partial(_contract_case, code)) for code in (
     "needs_consent", "entry_exists", "pin_conflict", "pack_version_differs", "unknown_input",
-    "source_unreachable", "commit_unavailable", "pip_failed", "protected_change", "conflict",
+    "source_unreachable", "commit_unavailable", "pip_failed", "protected_change", "node_pack_conflict",
     "partial_install", "classes_not_loaded", "fetch_404",
 )]

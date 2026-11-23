@@ -285,9 +285,17 @@ issues without these fields retain their existing guidance; do not invent a fix.
 
 Treat workflow source refs and saved code approvals separately. An approval
 records `{identity: {repo, commit}, recipe_sha256, approval_sha256, placement_class}`.
-The commit is a full 40-character hash, and placement is resolved to `local`,
-`attached` or `runpod` before asking. A token is the first 12 hex characters of
-the approval hash. Changing the source, recipe or placement invalidates it.
+The commit is a full 40-character hash. Resolve placement before asking:
+
+- `local`: Astrid's managed ComfyUI on the local machine. The `managed` selector
+  resolves to this placement class.
+- `attached`: the person's own ComfyUI, including one at a loopback address.
+  Sharing the local host does not make it Astrid's managed target.
+- `runpod`: a rented RunPod machine.
+
+Use the resolved placement, never `auto` or the `managed` selector as the class.
+A token is the first 12 hex characters of the approval hash. Changing the source,
+recipe or placement invalidates it.
 
 The entry's `code-approvals.json` keeps these records beside `entry.json`; a
 source declaration alone grants no approval. The token is a confirmation of

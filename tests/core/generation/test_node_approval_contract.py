@@ -130,3 +130,21 @@ def test_sidecar_rejects_malformed_or_symlinked_records(tmp_path):
     sidecar.symlink_to(other)
     with pytest.raises(ValueError, match="symlink"):
         read_entry_approvals(tmp_path)
+
+
+def test_failed_atomic_replace_preserves_the_previous_approval(tmp_path, monkeypatch):
+    from astrid.core.generation import node_approvals
+
+    (tmp_path / "entry.json").write_text("{}")
+    first = node_approvals.approval_record(NODE, placement_class="local")
+    second = node_approvals.approval_record({**NODE, "commit": "b" * 40}, placement_class="local")
+    node_approvals.write_entry_approvals(tmp_path, [first])
+
+    def fail_replace(*_args):
+        raise OSError("injected atomic replace failure")
+
+    monkeypatch.setattr(node_approvals.os, "replace", fail_replace)
+    with pytest.raises(OSError, match="injected"):
+        node_approvals.write_entry_approvals(tmp_path, [second])
+    assert node_approvals.read_entry_approvals(tmp_path) == [first]
+    assert not list(tmp_path.glob(".code-approvals-*.json"))

@@ -13,12 +13,12 @@ from typing import Any
 
 SETUP_ISSUE_CODES = frozenset({
     "needs_consent", "entry_exists", "pin_conflict", "pack_version_differs", "unknown_input",
-    "source_unreachable", "commit_unavailable", "pip_failed", "protected_change", "conflict",
+    "source_unreachable", "commit_unavailable", "pip_failed", "protected_change", "node_pack_conflict",
     "partial_install", "classes_not_loaded", "fetch_404",
 })
 _SCOPES = frozenset({"read_only", "managed_write", "user_env", "paid", "attached_target"})
 _FIX_FIELDS = frozenset({"id", "who", "scope", "details", "argv", "instruction", "placeholders"})
-_PLACEHOLDER = re.compile(r"<([A-Z][A-Z0-9_]*)>")
+_PLACEHOLDER = re.compile(r"<([^<>]+)>")
 _NAME = re.compile(r"[A-Z][A-Z0-9_]*")
 
 

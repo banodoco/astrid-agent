@@ -5,6 +5,14 @@ repository/commit, recipe hash and resolved placement class. Computing a record
 or storing a caller-supplied record is not evidence of a person's consent:
 LE-2b owns the CLI warning and target admission. Tokens are a short confirmation
 of what was shown, not a secret, a signature or proof of who typed them.
+
+Classes follow the resolved ``Placement.kind``, not the command's selector:
+``local`` is Astrid's managed ComfyUI on the local machine (the ``managed``
+selector resolves to this class); ``attached`` is the person's own ComfyUI,
+including a loopback endpoint, which Astrid does not own; ``runpod`` is a rented
+RunPod machine. An attached endpoint never becomes ``local`` merely because it
+is on the same host. Resolve ``auto`` before constructing the approval; target
+admission maps its managed/attached/pod transport to these placement classes.
 """
 from __future__ import annotations
 
