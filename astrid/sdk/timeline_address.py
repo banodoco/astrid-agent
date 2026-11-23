@@ -280,12 +280,14 @@ _SCHEMA_BINDINGS: dict[str, tuple[str, Path, Path, tuple[int, int, int, int], tu
 # Preserve just the last selected pack id so repeated writes can still classify a now
 # malformed provider after the schema and registry corpus have both been invalidated.
 _SCHEMA_PROVIDER_HINTS: dict[str, str] = {}
+_SCHEMA_COLLECTION_STATES: dict[str, tuple] = {}
 
 
 def clear_schema_cache() -> None:
     """Clear resolved schemas and the provider identities they were validated against."""
     _SCHEMAS.clear()
     _SCHEMA_BINDINGS.clear()
+    _SCHEMA_COLLECTION_STATES.clear()
 
 
 def _file_identity(path: Path) -> tuple[int, int, int, int] | None:
@@ -322,7 +324,11 @@ def _cached_schema_is_current(element: str) -> bool:
 
     manifest = next((element_root / name for name in ELEMENT_MANIFEST_NAMES
                      if (element_root / name).is_file()), element_root / "element.yaml")
-    return (_file_identity(pack_manifest) == pack_identity
+    from astrid.core.element.registry import _default_registry_state
+    from astrid.core.foundation.paths import REPO_ROOT
+
+    return (_SCHEMA_COLLECTION_STATES.get(element) == _default_registry_state(Path(REPO_ROOT).resolve())
+            and _file_identity(pack_manifest) == pack_identity
             and _file_identity(manifest) == element_identity)
 
 # A media clip (footage or audio file) is not an element: it has no element manifest, and the only
@@ -475,6 +481,17 @@ def element_schema(element: str) -> dict[str, Any]:
     ``ASTRID_PACKS_PATH``), so a moved element resolves from its installed pack. A ``media`` clip is not an
     element and has an empty schema (its params are ``MEDIA_PARAMS``). Any other clip type with no resolvable
     declaration raises an :class:`ElementSchemaUnavailable` subclass; it is never schema-less."""
+    for _attempt in range(2):
+        result = _element_schema_once(element)
+        if result is not None:
+            return result
+    raise ElementRegistryUnavailable(
+        element, "the element collection changed during discovery",
+        fix="Retry once the collection is stable.",
+    )
+
+
+def _element_schema_once(element: str) -> dict[str, Any] | None:
     provider_hint = None
     if element in _SCHEMAS:
         # A few SDK callers/tests may seed this private mapping with a core-only schema;
@@ -491,9 +508,11 @@ def element_schema(element: str) -> dict[str, Any]:
         clear_default_registry_cache()
     if element == MEDIA_CLIP_TYPE:
         return {}
-    from astrid.core.element.registry import load_default_registry
+    from astrid.core.element.registry import _default_registry_state, load_default_registry
     from astrid.core.element.schema import ELEMENT_MANIFEST_NAMES
+    from astrid.core.foundation.paths import REPO_ROOT
 
+    collection_state = _default_registry_state(Path(REPO_ROOT).resolve())
     try:
         registry = load_default_registry()
         from astrid.core.element.clip_types import clip_type_aliases
@@ -507,6 +526,8 @@ def element_schema(element: str) -> dict[str, Any]:
             resolved = aliases.get(element)
             candidates = [effects[resolved]] if resolved in effects else []
     except Exception as exc:  # noqa: BLE001 - an unreadable corpus refuses; it never means "schema-less"
+        if collection_state != _default_registry_state(Path(REPO_ROOT).resolve()):
+            return None
         moved = moved_element_pack(element)
         fix = "Run `astrid doctor` to find the pack that breaks the registry."
         details = {}
@@ -517,6 +538,8 @@ def element_schema(element: str) -> dict[str, Any]:
             element, f"the element registry could not be loaded ({' '.join(str(exc).split())})",
             fix=fix, details=details) from exc
     if not candidates:
+        if collection_state != _default_registry_state(Path(REPO_ROOT).resolve()):
+            return None
         raise _unresolved(element, registry, provider_hint)
     definition = sorted(candidates, key=lambda item: (item.kind != "effects", item.kind))[0]
     schema = definition.schema or {}
@@ -526,11 +549,14 @@ def element_schema(element: str) -> dict[str, Any]:
              "additional": bool(schema.get("additionalProperties", True)), "path": str(manifest),
              "units": dict((definition.metadata or {}).get("units") or {})}
     binding = _schema_binding(definition, manifest)
+    if collection_state != _default_registry_state(Path(REPO_ROOT).resolve()):
+        return None
     pack_id = str((definition.metadata or {}).get("pack_id") or definition.source.removeprefix("pack:"))
     _SCHEMA_PROVIDER_HINTS[element] = pack_id
     if binding is not None:
         _SCHEMAS[element] = found
         _SCHEMA_BINDINGS[element] = binding
+        _SCHEMA_COLLECTION_STATES[element] = collection_state
     return found
 
 
