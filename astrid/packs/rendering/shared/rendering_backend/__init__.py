@@ -227,6 +227,9 @@ def _render_provenance_payload(
         ),
         "staged_asset_root": stage_summary.get("root"),
     }
+    if "pack_revisions" in stage_summary:
+        payload["pack_revisions"] = stage_summary["pack_revisions"]
+        payload["editor_revision_status"] = stage_summary["editor_revision_status"]
     if runtime is not None:
         payload["runtime"] = dict(runtime)
     if segments is not None:

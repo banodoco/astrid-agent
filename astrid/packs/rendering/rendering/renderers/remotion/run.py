@@ -61,6 +61,7 @@ from astrid.packs.rendering.rendering.renderers.remotion.normal_audio import (
 from astrid.core.subprocess_env import build_child_subprocess_env
 from astrid.packs.rendering.rendering.renderers.remotion import lock as remotion_lock
 from astrid.packs.rendering.rendering.renderers.remotion.progress import RemotionProgressRelay
+from astrid.packs.rendering.rendering.renderers.remotion.pack_revisions import resolved_pack_revisions
 from astrid.packs.rendering.shared import rendering_backend as _shared
 from astrid.packs.rendering.shared.rendering_backend import (
     _alpha_output_name,
@@ -1126,6 +1127,7 @@ def _execute_remotion(
     frame_session_identity: str | None = None,
     window: FrameWindow | None = None,
     composition_duration_frames: int | None = None,
+    editor_pack_revisions: Mapping[str, str] | None = None,
 ) -> _ExecutionDetails:
     """Render one private video and return the data needed for provenance."""
 
@@ -1156,6 +1158,7 @@ def _execute_remotion(
                 frame_session_identity=frame_session_identity,
                 window=window,
                 composition_duration_frames=composition_duration_frames,
+                editor_pack_revisions=editor_pack_revisions,
             )
 
     # Direct backend callers may pass the final output as the staging path.
@@ -1197,6 +1200,7 @@ def _execute_remotion(
                 frame_session_identity=frame_session_identity,
                 window=window,
                 composition_duration_frames=composition_duration_frames,
+                editor_pack_revisions=editor_pack_revisions,
             )
         os.replace(isolated_stage, final_path)
         return details
@@ -1229,6 +1233,7 @@ def _execute_remotion_locked(
     on_scene_props: Callable[[Mapping[str, Any], Sequence[int]], None] | None = None,
     window: FrameWindow | None = None,
     composition_duration_frames: int | None = None,
+    editor_pack_revisions: Mapping[str, str] | None = None,
 ) -> _ExecutionDetails:
     """Execute one render while the caller owns the non-recursive outer lock."""
 
@@ -1250,6 +1255,15 @@ def _execute_remotion_locked(
         render_hash, staged_public_root, window_argument, alpha,
         frame_output_dir, pcm_aac_mp4, cli_video,
     ):
+        stage_summary["pack_revisions"] = resolved_pack_revisions(stage_summary, editor_pack_revisions)
+        stage_summary["editor_revision_status"] = (
+            "supplied" if editor_pack_revisions is not None else "editor revision not supplied"
+        )
+        for row in stage_summary["pack_revisions"]:
+            if row["comparison"] == "mismatch":
+                print(f"Pack {row['pack_id']} revision mismatch: editor {row['editor_revision']}; "
+                      f"declared render upstream {row['derived_from']} (resolved {row['resolved_revision']})",
+                      file=sys.stderr, flush=True)
         frame_mode = frame_numbers is not None
         remotion_env_additions: dict[str, str] = {
             # Keep Remotion's pre-encode files on the admitted attempt
@@ -1850,6 +1864,8 @@ def _protocol_render(request: RenderRequest, *, workspace: Path) -> RenderResult
                 window=request.window,
                 composition_duration_frames=_composition_duration_from_request(request),
                 encode_aac_at_stitch=True,
+                editor_pack_revisions=(json.loads(request.metadata["editor_pack_revisions"])
+                                       if "editor_pack_revisions" in request.metadata else None),
             )
             os.replace(staged_video, output_path)
         finally:

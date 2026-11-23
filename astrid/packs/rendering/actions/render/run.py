@@ -439,6 +439,7 @@ def render(
     materialized_objects: Mapping[str, str] | None = None,
     media_dependency: Path | None = None,
     delivery_audio: Mapping[str, Any] | None = None,
+    editor_pack_revisions: Mapping[str, str] | None = None,
 ) -> Path:
     """Render through :class:`RenderService` and publish one locked pair.
 
@@ -447,6 +448,13 @@ def render(
     output naming.
     """
     _validate_media_dependency(assets_path, media_dependency)
+    if editor_pack_revisions is not None and (
+        not isinstance(editor_pack_revisions, Mapping)
+        or any(not isinstance(key, str) or not key.strip()
+               or not isinstance(value, str) or not value.strip()
+               for key, value in editor_pack_revisions.items())
+    ):
+        raise ValueError("editor_pack_revisions must be a string map")
     _report_progress("admit", 0)
     out_path = Path(out_path)
     validate_output_name(out_path.name)
@@ -487,7 +495,7 @@ def render(
             "audio": None,
             "profile": profile,
             "backend_config": config,
-            "metadata": {**({"review": json.dumps(dict(review_context or {"shots": []}), sort_keys=True)} if review else {}), **delivery_metadata},
+            "metadata": {**({"review": json.dumps(dict(review_context or {"shots": []}), sort_keys=True)} if review else {}), **delivery_metadata, **({"editor_pack_revisions": json.dumps(dict(editor_pack_revisions), sort_keys=True)} if editor_pack_revisions is not None else {})},
             "materialized_root": (
                 None
                 if materialized_root is None
@@ -540,6 +548,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--media-dependency", type=Path)
     parser.add_argument("--materialized-root", type=Path)
     parser.add_argument("--materialized-objects", default=None)
+    parser.add_argument("--editor-pack-revisions", default=None)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument(
         "--selector",
@@ -625,6 +634,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         materialized_objects = _parse_profile(args.materialized_objects)
         if materialized_objects is not None and not isinstance(materialized_objects, Mapping):
             raise ValueError("--materialized-objects must be a JSON object")
+        editor_pack_revisions = _parse_profile(args.editor_pack_revisions)
         delivery_audio = _delivery_audio_from_args(args)
         if args.assets is None:
             with TemporaryDirectory(prefix="astrid-render-assets-") as tmp_text:
@@ -650,6 +660,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     materialized_objects=materialized_objects,
                     media_dependency=args.media_dependency,
                     delivery_audio=delivery_audio,
+                    editor_pack_revisions=editor_pack_revisions,
                 )
         else:
             output = render(
@@ -672,6 +683,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 materialized_objects=materialized_objects,
                 media_dependency=args.media_dependency,
                 delivery_audio=delivery_audio,
+                editor_pack_revisions=editor_pack_revisions,
             )
     except RendererException as exc:  # pragma: no cover - CLI path
         print(_renderer_cli_error(exc), file=sys.stderr)

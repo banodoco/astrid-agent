@@ -288,6 +288,31 @@ def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
     )
 
 
+def _pack_revision_warnings(output: Path) -> list[str]:
+    """Carry actionable renderer parity findings into the task receipt."""
+    try:
+        provenance = json.loads(Path(f"{output}.provenance.json").read_text(encoding="utf-8"))
+        fragments = provenance.get("backend_fragments")
+        fragment = fragments.get(REMOTION_SELECTOR) if isinstance(fragments, Mapping) else None
+        rows = fragment.get("pack_revisions") if isinstance(fragment, Mapping) else None
+    except (OSError, UnicodeError, ValueError, AttributeError):
+        return []
+    if not isinstance(rows, list):
+        return []
+    warnings = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        warnings.append(
+            f"Pack {row.get('pack_id')} revision {row.get('comparison', 'unknown')}: "
+            f"editor {row.get('editor_revision')}; declared render upstream {row.get('derived_from')}; "
+            f"resolved {row.get('resolved_revision')}; {row.get('identity_verification', 'unverified')}"
+        )
+    if not rows and fragment.get("editor_revision_status") == "editor revision not supplied":
+        warnings.append("editor revision not supplied")
+    return warnings
+
+
 class RenderExportTaskAdapter:
     """Execute one admitted render-export task through ``rendering.render``."""
 
@@ -346,6 +371,14 @@ class RenderExportTaskAdapter:
             raise RenderExportRefused(
                 "render_export expected_version must be an integer"
             )
+        editor_pack_revisions = params.get("editor_pack_revisions")
+        if editor_pack_revisions is not None and (
+            not isinstance(editor_pack_revisions, Mapping)
+            or any(not isinstance(key, str) or not key.strip()
+                   or not isinstance(value, str) or not value.strip()
+                   for key, value in editor_pack_revisions.items())
+        ):
+            raise RenderExportRefused("render_export editor_pack_revisions must be a string map")
         materialized_root = (staging_dir / "managed-objects").resolve()
         if not materialized_root.is_dir():
             raise RenderExportRefused(
@@ -430,6 +463,8 @@ class RenderExportTaskAdapter:
                 renderer_inputs["theme"] = theme_path
             if expected_version is not None:
                 renderer_inputs["expected_version"] = expected_version
+            if editor_pack_revisions is not None:
+                renderer_inputs["editor_pack_revisions"] = dict(editor_pack_revisions)
             render_env = nullcontext()
             if requires_remotion:
                 assert remotion_status is not None and remotion_status.project_dir is not None
@@ -526,7 +561,7 @@ class RenderExportTaskAdapter:
                 }
             ],
             "created": str(getattr(task, "created_at", "") or PACK_ID),
-            "warnings": [],
+            "warnings": _pack_revision_warnings(rendered_path),
         }
 
 
