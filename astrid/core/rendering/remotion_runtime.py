@@ -554,6 +554,10 @@ def _registry_context(environment: Mapping[str, str], *, generator: bool) -> dic
     if not generator:
         keys.update((*_REGISTRY_SELECTORS, 'PYTHONPATH', 'XDG_CONFIG_HOME'))
     context = {k: environment[k] for k in sorted(keys) if k in environment}
+    # An empty pack search path selects no extra roots, exactly like an unset
+    # one; a child that inherits the empty spelling is the same context.
+    if context.get(ASTRID_PACKS_PATH) == '':
+        del context[ASTRID_PACKS_PATH]
     # This mapping is the registry child's complete environment. Ambient
     # Git/startup controls omitted here cannot influence that child.
     probe_context(environment=context, python_executable=sys.executable)
@@ -1275,10 +1279,12 @@ def _validated_runtime(project_dir: Path, *, environment: Mapping[str, str] | No
             raise RemotionValidationError("runtime validation launch/source differs")
         matches = [item for item in artifact['contexts'][role]['variants'] if item['context'] == context]
         if len(matches) != 1:
-            differences = [_context_differences(item['context'], context)
+            differences = [_context_differences(item.get('context'), context)
                            for item in artifact['contexts'][role]['variants']]
             fields = min(differences, key=len) if differences else []
-            detail = ", ".join(fields) if fields else "validated context or role"
+            detail = ", ".join(fields[:8]) if fields else "validated context or role"
+            if len(fields) > 8:
+                detail += ", …"
             raise RemotionValidationError(
                 f"runtime validation consumer context differs in {detail}; "
                 "restart the Astrid host after aligning its launch and worker environment, then retry")

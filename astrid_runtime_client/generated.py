@@ -1340,8 +1340,9 @@ class WorkspaceClient:
         _, _, body = self._request("POST", f"/v1/tasks/{_path_part(task_id)}/claim-delegated-child", body=json.dumps(payload, separators=(",", ":")).encode(), headers={"Content-Type": "application/json", "Idempotency-Key": idempotency_key}, expected=(200,))
         return AttemptFence.from_json(self._json(body))
 
-    def heartbeat_attempt(self, attempt_id: str, *, lease_id: str, fence: int, idempotency_key: str, runtime_epoch: int, progress: Mapping[str, Any] | None = None) -> MutationResult:
+    def heartbeat_attempt(self, attempt_id: str, *, lease_id: str, fence: int, idempotency_key: str, runtime_epoch: int, progress: Mapping[str, Any] | None = None, lease_seconds: int | None = None) -> MutationResult:
         payload: dict[str, Any] = {"lease_id": lease_id, "fence": fence, "runtime_epoch": runtime_epoch}
+        if lease_seconds is not None: payload["lease_seconds"] = lease_seconds
         if progress is not None: payload["progress"] = dict(progress)
         _, _, body = self._request("POST", f"/v1/attempts/{_path_part(attempt_id)}/heartbeat", body=json.dumps(payload, separators=(",", ":")).encode(), headers={"Content-Type": "application/json", "Idempotency-Key": idempotency_key})
         return self._mutation_json(body)

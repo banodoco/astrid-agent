@@ -173,7 +173,7 @@ def candidate_preview_snapshot(
         projected.config, raw_registry
     )
     registry = _runtime_snapshot_registry(
-        render_registry, project_ref=snapshot.project_slug, client=client
+        render_registry, project_ref=snapshot.project_slug, client=client, config=render_config
     )
     shot_rows = []
     for shot in shots:

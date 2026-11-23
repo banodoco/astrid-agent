@@ -5310,10 +5310,17 @@ class RuntimeProtocolClient:
                     f"{self._heartbeat_session}-{heartbeat_sequence}"
                 ),
                 "runtime_epoch": runtime_epoch,
+                # R6 stopgap: a long render starves heartbeats while the
+                # Runtime serves its inputs; ask for a lease that survives it.
+                "lease_seconds": 7200,
             }
             if progress is not None:
                 payload["progress"] = dict(progress)
-            return self._lifecycle_client(deadline=deadline).heartbeat_attempt(attempt_id, **payload)
+            client = self._lifecycle_client(deadline=deadline)
+            if hasattr(client, "timeout"):
+                client.timeout = max(float(client.timeout), 20.0) if deadline is None else max(
+                    float(client.timeout), min(20.0, max(0.1, deadline - time.monotonic())))
+            return client.heartbeat_attempt(attempt_id, **payload)
         finally:
             self._heartbeat_lock.release()
 
@@ -10330,6 +10337,7 @@ class GenericPackHost:
             align=align,
             generation_entry=generation_entry,
             managed_preparation=managed_preparation,
+            readiness_worker_kind="command",
             network_policy=(
                 _network_policy(record, inputs)
                 if record.id == "vibecomfy.run" and inputs.get("comfy_url") else None
