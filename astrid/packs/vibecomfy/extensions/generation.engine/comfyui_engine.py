@@ -153,6 +153,8 @@ class ComfyUIEngine:
 
     def workflow_requirements(self, workflows: Any) -> dict[str, Any]:
         """Requirements of the already selected canonical graph(s), without rebuilding."""
+        from vibecomfy.node_recipes import RECIPE_FIELDS, canonical_recipe
+
         models: dict[tuple[str, str | None], dict[str, Any]] = {}
         nodes: dict[str, dict[str, Any]] = {}
         base = None
@@ -166,9 +168,18 @@ class ComfyUIEngine:
             base = base or (requirements.get("runtime") or {}).get("comfy_commit")
             refs = [*(requirements.get("custom_node_refs") or ()), *(metadata.get("custom_node_packs") or {}).values()]
             for ref in refs:
-                repo, commit = ref.get("url") or ref.get("repository"), ref.get("commit") or ref.get("revision")
+                repo, commit = ref.get("url") or ref.get("repository") or ref.get("repo"), ref.get("commit") or ref.get("revision")
                 if repo:
-                    nodes.setdefault(repo, {"repo": repo, "commit": commit})
+                    declared = {key: ref[key] for key in RECIPE_FIELDS if key in ref}
+                    recipe = canonical_recipe(declared)
+                    row = {"repo": repo, "commit": commit, **{key: recipe[key] for key in declared}}
+                    previous = nodes.get(repo)
+                    if previous is not None:
+                        if any(previous[key] != row[key] for key in previous.keys() & row.keys()):
+                            raise _ComfyUIValidationError(f"conflicting node identity or recipe for {repo}")
+                        previous.update(row)
+                    else:
+                        nodes[repo] = row
         if any(row["sha256"] is None or row["size"] is None for row in models.values()):
             pinned = _pinned_locks()  # a workflow that pins only a url takes digest and size from the lock
             for row in models.values():
@@ -182,14 +193,19 @@ class ComfyUIEngine:
         return {"engine": self.name, "base": base, "models": list(models.values()), "extra": extra}
 
     def validate_extra(self, extra: Any) -> None:
-        """ComfyUI's extra is exactly nodes[repo, commit]; anything else is refused."""
+        """Each node is repo/commit plus optional declarative recipe fields."""
+        from vibecomfy.node_recipes import RECIPE_FIELDS, canonical_recipe
+
         nodes = extra.get("nodes") if isinstance(extra, dict) and set(extra) == {"nodes"} else None
         if not isinstance(nodes, list) or not all(
-                isinstance(node, dict) and set(node) == {"repo", "commit"}
-                and all(isinstance(v, str) and v for v in node.values()) for node in nodes):
-            error = _ComfyUIValidationError("comfyui extra must be {'nodes': [{'repo': str, 'commit': str}, ...]}")
+                isinstance(node, dict) and {"repo", "commit"} <= set(node)
+                and not set(node) - ({"repo", "commit"} | RECIPE_FIELDS)
+                and all(isinstance(node[key], str) and node[key] for key in ("repo", "commit")) for node in nodes):
+            error = _ComfyUIValidationError("comfyui extra must contain nodes with repo, commit and optional requirements_txt/pip_no_deps")
             error.unpinned = True  # a custom node ref without its repo or commit, as distinct from a loader failure
             raise error
+        for node in nodes:
+            canonical_recipe({key: node[key] for key in RECIPE_FIELDS if key in node})
 
     def align(self, manifest: Any, mode: str, *, workflow: Any = None) -> Any:
         """Align this disk to the manifest. Models arrive only through VibeComfy fetch.
