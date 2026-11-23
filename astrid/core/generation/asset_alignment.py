@@ -367,11 +367,51 @@ def catalog_manifests(entry_id: str | None = None) -> list[dict[str, Any]]:
             from .asset_gaps import declared_model_specs
             from .entries import _load_entry_workflow, find_entry
             entry = find_entry(entry_id)
-            if entry is None or entry.get('source') != 'ready-template':
-                raise AlignmentError(f'Unknown pinned entry {entry_id}; astrid generate align requires a catalog or ready-template entry ID')
+            if entry is None or entry.get('source') not in {'ready-template', 'user-entry'}:
+                raise AlignmentError(f'Unknown pinned entry {entry_id}; astrid generate align requires a catalog, ready-template or saved user entry ID')
             workflow = _load_entry_workflow(entry)
             classes = {node.class_type for node in workflow.runtime_nodes().values()}
             packs, unlocked = [], []
+            if entry['source'] == 'user-entry':
+                from vibecomfy.custom_node_refs import workflow_lock_entries
+
+                # User entries carry their own identities. Never replace a
+                # missing or different pin with a same-named shipped pack.
+                by_name = {}
+                declared = set()
+                for row in workflow_lock_entries(workflow):
+                    declared.update({row.name, row.slug or row.name})
+                    revision, repo = row.git_commit_sha or row.commit, row.url
+                    if not repo or not revision or not re.fullmatch('[0-9a-f]{40}', revision):
+                        unlocked.append({'kind': 'node_pack', 'name': row.name,
+                                         'missing': ['locked_repository_and_sha']})
+                        continue
+                    pack = {'name': row.name, 'repository': repo, 'revision': revision,
+                            'classes': sorted(set(row.class_set) & classes)}
+                    _validate_pack(pack)
+                    shipped = node_locks.get(row.name)
+                    if (shipped is None or shipped.url != repo
+                            or (shipped.git_commit_sha or shipped.commit) != revision):
+                        # Inspection may report a bundle pin, but existing
+                        # user_env consent must not grant novel code installs.
+                        pack['requires_code_consent'] = True
+                    prior = by_name.get(row.name)
+                    if prior is not None:
+                        if (prior['repository'], prior['revision']) != (repo, revision):
+                            raise AlignmentError(f'Conflicting bundle node pack pins for {row.name}')
+                        pack['classes'] = sorted(set(prior['classes']) | set(pack['classes']))
+                    by_name[row.name] = pack
+                for name in sorted(set(workflow.requirements.custom_nodes) - declared):
+                    unlocked.append({'kind': 'node_pack', 'name': name,
+                                     'missing': ['locked_repository_and_sha']})
+                packs = list(by_name.values())
+                models = list(declared_model_specs(workflow.metadata.get('model_assets', [])))
+                # Assets belong to the workflow even if its saved generation
+                # mode has not been chosen (e.g. an imported audio workflow).
+                return [{'id': entry_id, 'provider_only': False, 'modes': [
+                    {'mode': mode, 'workflow': workflow, 'models': models,
+                     'node_packs': packs, 'unlocked': unlocked}
+                    for mode in (entry['modes'] or ['workflow'])]}]
             for pack in resolve_node_packs(classes, lockfile_path=lockpath):
                 row = node_locks.get(pack.name)
                 revision, repo = getattr(row, 'git_commit_sha', None), getattr(row, 'url', None)
@@ -595,6 +635,12 @@ def _align_selected(manifests, target, *, entry_id, apply, deadline, client=None
             for row in [*mode['models'], *mode['node_packs']]:
                 if row['status'] == 'mismatch':
                     raise IntegrityError(f"Existing asset {row.get('destination', row.get('name'))} differs from its lock; restore verified bytes before running astrid generate align")
+                if row.get('requires_code_consent') and row['status'] != 'verified':
+                    raise AlignmentError(
+                        f"Node pack {row['name']} at {row['revision']} is not a shipped pin; "
+                        "user_env consent does not authorize installing new node code. "
+                        "Have the user approve and install that exact pack on the selected target, then retry "
+                        + report['align_command'])
     if report['disk_check']['status'] == 'blocked':
         raise AlignmentError(f"Insufficient disk for missing locked models: need {report['total_missing_bytes']} bytes, free {report['disk_check']['free_bytes']}; free disk and retry {report['align_command']}")
     target.verify_installation(deadline=deadline)
