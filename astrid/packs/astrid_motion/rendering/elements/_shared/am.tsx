@@ -3,7 +3,7 @@ import {staticFile} from 'remotion';
 import {
   type ElementComponentProps,
   narrowParams,
-} from '../../../../rendering/shared/element_contracts';
+} from '@astrid-rendering/shared/element_contracts';
 
 // Shared helpers for the am-* motion elements. This lives outside any element
 // root, so the element fingerprint covers only each element's own folder. A

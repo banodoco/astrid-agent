@@ -3,7 +3,7 @@ import {useCurrentFrame} from 'remotion';
 import {
   type ElementComponentProps,
   narrowParams,
-} from '../../../../../rendering/shared/element_contracts';
+} from '@astrid-rendering/shared/element_contracts';
 import {
   COLOR,
   FAMILY,
