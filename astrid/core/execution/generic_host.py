@@ -2085,6 +2085,14 @@ def _launch_worker_probe_environments(pack_roots: tuple[Path, ...], environment:
                 native.pop('PYTHONPATH', None)
         else:
             native = _worker_import_environment(record, native, kind='native', pack_roots=pack_roots)
+        if dispatch_only and command is None:
+            selected = None
+            if record.definition.metadata.get('action_invocation'):
+                owner = object.__new__(GenericPackHost)
+                owner._pack_source_roots = {item.pack.id: item.pack.root.resolve() for item in discovered_packs}
+                selected = owner._selected_pack_map(record)
+            native = _worker_import_environment(record, native if installed else projected, kind='native', pack_roots=pack_roots,
+                                                python_roots=(), selected=selected, installed=installed)
         if not dispatch_only or command is None:
             variants.append(native)
         if dispatch_only and command is None:
@@ -2108,7 +2116,7 @@ def _launch_worker_probe_environments(pack_roots: tuple[Path, ...], environment:
         if installed and ASTRID_PACKS_PATH not in fixed:
             command_variant.pop(ASTRID_PACKS_PATH, None)
         selected = None
-        if _is_selected_command(record):
+        if record.definition.metadata.get('action_invocation'):
             owner = object.__new__(GenericPackHost)
             owner._pack_source_roots = {item.pack.id: item.pack.root.resolve() for item in discovered_packs}
             selected = owner._selected_pack_map(record)
@@ -2134,6 +2142,11 @@ def _worker_import_environment(record: 'CapabilityRecord', environment: Mapping[
                                 installed: bool = False) -> dict[str, str]:
     """Apply the same worker import selection at validation and dispatch."""
     env = dict(environment)
+    if selected is not None:
+        from astrid.core.pack.imports import selected_pack_environment
+        selection_env = selected_pack_environment(selected, verified_relocations=relocations)
+    else:
+        selection_env = {}
     if kind == 'native':
         if not installed:
             env[ASTRID_PACKS_PATH] = os.pathsep.join(str(root) for root in pack_roots)
@@ -2142,14 +2155,15 @@ def _worker_import_environment(record: 'CapabilityRecord', environment: Mapping[
             env['PYTHONPATH'] = os.pathsep.join(dict.fromkeys((
                 *network_hook_roots, str(Path(__file__).resolve().parents[3]),
                 *_dependency_pythonpath(environment), *roots)))
+        env.update(selection_env)
         return env
     if kind != 'command':
         raise HostError('unknown internal readiness worker projection')
     if selected is not None:
-        from astrid.core.pack.imports import selected_pack_environment
-        env.update(selected_pack_environment(selected, verified_relocations=relocations))
-        env['PYTHONPATH'] = os.pathsep.join((str(Path(__file__).resolve().parents[3]),
-                                              *_dependency_pythonpath(environment)))
+        env.update(selection_env)
+        if not installed:
+            env['PYTHONPATH'] = os.pathsep.join((*network_hook_roots,
+                str(Path(__file__).resolve().parents[3]), *_dependency_pythonpath(environment)))
     elif not installed:
         env['PYTHONPATH'] = _command_worker_pythonpath(record, env.get('PYTHONPATH', ''))
     return env
@@ -9948,18 +9962,20 @@ class GenericPackHost:
                     raise HostError('host network hook context differs before readiness validation')
             if readiness_worker_kind not in {'native', 'command'}:
                 raise HostError('unknown internal readiness worker projection')
-            if os.environ.get('ASTRID_HOST_EXECUTION_PROFILE') == 'installed':
-                if readiness_path:
-                    readiness_env['PYTHONPATH'] = readiness_path
-                else:
-                    readiness_env.pop('PYTHONPATH', None)
-            elif readiness_worker_kind == 'command':
+            if readiness_path:
                 readiness_env['PYTHONPATH'] = readiness_path
-                readiness_env = _worker_import_environment(record, readiness_env, kind='command', selected=selected_command_map, relocations=selected_command_relocations)
-            elif readiness_worker_kind == 'native':
-                readiness_env = _worker_import_environment(record, readiness_env, kind='native', pack_roots=self.pack_roots)
             else:
-                raise HostError('unknown internal readiness worker projection')
+                readiness_env.pop('PYTHONPATH', None)
+            installed = os.environ.get('ASTRID_HOST_EXECUTION_PROFILE') == 'installed'
+            selected = (selected_command_map if readiness_worker_kind == 'command'
+                        else (admission or {}).get('selected_pack_map') or None)
+            relocations = (selected_command_relocations if readiness_worker_kind == 'command'
+                           else (admission or {}).get('verified_pack_relocations'))
+            native_roots = (tuple(str(root) for root in (admission or {}).get('python_path_roots', ()))
+                            if admission is not None and readiness_worker_kind == 'native' else None)
+            readiness_env = _worker_import_environment(
+                record, readiness_env, kind=readiness_worker_kind, pack_roots=self.pack_roots,
+                python_roots=native_roots, selected=selected, relocations=relocations, installed=installed)
             from astrid.core.rendering.remotion_runtime import _validated_runtime
             try:
                 _validated_runtime(Path(env[ASTRID_REMOTION_PROJECT_DIR]), environment=readiness_env)
@@ -10372,8 +10388,8 @@ class GenericPackHost:
         # boundary.  In particular, an unrelated ambient API key must never
         # leak into a provider subprocess.
         package_parent = str(Path(__file__).resolve().parents[3])
-        selected_map = ((admission or {}).get("selected_pack_map") or self._selected_pack_map(record)) if selected_command else None
-        selected_relocations = (admission or {}).get("verified_pack_relocations", {}) if selected_command else None
+        selected_map = ((admission or {}).get("selected_pack_map") or self._selected_pack_map(record)) if record.definition.metadata.get("action_invocation") else None
+        selected_relocations = (admission or {}).get("verified_pack_relocations", {}) if selected_map is not None else None
         env, secrets = self._child_environment(
             record,
             attempt,
@@ -10475,7 +10491,8 @@ class GenericPackHost:
             worker_index = argv.index("astrid.core.execution.generic_host_worker") + 1
             argv[worker_index:worker_index] = ["--external-source-fd", str(source_channel.fileno())]
             # The descriptor proves Runtime selection/custody; execution reads raw source.
-            env["PYTHONPATH"] = os.pathsep.join((package_parent, *_dependency_pythonpath()))
+            if os.environ.get('ASTRID_HOST_EXECUTION_PROFILE') != 'installed':
+                env["PYTHONPATH"] = os.pathsep.join((package_parent, *_dependency_pythonpath()))
         if selected_command:
             control = {"pack_id": str(record.definition.metadata["source_pack"]), "root": str(pack_root),
                        "source_digest": (admission or {}).get("source_digest") or _source_digest_for_roots((pack_root,)),
@@ -10499,7 +10516,8 @@ class GenericPackHost:
             # Keep the host-created network hook visible to strict startup, as
             # invoke_capability does; arbitrary child PYTHONPATH stays excluded.
             network_hook_roots = (str(attempt / ".astrid-network-hook"),) if env.get("ASTRID_NETWORK_POLICY") else ()
-            env["PYTHONPATH"] = os.pathsep.join((*network_hook_roots, package_parent, *_dependency_pythonpath()))
+            if os.environ.get('ASTRID_HOST_EXECUTION_PROFILE') != 'installed':
+                env["PYTHONPATH"] = os.pathsep.join((*network_hook_roots, package_parent, *_dependency_pythonpath()))
         remotion_lease = None
         if record.id == "rendering.timeline_visualize":
             if not argv or Path(argv[0]).resolve() != Path(sys.executable).resolve():
@@ -10829,12 +10847,9 @@ class GenericPackHost:
         env = _worker_import_environment(
             storage_record, env, kind='native', pack_roots=self.pack_roots,
             python_roots=tuple(import_roots), network_hook_roots=network_hook_roots,
+            selected=(admission or {}).get('selected_pack_map') or None,
+            relocations=(admission or {}).get('verified_pack_relocations'),
             installed=os.environ.get('ASTRID_HOST_EXECUTION_PROFILE') == 'installed')
-        if isinstance(admission, Mapping) and admission.get("selected_pack_map"):
-            from astrid.core.pack.imports import selected_pack_environment
-
-            env.update(selected_pack_environment(admission["selected_pack_map"],
-                                                 verified_relocations=admission.get("verified_pack_relocations")))
         secret_values = {
             key: value for key, value in env.items()
             if key.upper().endswith(("_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_CREDENTIAL"))
