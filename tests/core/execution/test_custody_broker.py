@@ -1308,6 +1308,22 @@ def test_native_census_retains_protected_uid_zombie_and_kernel_topology(monkeypa
     assert call.calls == [(1, 14, 0, 0)] * 2
 
 
+@pytest.mark.parametrize(("kernel_name", "name"), [(b"chrome-headless", "chrome-headless"),
+                                                  (b"helper-\xff", "helper-\ufffd")])
+def test_native_candidate_observation_records_kernel_executable_name(monkeypatch, kernel_name, name):
+    row = custody._DarwinKInfoProc.from_buffer_copy(_census_record())
+    row.proc.comm = kernel_name
+    call = _fake_census(monkeypatch, bytes(row))
+
+    sample = custody.ordinary_candidate_observation(123)
+    assert sample["outcome"] == "LIVE"
+    evidence = json.loads(custody._canonical(custody._candidate_observation_evidence(sample)))
+    assert evidence["executable_observation"] == {
+        "name": name, "source": "darwin-kinfo-proc-p_comm", "authority": "NONE",
+    }
+    assert call.calls == [(1, 14, 1, 123)] * 2
+
+
 def test_native_identity_preserves_public_shape_birth_and_microsecond_compatibility(monkeypatch):
     call = _fake_census(monkeypatch, _census_record())
     identity = custody.default_process_identity(123)
@@ -3046,6 +3062,112 @@ def test_capture_substage_release_or_identity_failure_stays_sticky(observed_desc
         owner.observe_census({pid: row['birth_id'] for pid, row in census.items()}, census=census,
             fresh_census=lambda: pytest.fail('sticky capture was reconciled'))
     assert owner._uncertain is not None and 103 not in owner._handles and not owner._unadmitted_absent
+
+
+@pytest.mark.parametrize("outcome", ["fresh-absence", "retry-pre-absence", "admitted", "still-live",
+                                     "second-capture-absence", "deadline"])
+def test_pid_for_task_retries_live_incarnation_or_reconciles_observed_absence(
+    observed_descendant, monkeypatch, outcome,
+):
+    owner, census, native, birth = _capture_absence_fixture(observed_descendant, monkeypatch)
+    _, _, identities, tokens = observed_descendant
+    census[103]["status"] = 2
+    identity = {"pid": 103, "uid": 501, "parent_pid": 100, "birth_id": birth}
+    identities[103] = identity
+    live = {"outcome": "LIVE", "identity": identity,
+            "native": {**native, "status": 2, "executable_name": "chrome-headless"}}
+    absent = {"outcome": "ABSENT"}
+    samples = {
+        "fresh-absence": [live, live, absent],
+        "retry-pre-absence": [live, live, absent, absent],
+        "admitted": [live] * 5,
+        "still-live": [live] * 5,
+        "second-capture-absence": [live] * 4 + [absent],
+        "deadline": [live, live],
+    }[outcome]
+    observations, captures, fresh_calls = [], [], []
+    clock = [10.0]
+    monkeypatch.setattr(custody.time, "monotonic", lambda: clock[0])
+
+    def observe(pid):
+        assert pid == 103 and len(observations) < len(samples)
+        observations.append(pid)
+        return samples[len(observations) - 1]
+
+    def capture(pid):
+        captures.append(pid)
+        if len(captures) == 2 and outcome == "admitted":
+            return tokens[103]
+        failure = custody.NativeTokenCaptureError(
+            "controlled pid_for_task failure", substage="pid_for_task", kern_return=5, port_acquired=True,
+        )
+        failure.capture_failure["port_release_succeeded"] = True
+        raise failure
+
+    def fresh():
+        fresh_calls.append(1)
+        if outcome == "deadline":
+            clock[0] += 1
+        if outcome in {"fresh-absence", "deadline"} or (outcome == "retry-pre-absence" and len(fresh_calls) > 1):
+            return {100: dict(census[100])}
+        return {pid: dict(row) for pid, row in census.items()}
+
+    monkeypatch.setattr(custody, "ordinary_candidate_observation", observe)
+    monkeypatch.setattr(custody, "current_process_audit_token", capture)
+    members = {pid: row["birth_id"] for pid, row in census.items()}
+    if outcome in {"still-live", "second-capture-absence", "deadline"}:
+        message = "deadline" if outcome == "deadline" else "controlled pid_for_task failure"
+        with pytest.raises(custody.CustodyError, match=message):
+            owner.observe_census(members, census=census, fresh_census=fresh, deadline=10.05)
+        assert owner._uncertain is not None and not owner._unadmitted_absent
+        assert 103 not in owner._handles and not list(owner.root.glob("designation-descendant_103_*.json"))
+    else:
+        result = owner.observe_census(members, census=census, fresh_census=fresh, deadline=10.05)
+        assert owner._uncertain is None
+        if outcome == "admitted":
+            assert 103 in result and 103 in owner._handles and not owner._unadmitted_absent
+        else:
+            assert result == {100: members[100]} and 103 not in owner._handles
+            record = owner._unadmitted_absent[103]
+            assert record["disposition"] == "UNADMITTED_ABSENT" and record["capability"] == "NONE"
+            assert record["exit_reap"] == record["subtree"] == "UNPROVED"
+            assert record["terminal_observation_source"] == "same-transaction-later-native-absence"
+    assert len(observations) == len(samples)
+    assert captures == ([103, 103] if len(samples) == 5 else [103])
+    evidence = json.loads((owner.root / "observed-containment.json").read_text())
+    failure = evidence["capture_failures"][0]
+    assert failure["observations"]["pre"]["outcome"] == failure["observations"]["post"]["outcome"] == "LIVE"
+    assert failure["observations"]["pre"]["executable_observation"]["name"] == "chrome-headless"
+    assert failure["observations"]["pre"]["executable_observation"]["authority"] == "NONE"
+    assert "failure_command_observations" not in failure
+
+
+@pytest.mark.parametrize("defect", ["wrong-code", "no-port", "missing-release", "failed-release", "release-error"])
+def test_pid_for_task_retry_requires_an_acquired_and_cleanly_released_port(observed_descendant, monkeypatch, defect):
+    owner, census, native, birth = _capture_absence_fixture(observed_descendant, monkeypatch)
+    census[103]["status"] = 2
+    live = {"outcome": "LIVE", "native": {**native, "status": 2},
+            "identity": {"pid": 103, "uid": 501, "parent_pid": 100, "birth_id": birth}}
+    monkeypatch.setattr(custody, "ordinary_candidate_observation", lambda _: live)
+    failure = custody.NativeTokenCaptureError(
+        "controlled unqualified pid_for_task failure", substage="pid_for_task",
+        kern_return=4 if defect == "wrong-code" else 5, port_acquired=defect != "no-port",
+    )
+    if defect != "missing-release":
+        failure.capture_failure["port_release_succeeded"] = defect != "failed-release"
+    if defect == "release-error":
+        failure.port_release_error = custody.CustodyError("controlled deallocation error")
+
+    def capture(_):
+        raise failure
+
+    monkeypatch.setattr(custody, "current_process_audit_token", capture)
+    with pytest.raises(custody.CustodyError):
+        owner.observe_census({pid: row["birth_id"] for pid, row in census.items()}, census=census,
+                             fresh_census=lambda: pytest.fail("unqualified capture entered retry"))
+    assert owner._uncertain is not None and set(owner._handles) == {100}
+    assert not owner._unadmitted_absent and not list(owner.root.glob("designation-descendant_103_*.json"))
+    assert "retry_decision" not in owner._capture_failure_observations[0]
 
 
 @pytest.mark.darwin_native
