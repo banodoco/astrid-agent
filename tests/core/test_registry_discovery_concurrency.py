@@ -171,10 +171,12 @@ def test_miss_rediscovers_when_managed_pack_root_is_activated(monkeypatch, tmp_p
     monkeypatch.setattr(registry, "_load_default_registry_data", load_data)
     _clear_cache()
 
+    assert not newly_active_root.exists()
     registry.load_default_registry(project_root=tmp_path)
     initial_roots = set(sampled_root_states[0])
     assert newly_active_root not in initial_roots
 
+    newly_active_root.mkdir(parents=True)
     active.append(SimpleNamespace(pack_root=newly_active_root))
     found, refreshed = registry.lookup_default_registry(
         lambda loaded: loaded.get("effects", "newly-active"), project_root=tmp_path
