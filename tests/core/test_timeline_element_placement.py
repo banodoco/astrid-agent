@@ -986,6 +986,156 @@ def test_builtin_effect_identity_fails_closed_for_non_effect_and_registry_failur
     registry.list.side_effect = RuntimeError('registry unavailable')
     assert not _builtin_effect('known-animation')
 
+
+def test_public_mixed_commit_retries_first_placement_after_pack_install(
+        monkeypatch, tmp_path, configured):
+    """A newly installed source effect remains placeable in one public mixed commit."""
+    import yaml
+    from astrid.core.element.registry import clear_default_registry_cache, load_default_registry
+    from astrid.sdk.timeline import commit_session, store
+    from astrid.sdk.timeline.commit import _digest, _manifest, bundle_from_document, create_runtime_commit_service
+    from tests.core.test_elements_registry import write_pack_element, finalize_v3_pack
+    from tests.sdk.test_timeline_commit_provider import DetachedPort, DetachedRealm, detached, runtime_abi
+
+    runtime_abi.__wrapped__(monkeypatch)
+    roots = tmp_path / 'personal-packs'
+    roots.mkdir()
+    monkeypatch.setenv('ASTRID_PACKS_PATH', str(roots))
+    from astrid.core.receipts.canonical import canonical_json
+    from tests.sdk.test_timeline_commit_provider_document import document_fixture
+
+    # Build the personal project pack and its admission before warming source discovery.
+    test_project_packs.seed('project')
+    # Admit the project-owned fork before the source pack is made discoverable.
+    project_root = Path(packs.inspect_project_pack('realm', 'project')['packRoot'])
+    element_dir = project_root / 'rendering/elements/effects/reveal'
+    manifest = yaml.safe_load((project_root / 'pack.yaml').read_text())
+    definition_path = element_dir / 'element.yaml'
+    definition = yaml.safe_load(definition_path.read_text())
+    definition['id'] = 'am-footage'
+    definition_path.write_text(yaml.safe_dump(definition))
+    renamed_element_dir = element_dir.with_name('am-footage')
+    element_dir.rename(renamed_element_dir)
+    element_dir = renamed_element_dir
+    declaration = manifest['rendering'].pop('effects/reveal')
+    declaration['path'] = declaration['path'].replace('/reveal/', '/am-footage/')
+    for resource in declaration['resources']:
+        resource['path'] = resource['path'].replace('/reveal/', '/am-footage/')
+    manifest['rendering']['effects/am-footage'] = declaration
+    (project_root / 'pack.yaml').write_text(yaml.safe_dump(manifest))
+    def compile_placeholder(staging, components):
+        for component in set(components):
+            compiled = staging / packs._compiled_path(component)
+            compiled.parent.mkdir(parents=True, exist_ok=True)
+            compiled.write_text('// registry placement regression fixture')
+    monkeypatch.setattr(packs, '_compile_components', compile_placeholder)
+    admission = packs.admit_project_pack('realm', 'project')
+    selected_record = next(item for item in admission['elements']
+                           if item['descriptor']['id'] == 'am-footage')
+    ref = {key: selected_record['descriptor'][key]
+           for key in ('id', 'kind', 'packId', 'revision')}
+    admitted_row = configured.rows[('project', admission['documentId'])]
+    admitted_row['project_id'] = 'project'
+    pin = {'document_id': admitted_row['document_id'], 'version': admitted_row['version'],
+           'content_digest': packs._json_digest(admitted_row['content'])}
+    objects = {}
+    for item in admitted_row['content']['admissions']:
+        descriptor = item['snapshot_object']
+        objects[descriptor['object_id']] = {
+            **descriptor, 'bytes_base64': base64.b64encode(
+                configured.media.read_bytes(descriptor['object_id'])).decode()}
+    schema_inputs = [({'pin': pin, 'document': admitted_row}, objects)]
+
+    monkeypatch.setattr('astrid.sdk.timeline_elements.Documents', lambda _client: configured)
+    monkeypatch.setattr('astrid.sdk.timeline_elements.RemoteMedia', lambda _client: configured.media)
+    monkeypatch.setenv('ASTRID_RUNTIME_DATA_ROOT', str(tmp_path / 'outbox'))
+    document = document_fixture(shared=False)
+    document.update(project_id='project', timeline_id='film')
+    internal = document['internal_timeline_revisions'][0]
+    clip = internal['payload']['clips'][0]
+    clip.pop('elementRef', None)
+    clip['clipType'] = 'am-footage'
+    for row in document['parent_revision']['payload'].get('clips', []):
+        if row.get('id') == clip['id']:
+            row['id'] = 'parent-' + row['id']
+    for row in document['parent_revision']['payload'].get('config', {}).get('clips', []):
+        if row.get('id') == clip['id']:
+            row['id'] = 'parent-' + row['id']
+    internal['content_digest'] = _digest(internal['payload'])
+    document['parent_revision']['content_digest'] = _digest(document['parent_revision']['payload'])
+    document['dependency_manifest'] = _manifest(
+        document['shot_revisions'], document['internal_timeline_revisions'],
+        document['dependency_manifest']['media'], document['dependency_manifest']['documents'])
+    bundle = bundle_from_document(document)
+    owner = Mock()
+    owner.schema_inputs = schema_inputs
+    owner._client._last_handshake = {'realm_id': 'realm', 'actor_id': 'actor-1'}
+    owner.open_composition.return_value = DomainResult.success({
+        'native_inspection': {'project_id': 'project', 'timeline_id': 'film'},
+        'summary': {'head_revision_id': 'head'}})
+    owner.open_bundle.return_value = DomainResult.success({
+        'bundle': bundle, 'project_id': 'project', 'timeline_id': 'film',
+        'head_revision_id': 'head', 'revision_id': 'head'})
+
+    clear_default_registry_cache()
+    load_default_registry()
+    # Install the synthetic source pack after real default discovery has warmed.
+    source = roots / 'astrid_motion'
+    write_pack_element(source, 'effects', 'am-footage', pack_id='astrid_motion', label='Footage')
+    finalize_v3_pack(source, [('effects', 'am-footage')])
+    target = f"occurrence:occ-a/clip:{clip['id']}"
+    realm = DetachedRealm(document)
+    realm.entries[0]['receipt']['project_id'] = 'project'
+    source_doc, snapshots = schema_inputs[0]
+    realm.live_sources[_digest(pin)] = detached(source_doc)
+    realm.snapshot_objects = detached(snapshots)
+    owner._client._last_handshake = {'realm_id': 'realm', 'actor_id': 'actor-1'}
+    service = create_runtime_commit_service()
+
+    def accept(body, key):
+        invocation = {'operation': 'commitTimeline', 'path': '/v1/projects/project/timelines/film/commit',
+                      'publisher': 'actor-1', 'request': copy.deepcopy(body)}
+        context = {'request': body, 'invocation': invocation, 'idempotency_key': key,
+                   'request_hash': hashlib.sha256(canonical_json(invocation).encode()).hexdigest(),
+                   'realm_id': 'realm', 'publisher': 'actor-1'}
+        port = DetachedPort(realm, context)
+        port.context['request'].setdefault('rationale', '')  # Required by the legacy receipt fixture.
+        accepted = service.commit(context, port)
+        receipt = copy.deepcopy(accepted['receipt'])
+        receipt['project_id'] = 'project'
+        receipt['project_seq'] = [receipt['project_seq'][0], receipt['project_seq'][0]]
+        realm.entries[-1]['receipt']['project_id'] = 'project'
+        realm.entries[-1]['receipt']['project_seq'] = copy.deepcopy(receipt['project_seq'])
+        realm.accepted[-1]['receipt']['project_id'] = 'project'
+        realm.accepted[-1]['receipt']['project_seq'] = copy.deepcopy(receipt['project_seq'])
+        return accepted['data'], receipt
+
+    owner.open_bundle.side_effect = lambda *_a, **_kw: DomainResult.success({
+        'bundle': bundle, 'project_id': 'project', 'timeline_id': 'film',
+        'head_revision_id': realm.head['revision_id'], 'revision_id': realm.head['revision_id']})
+    owner.history.side_effect = lambda *_a, **_kw: DomainResult.success({
+        'head': copy.deepcopy(realm.head), 'items': copy.deepcopy(realm.entries), 'next_cursor': None})
+
+    def commit(_project, _timeline, body, *, idempotency_key):
+        data, receipt = accept(body, idempotency_key)
+        return DomainResult.success(data, receipt=CommandReceipt.from_dict(receipt),
+                                    idempotency_key=idempotency_key)
+
+    owner.commit.side_effect = commit
+    client = SimpleNamespace(_remote=SimpleNamespace(_transport=owner._client), timelines=owner,
+                             documents=configured, media=configured.media)
+    monkeypatch.setattr(store, 'fetch_bundle', lambda *_a, **_kw: copy.deepcopy(bundle))
+    timeline = commit_session.open('project', 'film', client=client,
+                                   outbox_path=tmp_path / 'warm-corpus-outbox.json')
+    def edit(working):
+        next(item for item in working.clips if item.id == clip['id']).set_element(ref)
+        working.bundle['parent']['config']['opaque'].update({'timestamp': 'mixed edit'})
+    accepted = timeline.commit(edit, key='warm-corpus-mixed')
+    landed = bundle_from_document(accepted['data']['canonical_document'])
+    assert State(landed).entity(target)['elementRef'] == ref
+    assert landed['parent']['config']['opaque']['timestamp'] == 'mixed edit'
+    assert len(realm.entries) == 2
+
 @pytest.mark.parametrize('key', ['place-retry', None])
 @pytest.mark.parametrize('race', ['suffix', 'settled', 'new-flight'])
 def test_lost_ack_captured_flight_reconciles_without_flushing_suffix(
@@ -1033,3 +1183,50 @@ def test_lost_ack_captured_flight_reconciles_without_flushing_suffix(
         state = session._state()
     assert state['pending'] == [suffix]
     assert state['flight'] == ({'key': 'different-flight'} if race == 'new-flight' else None)
+
+
+def test_native_first_placement_refuses_ambiguous_builtin_kind(monkeypatch, tmp_path, configured):
+    from types import SimpleNamespace
+
+    owner, ref, _, bundle = _setup(monkeypatch, tmp_path, configured)
+    registry = Mock()
+    registry.list.return_value = [
+        SimpleNamespace(id='am-discord', kind='effects'),
+        SimpleNamespace(id='am-discord', kind='animations'),
+    ]
+    monkeypatch.setattr('astrid.core.element.registry.load_default_registry', lambda: registry)
+    command = {
+        'schema_version': 1,
+        'op': 'clip.set-element',
+        'version': '1',
+        'select': TARGET,
+        'args': {'elementRef': ref, 'placement': 'place'},
+    }
+    before = copy.deepcopy(bundle)
+
+    with pytest.raises(CommandError, match='requires an existing element ref'):
+        execute(bundle, [command], schema_inputs=owner.schema_inputs, realm_id='realm')
+
+    assert bundle == before
+    owner.commit.assert_not_called()
+
+
+def test_native_first_placement_refuses_unreadable_builtin_registry(monkeypatch, tmp_path, configured):
+    owner, ref, _, bundle = _setup(monkeypatch, tmp_path, configured)
+    registry = Mock()
+    registry.list.side_effect = RuntimeError('registry unavailable')
+    monkeypatch.setattr('astrid.core.element.registry.load_default_registry', lambda: registry)
+    command = {
+        'schema_version': 1,
+        'op': 'clip.set-element',
+        'version': '1',
+        'select': TARGET,
+        'args': {'elementRef': ref, 'placement': 'place'},
+    }
+    before = copy.deepcopy(bundle)
+
+    with pytest.raises(CommandError, match='requires an existing element ref'):
+        execute(bundle, [command], schema_inputs=owner.schema_inputs, realm_id='realm')
+
+    assert bundle == before
+    owner.commit.assert_not_called()

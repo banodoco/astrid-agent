@@ -122,10 +122,14 @@ def _builtin_effect(clip_type):
     """A clip type that names a built-in effect: not media, and not declared as another element kind."""
     if not isinstance(clip_type, str) or clip_type in ('', 'media'):
         return False
-    from astrid.core.element.registry import load_default_registry
+    from astrid.core.element.registry import lookup_default_registry
 
     try:
-        kinds = {item.kind for item in load_default_registry().list() if item.id == clip_type}
+        def kinds_for(registry):
+            kinds = {item.kind for item in registry.list() if item.id == clip_type}
+            return kinds or None
+
+        kinds, _ = lookup_default_registry(kinds_for)
     except Exception:  # noqa: BLE001 - an unreadable registry cannot prove the target is an effect
         return False
     return kinds == {'effects'}
