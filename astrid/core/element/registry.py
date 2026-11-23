@@ -198,6 +198,21 @@ class ElementRegistry(CapabilityRegistry[tuple[str, str], ElementDefinition]):
 
 _default_registry_lock = Lock()
 _default_registry_cache = {}
+_project_root_keys = {}
+
+
+def _project_root_key(project_root):
+    # Normalize relative paths without I/O; resolve each spelling only once
+    # until cache invalidation, including its current working directory.
+    path = os.fspath(project_root)
+    if not os.path.isabs(path):
+        path = os.path.join(os.getcwd(), path)
+    keys = _project_root_keys
+    key = keys.get(path)
+    if key is None:
+        key = str(Path(path).resolve())
+        keys[path] = key
+    return key
 
 
 def _pack_roots(project_root, extra_pack_roots):
@@ -240,26 +255,30 @@ def _assemble_registry(data):
 
 def _publish(key=None, lookup=None, *, clear=False):
     """Serialize every publication, including invalidation and first load."""
-    global _default_registry_cache
+    global _default_registry_cache, _project_root_keys
     with _default_registry_lock:
         if clear:
             _default_registry_cache = {}
+            _project_root_keys = {}
             return
         entry = _default_registry_cache.get(key)
         if entry is not None and lookup is not None:
-            registry = deepcopy(entry[2])
-            result = lookup(registry)
+            if entry is getattr(lookup, "observed_entry", None):
+                result, registry = lookup.previous_result
+            else:
+                registry = deepcopy(entry[2])
+                result = lookup(registry)
             if result is not None:
                 return result, registry
         if entry is None:
             roots = _pack_roots(key[0], key[2])
             state = _root_state(roots)
         elif lookup is not None:
-            roots = entry[0]
+            roots = _pack_roots(key[0], key[2])
             state = _root_state(roots)
         else:
             return deepcopy(entry[2])
-        if entry is not None and state == entry[1]:
+        if entry is not None and (roots, state) == entry[:2]:
             return result, registry
         entry = (roots, state, _assemble_registry(_load_default_registry_data(*key)))
         _default_registry_cache = {**_default_registry_cache, key: entry}
@@ -323,13 +342,20 @@ def lookup_default_registry(lookup, *, project_root=None):
     Root mtimes cannot see in-place edits or a pack landing after the stamp
     read until a later miss (issue #1584).
     """
+    root_key = _project_root_key(REPO_ROOT if project_root is None else project_root)
+    key = (root_key, False, ())
+    observed = _default_registry_cache.get(key)
     registry = (load_default_registry() if project_root is None
                 else load_default_registry(project_root=project_root))
     result = lookup(registry)
     if result is not None:
         return result, registry
-    root = Path(REPO_ROOT if project_root is None else project_root).resolve()
-    return _publish((str(root), False, ()), lookup)
+    def retry(current):
+        return lookup(current)
+
+    retry.observed_entry = observed
+    retry.previous_result = (result, registry)
+    return _publish(key, retry)
 
 
 def load_default_registry(
@@ -339,9 +365,9 @@ def load_default_registry(
     extra_pack_roots: tuple[str, ...] = (),
 ) -> ElementRegistry:
     """Return an independently mutable registry from the published corpus."""
-    project_root = Path(project_root).resolve()
+    project_root = _project_root_key(project_root)
     extra_pack_roots = tuple(str(Path(root).resolve()) for root in extra_pack_roots)
-    key = (str(project_root), include_missing_roots, extra_pack_roots)
+    key = (project_root, include_missing_roots, extra_pack_roots)
     entry = _default_registry_cache.get(key)
     return deepcopy(entry[2]) if entry is not None else _publish(key)
 

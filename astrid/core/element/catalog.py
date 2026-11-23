@@ -54,7 +54,7 @@ def _registry(theme: str | Path | None = None, *, project_slug: str | None = Non
     # Timeline theme slugs are authoring metadata.  They cannot select
     # executable element definitions; only discovered Astrid packs do that.
     del theme, project_slug
-    return load_default_registry(project_root=Path(TOOLS_DIR).resolve())
+    return load_default_registry(project_root=TOOLS_DIR)
 
 
 def _clear_registry_cache() -> None:
@@ -305,7 +305,7 @@ def _element(
         except KeyError:
             return None
 
-    found, registry = lookup_default_registry(find, project_root=Path(TOOLS_DIR).resolve())
+    found, registry = lookup_default_registry(find, project_root=TOOLS_DIR)
     return found if found is not None else registry.get(kind, element_id)
 
 

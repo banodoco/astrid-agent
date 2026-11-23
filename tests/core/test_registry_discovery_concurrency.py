@@ -135,6 +135,130 @@ def test_install_during_discovery_is_seen_on_the_next_lookup_retry(monkeypatch, 
     _clear_cache()
 
 
+def test_miss_rediscovers_when_managed_pack_root_is_activated(monkeypatch, tmp_path: Path):
+    from types import SimpleNamespace
+
+    from astrid.core.pack import source_setup
+
+    active = []
+    newly_active_root = tmp_path / "managed-source" / "packs"
+    sampled_root_states = []
+    discoveries = 0
+
+    class FakeRegistry:
+        def __init__(self, elements=(), **_kwargs):
+            self.elements = set(elements)
+
+        def get(self, _kind, element_id):
+            return element_id if element_id in self.elements else None
+
+    def root_state(roots):
+        sample = {Path(root): 7 for root in roots}
+        sampled_root_states.append(sample)
+        return tuple((str(root), sample[Path(root)]) for root in roots)
+
+    def load_data(*_key):
+        nonlocal discoveries
+        discoveries += 1
+        elements = ("newly-active",) if discoveries > 1 else ()
+        return (elements, registry.ELEMENT_KIND_REGISTRY, ())
+
+    monkeypatch.setattr(source_setup, "active_sources", lambda *, verify=False: tuple(active))
+    monkeypatch.setattr(registry, "ElementRegistry", FakeRegistry)
+    monkeypatch.setattr(registry, "create_shared_alias_resolver", lambda: None)
+    monkeypatch.setattr(registry, "_register_pack_aliases", lambda *_args: None)
+    monkeypatch.setattr(registry, "_root_state", root_state)
+    monkeypatch.setattr(registry, "_load_default_registry_data", load_data)
+    _clear_cache()
+
+    assert not newly_active_root.exists()
+    registry.load_default_registry(project_root=tmp_path)
+    initial_roots = set(sampled_root_states[0])
+    assert newly_active_root not in initial_roots
+
+    newly_active_root.mkdir(parents=True)
+    active.append(SimpleNamespace(pack_root=newly_active_root))
+    found, refreshed = registry.lookup_default_registry(
+        lambda loaded: loaded.get("effects", "newly-active"), project_root=tmp_path
+    )
+
+    assert len(sampled_root_states) >= 2
+    assert newly_active_root in sampled_root_states[-1]
+    assert all(sampled_root_states[0][root] == sampled_root_states[-1][root]
+               for root in initial_roots)
+    assert found == "newly-active"
+    assert "newly-active" in refreshed.elements
+    assert discoveries == 2
+    _clear_cache()
+
+
+def test_warm_hit_and_unchanged_miss_resolve_and_copy_once(monkeypatch, tmp_path: Path):
+    class FakeRegistry:
+        def __init__(self, elements=(), **_kwargs):
+            self.elements = set(elements)
+
+        def get(self, _kind, element_id):
+            return element_id if element_id in self.elements else None
+
+    monkeypatch.setattr(registry, "ElementRegistry", FakeRegistry)
+    monkeypatch.setattr(registry, "create_shared_alias_resolver", lambda: None)
+    monkeypatch.setattr(registry, "_register_pack_aliases", lambda *_args: None)
+    monkeypatch.setattr(registry, "_pack_roots", lambda *_args: (tmp_path / "packs",))
+    monkeypatch.setattr(registry, "_root_state", lambda _roots: (0,))
+    monkeypatch.setattr(
+        registry,
+        "_load_default_registry_data",
+        lambda *_args: (("known",), registry.ELEMENT_KIND_REGISTRY, ()),
+    )
+    _clear_cache()
+    registry.load_default_registry(project_root=tmp_path)  # warm and normalize the key
+
+    resolve_calls = 0
+    original_resolve = Path.resolve
+
+    def counted_resolve(path, *args, **kwargs):
+        nonlocal resolve_calls
+        resolve_calls += 1
+        return original_resolve(path, *args, **kwargs)
+
+    deepcopy_calls = 0
+    original_deepcopy = registry.deepcopy
+
+    def counted_deepcopy(value):
+        nonlocal deepcopy_calls
+        deepcopy_calls += 1
+        return original_deepcopy(value)
+
+    monkeypatch.setattr(Path, "resolve", counted_resolve)
+    monkeypatch.setattr(registry, "deepcopy", counted_deepcopy)
+
+    lookup_calls = 0
+
+    def find_known(loaded):
+        nonlocal lookup_calls
+        lookup_calls += 1
+        return loaded.get("effects", "known")
+
+    found, _ = registry.lookup_default_registry(find_known, project_root=tmp_path)
+    assert found == "known"
+    assert resolve_calls == 0
+
+    deepcopy_calls = 0
+    lookup_calls = 0
+
+    def find_absent(loaded):
+        nonlocal lookup_calls
+        lookup_calls += 1
+        return loaded.get("effects", "absent")
+
+    absent, _ = registry.lookup_default_registry(find_absent, project_root=tmp_path)
+    assert absent is None
+    assert resolve_calls == 0
+    assert deepcopy_calls == 1
+    assert lookup_calls == 1
+    _clear_cache()
+
+
 def test_catalog_old_assembly_cannot_refill_after_newer_registry_publication(monkeypatch):
     from dataclasses import replace
 
@@ -286,6 +410,8 @@ def test_miss_during_discovery_waits_for_and_returns_new_publication(monkeypatch
     discovery_started = threading.Event()
     release_discovery = threading.Event()
     arriving_started = threading.Event()
+    arriving_lookup_missed = threading.Event()
+    waiting_on_lock = threading.Event()
     state = {"mtime": 0}
     discoveries = 0
 
@@ -321,15 +447,36 @@ def test_miss_during_discovery_waits_for_and_returns_new_publication(monkeypatch
     def lookup(loaded):
         return loaded.get("effects", "installed")
 
+    def arriving_lookup(loaded):
+        result = loaded.get("effects", "installed")
+        if result is None:
+            arriving_lookup_missed.set()
+        return result
+
     def arrive():
         arriving_started.set()
-        return registry.lookup_default_registry(lookup, project_root=tmp_path)
+        return registry.lookup_default_registry(arriving_lookup, project_root=tmp_path)
 
+    original_lock = registry._default_registry_lock
+
+    class ObservedLock:
+        def __enter__(self):
+            if threading.current_thread().name == "registry-miss_1":
+                waiting_on_lock.set()
+            return original_lock.__enter__()
+
+        def __exit__(self, *args):
+            return original_lock.__exit__(*args)
+
+    monkeypatch.setattr(registry, "_default_registry_lock", ObservedLock())
     with ThreadPoolExecutor(max_workers=2, thread_name_prefix="registry-miss") as pool:
         refreshing_miss = pool.submit(registry.lookup_default_registry, lookup, project_root=tmp_path)
         assert discovery_started.wait(10)
         arriving_miss = pool.submit(arrive)
         assert arriving_started.wait(10)
+        # The arriving reader must actually observe a miss before discovery completes.
+        assert arriving_lookup_missed.wait(10)
+        assert waiting_on_lock.wait(10)
         # A second miss must queue behind discovery rather than start another scan.
         assert not arriving_miss.done()
         release_discovery.set()
