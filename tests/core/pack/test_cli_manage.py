@@ -118,7 +118,7 @@ def test_packs_add_with_a_pending_host_refresh_prints_the_one_availability_line(
     captured = capsys.readouterr()
     assert "refresh" not in seen  # one registrar: the host acknowledges at its next start
     lines = captured.out.splitlines()
-    assert lines[-1] == "The pack will be picked up by the running host."
+    assert lines[-1] == "The pack is installed. Astrid picks it up as soon as its host is free, or the next time it starts."
     assert lines.count(lines[-1]) == 1
     assert "Refresh acknowledgment" not in captured.out + captured.err
     assert "retry the committed transaction refresh" not in captured.out + captured.err
