@@ -33,13 +33,29 @@ def _retain_clip_rows(before, after):
     def retain(old_rows, new_rows):
         if not isinstance(old_rows, list) or not isinstance(new_rows, list):
             return
+
+        old_by_id = {}
+        for old in old_rows:
+            if not isinstance(old, dict) or not old.get('id'):
+                continue
+            row_id = old['id']
+            if row_id in old_by_id:
+                old_by_id[row_id] = (None, 2)
+            else:
+                old_by_id[row_id] = (old, 1)
+
+        new_counts = {}
+        for row in new_rows:
+            if isinstance(row, dict) and row.get('id'):
+                row_id = row['id']
+                new_counts[row_id] = new_counts.get(row_id, 0) + 1
+
         for index, row in enumerate(new_rows):
             if not isinstance(row, dict) or not row.get('id'):
                 continue
-            matches = [old for old in old_rows if isinstance(old, dict) and old.get('id') == row['id']]
-            if len(matches) == 1 and sum(isinstance(item, dict) and item.get('id') == row['id']
-                                         for item in new_rows) == 1:
-                new_rows[index] = merge(matches[0], row)
+            old, old_count = old_by_id.get(row['id'], (None, 0))
+            if old_count == 1 and new_counts[row['id']] == 1:
+                new_rows[index] = merge(old, row)
 
     old_parent, new_parent = before.get('parent', {}), after.get('parent', {})
     retain(old_parent.get('clips'), new_parent.get('clips'))
