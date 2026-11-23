@@ -328,6 +328,7 @@ def test_sdk_capture_free_edits_reuses_shared_swap_recipe_without_source_mapping
     session = SimpleNamespace(
         client=SimpleNamespace(_remote=SimpleNamespace(_transport=transport)),
         project_id="project-1",
+        identity={"realm_id": "realm-1"},
     )
     timeline = Timeline(session, base, base.get("base_parent"), evaluating=True)
     shot_id = State(timeline.bundle).occurrence(OWNER)["shot_id"]

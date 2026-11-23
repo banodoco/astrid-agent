@@ -900,7 +900,8 @@ class TimelineSession:
 
     def save_interrupted(self, commands, *, base, label, steps, merge, reads, key, evaluation,
                          failure=None, release_flight=None, release_dry_run=False,
-                         pending_id=None, pending_path=None, pending_part=None, pending_identity=None):
+                         pending_id=None, pending_path=None, pending_part=None, pending_identity=None,
+                         via='python'):
         """Save captured intent without changing another writer's queue or flight."""
         from ._pending import clash, snapshot
 
@@ -908,7 +909,7 @@ class TimelineSession:
             raise TimelineEditError("idempotency key must be nonempty")
         body = {"api_version": 1, "project_id": self.project_id, "timeline_id": self.timeline_id,
                 "base_revision_id": base["revision_id"], "base_publication_id": base["publication_id"],
-                "commands": copy.deepcopy(commands), "source": {"via": "python"}, "dry_run": False,
+                "commands": copy.deepcopy(commands), "source": {"via": via}, "dry_run": False,
                 "label": label, "steps": copy.deepcopy(steps), "merge": merge}
         if reads is not None:
             body["reads"] = copy.deepcopy(reads)
@@ -976,7 +977,7 @@ class TimelineSession:
                idempotency_key=None, dry_run=False, expected_state, base=None, evaluation=None,
                pending_id=None, pending_path=None, pending_part=None, pending_how="retry", group_id=None,
                pending_identity=None,
-               logical_key=None, rationale=None, imports=()):
+               logical_key=None, rationale=None, imports=(), via="python"):
         """Freeze an already captured v2 batch, without recapturing its guards.
 
         A replacement is allowed only after an explicit conflict. Transport
@@ -1040,7 +1041,7 @@ class TimelineSession:
         release_conflict = (not isinstance(evaluation, dict)
                             or evaluation.get("kind") != "function"
                             or evaluation.get("count", 0) >= 3)
-        return self._flush(idempotency_key=idempotency_key, dry_run=dry_run, prepare=prepare,
+        return self._flush(idempotency_key=idempotency_key, dry_run=dry_run, via=via, prepare=prepare,
                            release_conflict=release_conflict)
 
     def _flush(self, *, idempotency_key=None, dry_run=False, via="python", prepare=None,

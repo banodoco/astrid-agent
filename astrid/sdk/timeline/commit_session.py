@@ -782,7 +782,8 @@ class Timeline(Checkout):
                           self._resolve_pending_key(idempotency_key) if idempotency_key is not None else None)
         pending_id, pending_path, pending_part, pending_identity = pending_target if pending_target is not None else (None, None, None, None)
         if function:
-            replay = self.session.resolve_acknowledged(idempotency_key, dry_run=dry_run)
+            replay = self.session.resolve_acknowledged(idempotency_key, dry_run=dry_run,
+                                                       via=getattr(self, '_commit_via', 'python'))
             if replay is not None:
                 return replay
         if commands is not None:
@@ -821,6 +822,7 @@ class Timeline(Checkout):
                     raise TimelineEditError("local edits differ from the original request; reopen to reconcile it")
                 try:
                     result = self.session.flush(idempotency_key=idempotency_key, dry_run=dry_run,
+                                                via=getattr(self, '_commit_via', 'python'),
                                                 release_conflict=not function)
                 except CommitRefused as exc:
                     if function:
@@ -893,6 +895,7 @@ class Timeline(Checkout):
                 if overlap is not None:
                     error = self.session.save_interrupted(
                         working._commands, base=original_base, label=commit_label, steps=steps,
+                        via=getattr(self, '_commit_via', 'python'),
                         merge=effective_merge, reads=reads, key=idempotency_key,
                         evaluation=evaluation, failure=overlap, release_flight=state.get("flight"),
                         release_dry_run=dry_run, pending_id=pending_id,
@@ -904,6 +907,7 @@ class Timeline(Checkout):
                 if dry_run or pending_id is not None:
                     raise TimelineEditError("session base changed; reopen before committing")
                 error = self.session.save_interrupted(working._commands, base=base, label=commit_label,
+                                                      via=getattr(self, '_commit_via', 'python'),
                                                       steps=steps, merge=effective_merge, reads=reads,
                                                       key=idempotency_key, evaluation=evaluation)
                 self._adopt(self._base_bundle)
@@ -911,6 +915,7 @@ class Timeline(Checkout):
             try:
                 result = self.session.submit(
                     working._commands, label=commit_label, steps=steps, merge=effective_merge, reads=reads,
+                    via=getattr(self, '_commit_via', 'python'),
                     idempotency_key=idempotency_key, dry_run=dry_run, expected_state=state, base=base,
                     evaluation=evaluation,
                     pending_id=pending_id,
@@ -934,6 +939,7 @@ class Timeline(Checkout):
                         base = _pin(latest["base"])
                         continue
                 error = self.session.save_interrupted(working._commands, base=original_base if function else base, label=commit_label,
+                                                      via=getattr(self, '_commit_via', 'python'),
                                                       steps=steps, merge=effective_merge, reads=reads,
                                                       key=idempotency_key, evaluation=evaluation,
                                                       pending_id=pending_id, pending_path=pending_path,
