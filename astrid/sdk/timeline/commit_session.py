@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 import re
 import uuid
 from collections.abc import Mapping
@@ -69,7 +70,89 @@ def _retain_clip_rows(before, after):
                shot.get('internal_timeline', {}).get('clips'))
 
 
-def _function_rerun_conflict(session, original_base, current_base, before_bundle, after_bundle):
+_OCCURRENCE_CLOSURE_ERROR = "closure membership or provenance changed; use a semantic command"
+
+
+def _occurrence_timing_candidate(before, after):
+    """Extract only existing timing leaves, leaving all closure identity in the basis."""
+    from .emitter import DocumentPatchError, _outside, _same
+
+    base_rows, requested = before.get("placements"), after.get("placements")
+    if _same(base_rows, requested):
+        return None, []
+    if any(before.get(key) != after.get(key) for key in ("project_id", "timeline_id")):
+        emit_document_commands(before, after)
+
+    # INTERIM: Plan 18 TL-3r replaces this lowering with the semantic ripple operation.
+    if not isinstance(base_rows, list) or not isinstance(requested, list) or len(base_rows) != len(requested):
+        raise DocumentPatchError(_OCCURRENCE_CLOSURE_ERROR)
+    desired = copy.deepcopy(base_rows)
+    expected = []
+    identities = set()
+    for old, row, target in zip(base_rows, requested, desired):
+        if not isinstance(old, dict) or not isinstance(row, dict):
+            raise DocumentPatchError(_OCCURRENCE_CLOSURE_ERROR)
+        identity = old.get("occurrence_id")
+        if not isinstance(identity, str) or not identity or identity in identities or row.get("occurrence_id") != identity:
+            raise DocumentPatchError(_OCCURRENCE_CLOSURE_ERROR)
+        identities.add(identity)
+        if _same(old, row):
+            continue
+        old_placement, new_placement = old.get("placement"), row.get("placement")
+        if (old.get("at_ms") is not None or row.get("at_ms") is not None
+                or not isinstance(old_placement, dict) or not isinstance(new_placement, dict)):
+            raise DocumentPatchError(_OCCURRENCE_CLOSURE_ERROR)
+        for path, previous, value, positive in (
+            (["placement", "start_ms"], old_placement.get("start_ms"), new_placement.get("start_ms"), False),
+            (["duration_ms"], old.get("duration_ms"), row.get("duration_ms"), True),
+        ):
+            if any(type(item) not in (int, float) or (isinstance(item, float) and not math.isfinite(item))
+                   or item < 0 or (positive and item == 0) for item in (previous, value)):
+                raise DocumentPatchError(_OCCURRENCE_CLOSURE_ERROR)
+            if not _same(previous, value):
+                holder = target["placement"] if path[0] == "placement" else target
+                holder[path[-1]] = value
+                expected.append({"op": "set", "ref": "parent",
+                                 "path": ["occurrences", f"occurrence_id:{identity}", *path],
+                                 "before": {"state": "present", "value": previous}, "value": value})
+
+    if (not _same(desired, requested)
+            or not _same(_outside(before), _outside({**after, "placements": base_rows}))):
+        raise DocumentPatchError(_OCCURRENCE_CLOSURE_ERROR)
+    return desired, expected
+
+
+def _ripple_payload_change(change):
+    """Recognize only retained clip timing and removal in a mixed placement patch."""
+    ref, path = change["ref"], change["path"]
+    if ref == "parent" and path[:1] == ["config"]:
+        path = path[1:]
+    if (ref != "parent" and not ref.startswith("internal-revision:")) or path[:1] != ["clips"]:
+        return False
+    if change["op"] == "list.remove":
+        return path == ["clips"]
+    if change["op"] != "set" or len(path) < 3 or not path[1].startswith("id:"):
+        return False
+
+    leaf, value = path[2:], change["value"]
+    if len(leaf) == 1 and leaf[0] in {"at", "hold", "from", "to"}:
+        return type(value) in (int, float)
+    if leaf != ["app", "astrid", "words"] or not isinstance(value, list):
+        return False
+    previous = change["before"].get("value")
+    if not isinstance(previous, list):
+        return False
+    # A trim may discard inline words or translate their timestamps.
+    from .emitter import _same
+
+    old_words = iter(row[2:] for row in previous if isinstance(row, list) and len(row) >= 3)
+    return all(isinstance(row, list) and len(row) >= 3
+               and all(type(edge) in (int, float) for edge in row[:2])
+               and any(_same(row[2:], word) for word in old_words) for row in value)
+
+
+def _function_rerun_conflict(session, original_base, current_base, before_bundle, after_bundle,
+                             occurrence_writes=()):
     """Return the existing conflict shape when a rerun rewrites intervening work."""
     from . import clash
     from ._doc_patch import Closure
@@ -81,7 +164,7 @@ def _function_rerun_conflict(session, original_base, current_base, before_bundle
     original = session._capture_bundle({"base": original_base, "pending": []})
     original_closure = Closure(original)
     before = Closure(before_bundle)
-    writes = []
+    writes = [(change["ref"], change["path"]) for change in occurrence_writes]
     for ref, left, right in _root_pairs(before_bundle, after_bundle):
         changes = []
         _diff(_payload_for_emit(ref, left), _payload_for_emit(ref, right), ref, (), changes)
@@ -379,6 +462,7 @@ class Timeline(Checkout):
         self._commands: list[dict[str, Any]] = []
         self._steps: list[dict[str, Any]] = []
         self._free_edits = False
+        self._occurrence_timing_writes: list[dict[str, Any]] = []
         self._journal.clear()
         self._refresh()
 
@@ -579,12 +663,37 @@ class Timeline(Checkout):
     def _capture_free_edits(self):
         if self.bundle != self._command_bundle:
             before, after = copy.deepcopy(self._command_bundle), copy.deepcopy(self.bundle)
-            if self._runtime_document is not None or before.get("shots") != after.get("shots"):
+            desired, occurrence_writes = _occurrence_timing_candidate(before, after)
+            if desired is not None or self._runtime_document is not None or before.get("shots") != after.get("shots"):
                 before, after = self._execution_bundle(before), self._execution_bundle(after)
+            from .emitter import DocumentPatchError, _same
             from .media_swap import capture_document_swaps
 
-            hydrate_retained = self._retained_capture_hydrator()
+            if desired is not None:
+                from .authoring_commit import physical_occurrence_commands
 
+                placement_commands = physical_occurrence_commands(before, desired)
+                changes = [change for call in placement_commands for change in call["args"]["changes"]]
+                if not _same(sorted(changes, key=lambda change: change["path"]),
+                             sorted(occurrence_writes, key=lambda change: change["path"])):
+                    raise DocumentPatchError(_OCCURRENCE_CLOSURE_ERROR)
+                try:
+                    payload = emit_document_commands(before, {**after, "placements": before["placements"]})
+                except DocumentPatchError:
+                    # Keep the original emitter refusal for mixed unsupported edits.
+                    emit_document_commands(before, after)
+                    raise
+                if any(not _ripple_payload_change(change)
+                       for call in payload for change in call["args"]["changes"]):
+                    raise DocumentPatchError(_OCCURRENCE_CLOSURE_ERROR)
+                # This interim path cannot swap or admit media. Do not invoke
+                # media discovery for placement edits, even if a payload is invalid.
+                self._append(placement_commands + payload, label="Edit document")
+                self._free_edits = True
+                self._occurrence_timing_writes.extend(occurrence_writes)
+                return
+
+            hydrate_retained = self._retained_capture_hydrator()
             swaps, remaining, selected = capture_document_swaps(
                 before, after, self.session.client._remote._transport,
                 verified_media=self._verified_media,
@@ -937,8 +1046,9 @@ class Timeline(Checkout):
                 raise TimelineEditError("no pending timeline edits")
             steps = copy.deepcopy(working._steps)
             effective_merge = merge
-            if reads is None and (function or working._free_edits
-                                  or any(command["op"] == "doc.patch" for command in working._commands)):
+            if working._occurrence_timing_writes or (reads is None and (
+                    function or working._free_edits
+                    or any(command["op"] == "doc.patch" for command in working._commands))):
                 effective_merge = "atomic"
                 # Arbitrary Python may consult any part of the loaded closure.
                 # Keep omitted batch reads distinct from an empty declaration,
@@ -950,7 +1060,7 @@ class Timeline(Checkout):
                           "identity_cache": copy.deepcopy(working._identity_cache)}
             if function and not _overwrite:
                 overlap = _function_rerun_conflict(
-                    self.session, original_base, base, before_bundle, working.bundle)
+                    self.session, original_base, base, before_bundle, working.bundle, working._occurrence_timing_writes)
                 if overlap is not None:
                     error = self.session.save_interrupted(
                         working._commands, base=original_base, label=commit_label, steps=steps,
