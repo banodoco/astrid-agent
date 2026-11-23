@@ -66,7 +66,7 @@ def _raw_inputs(transport, project, inputs, verified):
     return rows
 
 
-def capture_document_swaps(base, candidate, transport, verified_media=()):
+def capture_document_swaps(base, candidate, transport, verified_media=(), *, hydrate_retained=None):
     """Capture lossless document edits with explicit Runtime media admission.
 
     The emitter validates the original provenance and emits only authored
@@ -132,5 +132,8 @@ def capture_document_swaps(base, candidate, transport, verified_media=()):
     if inputs:
         commands.append({'schema_version': 1, 'op': 'media.admit', 'version': '1',
                          'select': None, 'args': {'inputs': inputs}})
-    plan = execute(base, commands, verified_media=verified)
+    execution_base = copy.deepcopy(base)
+    if hydrate_retained is not None:
+        hydrate_retained(execution_base)
+    plan = execute(execution_base, commands, verified_media=verified)
     return plan.commands, working, verified

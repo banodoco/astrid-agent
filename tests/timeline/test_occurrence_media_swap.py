@@ -438,3 +438,63 @@ def test_cli_swap_adapter_reuses_session_outbox_and_calls_sdk_swap_asset(monkeyp
         ("swap_asset", "new-footage"),
         ("commit", {"label": "Swap clip media", "dry_run": True, "idempotency_key": "swap-key"}),
     ]
+
+
+def _retained_anchor_swap():
+    from astrid.sdk.timeline.commands import execute
+    from astrid.sdk.timeline.native_word_anchor import capture_anchor
+    from tests.editing_conformance.test_native_word_anchor_vectors import fixture
+
+    bundle, pin, content = fixture()
+    verified = copy.deepcopy(bundle['source_mapping']['pinned_documents'][0])
+    choice = {'source': 'occurrence:occ-a/clip:voice', 'document': pin,
+              'word_ids': [content['segments'][0]['words'][0]['id']]}
+    anchored = execute(bundle, [capture_anchor(bundle, 'parent/clip:clip-a', 'on', 'again', choice)]).bundle
+    document = document_from_bundle(anchored)
+    internal = document['internal_timeline_revisions'][0]
+    internal['payload']['clips'].append({'id': 'visual', 'clipType': 'media', 'track': 'vo',
+                                         'asset': 'old-visual', 'at': 0, 'hold': 2})
+    internal['payload']['registry']['assets']['old-visual'] = {
+        'media_id': OLD_ID, 'type': 'image/jpeg', 'source': 'old.jpg'}
+    internal['content_digest'] = _digest(internal['payload'])
+    document['dependency_manifest'] = _manifest(document['shot_revisions'],
+        document['internal_timeline_revisions'], document['dependency_manifest']['media'], [pin])
+    return bundle_from_document(document), verified
+
+
+@pytest.mark.parametrize('damage', [None, 'mismatch', 'revoked'])
+def test_sdk_swap_capture_hydrates_only_exact_retained_parent_anchor(damage):
+    from astrid.sdk.timeline.commit_session import Timeline
+    from astrid.sdk.timeline.model import Clip
+
+    base, verified = _retained_anchor_swap()
+    transport = CatalogTransport()
+    class Missing(Exception):
+        code = 'not_found'
+    def get_document(project, pin):
+        if damage == 'revoked':
+            raise Missing()
+        result = copy.deepcopy(verified)
+        if damage == 'mismatch':
+            result['document']['version'] += 1
+        return result
+    transport.get_project_verified_document = get_document
+    session = SimpleNamespace(client=SimpleNamespace(_remote=SimpleNamespace(_transport=transport)),
+                              project_id=base['project_id'], identity={'realm_id': 'realm-1'})
+    timeline = Timeline(session, base, base.get('base_parent'), evaluating=True)
+    shot_id = State(timeline.bundle).occurrence(OWNER)['shot_id']
+    Clip(timeline, shot_id, State(timeline.bundle).entity(OWNER + '/clip:visual')).swap_asset({
+        'key': 'new-footage', 'media_id': NEW_ID, 'type': 'image/jpeg',
+        'generationId': 'new-generation', 'variantId': 'new-variant'})
+    before = copy.deepcopy(timeline.bundle['parent'])
+    if damage:
+        message = {'mismatch': 'scope or version', 'revoked': 'missing or unavailable'}[damage]
+        with pytest.raises(ValueError, match=message):
+            timeline._capture_free_edits()
+        assert timeline.bundle['parent'] == before
+    else:
+        timeline._capture_free_edits()
+        assert {command['op'] for command in timeline._commands} == {'doc.patch', 'media.admit'}
+        assert timeline.bundle['parent'] == before
+        assert State(timeline.bundle).entity(OWNER + '/clip:visual')['asset'] == 'new-footage'
+        assert 'pinned_documents' not in timeline.bundle['source_mapping']
