@@ -218,6 +218,147 @@ there with its kind, modes and default slots; `astrid generate describe` then sh
 it. Keep one contribution minimal: one workflow file, one entry, and a dry run that
 passes.
 
+## Workflow setup: missing packs or models
+
+Read the readiness result before running a workflow. Keep its issues and target
+together when asking for help. The existing placement and missing-assets
+instructions above apply until a subsection supplies a supported next step.
+
+<!-- Plan 56 WS-6a: one editing slot per source card. Populate each slot
+with its implementation; an empty slot promises no command or behavior. -->
+
+### WS-0a — Audio workflow readiness
+
+<!-- WS-0a: fill this subsection in the same change as the card. -->
+
+### WS-0b — Unresolved model references
+
+<!-- WS-0b: fill this subsection in the same change as the card. -->
+
+### WS-0c — Node pack catalog
+
+<!-- WS-0c: fill this subsection in the same change as the card. -->
+
+### WS-0d — Save and replace an entry
+
+<!-- WS-0d: fill this subsection in the same change as the card. -->
+
+### WS-0e — Align a saved entry
+
+<!-- WS-0e: fill this subsection in the same change as the card. -->
+
+### WS-0g — Missing classes on every placement
+
+<!-- WS-0g: fill this subsection in the same change as the card. -->
+
+### WS-7a — Node recipe declarations
+
+<!-- WS-7a: fill this subsection in the same change as the card. -->
+
+### WS-7b — Controlled recipe installation
+
+<!-- WS-7b: fill this subsection in the same change as the card. -->
+
+### LE-1a — Read issues and next steps
+
+<!-- LE-1a: fill this subsection in the same change as the card. -->
+
+### LE-1b — Missing assets and failed checks
+
+<!-- LE-1b: fill this subsection in the same change as the card. -->
+
+### LE-2a — Approval identity and consent tokens
+
+<!-- LE-2a: fill this subsection in the same change as the card. -->
+
+### LE-2b — Consent to unreviewed code
+
+<!-- LE-2b: fill this subsection in the same change as the card. -->
+
+### LE-3 — Add a pinned node pack
+
+<!-- LE-3: fill this subsection in the same change as the card. -->
+
+### LE-4 — Lookup availability
+
+<!-- LE-4: fill this subsection in the same change as the card. -->
+
+### LE-5 — Candidates and manual lookup
+
+<!-- LE-5: fill this subsection in the same change as the card. -->
+
+### LE-6 — Check the target after setup
+
+<!-- LE-6: fill this subsection in the same change as the card. -->
+
+### LE-8 — Model downloads and available space
+
+<!-- LE-8: fill this subsection in the same change as the card. -->
+
+### LE-9 — Declare a missing model
+
+<!-- LE-9: fill this subsection in the same change as the card. -->
+
+### LE-10 — Recorded and installed versions
+
+<!-- LE-10: fill this subsection in the same change as the card. -->
+
+### LE-11 — Explain the warning
+
+<!-- LE-11: fill this subsection in the same change as the card. -->
+
+### LE-12 — Preview, replace and run again
+
+<!-- LE-12: fill this subsection in the same change as the card. -->
+
+### LE-13 — Declare an unlisted recipe
+
+<!-- LE-13: fill this subsection in the same change as the card. -->
+
+### LE-14 — Target failures and recovery
+
+<!-- LE-14: fill this subsection in the same change as the card. -->
+
+### LE-15 — Workflow inputs
+
+<!-- LE-15: fill this subsection in the same change as the card. -->
+
+### LE-16 — Several node packs
+
+<!-- LE-16: fill this subsection in the same change as the card. -->
+
+### LE-17 — Pins that conflict
+
+<!-- LE-17: fill this subsection in the same change as the card. -->
+
+### LE-18b — Terminal and JSON results
+
+<!-- LE-18b: fill this subsection in the same change as the card. -->
+
+### RS1 — Consent boundary review
+
+<!-- RS1: fill this subsection in the same change as the card. -->
+
+### WS-L — Live SAM proof
+
+<!-- WS-L: fill this subsection in the same change as the card. -->
+
+### WS-5 — Manager lookup
+
+<!-- WS-5: fill this subsection in the same change as the card. -->
+
+### WS-6a — Workflow setup guidance
+
+<!-- WS-6a: fill this subsection in the same change as the card. -->
+
+### WS-6b — Complete setup walkthrough
+
+<!-- WS-6b: fill this subsection in the same change as the card. -->
+
+### R — Integrated review
+
+<!-- R: fill this subsection in the same change as the card. -->
+
 ## Defaults
 
 Each `(kind, mode)` slot has one entry. Packs offer defaults as data
