@@ -547,9 +547,33 @@ class Timeline(Checkout):
                 before, after = self._execution_bundle(before), self._execution_bundle(after)
             from .media_swap import capture_document_swaps
 
+            retained_captures = None
+            def hydrate_retained(bundle):
+                nonlocal retained_captures
+                from .native_source_inputs import read_verified_transcript
+
+                mapping = bundle['source_mapping']
+                document = self._runtime_document
+                if document is None or document.get('project_id') != self.session.project_id:
+                    raise TimelineEditError('retained document project scope does not match session')
+                manifest = document['dependency_manifest']
+                media = {row['media_id'] for row in manifest['media']}
+                if retained_captures is None:
+                    retained_captures = []
+                    for pin in manifest['documents']:
+                        if not pin['document_id'].startswith('transcript:'):
+                            continue
+                        capture = read_verified_transcript(
+                            self.session.client._remote._transport, self.session.project_id, pin)
+                        if capture['document']['content']['media_id'] not in media:
+                            raise TimelineEditError('retained transcript media is outside the accepted manifest')
+                        retained_captures.append(capture)
+                mapping['pinned_documents'] = copy.deepcopy(retained_captures)
+
             swaps, remaining, selected = capture_document_swaps(
                 before, after, self.session.client._remote._transport,
                 verified_media=self._verified_media,
+                hydrate_retained=hydrate_retained,
             )
             commands = emit_document_commands(remaining, after)
             if not commands and not swaps:
@@ -584,23 +608,28 @@ class Timeline(Checkout):
             # steps. Mixing doc.patch claims with media.admit previously
             # compared input-revision paths against successor-revision effects.
             for swap in swaps:
-                self._append([swap], label="Replace clip media", verified_media=preview_media)
+                self._append([swap], label="Replace clip media", verified_media=preview_media,
+                             hydrate_retained=hydrate_retained)
             if commands:
-                self._append(commands, label="Edit document", verified_media=preview_media)
+                self._append(commands, label="Edit document", verified_media=preview_media,
+                             hydrate_retained=hydrate_retained if swaps else None)
             if inputs:
                 self._append([{"schema_version": 1, "op": "media.admit", "version": "1",
                                "select": None, "args": {"inputs": inputs}}],
-                             label="Capture document media", verified_media=preview_media)
+                             label="Capture document media", verified_media=preview_media,
+                             hydrate_retained=hydrate_retained if swaps else None)
             self._free_edits = True
 
     def _append(self, commands, *, label, intent="", tags=(), reads=None, verified_media=None,
-                schema_inputs=(), capture=False):
+                schema_inputs=(), capture=False, hydrate_retained=None):
         from .commands import CommandError, execute
 
         try:
             bundle = (self._execution_bundle(self._command_bundle)
                       if self._runtime_document is not None or any(command.get("op") == "doc.patch" for command in commands)
                       else self._command_bundle)
+            if hydrate_retained is not None:
+                hydrate_retained(bundle)
             plan = execute(bundle, commands, verified_media=self._verified_media if verified_media is None else verified_media,
                            schema_inputs=schema_inputs, realm_id=self.session.identity["realm_id"])
         except CommandError as exc:
@@ -624,6 +653,12 @@ class Timeline(Checkout):
         self._commands.extend(copy.deepcopy(commands))
         self._steps.append(step)
         staged = copy.deepcopy(plan.bundle)
+        if hydrate_retained is not None:
+            original_mapping = self._command_bundle.get('source_mapping', {})
+            if 'pinned_documents' in original_mapping:
+                staged['source_mapping']['pinned_documents'] = copy.deepcopy(original_mapping['pinned_documents'])
+            else:
+                staged['source_mapping'].pop('pinned_documents', None)
         _retain_clip_rows(self.bundle, staged)
         self.bundle = staged
         self._runtime_document = self.bundle.get("source_mapping", {}).pop("_runtime_document", self._runtime_document)
