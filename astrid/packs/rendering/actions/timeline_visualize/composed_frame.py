@@ -348,6 +348,9 @@ def renderer_environment_identity(config: Mapping[str, Any] | None = None) -> st
         "r13-timeline-elements",
         project.parent / "astrid/core/timeline/schema/r13-legacy-elements.json",
     ))
+    from astrid.core.timeline import legacy_elements
+    paths.append(("selected-r13-timeline-elements",
+                  Path(legacy_elements.__file__).resolve().parent / "schema" / "r13-legacy-elements.json"))
     paths.append(("package-lock", project / "package-lock.json"))
     paths.append((
         "generated-effects",

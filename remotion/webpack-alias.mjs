@@ -138,7 +138,7 @@ export const assertOutsidePublicRoot = (publicRoot, candidate) => {
   return resolved;
 };
 
-const collectDeclaredPackElementAliases = (packRoots, scope) => {
+const collectDeclaredPackElementAliases = (packRoots, scope, {strict = false} = {}) => {
   const aliases = {};
   for (const packRoot of packRoots) {
     const manifest = readPackManifest(packRoot);
@@ -157,7 +157,11 @@ const collectDeclaredPackElementAliases = (packRoots, scope) => {
       const elementRoot = path.dirname(elementManifest);
       const kindRoot = path.dirname(elementRoot);
       if (path.basename(kindRoot) !== kind || !isDirectory(kindRoot)) continue;
-      aliases[`@${scope ?? `pack-${packId}-elements`}-${kind}`] = kindRoot;
+      const key = `@${scope ?? `pack-${packId}-elements`}-${kind}`;
+      if (strict && Object.hasOwn(aliases, key) && aliases[key] !== kindRoot) {
+        throw new Error(`conflicting render pack alias: ${key}`);
+      }
+      aliases[key] = kindRoot;
     }
   }
   return aliases;
@@ -166,6 +170,35 @@ const collectDeclaredPackElementAliases = (packRoots, scope) => {
 // V3 aliases come only from declared rendering entries. There is deliberately
 // no fallback scan of legacy `elements/` locations.
 export const packElementAliases = ({env = process.env, astridDir = repoRootOf()} = {}) => {
+  // A managed render supplies exactly the roots used by its Python registry.
+  // Do not broaden that selection with this process's checkout or environment.
+  if (Object.hasOwn(env, 'ASTRID_RENDER_PACK_ROOTS')) {
+    const roots = JSON.parse(env.ASTRID_RENDER_PACK_ROOTS);
+    if (!Array.isArray(roots)) throw new Error('invalid render pack roots');
+    const aliases = {};
+    for (const entry of roots) {
+      if (!entry || typeof entry.root !== 'string' || !path.isAbsolute(entry.root) ||
+          typeof entry.scope !== 'string' || !/^[A-Za-z0-9_-]+$/.test(entry.scope) ||
+          !isDirectory(entry.root) || !hasManifest(entry.root)) {
+        throw new Error('invalid render pack root');
+      }
+      const selected = collectDeclaredPackElementAliases([entry.root], entry.scope, {strict: true});
+      if (entry.scope === 'pack-rendering-elements') selected['@astrid-rendering'] = entry.root;
+      if (entry.legacy_schema !== undefined) {
+        if (entry.scope !== 'pack-rendering-elements' || typeof entry.legacy_schema !== 'string' ||
+            !path.isAbsolute(entry.legacy_schema) || path.basename(entry.legacy_schema) !== 'r13-legacy-elements.json' ||
+            !fs.existsSync(entry.legacy_schema)) throw new Error('invalid legacy element schema');
+        selected['../../astrid/core/timeline/schema/r13-legacy-elements.json$'] = entry.legacy_schema;
+      }
+      for (const [key, value] of Object.entries(selected)) {
+        if (Object.hasOwn(aliases, key) && aliases[key] !== value) {
+          throw new Error(`conflicting render pack alias: ${key}`);
+        }
+        aliases[key] = value;
+      }
+    }
+    return aliases;
+  }
   const inTree = packRootsIn(path.resolve(astridDir, 'astrid/packs'));
   const external = [];
   for (const rawRoot of (env.ASTRID_PACKS_PATH ?? '').split(path.delimiter)) {
@@ -179,6 +212,8 @@ export const packElementAliases = ({env = process.env, astridDir = repoRootOf()}
     ...collectDeclaredPackElementAliases(inTree),
     ...collectDeclaredPackElementAliases(external),
     ...selected,
+    ...(inTree.some((root) => path.basename(root) === 'rendering')
+      ? {'@astrid-rendering': path.resolve(astridDir, 'astrid/packs/rendering')} : {}),
   };
 };
 

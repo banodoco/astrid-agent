@@ -321,6 +321,68 @@ def _import_scope_for_element(element: ElementDefinition) -> str:
     return "managed-elements"
 
 
+def render_pack_roots(*, registry: ElementRegistry | None = None) -> list[dict[str, str]]:
+    """Return the pack roots and scopes for the actual host imports.
+
+    Use the same registry snapshot and selection rules as generation, including
+    effect owner imports and retained project revisions. A directory alias can
+    name only one kind directory, so refuse a mapping that would resolve any
+    generated import to a different element.
+    """
+    registry = registry if registry is not None else _element_registry()
+    plugins = {
+        kind: discover_plugins(kind, registry=registry)
+        for kind in sorted(OUTPUTS)
+    }
+    imported = [plugin for values in plugins.values() for plugin in values.values()
+                if plugin.root.joinpath("component.tsx").is_file()]
+    for element in registry.list(kind="effects", include_shadowed=True):
+        if element.id in plugins["effects"] and _component_is_host_importable(element):
+            imported.append(_plugin_from_element(element))
+
+    aliases: dict[tuple[str, str], Path] = {}
+    roots: set[tuple[str, str]] = set()
+    for plugin in imported:
+        element_root = plugin.root.resolve()
+        kind_root = element_root.parent
+        if element_root.name != plugin.plugin_id or kind_root.name != plugin.kind:
+            raise ValueError(f"render import does not match element path: {element_root}")
+        scope = plugin.import_scope or plugin.scope
+        key = (scope, plugin.kind)
+        if key in aliases and aliases[key] != kind_root:
+            raise ValueError(f"conflicting render import scope {scope!r} for {plugin.kind}")
+        aliases[key] = kind_root
+        pack_root = next((parent for parent in element_root.parents
+                          if any((parent / name).is_file()
+                                 for name in ("pack.yaml", "pack.yml", "pack.json"))), None)
+        if pack_root is None:
+            raise ValueError(f"render element has no owning pack manifest: {element_root}")
+        roots.add((str(pack_root), scope))
+    # Shared renderer contracts are needed even when Composition provides all
+    # of the rendering pack's component implementations itself.
+    for kind in sorted(OUTPUTS):
+        for element in registry.list(kind=kind, include_shadowed=True):
+            if (getattr(element, "source", None) != "pack:rendering"
+                    or element.metadata.get("render_key")):
+                continue
+            root = Path(element.root).resolve()
+            pack_root = next((parent for parent in root.parents
+                              if any((parent / name).is_file()
+                                     for name in ("pack.yaml", "pack.yml", "pack.json"))), None)
+            if pack_root is None:
+                raise ValueError(f"rendering element has no owning pack manifest: {root}")
+            roots.add((str(pack_root), "pack-rendering-elements"))
+    result = [{"root": root, "scope": scope} for root, scope in sorted(roots)]
+    for entry in result:
+        if entry["scope"] == "pack-rendering-elements":
+            from astrid.core.timeline import legacy_elements
+            schema = Path(legacy_elements.__file__).resolve().parent / "schema" / "r13-legacy-elements.json"
+            if not schema.is_file():
+                raise ValueError("installed legacy element schema is unavailable")
+            entry["legacy_schema"] = str(schema)
+    return result
+
+
 def _clip_type_aliases(effects: dict[str, EffectRecord]) -> dict[str, str]:
     from astrid.core.element.clip_types import clip_type_aliases
 

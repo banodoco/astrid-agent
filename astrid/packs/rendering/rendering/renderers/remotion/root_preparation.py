@@ -25,7 +25,8 @@ from astrid.core.rendering.remotion_runtime import RemotionRuntimeTools, probe_c
 
 def _compile_verified_canonical_transitions(
     props: dict[str, Any], *, fps: float, timeline_path: Path, assets_path: Path,
-    runtime_tools: RemotionRuntimeTools, project_dir: Path,
+    runtime_tools: RemotionRuntimeTools, project_dir: Path, pack_roots: list[dict[str, str]] | None = None,
+    registry_root: Path | None = None,
 ) -> None:
     """Compile canonical transition declarations at the host registry boundary.
 
@@ -51,8 +52,13 @@ def _compile_verified_canonical_transitions(
     # This selector was already admitted by the Remotion runtime status probe.
     # The webpack alias resolver must see the same external pack roots as the
     # host scene query path.
-    if ASTRID_PACKS_PATH in os.environ:
+    from astrid.core.rendering.project_elements import PACK_ROOTS_ENV, REGISTRY_ROOT_ENV
+    if pack_roots is not None:
+        environment[PACK_ROOTS_ENV] = json.dumps(pack_roots)
+    elif ASTRID_PACKS_PATH in os.environ:
         environment[ASTRID_PACKS_PATH] = os.environ[ASTRID_PACKS_PATH]
+    if registry_root is not None:
+        environment[REGISTRY_ROOT_ENV] = str(registry_root)
     payload = {"operation": "compile-canonical-transitions", "props": props,
                "basis": {"fps": fps}}
     try:
@@ -176,7 +182,9 @@ def _prepared_remotion_root(*args: Any, **kwargs: Any) -> Iterator[Any]:
     Path(parent).mkdir(parents=True, exist_ok=True)
     with TemporaryDirectory(prefix=".project-elements-", dir=parent) as temporary:
         registry, pack_roots = stage_project_elements(
-            config, Path(temporary), registry=backend.load_default_registry(project_root=backend.CHECKOUT_ROOT),
+            config, Path(temporary), registry=backend.load_default_registry(
+                project_root=backend.gen_effect_registry.TOOLS_DIR if backend.gen_effect_registry is not None
+                else backend.CHECKOUT_ROOT),
         )
         with _prepared_remotion_root_selected(
             *args, **kwargs, element_registry=registry, pack_roots=pack_roots,
@@ -236,8 +244,23 @@ def _prepared_remotion_root_selected(
     if element_registry is None:
         backend._regenerate_element_registries(project_dir, theme_path)
         registry_state = backend._effective_registry_state(theme_path)
+        if backend.gen_effect_registry is not None:
+            element_registry = backend.gen_effect_registry._element_registry()
+            if backend.gen_effect_registry.compute_generated_registry_state(registry=element_registry) != registry_state:
+                raise ValueError("render element registry changed during preparation")
     else:
         registry_state = backend._write_selected_element_registries(registry_root, element_registry)
+    render_pack_roots = (backend.gen_effect_registry.render_pack_roots(registry=element_registry)
+                         if backend.gen_effect_registry is not None else [])
+    from astrid.core.env_vars import ASTRID_REMOTION_VALIDATION_LAUNCH
+    if ASTRID_REMOTION_VALIDATION_LAUNCH in os.environ:
+        from astrid.core.rendering.remotion_runtime import _validated_runtime
+        validated_registry = _validated_runtime(project_dir)["registry"]
+        if validated_registry["mode"] == "source_settled":
+            selected_scopes = {row["scope"] for row in (pack_roots or [])}
+            base_roots = [row for row in render_pack_roots if row["scope"] not in selected_scopes]
+            if base_roots != validated_registry["renderer"]["observation"]["render_pack_roots"]:
+                raise ValueError("render pack roots differ from launch validation")
     # Render admission: the catalog and the active composition's generated
     # EFFECT_REGISTRY must agree.  A catalog effect that the registry cannot
     # mount would otherwise pass validation and silently drop to the base
@@ -371,6 +394,7 @@ def _prepared_remotion_root_selected(
                 asset_registry=resolved_registry,
                 **({"registry": element_registry} if element_registry is not None else {}),
             )
+            stage_summary["render_pack_roots"] = render_pack_roots
             if pack_roots:
                 stage_summary["project_pack_roots"] = pack_roots
                 stage_summary["project_registry_root"] = str(registry_root)
@@ -398,7 +422,8 @@ def _prepared_remotion_root_selected(
                 merged_props,
                 fps=composition_profile.fps_rational[0] / composition_profile.fps_rational[1],
                 timeline_path=timeline_path, assets_path=assets_path,
-                runtime_tools=runtime_tools, project_dir=project_dir,
+                runtime_tools=runtime_tools, project_dir=project_dir, pack_roots=render_pack_roots,
+                registry_root=registry_root,
             )
             staged_video.parent.mkdir(parents=True, exist_ok=True)
             props_path.write_text(json.dumps(merged_props), encoding="utf-8")
