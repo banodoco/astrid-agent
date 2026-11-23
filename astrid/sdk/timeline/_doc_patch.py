@@ -171,6 +171,17 @@ class Closure:
         mapping = self.bundle['source_mapping']['shots'].get(local, {}).get('item_id_map', {})
         return _remap_known_item_references(shot['payload'], {v: k for k, v in mapping.items()})
 
+    def read(self, physical, path):
+        """Read a captured value without materializing unrelated parent fields.
+
+        Parent occurrences are a projection of placements and published links,
+        so root and occurrence reads still use the complete projected payload.
+        value_at owns the returned value; the borrowed parent never escapes.
+        """
+        if physical == 'parent' and path and path[0] != 'occurrences':
+            return value_at(self.bundle['parent'], physical, path)
+        return value_at(self.payload(physical), physical, path)
+
     def binding(self, submitted, physical, **boundary):
         image = self.images[physical]
         result = {'ref': submitted, 'physical_ref': physical,

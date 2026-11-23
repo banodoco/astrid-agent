@@ -333,8 +333,7 @@ class CommitPatch:
             physical = closure.resolve(read['ref'])
         if expected is not None and physical != expected:
             raise CommandError('declared read changed physical binding', kind='binding_changed', ref=read['ref'])
-        payload = closure.payload(physical)
-        actual = value_at(payload, physical, read['path'])
+        actual = closure.read(physical, read['path'])
         if read['kind'] == 'field':
             if not equal(actual, read['state']):
                 raise CommandError('declared field read does not match', kind='previous_value_mismatch',
