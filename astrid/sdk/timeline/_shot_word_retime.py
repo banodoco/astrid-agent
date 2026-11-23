@@ -182,6 +182,12 @@ def _exact_word(bundle, pool, owner, field, declaration):
     end = start + _duration(source_clip)
     rate = _time_fraction(source_clip.get("speed") or 1, "speed")
     source_start = source_clip.get("from") or 0
+    if source_clip.get("to") is not None:
+        # A hold controls the clip span, but playback still stops at source out.
+        source_end = source_to_timeline_time(
+            source_clip["to"], source_start=source_start, timeline_start=start, speed=rate,
+        )
+        end = min(end, source_end)
     origin = source_to_timeline_time(0, source_start=source_start, timeline_start=start, speed=rate)
     edges = [
         tuple(source_to_timeline_time(stored[item.word_id][edge], source_start=source_start,

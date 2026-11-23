@@ -187,6 +187,21 @@ def test_provable_word_anchor_refuses_voice_trim_change(voice_trim):
     assert candidate == before
 
 
+def test_stationary_word_anchor_refuses_source_out_trim_with_unchanged_hold():
+    baseline = _with_provable_anchor()
+    voice, _ = _shot_clips(baseline)
+    voice["hold"] = 4
+    validate_final_candidate(baseline, baseline=baseline)
+    candidate = copy.deepcopy(baseline)
+    voice, _ = _shot_clips(candidate)
+    voice["to"] = 5.75  # "stop" still starts at 5.5, but ends at 6 in the transcript.
+    before = copy.deepcopy(candidate)
+
+    with pytest.raises(AuthoringBundleError, match=re.escape(GUIDANCE)):
+        validate_final_candidate(candidate, baseline=baseline)
+    assert candidate == before
+
+
 def test_stationary_ambiguous_word_requires_unchanged_narration_search():
     baseline = _with_provable_anchor("again")
     candidate = copy.deepcopy(baseline)
