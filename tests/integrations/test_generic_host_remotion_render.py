@@ -407,6 +407,48 @@ def test_generic_host_remotion_register_claim_execute_settle_and_cas(
         daemon.stop()
 
 
+def test_short_contract_builtin_element_through_command_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, real_runtime, remotion_launch: Path
+) -> None:
+    """Render a two-second visual element through the real host and Runtime.
+
+    This first contract case deliberately exercises the existing end-to-end
+    lifecycle, including output registration, before adding cases that need
+    collection and admitted project packs.
+    """
+    make_media = _make_media
+
+    def make_contract_media(root: Path) -> tuple[Path, Path]:
+        timeline_path, assets_path = make_media(root)
+        timeline = json.loads(timeline_path.read_text(encoding="utf-8"))
+        timeline["tracks"] = [{"id": "picture", "kind": "visual", "label": "Picture"}]
+        timeline["clips"] = [{
+            "id": "builtin-colour",
+            "at": 0,
+            "hold": 2,
+            "track": "picture",
+            "clipType": "audio-reactive-colour",
+            "params": {"schemaVersion": 1, "initialColor": "#2ecc71", "events": []},
+        }]
+        timeline_path.write_text(json.dumps(timeline), encoding="utf-8")
+        return timeline_path, assets_path
+
+    monkeypatch.setattr(sys.modules[__name__], "_make_media", make_contract_media)
+    test_generic_host_remotion_register_claim_execute_settle_and_cas(
+        tmp_path, real_runtime, remotion_launch
+    )
+
+    # Sampling the encoded output makes a blank or truncated render fail too.
+    output = tmp_path / "attempt" / "outputs" / "generic.mp4"
+    sample = subprocess.run(
+        ["ffmpeg", "-v", "error", "-ss", "1", "-i", str(output), "-frames:v", "1",
+         "-vf", "format=rgb24,crop=1:1:0:0", "-f", "rawvideo", "-"],
+        check=True, capture_output=True,
+    ).stdout
+    assert len(sample) == 3
+    assert all(abs(actual - expected) <= 12 for actual, expected in zip(sample, (46, 204, 113)))
+
+
 def test_generic_host_normal_imported_theme_reaches_props_and_rejects_local_source(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, real_runtime
 ) -> None:
