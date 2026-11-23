@@ -6,7 +6,6 @@ import readline from 'node:readline';
 import {createRequire, syncBuiltinESMExports} from 'node:module';
 import { openBrowser, renderFrames, selectComposition } from '@remotion/renderer';
 import { sharedBrowserExecutable } from '../shared-browser.mjs';
-import { applyFrameRequestEnvironment } from './frame-request-environment.mjs';
 
 // Retain the owner's startup temp context before requests can replace TMPDIR.
 // A warm Chrome profile must outlive each invocation's temporary media tree.
@@ -310,7 +309,16 @@ function frameDiagnostics(request, props, bounds = {}) {
   };
 }
 
-export const _test = { framesOptions, frameDiagnostics, boundsCollector };
+// Keep this worker self-contained: supported host fixtures may copy the
+// worker without its optional sibling modules.
+const applyFrameRequestEnvironment = (target, environment) => {
+  delete target.ASTRID_RENDER_PACK_ROOTS;
+  delete target.ASTRID_RENDER_REGISTRY_ROOT;
+  delete target.ASTRID_PACKS_PATH;
+  Object.assign(target, environment ?? {});
+};
+
+export const _test = { framesOptions, frameDiagnostics, boundsCollector, applyFrameRequestEnvironment };
 
 async function renderRequest(request) {
   if (sessionCleanupError) throw sessionCleanupError;

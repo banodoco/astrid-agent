@@ -3,7 +3,6 @@ import test from 'node:test';
 // The worker's standalone mode reads stdin; end it before importing in a test.
 process.stdin.push(null);
 const {_test} = await import('./astrid-frame-worker.mjs');
-const {applyFrameRequestEnvironment} = await import('./frame-request-environment.mjs');
 
 test('request roots replace prior roots and an ordinary request clears both projections', () => {
   const target = {
@@ -14,7 +13,7 @@ test('request roots replace prior roots and an ordinary request clears both proj
     ASTRID_RENDER_REGISTRY_ROOT: '/stale/registry',
   };
   const roots = JSON.stringify([{root: '/host/selected', scope: 'pack-selected-elements', kind_roots: {}}]);
-  applyFrameRequestEnvironment(target, {
+  _test.applyFrameRequestEnvironment(target, {
     ASTRID_RENDER_PACK_ROOTS: roots,
     ASTRID_RENDER_REGISTRY_ROOT: '/host/selected-registry',
     TMPDIR: '/task/one',
@@ -23,7 +22,7 @@ test('request roots replace prior roots and an ordinary request clears both proj
   assert.equal(target.ASTRID_RENDER_REGISTRY_ROOT, '/host/selected-registry');
   assert.equal(target.TMPDIR, '/task/one');
 
-  applyFrameRequestEnvironment(target, {TMPDIR: '/task/two'});
+  _test.applyFrameRequestEnvironment(target, {TMPDIR: '/task/two'});
   assert.equal('ASTRID_RENDER_PACK_ROOTS' in target, false);
   assert.equal('ASTRID_RENDER_REGISTRY_ROOT' in target, false);
   assert.equal(target.TMPDIR, '/task/two');

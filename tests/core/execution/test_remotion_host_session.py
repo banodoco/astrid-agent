@@ -138,34 +138,6 @@ def test_render_roots_must_equal_launch_validated_selection(tmp_path, monkeypatc
         manager.close()
 
 
-def test_frame_environment_helper_is_bound_to_the_host_lease(tmp_path, monkeypatch):
-    manager, _ = owner(tmp_path)
-    env = environment(tmp_path)
-    helper = Path(env["ASTRID_REMOTION_PROJECT_DIR"]) / "src/frame-request-environment.mjs"
-    helper.write_text("export function applyFrameRequestEnvironment() {}\n")
-    lease = manager.lease(env, attempt=tmp_path)
-    try:
-        helper.write_text("export function applyFrameRequestEnvironment() { return false; }\n")
-        with pytest.raises(ValueError, match="host-selected renderer input changed after task admission"):
-            manager._validate_request(lease, request(env)["request"])
-    finally:
-        lease.close()
-        manager.close()
-
-
-def test_frame_environment_helper_symlink_cannot_escape_renderer_project(tmp_path):
-    manager, _ = owner(tmp_path)
-    env = environment(tmp_path)
-    project = Path(env["ASTRID_REMOTION_PROJECT_DIR"])
-    outside = tmp_path / "outside-frame-request-environment.mjs"
-    outside.write_text("export function applyFrameRequestEnvironment() {}\n")
-    helper = project / "src/frame-request-environment.mjs"
-    helper.symlink_to(outside)
-    with pytest.raises(ValueError, match="host frame environment helper escapes project"):
-        manager.lease(env, attempt=tmp_path)
-    manager.close()
-
-
 def test_host_populates_missing_source_settled_roots_from_validated_runtime(tmp_path, monkeypatch):
     from astrid.core.rendering import remotion_runtime
 

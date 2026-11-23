@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -85,6 +86,39 @@ def test_native_defaults_and_explicit_roots_ignore_later_cwd(tmp_path: Path) -> 
         """, str(ROOT), str(MODULE), str(tmp_path),
     )
     assert result['@pack-rendering-elements-effects'].startswith(str(ROOT / 'astrid/packs/rendering/'))
+
+
+def test_copied_frame_worker_clears_project_selectors_without_optional_sibling(tmp_path: Path) -> None:
+    copied_remotion = tmp_path / "remotion"
+    copied_source = copied_remotion / "src"
+    copied_source.mkdir(parents=True)
+    shutil.copy2(ROOT / "remotion" / "src" / "astrid-frame-worker.mjs",
+                 copied_source / "astrid-frame-worker.mjs")
+    shutil.copy2(ROOT / "remotion" / "shared-browser.mjs", copied_remotion / "shared-browser.mjs")
+    (copied_remotion / "node_modules").symlink_to(ROOT / "remotion" / "node_modules", target_is_directory=True)
+
+    result = _node_json(
+        """
+        import assert from 'node:assert/strict';
+        import {pathToFileURL} from 'node:url';
+        process.stdin.push(null);
+        const {_test} = await import(pathToFileURL(process.argv[1]).href);
+        const target = {PATH: '/owner/bin'};
+        _test.applyFrameRequestEnvironment(target, {
+          ASTRID_RENDER_PACK_ROOTS: '[{"root":"/project/packs"}]',
+          ASTRID_RENDER_REGISTRY_ROOT: '/project/registry',
+          ASTRID_PACKS_PATH: '/project/packs',
+        });
+        _test.applyFrameRequestEnvironment(target, {TMPDIR: '/task/tmp'});
+        assert.equal('ASTRID_RENDER_PACK_ROOTS' in target, false);
+        assert.equal('ASTRID_RENDER_REGISTRY_ROOT' in target, false);
+        assert.equal('ASTRID_PACKS_PATH' in target, false);
+        assert.equal(target.PATH, '/owner/bin');
+        console.log(JSON.stringify({cleared: true, path: target.PATH}));
+        """,
+        str(copied_source / "astrid-frame-worker.mjs"),
+    )
+    assert result == {"cleared": True, "path": "/owner/bin"}
 
 
 @pytest.mark.integration

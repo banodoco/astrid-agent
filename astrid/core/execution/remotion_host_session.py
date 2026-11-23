@@ -489,13 +489,7 @@ class _HostLease:
         self.attempt = attempt
         self.project_selection = project_selection
         self.hold = None
-        inputs = [node, cli, project / "src/astrid-frame-worker.mjs"]
-        request_environment_helper = project / "src/frame-request-environment.mjs"
-        if request_environment_helper.exists():
-            if not request_environment_helper.resolve().is_relative_to(project):
-                raise ValueError("host frame environment helper escapes project")
-            inputs.append(request_environment_helper)
-        self.input_identities = {p: _file_identity(p) for p in inputs}
+        self.input_identities = {p: _file_identity(p) for p in (node, cli, project / "src/astrid-frame-worker.mjs")}
         project_stat = project.stat()
         self.selected_identity = (
             str(project), (project_stat.st_dev, project_stat.st_ino, project_stat.st_uid),
