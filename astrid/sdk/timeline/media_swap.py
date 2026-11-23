@@ -77,9 +77,14 @@ def capture_document_swaps(base, candidate, transport, verified_media=()):
     if not commands:
         return [], copy.deepcopy(base), list(verified_media)
     original, target = State(base), State(candidate)
+    working = copy.deepcopy(base)
+    working_state = State(working)
+    replacements = []
+    candidate_placements = {row['occurrence_id']: row for row in candidate.get('placements', [])}
     for placement in base.get('placements', []):
         owner = 'occurrence:' + placement['occurrence_id']
-        if placement not in candidate.get('placements', []):
+        new_placement = candidate_placements.get(placement['occurrence_id'])
+        if new_placement is None or new_placement.get('shot_id') != placement.get('shot_id'):
             continue
         before = {row['id']: row for row in original.collection(owner, 'clip')}
         after = {row['id']: row for row in target.collection(owner, 'clip')}
@@ -98,10 +103,22 @@ def capture_document_swaps(base, candidate, transport, verified_media=()):
             retained = original.registry(owner)['assets'].get(new['asset'])
             if retained is not None and retained != entry:
                 raise ValueError('clip media swap cannot rebind an existing asset alias')
-    inputs = _media_admission_inputs(base, candidate, transport)
+            working_state.entity(owner + '/clip:' + clip_id)['asset'] = new['asset']
+            working_state.registry(owner)['assets'][new['asset']] = copy.deepcopy(entry)
+            replacements.append((_object_id(entry), new_kind))
+    if not replacements:
+        return [], copy.deepcopy(base), list(verified_media)
+    commands = emit_document_commands(base, working)
+    inputs = _media_admission_inputs(base, working, transport)
     verified = _raw_inputs(transport, base['project_id'], inputs, verified_media)
+    for object_id, kind in replacements:
+        for row in verified:
+            if row.get('object_id', row.get('selection', {}).get('object_id')) == object_id:
+                media_type = row.get('media_type')
+                if not isinstance(media_type, str) or media_type.split('/')[0] != kind:
+                    raise ValueError('replacement media type differs from Runtime metadata')
     if inputs:
         commands.append({'schema_version': 1, 'op': 'media.admit', 'version': '1',
                          'select': None, 'args': {'inputs': inputs}})
     plan = execute(base, commands, verified_media=verified)
-    return plan.commands, copy.deepcopy(candidate), verified
+    return plan.commands, working, verified

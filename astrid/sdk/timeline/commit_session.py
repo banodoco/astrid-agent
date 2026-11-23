@@ -782,7 +782,8 @@ class Timeline(Checkout):
                           self._resolve_pending_key(idempotency_key) if idempotency_key is not None else None)
         pending_id, pending_path, pending_part, pending_identity = pending_target if pending_target is not None else (None, None, None, None)
         if function:
-            replay = self.session.resolve_acknowledged(idempotency_key, dry_run=dry_run)
+            replay = self.session.resolve_acknowledged(idempotency_key, dry_run=dry_run,
+                                                       via=getattr(self, '_commit_via', 'python'))
             if replay is not None:
                 return replay
         if commands is not None:
@@ -821,6 +822,7 @@ class Timeline(Checkout):
                     raise TimelineEditError("local edits differ from the original request; reopen to reconcile it")
                 try:
                     result = self.session.flush(idempotency_key=idempotency_key, dry_run=dry_run,
+                                                via=getattr(self, '_commit_via', 'python'),
                                                 release_conflict=not function)
                 except CommitRefused as exc:
                     if function:
@@ -911,6 +913,7 @@ class Timeline(Checkout):
             try:
                 result = self.session.submit(
                     working._commands, label=commit_label, steps=steps, merge=effective_merge, reads=reads,
+                    via=getattr(self, '_commit_via', 'python'),
                     idempotency_key=idempotency_key, dry_run=dry_run, expected_state=state, base=base,
                     evaluation=evaluation,
                     pending_id=pending_id,

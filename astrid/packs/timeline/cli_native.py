@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 import sys
 from collections.abc import Mapping
 from pathlib import Path
@@ -473,11 +474,16 @@ def commit_swap(session, parsed, options):
             clip = t.clip(parsed.clip, near=parsed.near, cut=parsed.cut)
         else:
             cut = int(parsed.cut) if str(parsed.cut).isdigit() else parsed.cut
-            clip = t.cut_picture(cut) if isinstance(cut, str) else t.cut(cut).picture
+            if isinstance(cut, str) and re.fullmatch(r'c\d+[a-z]?', cut.strip().lower()):
+                name = cut.strip().lower()
+                clip = t.cut_picture(t._cut_id(name) or name)
+            else:
+                clip = t.cut(cut).picture
         if clip is None:
             raise TimelineEditError('no clip matches the selected target')
         clip.swap_asset(parsed.swap_asset)
 
+    timeline._commit_via = options.get('via', 'python')
     return timeline.commit(swap, label='Swap clip media',
                            dry_run=parsed.dry_run,
                            idempotency_key=parsed.idempotency_key)

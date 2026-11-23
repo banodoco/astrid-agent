@@ -976,7 +976,7 @@ class TimelineSession:
                idempotency_key=None, dry_run=False, expected_state, base=None, evaluation=None,
                pending_id=None, pending_path=None, pending_part=None, pending_how="retry", group_id=None,
                pending_identity=None,
-               logical_key=None, rationale=None, imports=()):
+               logical_key=None, rationale=None, imports=(), via="python"):
         """Freeze an already captured v2 batch, without recapturing its guards.
 
         A replacement is allowed only after an explicit conflict. Transport
@@ -1040,7 +1040,7 @@ class TimelineSession:
         release_conflict = (not isinstance(evaluation, dict)
                             or evaluation.get("kind") != "function"
                             or evaluation.get("count", 0) >= 3)
-        return self._flush(idempotency_key=idempotency_key, dry_run=dry_run, prepare=prepare,
+        return self._flush(idempotency_key=idempotency_key, dry_run=dry_run, via=via, prepare=prepare,
                            release_conflict=release_conflict)
 
     def _flush(self, *, idempotency_key=None, dry_run=False, via="python", prepare=None,
