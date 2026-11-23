@@ -9,6 +9,8 @@ import pytest
 
 from astrid import console
 from astrid.core import gateway
+from astrid.core.gateway import dispatch as gateway_dispatch
+from astrid.core.generation import cli as generation_cli
 from astrid.core.execution.generic_host import GenericPackHost, RuntimeProtocolClient
 from astrid.core.generation import entries
 from astrid.sdk import command_timing
@@ -56,16 +58,31 @@ def test_workflow_input_delay_is_attributed_on_real_admission(network, real_runt
                "--project", project.data["project_id"], "--prompt", "a silver paper boat",
                "--no-wait", "--json", "--timings"]
 
+    class Clock:
+        # Patch only the modules that capture command timings. All other code,
+        # including the real resolver and daemon, keeps the process clock.
+        now = time.monotonic()
+
+        def monotonic(self):
+            return self.now
+
+        def __getattr__(self, name):
+            return getattr(time, name)
+
+    clock = Clock()
+    for module in (console, gateway, gateway_dispatch, generation_cli, command_timing):
+        monkeypatch.setattr(module, "time", clock)
+
     def run():
-        start = time.monotonic()
+        start = clock.monotonic()
         code = console.main(command)
-        wall = time.monotonic() - start
+        wall = clock.monotonic() - start
         captured = capsys.readouterr()
         assert code == 0, captured.out + captured.err
         payload = json.loads(captured.out)
         assert payload.get("ok") and payload.get("kernel_task_id"), payload
         rows = payload["timings"]
-        assert abs(sum(row["seconds"] for row in rows) - wall) <= 0.1 * wall
+        assert sum(row["seconds"] for row in rows) == wall
         matching = [row for row in rows if row["stage"] == "workflow inputs"]
         assert len(matching) == 1 and matching[0]["parent"] is None, matching
         return payload["kernel_task_id"], rows, matching[0]["seconds"]
@@ -77,14 +94,14 @@ def test_workflow_input_delay_is_attributed_on_real_admission(network, real_runt
 
         def delayed_resolve(*args, **kwargs):
             calls.append(True)
-            time.sleep(1.5)
+            clock.now += 1.5
             return resolve(*args, **kwargs)
 
         monkeypatch.setattr(entries, "resolve_workflow_inputs", delayed_resolve)
         delayed_id, rows, delayed = run()
         assert calls == [True]
         assert delayed_id != baseline_id
-        assert delayed - baseline >= 1.4, (baseline, delayed)
+        assert delayed - baseline == 1.5, (baseline, delayed)
         monkeypatch.setattr(entries, "resolve_workflow_inputs", resolve)
         dispatch = gateway.main
         dispatch_calls = []
@@ -93,16 +110,17 @@ def test_workflow_input_delay_is_attributed_on_real_admission(network, real_runt
             # Gateway dispatch starts before generation's TimingCollector exists.
             assert command_timing._current.get() is None
             dispatch_calls.append(True)
-            time.sleep(1.5)
+            clock.now += 1.5
             return dispatch(*args, **kwargs)
 
         monkeypatch.setattr(gateway, "main", delayed_dispatch)
-        outside_id, outside_rows, _ = run()
+        outside_id, outside_rows, outside = run()
         assert dispatch_calls == [True]
         assert outside_id not in {baseline_id, delayed_id}
         def stage_seconds(rows, name):
             return sum(row["seconds"] for row in rows if row["stage"] == name)
-        assert stage_seconds(outside_rows, "command dispatch") - stage_seconds(baseline_rows, "command dispatch") >= 1.4
+        assert outside == baseline
+        assert stage_seconds(outside_rows, "command dispatch") - stage_seconds(baseline_rows, "command dispatch") == 1.5
         diagnostic = StringIO()
         command_timing.print_timings(rows, file=diagnostic)
         assert "workflow inputs:" in diagnostic.getvalue(), diagnostic.getvalue()
