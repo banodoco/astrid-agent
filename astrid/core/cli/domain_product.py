@@ -414,8 +414,6 @@ def run_product_family(
         raise ProductRegistryError(
             f"family {family!r} parser did not configure a handler"
         )
-    if output_stream is None:
-        return int(handler(parsed))
     from astrid.core.cli.domain_output import output_stream_scope
 
     with output_stream_scope(output_stream):
