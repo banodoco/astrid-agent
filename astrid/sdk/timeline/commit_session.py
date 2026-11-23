@@ -566,7 +566,7 @@ class Timeline(Checkout):
         if (not isinstance(element, dict) or set(element) != {"packId", "id", "kind", "revision"}
                 or any(not isinstance(value, str) or not value for value in element.values())):
             raise ValueError("Element must be an owner-qualified admitted reference")
-        if clip.shot_id in (PARENT_SHOT, "parent"):
+        if clip.shot_id == PARENT_SHOT:
             target = f"parent/clip:{clip.id}"
         else:
             owners = [row for row in self.bundle["placements"] if row.get("shot_id") == clip.shot_id]
