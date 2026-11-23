@@ -4,7 +4,6 @@ import shutil
 import tempfile
 import threading
 import unittest
-import ctypes
 from pathlib import Path
 
 from astrid.core import element as element_module
@@ -197,15 +196,9 @@ class ElementRegistryTest(unittest.TestCase):
                         )
                         worker.start()
                         self.assertTrue(selected.wait(5), "schema lookup did not reach binding barrier")
-                        libc = ctypes.CDLL(None, use_errno=True)
-                        renameat2 = libc.renameat2
-                        renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p,
-                                              ctypes.c_uint]
-                        renameat2.restype = ctypes.c_int
-                        result = renameat2(-100, os.fsencode(old_root), -100, os.fsencode(staged_root), 2)
-                        if result != 0:
-                            error = ctypes.get_errno()
-                            raise OSError(error, os.strerror(error))
+                        # The reader is held at the barrier until both renames finish.
+                        old_root.rename(Path(tmp) / "demo.old")
+                        staged_root.rename(old_root)
                         exchanged.set()
                         worker.join(5)
                         self.assertFalse(worker.is_alive(), "schema lookup remained blocked after pack exchange")
