@@ -76,7 +76,13 @@ class CaptureSceneLabels:
         ids = [clip["id"] for clip in clips]
         if len(set(ids)) != len(ids) or set(ids) != set(self._addresses):
             raise SceneQueryUnavailable("exact projected clip address mapping required")
-        answers = host_frames_at(props, self._basis, frames)
+        from astrid.packs.rendering.rendering.renderers.remotion.root_preparation import scene_selectors
+
+        render_roots, registry_root = scene_selectors()
+        selectors = {} if render_roots is None and registry_root is None else {
+            "_render_roots": render_roots, "_registry_root": registry_root,
+        }
+        answers = host_frames_at(props, self._basis, frames, **selectors)
         if ([answer.get("frame") for answer in answers] != list(frames)
                 or any(answer.get("width") != self._basis["width"]
                        or answer.get("height") != self._basis["height"] for answer in answers)
@@ -332,12 +338,12 @@ def _render_registry_cache_inputs(config: Mapping[str, Any] | None) -> tuple[lis
                    (generator.TOOLS_DIR / "remotion" if generator is not None else _checkout_root() / "remotion"))
     composition_manifest = project / "node_modules/@banodoco/timeline-composition/package.json"
     if generator is None or not composition_manifest.is_file():
-        # Source-only provisioned bundles still import the shared UI. Their
-        # selected rendering implementation is the module executing them. An
-        # unprovisioned project cannot resolve generated imports; bind that
-        # state distinctly until its Composition package becomes available.
-        roots: list[dict[str, Any]] = [{"unavailable": "generator" if generator is None else "composition"}]
-        rendering_roots = [Path(run.__file__).resolve().parents[3]]
+        # Without the selected registry we cannot prove the complete import
+        # graph. Refuse cache reuse and still hash the selected project's
+        # in-tree rendering sources rather than the executing Python package.
+        roots: list[dict[str, Any]] = [{"unavailable": "generator" if generator is None else "composition",
+                                       "nonce": uuid.uuid4().hex, "project": str(project.resolve())}]
+        rendering_roots = [project.resolve().parent / "astrid/packs/rendering"]
     else:
         registry = generator._element_registry()
 

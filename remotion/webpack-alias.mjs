@@ -1,6 +1,7 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import {fileURLToPath} from 'node:url';
+import {createRequire} from 'node:module';
 const MANIFEST_NAMES = ['pack.yaml', 'pack.yml', 'pack.json'];
 const ELEMENT_KINDS = new Set(['effect', 'effects', 'animation', 'animations', 'transition', 'transitions']);
 const CANONICAL_KIND = {
@@ -29,45 +30,34 @@ const readText = (file) => {
   }
 };
 
-const unquote = (value) => value.trim().replace(/^(['"])(.*)\1$/, '$2');
-
-const parseYamlManifest = (text) => {
-  const id = text.match(/^id:\s*(['"]?)([A-Za-z0-9_-]+)\1\s*$/m)?.[2];
-  const rendering = {};
-  let inRendering = false;
-  let current = null;
-  for (const line of text.split(/\r?\n/)) {
-    if (/^\S/.test(line)) {
-      inRendering = /^rendering:\s*$/.test(line);
-      current = null;
-      continue;
-    }
-    if (!inRendering) continue;
-    const key = line.match(/^  ([^\s:#][^:#]*):\s*$/)?.[1]?.trim();
-    if (key) {
-      current = {key, type: undefined, path: undefined};
-      rendering[key] = current;
-      continue;
-    }
-    if (!current) continue;
-    const type = line.match(/^    type:\s*([^#]+?)\s*(?:#.*)?$/)?.[1];
-    if (type) current.type = unquote(type);
-    const declaredPath = line.match(/^    path:\s*([^#]+?)\s*(?:#.*)?$/)?.[1];
-    if (declaredPath) current.path = unquote(declaredPath);
-  }
-  return {id, rendering};
-};
-
-const readPackManifest = (packRoot) => {
+const readPackManifest = (packRoot, astridDir) => {
   for (const name of MANIFEST_NAMES) {
     const text = readText(path.join(packRoot, name));
     if (text === null) continue;
-    try {
-      const json = JSON.parse(text);
-      return {id: json.id, rendering: json.rendering ?? {}};
-    } catch {
-      return parseYamlManifest(text);
+    let manifest;
+    if (name.endsWith('.json')) {
+      manifest = JSON.parse(text);
+    } else {
+      let moduleRoot;
+      try { moduleRoot = nativeModuleDir(); }
+      catch { moduleRoot = path.join(astridDir, 'remotion'); }
+      const require = createRequire(path.join(moduleRoot, 'package.json'));
+      let yaml;
+      try {
+        yaml = require('js-yaml');
+      } catch (error) {
+        if (error.code !== 'MODULE_NOT_FOUND') throw error;
+        // Some provisioned hosts expose dependencies through the selected
+        // esbuild package's real installation rather than a flat node_modules.
+        yaml = createRequire(fs.realpathSync(require.resolve('esbuild')))('js-yaml');
+      }
+      manifest = yaml.load(text);
     }
+    if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest) ||
+        (manifest.rendering !== undefined && (!manifest.rendering || typeof manifest.rendering !== 'object' || Array.isArray(manifest.rendering)))) {
+      throw new Error(`invalid pack manifest: ${path.join(packRoot, name)}`);
+    }
+    return {id: manifest.id, rendering: manifest.rendering ?? {}};
   }
   return {};
 };
@@ -138,10 +128,10 @@ export const assertOutsidePublicRoot = (publicRoot, candidate) => {
   return resolved;
 };
 
-const collectDeclaredPackElementAliases = (packRoots, scope, {strict = false} = {}) => {
+const collectDeclaredPackElementAliases = (packRoots, scope, {strict = false, astridDir = repoRootOf()} = {}) => {
   const aliases = {};
   for (const packRoot of packRoots) {
-    const manifest = readPackManifest(packRoot);
+    const manifest = readPackManifest(packRoot, astridDir);
     const packId = manifest.id || path.basename(packRoot);
     for (const [rawKey, declaration] of Object.entries(manifest.rendering ?? {})) {
       if (!declaration || declaration.type !== 'element' || typeof declaration.path !== 'string') continue;
@@ -186,7 +176,7 @@ export const packElementAliases = ({env = process.env, astridDir = repoRootOf()}
       if (entry.kind_roots === undefined) {
         // Compatibility for standalone callers which still send the original
         // staged-pack carrier. Managed renders always send kind_roots.
-        selected = collectDeclaredPackElementAliases([entry.root], entry.scope, {strict: true});
+        selected = collectDeclaredPackElementAliases([entry.root], entry.scope, {strict: true, astridDir});
       } else {
         if (!entry.kind_roots || typeof entry.kind_roots !== 'object' || Array.isArray(entry.kind_roots)) {
           throw new Error('invalid render kind roots');
@@ -225,11 +215,11 @@ export const packElementAliases = ({env = process.env, astridDir = repoRootOf()}
   }
   const selected = {};
   for (const {root, scope} of JSON.parse(env.ASTRID_RENDER_PACK_ROOTS ?? '[]')) {
-    Object.assign(selected, collectDeclaredPackElementAliases([root], scope));
+    Object.assign(selected, collectDeclaredPackElementAliases([root], scope, {astridDir}));
   }
   return {
-    ...collectDeclaredPackElementAliases(inTree),
-    ...collectDeclaredPackElementAliases(external),
+    ...collectDeclaredPackElementAliases(inTree, undefined, {astridDir}),
+    ...collectDeclaredPackElementAliases(external, undefined, {astridDir}),
     ...selected,
     ...(inTree.some((root) => path.basename(root) === 'rendering')
       ? {'@astrid-rendering': path.resolve(astridDir, 'astrid/packs/rendering')} : {}),
@@ -274,15 +264,29 @@ const primitiveAliases = (projectDir) => {
 };
 
 const hostResourcePlugins = new Map();
+const usesLegacyCarrier = (rawRoots) => {
+  const roots = rawRoots === undefined ? null : JSON.parse(rawRoots);
+  return Array.isArray(roots) && roots.length > 0 &&
+    roots.every(entry => entry && entry.kind_roots === undefined);
+};
 const hostResourcePlugin = (remotionRoot) => {
   if (!hostResourcePlugins.has(remotionRoot)) {
     hostResourcePlugins.set(remotionRoot, {apply(compiler) {
       compiler.hooks.normalModuleFactory.tap('AstridHostResources', (factory) => {
         factory.hooks.beforeResolve.tap('AstridHostResources', (data) => {
           if (!data) return;
-          const selected = selectedHostResource({remotionRoot, issuer: data.contextInfo?.issuer,
-            request: data.request});
+          const issuer = data.contextInfo?.issuer;
+          const selected = selectedHostResource({remotionRoot, issuer, request: data.request});
           if (selected) data.request = selected;
+          else if (process.env.ASTRID_RENDER_REGISTRY_ROOT && usesLegacyCarrier(process.env.ASTRID_RENDER_PACK_ROOTS) &&
+                   /^\.\/(effects|animations|transitions)\.generated$/.test(data.request)) {
+            // The legacy public alias map remains usable by standalone
+            // resolvers. In webpack it must not redirect another issuer.
+            if (typeof issuer !== 'string' || !path.isAbsolute(issuer)) {
+              throw new Error('generated registry import requires an absolute issuer');
+            }
+            data.request = path.resolve(path.dirname(issuer), data.request);
+          }
         });
       });
     }});
@@ -295,11 +299,9 @@ const applyAliasesForRoot = (currentConfiguration, remotionRoot) => {
   const packAliases = packElementAliases({astridDir: repoRoot});
   const selectedRegistries = {};
   const rawRoots = process.env.ASTRID_RENDER_PACK_ROOTS;
-  const roots = rawRoots === undefined ? null : JSON.parse(rawRoots);
   // Older standalone integrations use only {root, scope}. Keep their public
   // alias map stable; managed callers always supply kind_roots, even if empty.
-  const legacyCarrier = Array.isArray(roots) && roots.length > 0 &&
-    roots.every(entry => entry && entry.kind_roots === undefined);
+  const legacyCarrier = usesLegacyCarrier(rawRoots);
   if (legacyCarrier && process.env.ASTRID_RENDER_REGISTRY_ROOT) {
     for (const kind of ['effects', 'animations', 'transitions']) {
       selectedRegistries[`./${kind}.generated$`] = path.resolve(

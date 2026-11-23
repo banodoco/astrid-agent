@@ -106,6 +106,38 @@ def test_two_task_leases_reuse_original_then_host_shutdown_waits_and_proves(tmp_
     assert events == [("track", processes[0]), ("untrack", processes[0])]
 
 
+def test_render_roots_must_equal_launch_validated_selection(tmp_path, monkeypatch):
+    from astrid.core.rendering import remotion_runtime
+
+    manager, _ = owner(tmp_path)
+    env = environment(tmp_path)
+    roots = [{"root": "/selected", "scope": "pack-selected-elements", "kind_roots": {}}]
+    calls = []
+    def validated(project, *, environment):
+        calls.append((project, environment))
+        return {"registry": {"mode": "source_settled", "renderer": {
+            "observation": {"render_pack_roots": roots}}}}
+    monkeypatch.setattr(remotion_runtime, "_validated_runtime", validated)
+    lease = manager.lease(env, attempt=tmp_path)
+    try:
+        frame = request(env)["request"]
+        frame["environment"]["ASTRID_RENDER_PACK_ROOTS"] = json.dumps(roots)
+        manager._validate_request(lease, frame)
+        assert calls[-1] == (lease.project, lease.environment)
+        frame["environment"]["ASTRID_RENDER_PACK_ROOTS"] = json.dumps([{"root": "/foreign"}])
+        with pytest.raises(ValueError, match="differ from launch"):
+            manager._validate_request(lease, frame)
+        frame["environment"]["ASTRID_RENDER_PACK_ROOTS"] = "[invalid"
+        with pytest.raises(ValueError, match="unavailable"):
+            manager._validate_request(lease, frame)
+        frame["environment"] = {"ASTRID_RENDER_REGISTRY_ROOT": str(tmp_path)}
+        with pytest.raises(ValueError, match="outside admitted projection"):
+            manager._validate_request(lease, frame)
+    finally:
+        lease.close()
+        manager.close()
+
+
 def test_userprofile_supplies_worker_home_and_separates_warm_lease_identity(
     tmp_path, monkeypatch
 ):

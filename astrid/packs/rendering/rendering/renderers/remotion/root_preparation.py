@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 from contextlib import ExitStack, contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, Callable, Iterator, Mapping, Sequence, cast
@@ -21,6 +22,13 @@ from runtime_protocol import platform
 from astrid.core.env_vars import ASTRID_INTERNAL_INVOCATION, ASTRID_PACKS_PATH
 from astrid.core.rendering.contracts import FrameWindow
 from astrid.core.rendering.remotion_runtime import RemotionRuntimeTools, probe_context
+
+_scene_selectors: ContextVar[tuple[Any, Any]] = ContextVar("scene_selectors", default=(None, None))
+
+
+def scene_selectors() -> tuple[Any, Any]:
+    """Selectors for the synchronous observer of the currently prepared Root."""
+    return _scene_selectors.get()
 
 
 def _compile_verified_canonical_transitions(
@@ -430,7 +438,11 @@ def _prepared_remotion_root_selected(
             staged_video.parent.mkdir(parents=True, exist_ok=True)
             props_path.write_text(json.dumps(merged_props), encoding="utf-8")
             if on_scene_props is not None and frame_numbers is not None:
-                on_scene_props(merged_props, frame_numbers)
+                token = _scene_selectors.set((render_pack_roots, str(registry_root) if registry_root else None))
+                try:
+                    on_scene_props(merged_props, frame_numbers)
+                finally:
+                    _scene_selectors.reset(token)
             yield (
                 merged_props, props_path, runtime_tools, theme_for_props,
                 registry_state, stage_summary, remotion_temp_root, remotion_port,

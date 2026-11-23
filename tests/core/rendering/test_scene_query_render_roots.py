@@ -40,6 +40,12 @@ def test_scene_query_uses_owned_roots_and_selected_registry(tmp_path, monkeypatc
     with pytest.raises(scene_answers.SceneQueryUnavailable, match="validated scene registry roots are unavailable"):
         scene_answers._query({"props": {}}, [1])
 
+    monkeypatch.setattr(remotion_runtime, "_validated_runtime", lambda _: {
+        "registry": {"mode": "provisioned_only", "outputs": [{"path": "bound-output"}]}})
+    scene_answers._query({"props": {}}, [1])
+    assert "ASTRID_RENDER_PACK_ROOTS" not in calls[-1]
+    assert "ASTRID_RENDER_REGISTRY_ROOT" not in calls[-1]
+
     monkeypatch.delenv("ASTRID_REMOTION_VALIDATION_PATH")
     scene_answers._query({"props": {}}, [1])
     assert "ASTRID_RENDER_PACK_ROOTS" not in calls[-1]

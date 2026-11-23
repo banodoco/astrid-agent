@@ -67,3 +67,18 @@ def test_renderer_environment_includes_aliases_and_shared_digest(tmp_path, monke
     selected['aliases'] = [{'scope': 'first'}]
     selected['shared'] = 'two'
     assert capture.renderer_environment_identity({}) != first
+
+
+def test_unavailable_registry_disables_reuse_and_hashes_selected_project(tmp_path, monkeypatch):
+    monkeypatch.setattr(run, 'gen_effect_registry', None)
+    project = tmp_path / 'realm/remotion'
+    shared = project.parent / 'astrid/packs/rendering/shared'
+    shared.mkdir(parents=True)
+    (shared / 'contract.ts').write_text('one')
+    monkeypatch.setenv('ASTRID_REMOTION_PROJECT_DIR', str(project))
+    first = capture._render_registry_cache_inputs({})
+    second = capture._render_registry_cache_inputs({})
+    assert first[0] != second[0]
+    assert first[1] == second[1]
+    (shared / 'contract.ts').write_text('two')
+    assert capture._render_registry_cache_inputs({})[1] != first[1]

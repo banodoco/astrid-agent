@@ -88,10 +88,16 @@ def _query(payload: dict[str, Any], frames: Iterable[int], *,
             if render_roots is None and os.environ.get(ASTRID_REMOTION_VALIDATION_PATH):
                 from astrid.core.rendering.remotion_runtime import _validated_runtime
                 binding = _validated_runtime(runtime.project_dir).get("registry", {})
-                if binding.get("mode") != "source_settled":
+                if binding.get("mode") == "source_settled":
+                    render_roots = binding.get("renderer", {}).get("observation", {}).get("render_pack_roots")
+                elif binding.get("mode") == "provisioned_only" and binding.get("outputs"):
+                    # This binding has no Python generator or selected carrier.
+                    # Use the validated project and pack search context, as the
+                    # provisioned renderer does, rather than ambient selectors.
+                    pass
+                else:
                     raise SceneQueryUnavailable("validated scene registry roots are unavailable")
-                render_roots = binding.get("renderer", {}).get("observation", {}).get("render_pack_roots")
-                if not isinstance(render_roots, list):
+                if binding.get("mode") == "source_settled" and not isinstance(render_roots, list):
                     raise SceneQueryUnavailable("validated scene registry roots are unavailable")
             if render_roots is not None:
                 environment[PACK_ROOTS_ENV] = json.dumps(render_roots)

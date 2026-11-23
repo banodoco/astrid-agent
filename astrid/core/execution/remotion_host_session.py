@@ -29,6 +29,7 @@ _client = None
 # the project itself is already the host-fixed projectDir and is not repeated here.
 _ADMITTED_RENDER_ENVIRONMENT = frozenset({
     "TMPDIR", "TMP", "TEMP", "ASTRID_TIMELINE_COMPOSITION_SRC", "PYTHONPATH",
+    "ASTRID_RENDER_PACK_ROOTS",
 })
 
 
@@ -290,6 +291,18 @@ class HostRemotionSession:
             raise ValueError("renderer composition source differs from admitted project")
         if "PYTHONPATH" in environment and environment["PYTHONPATH"] != lease.environment.get("ASTRID_TIMELINE_SCHEMA_PYTHONPATH"):
             raise ValueError("renderer schema environment differs from admission")
+        if "ASTRID_RENDER_PACK_ROOTS" in environment:
+            from astrid.core.rendering.remotion_runtime import _validated_runtime
+
+            try:
+                requested = json.loads(environment["ASTRID_RENDER_PACK_ROOTS"])
+                binding = _validated_runtime(lease.project, environment=lease.environment)["registry"]
+                selected = binding["renderer"]["observation"]["render_pack_roots"]
+            except (ValueError, TypeError, KeyError) as error:
+                raise ValueError("renderer selected pack roots are unavailable") from error
+            if (binding.get("mode") != "source_settled" or not isinstance(selected, list)
+                    or not isinstance(requested, list) or requested != selected):
+                raise ValueError("renderer pack roots differ from launch validation")
 
     def request(self, lease, frame):
         with self._lock:
