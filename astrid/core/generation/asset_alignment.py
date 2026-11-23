@@ -658,6 +658,12 @@ def _align_selected(manifests, target, *, entry_id, apply, deadline, client=None
             for pack in mode['node_packs']:
                 if pack['name'] not in seen_packs:
                     if _pack_state(target, pack) != 'verified':
+                        if pack.get('requires_code_consent'):
+                            raise AlignmentError(
+                                f"Node pack {pack['name']} at {pack['revision']} is not a shipped pin; "
+                                "user_env consent does not authorize installing new node code. "
+                                "Have the user approve and install that exact pack on the selected target, then retry "
+                                + report['align_command'])
                         if installer is None:
                             _install_pack(target, pack, deadline=deadline)
                         else:

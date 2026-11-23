@@ -77,3 +77,19 @@ def test_unfamiliar_bundle_pack_apply_refuses_before_mutation(user_bundle, monke
     })
     with pytest.raises(alignment.AlignmentError, match="user_env consent does not authorize"):
         alignment._align_selected(manifests, target, entry_id="bundle-align", apply=True, deadline=0)
+
+
+def test_unfamiliar_bundle_pack_is_never_installed_after_state_changes(user_bundle, monkeypatch):
+    manifests = alignment.catalog_manifests("bundle-align")
+    [pack] = manifests[0]["modes"][0]["node_packs"]
+    target = SimpleNamespace(cached_object_info=lambda: None, verify_installation=lambda **kwargs: None)
+    monkeypatch.setattr(alignment, "inspect_assets", lambda *args, **kwargs: {
+        "entries": [{"modes": [{"models": [], "node_packs": [{**pack, "status": "verified"}]}]}],
+        "disk_check": {"status": "ready"},
+    })
+    monkeypatch.setattr(alignment, "_pack_state", lambda *args: "missing")
+    def forbidden(*args, **kwargs):
+        pytest.fail("unapproved node code installer invoked")
+    with pytest.raises(alignment.AlignmentError, match="user_env consent does not authorize"):
+        alignment._align_selected(manifests, target, entry_id="bundle-align", apply=True,
+                                  deadline=0, installer=forbidden)
