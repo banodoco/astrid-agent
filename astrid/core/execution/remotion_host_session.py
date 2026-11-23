@@ -303,6 +303,24 @@ class HostRemotionSession:
             raise ValueError("renderer request environment is outside admitted projection: native/inline or "
                              "unanchored command project source lacks digest-bound handoff authority; "
                              "render through the command worker with an admitted revision")
+        if (project_selection is None and "ASTRID_RENDER_PACK_ROOTS" not in environment
+                and lease.environment.get("ASTRID_REMOTION_VALIDATION_PATH")):
+            from astrid.core.rendering.remotion_runtime import _validated_runtime
+
+            binding = _validated_runtime(lease.project, environment=lease.environment)["registry"]
+            if binding.get("mode") == "source_settled":
+                try:
+                    selected = binding["renderer"]["observation"]["render_pack_roots"]
+                except (TypeError, KeyError) as error:
+                    raise ValueError("renderer selected pack roots are unavailable") from error
+                if not isinstance(selected, list):
+                    raise ValueError("renderer selected pack roots are unavailable")
+                environment["ASTRID_RENDER_PACK_ROOTS"] = json.dumps(selected)
+            elif binding.get("mode") == "provisioned_only":
+                if lease.environment.get("ASTRID_PACKS_PATH") is not None:
+                    environment["ASTRID_PACKS_PATH"] = lease.environment["ASTRID_PACKS_PATH"]
+            else:
+                raise ValueError("renderer selected pack roots are unavailable")
         if "ASTRID_RENDER_PACK_ROOTS" in environment:
             from astrid.core.rendering.remotion_runtime import _validated_runtime
 
@@ -349,6 +367,9 @@ class HostRemotionSession:
                 registry_path = self._inside(environment["ASTRID_RENDER_REGISTRY_ROOT"], lease.attempt)
                 if registry_path.name != "host" or not registry_path.parent.name.startswith(".project-elements-"):
                     raise ValueError("renderer project registry differs from host selection")
+                from .remotion_host_project import same_staged_tree
+                if not same_staged_tree(registry_path, Path(project_selection["registry_root"])):
+                    raise ValueError("renderer project registry bytes differ from host selection")
                 # The child can describe its staging, but only host-created
                 # roots and registries are ever forwarded to the renderer.
                 environment["ASTRID_RENDER_PACK_ROOTS"] = json.dumps(expected)
@@ -468,7 +489,13 @@ class _HostLease:
         self.attempt = attempt
         self.project_selection = project_selection
         self.hold = None
-        self.input_identities = {p: _file_identity(p) for p in (node, cli, project / "src/astrid-frame-worker.mjs")}
+        inputs = [node, cli, project / "src/astrid-frame-worker.mjs"]
+        request_environment_helper = project / "src/frame-request-environment.mjs"
+        if request_environment_helper.exists():
+            if not request_environment_helper.resolve().is_relative_to(project):
+                raise ValueError("host frame environment helper escapes project")
+            inputs.append(request_environment_helper)
+        self.input_identities = {p: _file_identity(p) for p in inputs}
         project_stat = project.stat()
         self.selected_identity = (
             str(project), (project_stat.st_dev, project_stat.st_ino, project_stat.st_uid),

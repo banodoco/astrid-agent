@@ -992,13 +992,24 @@ class RemotionFrameProvider:
         if not isinstance(actual, dict) or not isinstance(props.get("assets"), Mapping):
             raise SceneQueryUnavailable("capture timeline or assets missing")
         expected_timeline = copy.deepcopy(self._timeline)
+        from astrid.core.rendering.project_elements import CARRIER, selections
+        from astrid.packs.rendering.rendering.renderers.remotion.root_preparation import scene_element_registry
+        from astrid.packs.rendering.rendering.renderers.remotion.run import _bind_pinned_element_slots
+
+        element_registry = scene_element_registry()
+        if selections(expected_timeline):
+            if element_registry is None:
+                raise SceneQueryUnavailable("capture selected project registry is unavailable")
+            expected_timeline["app"].pop(CARRIER)
         # Staging adds only this reserved parameter. Check its bytes against the
         # declared pack assets before comparing the entire serialized timeline.
         for clip, expected_clip in zip(actual.get("clips", []), expected_timeline["clips"]):
             params = clip.get("params", {})
-            self._validate_staged_assets(clip, props["assets"])
+            element = self._validate_staged_assets(clip, props["assets"], element_registry=element_registry)
             if "__astridAssets" in params:
                 expected_clip.setdefault("params", {})["__astridAssets"] = params["__astridAssets"]
+            if element is not None and element.kind != "effects" and element.metadata.get("render_revision"):
+                _bind_pinned_element_slots(expected_clip, element, params.get("__astridAssets", {}))
         if actual != expected_timeline:
             raise SceneQueryUnavailable("capture serialized timeline mismatch")
         registry = copy.deepcopy(props.get("assets"))
@@ -1036,7 +1047,8 @@ class RemotionFrameProvider:
         self._pending_scene = capture
         capture.observe(props, frames)
 
-    def _validate_staged_assets(self, clip: Mapping[str, Any], registry: Mapping[str, Any]) -> None:
+    def _validate_staged_assets(self, clip: Mapping[str, Any], registry: Mapping[str, Any], *,
+                                element_registry: Any | None = None) -> Any | None:
         from astrid.core.rendering.scene_answers import SceneQueryUnavailable
         from astrid.packs.rendering.rendering.renderers.remotion.run import (
             CHECKOUT_ROOT,
@@ -1047,16 +1059,24 @@ class RemotionFrameProvider:
             load_default_registry,
         )
 
-        catalog = load_default_registry(project_root=CHECKOUT_ROOT)
+        catalog = element_registry if element_registry is not None else load_default_registry(project_root=CHECKOUT_ROOT)
         effects, aliases = _effect_registry_for_assets(self.theme_path, registry=catalog)
         ref = clip.get("elementRef")
-        effect_id = ref.get("id") if isinstance(ref, Mapping) and ref.get("kind") == "effect" else _effect_id_for_clip(clip, effects, aliases)
+        pinned_kind = ref.get("kind") if isinstance(ref, Mapping) else None
+        effect_id = ref.get("id") if pinned_kind in {"effect", "animation", "transition"} else _effect_id_for_clip(clip, effects, aliases)
         staged = clip.get("params", {}).get("__astridAssets", {})
         if effect_id is None:
             if staged:
                 raise SceneQueryUnavailable("capture staged assets on a non-effect clip")
-            return
-        element = catalog.get("effects", effect_id, pack_id=ref.get("packId")) if isinstance(ref, Mapping) and "packId" in ref else catalog.get("effects", effect_id)
+            return None
+        if pinned_kind in {"animation", "transition"}:
+            element = catalog.get(pinned_kind, effect_id, pack_id=ref.get("packId"), revision=ref.get("revision"))
+            if not element.metadata.get("render_revision"):
+                if staged:
+                    raise SceneQueryUnavailable("capture staged assets on an unselected element")
+                return None
+        else:
+            element = catalog.get("effects", effect_id, pack_id=ref.get("packId"), revision=ref.get("revision")) if isinstance(ref, Mapping) and "packId" in ref else catalog.get("effects", effect_id)
         cards = _resolve_end_spanning_card_assets(clip, registry) if (_source_pack_id(element), element.id) == ("local", "end-spanning-layer") else {}
         if not isinstance(staged, Mapping) or set(staged) != {asset.name for asset in element.assets} | set(cards):
             raise SceneQueryUnavailable("capture staged element assets mismatch")
@@ -1069,6 +1089,7 @@ class RemotionFrameProvider:
                 raise SceneQueryUnavailable("capture staged element bytes mismatch")
         if any(staged[key] != value for key, value in cards.items()):
             raise SceneQueryUnavailable("capture staged card assets mismatch")
+        return element
 
     def scene_for_frame(self, frame: int) -> CaptureSceneLabels | None:
         return self.scene_capture if frame in self.fresh_scene_frames else self._cached_scenes.get(frame)

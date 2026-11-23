@@ -138,6 +138,134 @@ def test_render_roots_must_equal_launch_validated_selection(tmp_path, monkeypatc
         manager.close()
 
 
+def test_frame_environment_helper_is_bound_to_the_host_lease(tmp_path, monkeypatch):
+    manager, _ = owner(tmp_path)
+    env = environment(tmp_path)
+    helper = Path(env["ASTRID_REMOTION_PROJECT_DIR"]) / "src/frame-request-environment.mjs"
+    helper.write_text("export function applyFrameRequestEnvironment() {}\n")
+    lease = manager.lease(env, attempt=tmp_path)
+    try:
+        helper.write_text("export function applyFrameRequestEnvironment() { return false; }\n")
+        with pytest.raises(ValueError, match="host-selected renderer input changed after task admission"):
+            manager._validate_request(lease, request(env)["request"])
+    finally:
+        lease.close()
+        manager.close()
+
+
+def test_frame_environment_helper_symlink_cannot_escape_renderer_project(tmp_path):
+    manager, _ = owner(tmp_path)
+    env = environment(tmp_path)
+    project = Path(env["ASTRID_REMOTION_PROJECT_DIR"])
+    outside = tmp_path / "outside-frame-request-environment.mjs"
+    outside.write_text("export function applyFrameRequestEnvironment() {}\n")
+    helper = project / "src/frame-request-environment.mjs"
+    helper.symlink_to(outside)
+    with pytest.raises(ValueError, match="host frame environment helper escapes project"):
+        manager.lease(env, attempt=tmp_path)
+    manager.close()
+
+
+def test_host_populates_missing_source_settled_roots_from_validated_runtime(tmp_path, monkeypatch):
+    from astrid.core.rendering import remotion_runtime
+
+    manager, _ = owner(tmp_path)
+    env = {**environment(tmp_path), "ASTRID_REMOTION_VALIDATION_PATH": str(tmp_path / "validation.json")}
+    selected = [{"root": "/trusted/pack", "scope": "pack-selected-elements", "kind_roots": {}}]
+    monkeypatch.setattr(remotion_runtime, "_validated_runtime", lambda *a, **kw: {
+        "registry": {"mode": "source_settled", "renderer": {
+            "observation": {"render_pack_roots": selected},
+        }},
+    })
+    lease = manager.lease(env, attempt=tmp_path)
+    try:
+        frame = request(env)["request"]
+        assert "ASTRID_RENDER_PACK_ROOTS" not in frame["environment"]
+        manager._validate_request(lease, frame)
+        assert json.loads(frame["environment"]["ASTRID_RENDER_PACK_ROOTS"]) == selected
+    finally:
+        lease.close()
+        manager.close()
+
+
+def test_host_forwards_only_lease_packs_path_for_provisioned_only_registry(tmp_path, monkeypatch):
+    from astrid.core.rendering import remotion_runtime
+
+    manager, _ = owner(tmp_path)
+    env = {
+        **environment(tmp_path),
+        "ASTRID_REMOTION_VALIDATION_PATH": str(tmp_path / "validation.json"),
+        "ASTRID_PACKS_PATH": str(tmp_path / "lease-packs"),
+    }
+    monkeypatch.setattr(remotion_runtime, "_validated_runtime", lambda *a, **kw: {
+        "registry": {"mode": "provisioned_only", "outputs": [{"path": "src/effects.generated.ts"}]},
+    })
+    lease = manager.lease(env, attempt=tmp_path)
+    try:
+        frame = request(env)["request"]
+        assert frame["environment"] == {}
+
+        manager._validate_request(lease, frame)
+
+        assert frame["environment"] == {"ASTRID_PACKS_PATH": str(tmp_path / "lease-packs")}
+        assert "ASTRID_RENDER_PACK_ROOTS" not in frame["environment"]
+        frame["environment"] = {"ASTRID_PACKS_PATH": str(tmp_path / "caller-packs")}
+        with pytest.raises(ValueError, match="outside admitted projection"):
+            manager._validate_request(lease, frame)
+    finally:
+        lease.close()
+        manager.close()
+
+
+def test_source_settled_registry_does_not_forward_lease_pack_search(tmp_path, monkeypatch):
+    from astrid.core.rendering import remotion_runtime
+
+    manager, _ = owner(tmp_path)
+    env = {
+        **environment(tmp_path),
+        "ASTRID_REMOTION_VALIDATION_PATH": str(tmp_path / "validation.json"),
+        "ASTRID_PACKS_PATH": str(tmp_path / "ambient-packs"),
+    }
+    selected = [{"root": "/validated/pack", "scope": "installed", "kind_roots": {}}]
+    monkeypatch.setattr(remotion_runtime, "_validated_runtime", lambda *a, **kw: {
+        "registry": {"mode": "source_settled", "renderer": {
+            "observation": {"render_pack_roots": selected},
+        }},
+    })
+    lease = manager.lease(env, attempt=tmp_path)
+    try:
+        frame = request(env)["request"]
+        assert frame["environment"] == {}
+
+        manager._validate_request(lease, frame)
+
+        assert json.loads(frame["environment"]["ASTRID_RENDER_PACK_ROOTS"]) == selected
+        assert "ASTRID_PACKS_PATH" not in frame["environment"]
+    finally:
+        lease.close()
+        manager.close()
+
+
+@pytest.mark.parametrize("observation", [None, {}, {"render_pack_roots": None}, {"render_pack_roots": "bad"}])
+def test_missing_or_malformed_source_settled_observation_fails_closed(tmp_path, monkeypatch, observation):
+    from astrid.core.rendering import remotion_runtime
+
+    manager, _ = owner(tmp_path)
+    env = {**environment(tmp_path), "ASTRID_REMOTION_VALIDATION_PATH": str(tmp_path / "validation.json")}
+    monkeypatch.setattr(remotion_runtime, "_validated_runtime", lambda *a, **kw: {
+        "registry": {"mode": "source_settled", "renderer": {"observation": observation}},
+    })
+    lease = manager.lease(env, attempt=tmp_path)
+    try:
+        frame = request(env)["request"]
+        with pytest.raises(ValueError, match="renderer selected pack roots are unavailable"):
+            manager._validate_request(lease, frame)
+        assert "ASTRID_RENDER_PACK_ROOTS" not in frame["environment"]
+    finally:
+        lease.close()
+        manager.close()
+
+
 @pytest.mark.parametrize("source_kind", ["native", "inline"])
 def test_staged_render_roots_without_host_source_authority_are_refused(
     tmp_path, monkeypatch, source_kind,
@@ -231,6 +359,33 @@ def test_host_selection_replaces_child_staged_roots_in_forwarded_environment(tmp
         manager._validate_request(lease, frame)
         assert json.loads(frame["environment"]["ASTRID_RENDER_PACK_ROOTS"]) == selection["roots"]
         assert frame["environment"]["ASTRID_RENDER_REGISTRY_ROOT"] == selection["registry_root"]
+    finally:
+        lease.close()
+        manager.close()
+
+
+def test_foreign_generated_project_registry_bytes_are_refused(tmp_path, monkeypatch):
+    manager, _ = owner(tmp_path)
+    env = environment(tmp_path)
+    selection = _staged_project_selection(tmp_path)
+    _install_staged_selection(monkeypatch, selection)
+    host_registry = Path(selection["registry_root"])
+    (host_registry / "effects.generated.ts").write_text("export const selected = true;\n")
+    lease = manager.lease(env, attempt=tmp_path, source=selection["source"])
+    try:
+        frame = request(env)["request"]
+        child_root = selection["foreign_root"]
+        child_registry = child_root.parent.parent / "host"
+        child_registry.mkdir()
+        (child_registry / "effects.generated.ts").write_text("export const selected = false;\n")
+        frame["environment"] = {
+            "ASTRID_RENDER_PACK_ROOTS": json.dumps([{
+                "scope": "pack-selected-elements", "root": str(child_root), "kind_roots": {},
+            }]),
+            "ASTRID_RENDER_REGISTRY_ROOT": str(child_registry),
+        }
+        with pytest.raises(ValueError, match="renderer project registry bytes differ from host selection"):
+            manager._validate_request(lease, frame)
     finally:
         lease.close()
         manager.close()

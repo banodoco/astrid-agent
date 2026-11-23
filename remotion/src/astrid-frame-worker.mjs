@@ -6,6 +6,7 @@ import readline from 'node:readline';
 import {createRequire, syncBuiltinESMExports} from 'node:module';
 import { openBrowser, renderFrames, selectComposition } from '@remotion/renderer';
 import { sharedBrowserExecutable } from '../shared-browser.mjs';
+import { applyFrameRequestEnvironment } from './frame-request-environment.mjs';
 
 // Retain the owner's startup temp context before requests can replace TMPDIR.
 // A warm Chrome profile must outlive each invocation's temporary media tree.
@@ -317,7 +318,7 @@ async function renderRequest(request) {
   // Apply this invocation's admitted environment before cold Chrome chooses
   // its profile/temp paths, and before either cold or warm bundle work.
   // The long-lived host-owned child must not use its inherited context here.
-  Object.assign(process.env, request.environment ?? {});
+  applyFrameRequestEnvironment(process.env, request.environment);
   if (!browser || projectDir !== resolve(request.projectDir)) {
     await startSession(request);
   } else {

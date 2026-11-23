@@ -24,11 +24,17 @@ from astrid.core.rendering.contracts import FrameWindow
 from astrid.core.rendering.remotion_runtime import RemotionRuntimeTools, probe_context
 
 _scene_selectors: ContextVar[tuple[Any, Any]] = ContextVar("scene_selectors", default=(None, None))
+_scene_registry: ContextVar[Any | None] = ContextVar("scene_registry", default=None)
 
 
 def scene_selectors() -> tuple[Any, Any]:
     """Selectors for the synchronous observer of the currently prepared Root."""
     return _scene_selectors.get()
+
+
+def scene_element_registry() -> Any | None:
+    """The same selected element registry used by the synchronous observer."""
+    return _scene_registry.get()
 
 
 def _compile_verified_canonical_transitions(
@@ -439,9 +445,11 @@ def _prepared_remotion_root_selected(
             props_path.write_text(json.dumps(merged_props), encoding="utf-8")
             if on_scene_props is not None and frame_numbers is not None:
                 token = _scene_selectors.set((render_pack_roots, str(registry_root) if registry_root else None))
+                registry_token = _scene_registry.set(element_registry)
                 try:
                     on_scene_props(merged_props, frame_numbers)
                 finally:
+                    _scene_registry.reset(registry_token)
                     _scene_selectors.reset(token)
             yield (
                 merged_props, props_path, runtime_tools, theme_for_props,
