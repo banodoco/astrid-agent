@@ -301,7 +301,7 @@ class CommitPatch:
         self.merge_mode = ('atomic' if any(call['op'] == 'doc.patch' for call in calls)
                            and 'reads' not in self.request else merge)
         self.head = evaluated_head or {'revision_id': bundle['base_parent']['revision_id'], 'publication_id': None}
-        self.inputs, self.outputs, self.dependencies = {}, {}, {}
+        self.outputs, self.dependencies = {}, {}
         self.batch_dependencies = []
         self.closures = {}
         self.records = {}
@@ -377,7 +377,7 @@ class CommitPatch:
             prior = next(step for step in self.steps if step['id'] == step_id)
             if prior['command_ordinals'][-1] >= ordinal or step_id not in self.outputs:
                 raise CommandError('sequential binding precedes its source', kind='binding_changed')
-            before, after = Closure(self.inputs[step_id]), Closure(self.outputs[step_id])
+            before, after = self.closures[prior['command_ordinals'][0]], Closure(self.outputs[step_id])
             record = {'bindings': []}
             self.materializations(record, before, after,
                 self.boundaries[prior['command_ordinals'][-1]], prior,
@@ -410,7 +410,8 @@ class CommitPatch:
                                        {**boundary, 'phase': 'batch-read'})
                                        for read in self.request.get('reads', [])]
         if ordinal == step['command_ordinals'][0]:
-            self.inputs[step['id']] = copy.deepcopy(ctx.state.bundle)
+            # The first-command closure owns the same input boundary. It is
+            # private to this execution and only read after construction.
             self.dependencies[step['id']] = copy.deepcopy(self.batch_dependencies)
             self.dependencies[step['id']].extend(self.capture(self.closures[ordinal], read, ctx, boundary)
                                                  for read in step.get('reads', []))
@@ -526,7 +527,7 @@ class CommitPatch:
         if not self.active:
             return plan
         for step in self.steps:
-            before = Closure(self.inputs[step['id']])
+            before = self.closures[step['command_ordinals'][0]]
             ordinal = step['command_ordinals'][-1]
             after = inverse_closure(self.outputs[step['id']], self.inverse_sources.get(ordinal, []),
                                     inverse_records=self.inverse_records.get(ordinal, ()))
@@ -624,7 +625,7 @@ class CommitPatch:
                                          'value': copy.deepcopy(effect['after']['value'])})
         for step in self.steps:
             ordinal = step['command_ordinals'][-1]
-            before = Closure(self.inputs[step['id']])
+            before = self.closures[step['command_ordinals'][0]]
             after = inverse_closure(self.outputs[step['id']], self.inverse_sources.get(ordinal, []),
                                     inverse_records=self.inverse_records.get(ordinal, ()))
             record = plan.records[ordinal]
@@ -692,7 +693,7 @@ class CommitPatch:
                                     for step in self.steps) else {'timeline'}
             for step in self.steps:
                 start = step['command_ordinals'][0]
-                before = Closure(self.inputs[step['id']])
+                before = self.closures[step['command_ordinals'][0]]
                 dependencies = step['dependencies']
                 for ref in sorted(scopes):
                     item = {'kind': 'scope', 'ref': ref, 'path': []}
