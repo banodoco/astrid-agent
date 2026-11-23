@@ -475,9 +475,14 @@ def test_lookup_default_registry_omits_default_root_keyword(monkeypatch, retry, 
         return registries[len(calls) - 1]
 
     lookup_results = iter([None, "found"] if retry else ["found"])
+    published_keys = []
+
+    def publish(key, lookup):
+        published_keys.append(key)
+        return lookup(registries[1]), registries[1]
 
     monkeypatch.setattr(element_registry, "load_default_registry", load_default_registry)
-    monkeypatch.setattr(element_registry, "_refresh_if_roots_changed", lambda _key: retry)
+    monkeypatch.setattr(element_registry, "_publish", publish)
 
     kwargs = {"project_root": project_root} if explicit_root else {}
     result, registry = element_registry.lookup_default_registry(
@@ -488,4 +493,6 @@ def test_lookup_default_registry_omits_default_root_keyword(monkeypatch, retry, 
     assert result == "found"
     assert registry is registries[1 if retry else 0]
     expected_call = {"project_root": project_root} if explicit_root else {}
-    assert calls == [expected_call] * (2 if retry else 1)
+    assert calls == [expected_call]
+    expected_root = project_root.resolve() if explicit_root else Path(element_registry.REPO_ROOT).resolve()
+    assert published_keys == ([(str(expected_root), False, ())] if retry else [])

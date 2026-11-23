@@ -4,20 +4,25 @@ from __future__ import annotations
 
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 
 from astrid.core.element import registry
 
 
 def _clear_cache():
-    with registry._default_registry_lock:
-        registry._default_registry_cache.clear()
+    registry.clear_default_registry_cache()
 
 
-def test_inflight_old_discovery_cannot_refill_after_newer_catalog(monkeypatch, tmp_path: Path):
+def test_clear_waits_for_inflight_discovery_then_forces_new_catalog(monkeypatch, tmp_path: Path):
     old_started = threading.Event()
     release_old = threading.Event()
+    clear_started = threading.Event()
     discovery_count = 0
+
+    class FakeRegistry:
+        def __init__(self, elements=(), **_kwargs):
+            self.elements = tuple(elements)
 
     def discover_data(*_key):
         nonlocal discovery_count
@@ -28,23 +33,28 @@ def test_inflight_old_discovery_cannot_refill_after_newer_catalog(monkeypatch, t
             return (("old",), registry.ELEMENT_KIND_REGISTRY, ())
         return (("new",), registry.ELEMENT_KIND_REGISTRY, ())
 
-    roots = (tmp_path / "packs",)
-    monkeypatch.setattr(registry, "_pack_roots", lambda *_args: roots)
+    monkeypatch.setattr(registry, "_pack_roots", lambda *_args: (tmp_path / "packs",))
     monkeypatch.setattr(registry, "_root_state", lambda _roots: (0,))
     monkeypatch.setattr(registry, "_load_default_registry_data", discover_data)
+    monkeypatch.setattr(registry, "ElementRegistry", FakeRegistry)
+    monkeypatch.setattr(registry, "create_shared_alias_resolver", lambda: None)
+    monkeypatch.setattr(registry, "_register_pack_aliases", lambda *_args: None)
     _clear_cache()
-    key = (str(tmp_path.resolve()), False, ())
 
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        old_discovery = pool.submit(registry._discover_registry_data, key)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        old_discovery = pool.submit(registry.load_default_registry, project_root=tmp_path)
         assert old_started.wait(10)
-        registry.clear_default_registry_cache()
-        newest = registry._discover_registry_data(key)
-        assert newest[0] == ("new",)
+        clear = pool.submit(lambda: (clear_started.set(), registry.clear_default_registry_cache()))
+        assert clear_started.wait(10)
+        assert not clear.done()
         release_old.set()
-        assert old_discovery.result(timeout=10)[0] == ("new",)
+        old_registry = old_discovery.result(timeout=10)
+        assert old_registry.elements == ("old",)
+        clear.result(timeout=10)
 
-    assert registry._registry_data(key)[0] == ("new",)
+    newest = registry.load_default_registry(project_root=tmp_path)
+    assert newest.elements == ("new",)
+    assert discovery_count == 2
     _clear_cache()
 
 
@@ -180,19 +190,37 @@ def test_catalog_old_assembly_cannot_refill_after_newer_registry_publication(mon
 
 
 def test_registry_root_state_decrease_still_triggers_refresh(monkeypatch, tmp_path: Path):
-    key = (str(tmp_path.resolve()), False, ())
-    roots = (tmp_path / "packs",)
-    old_data = ((), registry.ELEMENT_KIND_REGISTRY, ())
-    refreshed_data = (("refreshed",), registry.ELEMENT_KIND_REGISTRY, ())
-    with registry._default_registry_lock:
-        registry._default_registry_cache.clear()
-        registry._default_registry_cache[key] = (1, roots, (100,), old_data)
-    monkeypatch.setattr(registry, "_root_state", lambda _roots: (99,))
-    monkeypatch.setattr(registry, "_load_default_registry_data", lambda *_key: refreshed_data)
+    states = iter(((100,), (99,)))
+    loads = 0
 
-    assert registry._refresh_if_roots_changed(key) is True
-    assert registry._registry_data(key)[0] == ("refreshed",)
-    assert registry._default_registry_cache[key][2] == (99,)
+    class FakeRegistry:
+        def __init__(self, elements=(), **_kwargs):
+            self.elements = tuple(elements)
+
+        def get(self, _kind, element_id):
+            return element_id if element_id in self.elements else None
+
+    def load_data(*_key):
+        nonlocal loads
+        loads += 1
+        return (("refreshed",) if loads > 1 else ("old",), registry.ELEMENT_KIND_REGISTRY, ())
+
+    monkeypatch.setattr(registry, "_pack_roots", lambda *_args: (tmp_path / "packs",))
+    monkeypatch.setattr(registry, "_root_state", lambda _roots: next(states))
+    monkeypatch.setattr(registry, "_load_default_registry_data", load_data)
+    monkeypatch.setattr(registry, "ElementRegistry", FakeRegistry)
+    monkeypatch.setattr(registry, "create_shared_alias_resolver", lambda: None)
+    monkeypatch.setattr(registry, "_register_pack_aliases", lambda *_args: None)
+    _clear_cache()
+    registry.load_default_registry(project_root=tmp_path)
+
+    refreshed, _ = registry.lookup_default_registry(
+        lambda loaded: loaded.get("effects", "refreshed"), project_root=tmp_path
+    )
+    assert refreshed == "refreshed"
+    assert loads == 2  # the lower root stamp still triggers one refresh
+    key = (str(tmp_path.resolve()), False, ())
+    assert registry._default_registry_cache[key][1] == (99,)
     _clear_cache()
 
 
@@ -250,4 +278,78 @@ def test_blocked_miss_observes_registry_published_by_peer(monkeypatch, tmp_path:
     )
     assert still_absent is None
     assert discoveries == 2
+    _clear_cache()
+
+
+def test_miss_during_discovery_waits_for_and_returns_new_publication(monkeypatch, tmp_path: Path):
+    """A concurrent miss waits for the discovery already refreshing its root."""
+    discovery_started = threading.Event()
+    release_discovery = threading.Event()
+    arriving_started = threading.Event()
+    state = {"mtime": 0}
+    discoveries = 0
+
+    class FakeRegistry:
+        def __init__(self, elements=(), **_kwargs):
+            self.elements = set(elements)
+
+        def register(self, element):
+            self.elements.add(element)
+
+        def get(self, _kind, element_id):
+            return element_id if element_id in self.elements else None
+
+    def load_data(*_key):
+        nonlocal discoveries
+        discoveries += 1
+        if discoveries == 1:
+            return ((), registry.ELEMENT_KIND_REGISTRY, ())
+        discovery_started.set()
+        assert release_discovery.wait(10)
+        return (("installed",), registry.ELEMENT_KIND_REGISTRY, ())
+
+    monkeypatch.setattr(registry, "ElementRegistry", FakeRegistry)
+    monkeypatch.setattr(registry, "create_shared_alias_resolver", lambda: None)
+    monkeypatch.setattr(registry, "_register_pack_aliases", lambda *_args: None)
+    monkeypatch.setattr(registry, "_pack_roots", lambda *_args: (tmp_path / "packs",))
+    monkeypatch.setattr(registry, "_root_state", lambda _roots: (state["mtime"],))
+    monkeypatch.setattr(registry, "_load_default_registry_data", load_data)
+    _clear_cache()
+    registry.load_default_registry(project_root=tmp_path)  # publish an empty registry
+    state["mtime"] = 1  # the pack install changes the root before discovery starts
+
+    def lookup(loaded):
+        return loaded.get("effects", "installed")
+
+    def arrive():
+        arriving_started.set()
+        return registry.lookup_default_registry(lookup, project_root=tmp_path)
+
+    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="registry-miss") as pool:
+        refreshing_miss = pool.submit(registry.lookup_default_registry, lookup, project_root=tmp_path)
+        assert discovery_started.wait(10)
+        arriving_miss = pool.submit(arrive)
+        assert arriving_started.wait(10)
+        # A second miss must queue behind discovery rather than start another scan.
+        assert not arriving_miss.done()
+        release_discovery.set()
+        found_first, first_registry = refreshing_miss.result(timeout=10)
+        found_second, second_registry = arriving_miss.result(timeout=10)
+
+    assert found_first == found_second == "installed"
+    assert "installed" in first_registry.elements
+    assert "installed" in second_registry.elements
+    assert discoveries == 2  # one initial publication and one shared refresh
+    _clear_cache()
+    # Publicly returned registries must not mutate the published snapshot.
+    monkeypatch.undo()
+    first = registry.load_default_registry()
+    original = first.get("effects", "text-card")
+    original_label = original.metadata["label"]
+    original.metadata["label"] = "caller mutation"
+    first.register(replace(original, id="caller-only-element"))
+
+    second = registry.load_default_registry()
+    assert second.get("effects", "text-card").metadata["label"] == original_label
+    assert "caller-only-element" not in {item.id for item in second.list("effects")}
     _clear_cache()
