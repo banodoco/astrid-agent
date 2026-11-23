@@ -19,8 +19,7 @@ from typing import Any
 
 from astrid.core.element.registry import (
     ElementRegistry,
-    _default_registry_lock,
-    _default_registry_state,
+    lookup_default_registry,
     clear_default_registry_cache,
     load_default_registry,
 )
@@ -56,28 +55,12 @@ def _registry(theme: str | Path | None = None, *, project_slug: str | None = Non
     # Timeline theme slugs are authoring metadata.  They cannot select
     # executable element definitions; only discovered Astrid packs do that.
     del theme, project_slug
-    project_root = Path(TOOLS_DIR).resolve()
-    with _default_registry_lock:
-        for attempt in range(2):
-            state = _default_registry_state(project_root)
-            try:
-                return _cached_registry(project_root, state)
-            except _CollectionChanged:
-                if attempt == 1:
-                    raise RuntimeError("element collection changed during discovery; retry") from None
-        raise RuntimeError("element collection changed during discovery; retry")
-
-
-class _CollectionChanged(Exception):
-    pass
+    return _cached_registry(Path(TOOLS_DIR).resolve())
 
 
 @lru_cache(maxsize=16)
-def _cached_registry(project_root: Path, pack_root_state: tuple) -> ElementRegistry:
-    registry = load_default_registry(project_root=project_root)
-    if registry._collection_state != pack_root_state:
-        raise _CollectionChanged
-    return registry
+def _cached_registry(project_root: Path) -> ElementRegistry:
+    return load_default_registry(project_root=project_root)
 
 
 def _clear_registry_cache() -> None:
@@ -322,7 +305,14 @@ def _element(
     theme: str | Path | None = None,
     project_slug: str | None = None,
 ):
-    return _registry(theme, project_slug=project_slug).get(kind, element_id)
+    def find(registry):
+        try:
+            return registry.get(kind, element_id)
+        except KeyError:
+            return None
+
+    found, registry = lookup_default_registry(find, project_root=Path(TOOLS_DIR).resolve())
+    return found if found is not None else registry.get(kind, element_id)
 
 
 def read_element_schema(

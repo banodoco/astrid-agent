@@ -1,8 +1,6 @@
 """Element registry and canonical pack-source discovery."""
 
 import logging
-import os
-import stat
 import sys
 from dataclasses import dataclass, replace
 from functools import lru_cache
@@ -25,10 +23,7 @@ from astrid.core.pack.alias_resolver import (
     _register_pack_aliases,
     create_shared_alias_resolver,
 )
-from astrid.core.pack.discovery import ASTRID_PACKS_PATH_ENV, discover_pack_metadata
-from astrid.core.pack.loader import packs_root
-from astrid.core.pack.personal import resolve_personal_packs_root
-from astrid.core.pack.source_setup import source_state_path
+from astrid.core.pack.discovery import discover_pack_metadata
 from astrid.core.pack.walkers import iter_element_manifest_paths
 from astrid.core.registry import CapabilityRegistry
 
@@ -200,69 +195,7 @@ class ElementRegistry(CapabilityRegistry[tuple[str, str], ElementDefinition]):
         """
         return {key: definitions[0] for key, definitions in self._entries.items()}
 
-# Serialize cold loads for catalog and snapshot callers. The filesystem key
-# still changes when another process publishes a new collection.
 _default_registry_lock = RLock()
-
-
-def _stat_key(info: os.stat_result) -> tuple[int, ...]:
-    return (info.st_dev, info.st_ino, info.st_mode, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
-
-
-def _path_state(path: Path) -> tuple[int, ...] | None:
-    try:
-        return _stat_key(path.stat())
-    except OSError:
-        return None
-
-
-def _pack_root_state(root: Path) -> tuple:
-    directory = _path_state(root)
-    manifest = _path_state(root / "pack.yaml")
-    if manifest is not None and stat.S_ISREG(manifest[2]):
-        return directory, manifest, ()
-
-    children = []
-    try:
-        with os.scandir(root) as entries:
-            for entry in entries:
-                if entry.name == "__pycache__":
-                    continue
-                try:
-                    info = entry.stat()
-                except OSError:
-                    # A concurrent removal will be visible on the next scan.
-                    continue
-                if stat.S_ISDIR(info.st_mode):
-                    children.append((entry.name, _stat_key(info), _path_state(Path(entry.path) / "pack.yaml")))
-    except OSError:
-        # Leave unreadable-root admission and diagnostics to discovery.
-        pass
-    return directory, manifest, tuple(sorted(children))
-
-
-def _default_registry_state(project_root: Path, extra_pack_roots: tuple[str, ...] = ()) -> tuple:
-    """Fingerprint collection membership without reading or validating manifests.
-
-    The key tracks collection publication and removal, not edits nested inside
-    installed packs or external mutation of an active managed root. The Node
-    Composition membership cache has its own key and does not track in-place
-    package replacement.
-    """
-    env_roots = tuple(filter(None, os.environ.get(ASTRID_PACKS_PATH_ENV, "").split(os.pathsep)))
-    personal_root = resolve_personal_packs_root()
-    roots = (packs_root(), project_root / "astrid" / "packs", *extra_pack_roots, *env_roots)
-    if personal_root is not None:
-        roots = (*roots, personal_root)
-    paths = dict.fromkeys((project_root / Path(root).expanduser()).resolve() for root in roots)
-    state = source_state_path()
-    return (
-        env_roots,
-        personal_root,
-        state,
-        _path_state(state),
-        tuple((root, _pack_root_state(root)) for root in paths),
-    )
 
 
 @lru_cache(maxsize=16)
@@ -270,9 +203,8 @@ def _load_default_registry_data(
     project_root_key: str,
     include_missing_roots: bool,
     extra_pack_roots_key: tuple[str, ...],
-    pack_root_state: tuple,
 ) -> tuple[tuple[ElementDefinition, ...], ElementKindRegistry, tuple[SkippedElement, ...]]:
-    """Parse the element corpus once per collection state; return raw definitions.
+    """Parse the element corpus once per cache key; return raw definitions.
 
     A fresh parse costs seconds of YAML work per call (measured: ~2s per load,
     ~189 ``yaml.safe_load`` calls — a 93-event timeline replay that validates
@@ -329,6 +261,22 @@ def clear_default_registry_cache() -> None:
     clear_schema_cache()
 
 
+def lookup_default_registry(lookup, *, project_root=REPO_ROOT):
+    """Resolve against the shared corpus, rediscovering once on a miss."""
+    with _default_registry_lock:
+        registry = load_default_registry(project_root=project_root)
+        result = lookup(registry)
+        if result is None:
+            # Misses do not detect alias-to-exact arrivals (#1538), nested edits
+            # (#1497), managed-root mutations (#1496), or in-place Node
+            # Composition replacement (#1495). A removed pack can keep validating
+            # until restart, unless a later miss triggers rediscovery.
+            clear_default_registry_cache()
+            registry = load_default_registry(project_root=project_root)
+            result = lookup(registry)
+        return result, registry
+
+
 def load_default_registry(
     *,
     project_root: str | Path = REPO_ROOT,
@@ -343,25 +291,9 @@ def load_default_registry(
     project_root = Path(project_root).resolve()
     extra_pack_roots = tuple(str(Path(root).resolve()) for root in extra_pack_roots)
     with _default_registry_lock:
-        for attempt in range(2):
-            state = _default_registry_state(project_root, extra_pack_roots)
-            try:
-                elements, element_kind_registry, diagnostics = _load_default_registry_data(
-                    str(project_root), include_missing_roots, extra_pack_roots, state,
-                )
-            except Exception:
-                if state == _default_registry_state(project_root, extra_pack_roots):
-                    raise
-                _load_default_registry_data.cache_clear()
-                if attempt == 1:
-                    raise RuntimeError("element collection changed during discovery; retry") from None
-                continue
-            if state == _default_registry_state(project_root, extra_pack_roots):
-                break
-            # Discovery crossed a publication; never reuse its mixed corpus.
-            _load_default_registry_data.cache_clear()
-            if attempt == 1:
-                raise RuntimeError("element collection changed during discovery; retry")
+        elements, element_kind_registry, diagnostics = _load_default_registry_data(
+            str(project_root), include_missing_roots, extra_pack_roots,
+        )
     resolver = create_shared_alias_resolver()
     _register_pack_aliases(resolver, {})  # no aliases yet
     registry = ElementRegistry(
@@ -371,7 +303,6 @@ def load_default_registry(
     )
     for element in elements:
         registry.register(element)
-    registry._collection_state = state
     return registry
 
 

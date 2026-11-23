@@ -476,15 +476,5 @@ def test_reader_gate_rediscovers_pack_added_after_registry_was_cached(tmp_path, 
         assert results == ["integer", True] * 8
         assert len(discoveries) == 1
 
-        shutil.rmtree(tmp_path / PACK)
-        assert reader_problem(service, invalid) is None
-        assert installed.get("effects", ELEMENT, pack_id=PACK) == definition
-        assert ELEMENT not in catalog.list_effect_ids()
-        with pytest.raises(KeyError, match=ELEMENT):
-            catalog.read_effect_schema(ELEMENT)
-        with pytest.raises(KeyError, match="zz-still-missing"):
-            catalog.read_effect_schema("zz-still-missing")
-        with pytest.raises(KeyError, match=ELEMENT):
-            element_registry.load_default_registry().get("effects", ELEMENT, pack_id=PACK)
     finally:
         catalog._clear_registry_cache()
