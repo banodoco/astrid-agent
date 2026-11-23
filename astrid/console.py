@@ -114,7 +114,7 @@ def _run_console(
     # A command owns the inventory; embedded invocations get fresh scopes.
     from astrid._pack_discovery_scope import pack_discovery_scope
 
-    with pack_discovery_scope():
+    with pack_discovery_scope(fresh=True):
         return _run_console_impl(argv, start_provenance=start_provenance)
 
 
@@ -143,7 +143,10 @@ def _run_console_impl(
         import_end = time.monotonic()
         token = _STARTUP_MARKS.set((process_start, provenance, import_start, import_end))
         try:
-            return gateway_main(rest)
+            from astrid._pack_discovery_scope import gateway_handoff
+
+            with gateway_handoff():
+                return gateway_main(rest)
         finally:
             _STARTUP_MARKS.reset(token)
     if rest and rest[0] == "engines":
@@ -166,6 +169,9 @@ def _run_console_impl(
     try:
         from .omp_agent import main as omp_main
 
-        return omp_main(rest)
+        from astrid._pack_discovery_scope import gateway_handoff
+
+        with gateway_handoff():
+            return omp_main(rest)
     finally:
         _CLI_STARTED_AT.reset(token)

@@ -149,8 +149,13 @@ def _discovery_fingerprint(
         return None
     project_root = Path(project_root).resolve()
     raw_env = os.environ.get(ASTRID_PACKS_PATH_ENV, "")
+    from astrid.core.pack.source_setup import SOURCE_DECLARATIONS_ENV
+
+    raw_declarations = os.environ.get(SOURCE_DECLARATIONS_ENV, "").strip()
     roots = [loader.packs_root(), PACKAGE_ROOT / "core" / "hivemind", Path.home() / "Astrid" / "packs", project_root / "astrid" / "packs",
              Path(__file__).with_name("schemas")]
+    if raw_declarations:
+        roots.append(Path(raw_declarations).expanduser())
     if personal_packs_root is not None:
         roots.append(Path(personal_packs_root).expanduser())
     roots.extend(source.pack_root for source in managed_inventory.sources)
@@ -165,7 +170,7 @@ def _discovery_fingerprint(
                       for root in dict.fromkeys(roots))
     except OSError:
         return None  # Unreadable/racing inputs use ordinary admission and its errors.
-    return (str(project_root), tuple(extra_pack_roots), raw_env, managed_inventory.identity,
+    return (str(project_root), tuple(extra_pack_roots), raw_env, raw_declarations, managed_inventory.identity,
             bool(include_hidden), str(personal_packs_root) if personal_packs_root is not None else None, trees)
 
 

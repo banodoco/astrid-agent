@@ -67,9 +67,9 @@ def _active_discovery_cache() -> _DiscoveryCache | None:
 
 
 @contextmanager
-def pack_discovery_scope():
+def pack_discovery_scope(*, fresh=False):
     """Reuse admitted packs only while their complete discovery inputs match."""
-    if _active_discovery_cache() is not None:
+    if not fresh and _active_discovery_cache() is not None:
         yield
         return
     cache = _DiscoveryCache()
@@ -79,3 +79,25 @@ def pack_discovery_scope():
     finally:
         cache.revoke()
         _discovery_cache.reset(token)
+
+
+# The console's dispatch into the gateway is one command, not a new public
+# invocation. Consume the handoff once so gateway calls nested inside its
+# implementation still receive their own command scope.
+_gateway_handoff = ContextVar("pack_discovery_gateway_handoff", default=False)
+
+
+@contextmanager
+def gateway_handoff():
+    token = _gateway_handoff.set(True)
+    try:
+        yield
+    finally:
+        _gateway_handoff.reset(token)
+
+
+def consume_gateway_handoff():
+    handoff = _gateway_handoff.get()
+    if handoff:
+        _gateway_handoff.set(False)
+    return handoff
