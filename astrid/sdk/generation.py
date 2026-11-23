@@ -2339,9 +2339,9 @@ class GenerationFacade:
     def _typed_command(self, modality, discovery, *, registry=None):
         """Bind this command's discovery to a built-in typed alias."""
         method = getattr(self, modality)
-        base_alias = getattr(GenerationFacade, modality)
+        base_alias = _BUILTIN_TYPED_ALIASES[modality]
         if (getattr(method, '__func__', None) is not base_alias
-                or getattr(self._media_request, '__func__', None) is not GenerationFacade._media_request):
+                or getattr(self._media_request, '__func__', None) is not _BUILTIN_MEDIA_REQUEST):
             return method
 
         from inspect import signature
@@ -2696,6 +2696,10 @@ class GenerationFacade:
         arguments = {key: value for key, value in locals().items() if key not in {"self", "inputs"}}
         return self._media_request("audio", **arguments, **inputs)
 
+
+# Keep the original methods, even if the class is later patched by an integrator.
+_BUILTIN_TYPED_ALIASES = {name: getattr(GenerationFacade, name) for name in ("image", "video", "audio")}
+_BUILTIN_MEDIA_REQUEST = GenerationFacade._media_request
 
 generate = GenerationFacade()
 

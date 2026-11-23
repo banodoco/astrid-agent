@@ -100,7 +100,10 @@ def _dispatch_generate(args: list[str]) -> int:
         from astrid.core.generation.listing import main
 
     if main is cli_main and dispatch_marks is not None and args and args[0] in {"image", "workflow"}:
-        return main(args, dispatch_marks=dispatch_marks)
+        from astrid.core.generation.cli import dispatch_timing
+
+        with dispatch_timing(dispatch_marks):
+            return main(args)
     return main(args)
 
 
@@ -671,13 +674,15 @@ def _dispatch_product_inner(args: list[str], *, output_stream: Any = None) -> in
 
         if not isinstance(exc, ServiceUnavailableError):
             raise
+        import sys
+
         from astrid.core.cli.domain_output import print_result
         from astrid.sdk.contracts import DomainResult
 
         return print_result(
             DomainResult.failure(exc.to_error_object()),
             as_json="--json" in rest,
-            stream=output_stream if "--json" in rest else None,
+            stream=(output_stream if output_stream is not None else sys.stdout) if "--json" in rest else None,
         )
 
 
