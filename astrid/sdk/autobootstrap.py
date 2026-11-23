@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
 import threading
 import time
 from contextlib import ExitStack, contextmanager
+from importlib import metadata
 from importlib.util import find_spec
 from pathlib import Path
 from typing import Any, Iterator, Mapping
@@ -137,6 +141,85 @@ def _launcher_command() -> list[str]:
         "the Astrid Runtime is not installed",
         next_action=INSTALL_RUNTIME_ACTION,
     )
+
+
+def _is_installed_console_launcher(launcher: list[str]) -> bool:
+    """Bind the selected POSIX console script to the SDK interpreter's wheel."""
+    if (os.name != "posix" or len(launcher) != 1 or _configured("ASTRID_RUNTIME_LAUNCHER")
+            or sys.prefix == sys.base_prefix or _configured("PYTHONPATH") or _configured("PYTHONHOME")):
+        return False
+    interpreter = Path(os.path.abspath(sys.executable))
+    executable = Path(launcher[0])
+    prefix = Path(sys.prefix)
+    if executable != interpreter.with_name("astrid-runtime") or interpreter.parent != prefix / "bin":
+        return False
+    try:
+        if executable.is_symlink() or not executable.is_file():
+            return False
+        distribution = metadata.distribution("astrid-runtime")
+        installed = Path(distribution.locate_file("")).resolve(strict=True)
+        if not installed.is_relative_to(prefix.resolve(strict=True)):
+            return False
+        if not any(entry.group == "console_scripts" and entry.name == executable.name
+                   and entry.value == "astrid_runtime.cli:main" for entry in distribution.entry_points):
+            return False
+        selected = executable.resolve(strict=True)
+        record = next((entry for entry in distribution.files or () if entry.name == executable.name
+                       and Path(distribution.locate_file(entry)).resolve() == selected), None)
+        if (record is None or record.hash is None or record.hash.mode != "sha256"
+                or record.size is None or not 0 < record.size <= 16_384):
+            return False
+        with executable.open("rb") as stream:
+            source = stream.read(record.size + 1)
+        digest = base64.urlsafe_b64encode(hashlib.sha256(source).digest()).decode("ascii").rstrip("=")
+        return len(source) == record.size and digest == record.hash.value and (
+            source.split(b"\n", 1)[0] == b"#!" + os.fsencode(interpreter)
+        )
+    except (OSError, RuntimeError, ValueError, metadata.PackageNotFoundError):
+        return False
+
+
+def _pending_startup_status(command: list[str]) -> Mapping[str, Any] | None:
+    from astrid.runtime_cli import _STARTUP_PHASES
+
+    try:
+        completed = subprocess.run(
+            [*command, "--json"], stdin=subprocess.DEVNULL, capture_output=True,
+            text=True, check=False, timeout=5.0,
+        )
+        if completed.returncode != 0:
+            return None
+        status = _result(completed.stdout)
+    except (OSError, subprocess.SubprocessError, UnicodeError, AutoBootstrapError):
+        return None
+    operation_id = status.get("operation_id")
+    phase = status.get("phase")
+    objects_checked = status.get("objects_checked")
+    if (status.keys() == {"operation_id", "phase", "state", "objects_checked"}
+            and status["state"] == "pending"
+            and isinstance(operation_id, str) and re.fullmatch(r"[a-f0-9]{32}", operation_id)
+            and isinstance(phase, str) and phase in _STARTUP_PHASES
+            and type(objects_checked) is int and 0 <= objects_checked < 2**63):
+        return status
+    return None
+
+
+def _observe_pending_startup(launcher: list[str], data_root: Path, manifest: Path | None) -> Mapping[str, Any] | None:
+    if not _is_installed_console_launcher(launcher):
+        return None
+    # startup-status uses the same default Astrid profile as up. Runtime pins
+    # the configured realm and validates the selected source and generation.
+    command = [*launcher, "startup-status", "--data-root", str(data_root), "--require-configured-selection"]
+    if manifest is not None:
+        command.extend(("--source-manifest", str(manifest)))
+    observed = _pending_startup_status(command)
+    if observed is None:
+        return None
+    operation_id = observed["operation_id"]
+    confirmed = _pending_startup_status([*command, "--operation-id", operation_id])
+    if confirmed is None or confirmed["operation_id"] != operation_id:
+        return None
+    return confirmed
 
 
 def _launcher_timeout() -> float:
@@ -470,8 +553,18 @@ def ensure_runtime(*, start_pack_host: bool = True, data_root: str | Path | None
                     code="runtime_acquisition_lock_timeout",
                 ) from exc
             locks.enter_context(_acquisition_file_lock(Path(data_root)))
-    except BaseException:
+    except BaseException as exc:
         locks.close()
+        if (isinstance(exc, AutoBootstrapError) and exc.code == "runtime_acquisition_lock_timeout"
+                and data_root is not None):
+            pending = _observe_pending_startup(launcher, data_root, manifest)
+            if pending is not None:
+                raise AutoBootstrapError(
+                    "Runtime startup is still in progress.",
+                    next_action="retry after Runtime startup completes",
+                    code="runtime_startup_pending",
+                    details=pending,
+                ) from exc
         raise
     with locks:
         value: Mapping[str, Any] | None = None
