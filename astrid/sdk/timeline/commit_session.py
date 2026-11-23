@@ -14,6 +14,60 @@ from .checkout import Checkout
 from .sync import CommitConflict, CommitRefused, TimelineSession, _OutboxChanged, _enrich_pending_diff, _pending_clash, _part_identity, _pin
 
 
+def _retain_clip_rows(before, after):
+    """Keep live clip and parameter references when staging replaces a bundle."""
+    def merge(old, new):
+        if isinstance(old, dict) and isinstance(new, dict):
+            for key in list(old):
+                if key not in new:
+                    del old[key]
+            for key, value in new.items():
+                old[key] = merge(old[key], value) if key in old else value
+            return old
+        if isinstance(old, list) and isinstance(new, list):
+            old[:] = [merge(old[i], value) if i < len(old) else value
+                      for i, value in enumerate(new)]
+            return old
+        return new
+
+    def retain(old_rows, new_rows):
+        if not isinstance(old_rows, list) or not isinstance(new_rows, list):
+            return
+
+        old_by_id = {}
+        for old in old_rows:
+            if not isinstance(old, dict) or not old.get('id'):
+                continue
+            row_id = old['id']
+            if row_id in old_by_id:
+                old_by_id[row_id] = (None, 2)
+            else:
+                old_by_id[row_id] = (old, 1)
+
+        new_counts = {}
+        for row in new_rows:
+            if isinstance(row, dict) and row.get('id'):
+                row_id = row['id']
+                new_counts[row_id] = new_counts.get(row_id, 0) + 1
+
+        for index, row in enumerate(new_rows):
+            if not isinstance(row, dict) or not row.get('id'):
+                continue
+            old, old_count = old_by_id.get(row['id'], (None, 0))
+            if old_count == 1 and new_counts[row['id']] == 1:
+                new_rows[index] = merge(old, row)
+
+    old_parent, new_parent = before.get('parent', {}), after.get('parent', {})
+    retain(old_parent.get('clips'), new_parent.get('clips'))
+    old_config, new_config = old_parent.get('config', {}), new_parent.get('config', {})
+    if isinstance(old_config, dict) and isinstance(new_config, dict):
+        retain(old_config.get('clips'), new_config.get('clips'))
+    for shot_id, shot in after.get('shots', {}).items():
+        old_shot = before.get('shots', {}).get(shot_id, {})
+        retain(old_shot.get('internal_timeline', {}).get('clips'),
+               shot.get('internal_timeline', {}).get('clips'))
+
+
 def _function_rerun_conflict(session, original_base, current_base, before_bundle, after_bundle):
     """Return the existing conflict shape when a rerun rewrites intervening work."""
     from . import clash
@@ -516,20 +570,24 @@ class Timeline(Checkout):
             self._append(commands, label="Edit document", verified_media=preview_media)
             self._free_edits = True
 
-    def _append(self, commands, *, label, intent="", tags=(), reads=None, verified_media=None):
+    def _append(self, commands, *, label, intent="", tags=(), reads=None, verified_media=None,
+                schema_inputs=(), capture=False):
         from .commands import CommandError, execute
 
         try:
             bundle = (self._execution_bundle(self._command_bundle)
                       if self._runtime_document is not None or any(command.get("op") == "doc.patch" for command in commands)
                       else self._command_bundle)
-            plan = execute(bundle, commands, verified_media=self._verified_media if verified_media is None else verified_media)
+            plan = execute(bundle, commands, verified_media=self._verified_media if verified_media is None else verified_media,
+                           schema_inputs=schema_inputs, realm_id=self.session.identity["realm_id"])
         except CommandError as exc:
             if exc.kind == "unsupported_operation" and any(command.get("op") == "doc.patch" for command in commands):
                 raise TimelineEditError(
                     "free edits require the G3 document emitter and the R1 doc.patch provider"
                 ) from exc
             raise
+        if capture:
+            commands = plan.commands
         start = len(self._commands)
         patch = [copy.deepcopy(change) for command in commands if command["op"] == "doc.patch"
                  for change in command["args"]["changes"]]
@@ -542,10 +600,44 @@ class Timeline(Checkout):
         # request/step reads. The provider captures against the pinned base.
         self._commands.extend(copy.deepcopy(commands))
         self._steps.append(step)
-        self.bundle = copy.deepcopy(plan.bundle)
+        staged = copy.deepcopy(plan.bundle)
+        _retain_clip_rows(self.bundle, staged)
+        self.bundle = staged
         self._runtime_document = self.bundle.get("source_mapping", {}).pop("_runtime_document", self._runtime_document)
         self._command_bundle = copy.deepcopy(self.bundle)
         self._refresh()
+
+    def _set_clip_element(self, clip, element):
+        from .model import Clip
+        from ._command_state import State
+        from astrid.sdk.timeline_elements import _admitted_element_inputs
+
+        if not self._evaluating:
+            with self.session.outbox.locked():
+                state = self.session._state()
+                if state["pending"] or state["flight"] is not None:
+                    raise TimelineEditError("reconcile the original request before another edit")
+                if state["base"] != self._basis:
+                    raise TimelineEditError("session base changed; reopen before editing")
+        if (not isinstance(element, dict) or set(element) != {"packId", "id", "kind", "revision"}
+                or any(not isinstance(value, str) or not value for value in element.values())):
+            raise ValueError("Element must be an owner-qualified admitted reference")
+        if clip.shot_id == PARENT_SHOT:
+            target = f"parent/clip:{clip.id}"
+        else:
+            owners = [row for row in self.bundle["placements"] if row.get("shot_id") == clip.shot_id]
+            if len(owners) != 1:
+                raise TimelineEditError("element placement requires a clip in one unambiguous occurrence")
+            target = f"occurrence:{owners[0]['occurrence_id']}/clip:{clip.id}"
+        self._capture_free_edits()
+        client = self.session.client
+        realm = self.session.identity["realm_id"]
+        pin, inputs = _admitted_element_inputs(client.timelines, client, self.session.project_id,
+                                               realm=realm, element=element)
+        command = {"schema_version": 1, "op": "clip.set-element", "version": "1", "select": target,
+                   "args": {"elementRef": copy.deepcopy(element), "placement": "place", "schema_source": pin}}
+        self._append([command], label="Place element", tags=("element",), schema_inputs=inputs, capture=True)
+        return Clip(self, clip.shot_id, State(self.bundle).entity(target))
 
     def command(self, command, *, label="Timeline edit", intent="", tags=(), reads=None):
         """Stage one command/step without sending or writing local history.

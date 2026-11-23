@@ -276,6 +276,7 @@ def validate_timeline(config: Any, *, strict: bool = True) -> None:
         raise ValueError("Timeline.clips must be a list")
     clip_ids: set[str] = set()
     normalized_clips: list[dict[str, Any]] = []
+    visual_clip_types: dict[str, bool] = {}
     for index, clip_raw in enumerate(clips):
         if not isinstance(clip_raw, dict):
             raise ValueError(f"clips[{index}] must be an object")
@@ -307,7 +308,9 @@ def validate_timeline(config: Any, *, strict: bool = True) -> None:
         # The authored theme label is not an element-registry selector.
         # Open-string clipTypes that are not registered elements remain opaque.
         from astrid.core.timeline.validators._type_resolve import is_visual_clip_element
-        if is_visual_clip_element(clip_type, None):
+        if clip_type not in visual_clip_types:
+            visual_clip_types[clip_type] = is_visual_clip_element(clip_type, None)
+        if visual_clip_types[clip_type]:
             _validate_effect_params(clip_type, clip.get("params"), f"clips[{index}].params", theme=None)
         if "pool_id" in clip and not isinstance(clip["pool_id"], str):
             raise ValueError(f"clips[{index}].pool_id must be a string")
