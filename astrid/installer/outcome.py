@@ -157,6 +157,8 @@ class Outcome:
             lines[0] += f" Default packs were published (revision {packs.get('revision')})."
         elif status == "rejected":
             lines[0] += " Default pack publication was rejected; the collection was not changed by it."
+            if packs.get("recovery"):
+                lines[0] += f" {packs['recovery']}"
         elif status == "recovery-needed":
             lines[0] += (f" Default pack publication needs recovery (transaction {packs.get('transaction_id')}, "
                          f"revision {packs.get('revision')}). {packs.get('recovery', '')}")

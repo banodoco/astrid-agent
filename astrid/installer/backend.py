@@ -1633,7 +1633,7 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             if not isinstance(report, dict) or report.get("status") not in {"rejected", "recovery-needed"}:
                 report = {"status": "unknown", "transaction_id": None, "revision": None,
                           "recovery": "Check the collection and installer log before retrying."}
-            detail = ("Default pack publication was rejected." if report["status"] == "rejected" else
+            detail = (f"Default pack publication was rejected. {report.get('recovery') or ''}" if report["status"] == "rejected" else
                       f"Default pack publication needs recovery: {report.get('recovery')} "
                       f"Transaction {report.get('transaction_id')}, revision {report.get('revision')}."
                       if report["status"] == "recovery-needed" else
