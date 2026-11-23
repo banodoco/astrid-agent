@@ -364,6 +364,10 @@ class Timeline(Checkout):
     def open(cls, project=None, timeline=None, *, client=None, outbox_path=None):
         return open(project, timeline, client=client, outbox_path=outbox_path)
 
+    def _retained_reflow_source(self):
+        remote = getattr(self.session.client, "_remote", None)
+        return self._runtime_document, getattr(remote, "_transport", None)
+
     def _adopt(self, bundle):
         self.bundle = copy.deepcopy(bundle)
         self._base_bundle = copy.deepcopy(bundle)

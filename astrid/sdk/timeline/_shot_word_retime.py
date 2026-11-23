@@ -57,10 +57,9 @@ def _word_source_mapping(bundle, source):
     return rate, origin
 
 
-def retained_retime_pins(bundle):
+def retained_retime_pins(runtime_document):
     """Use the authenticated Runtime manifest, excluding request-only captures."""
-    source = bundle.get("source_mapping", {})
-    manifest = source.get("_runtime_document", {}).get("dependency_manifest", {})
+    manifest = (runtime_document or {}).get("dependency_manifest", {})
     return [pin for pin in manifest.get("documents", []) if pin["document_id"].startswith("transcript:")]
 
 
@@ -120,8 +119,9 @@ def require_retime_word_scope(bundle, captures, line):
 
 
 def _word_pool(bundle):
-    capture_rows = bundle.get("source_mapping", {}).get("pinned_documents", [])
-    selected = select_retime_pins(bundle, retained_retime_pins(bundle))
+    source = bundle.get("source_mapping", {})
+    capture_rows = source.get("pinned_documents", [])
+    selected = select_retime_pins(bundle, retained_retime_pins(source.get("_runtime_document")))
     transcripts, captures = retime_transcripts(bundle, (row for row in capture_rows if row["pin"] in selected))
     # Use the same projection as reflow but require exactly one hit. Inline
     # words can make a match ambiguous but cannot prove an identity.
