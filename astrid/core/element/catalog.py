@@ -58,12 +58,24 @@ def _registry(theme: str | Path | None = None, *, project_slug: str | None = Non
     del theme, project_slug
     project_root = Path(TOOLS_DIR).resolve()
     with _default_registry_lock:
-        return _cached_registry(project_root, _default_registry_state(project_root))
+        while True:
+            state = _default_registry_state(project_root)
+            try:
+                return _cached_registry(project_root, state)
+            except _CollectionChanged:
+                continue
+
+
+class _CollectionChanged(Exception):
+    pass
 
 
 @lru_cache(maxsize=16)
 def _cached_registry(project_root: Path, pack_root_state: tuple) -> ElementRegistry:
-    return load_default_registry(project_root=project_root)
+    registry = load_default_registry(project_root=project_root)
+    if registry._collection_state != pack_root_state:
+        raise _CollectionChanged
+    return registry
 
 
 def _clear_registry_cache() -> None:

@@ -343,12 +343,21 @@ def load_default_registry(
     project_root = Path(project_root).resolve()
     extra_pack_roots = tuple(str(Path(root).resolve()) for root in extra_pack_roots)
     with _default_registry_lock:
-        elements, element_kind_registry, diagnostics = _load_default_registry_data(
-            str(project_root),
-            include_missing_roots,
-            extra_pack_roots,
-            _default_registry_state(project_root, extra_pack_roots),
-        )
+        while True:
+            state = _default_registry_state(project_root, extra_pack_roots)
+            try:
+                elements, element_kind_registry, diagnostics = _load_default_registry_data(
+                    str(project_root), include_missing_roots, extra_pack_roots, state,
+                )
+            except Exception:
+                if state == _default_registry_state(project_root, extra_pack_roots):
+                    raise
+                _load_default_registry_data.cache_clear()
+                continue
+            if state == _default_registry_state(project_root, extra_pack_roots):
+                break
+            # Discovery crossed a publication; never reuse its mixed corpus.
+            _load_default_registry_data.cache_clear()
     resolver = create_shared_alias_resolver()
     _register_pack_aliases(resolver, {})  # no aliases yet
     registry = ElementRegistry(
@@ -358,6 +367,7 @@ def load_default_registry(
     )
     for element in elements:
         registry.register(element)
+    registry._collection_state = state
     return registry
 
 
