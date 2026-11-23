@@ -1,11 +1,11 @@
 """Element registry and canonical pack-source discovery."""
 
 import logging
+import os
 import sys
 from dataclasses import dataclass, replace
-from functools import lru_cache
 from pathlib import Path
-from threading import RLock
+from threading import Event, RLock
 from typing import Iterable
 
 from astrid.core.foundation.paths import REPO_ROOT
@@ -196,9 +196,97 @@ class ElementRegistry(CapabilityRegistry[tuple[str, str], ElementDefinition]):
         return {key: definitions[0] for key, definitions in self._entries.items()}
 
 _default_registry_lock = RLock()
+_default_registry_cache = {}
+_registry_inflight = {}
+_discovery_counter = 0
+_invalidation_generation = 0
 
 
-@lru_cache(maxsize=16)
+def _pack_roots(project_root, extra_pack_roots):
+    from astrid.core.pack import loader
+    from astrid.core.pack.source_setup import active_sources
+
+    roots = [loader.packs_root(), Path.home() / "Astrid" / "packs",
+             Path(project_root) / "astrid" / "packs"]
+    roots.extend(source.pack_root for source in active_sources(verify=False))
+    roots.extend(extra_pack_roots)
+    roots.extend(filter(None, os.environ.get("ASTRID_PACKS_PATH", "").split(os.pathsep)))
+    paths = []
+    for raw in roots:
+        path = Path(raw).expanduser()
+        if not path.is_absolute():
+            path = Path(project_root) / path
+        path = Path(os.path.abspath(path))
+        if path not in paths:
+            paths.append(path)
+    return tuple(paths)
+
+
+def _root_state(roots):
+    state = []
+    for root in roots:
+        try:
+            state.append(root.stat().st_mtime_ns)
+        except FileNotFoundError:
+            state.append(None)
+    return tuple(state)
+
+
+def _discover_registry_data(key, *, roots=None, state=None):
+    global _discovery_counter
+    with _default_registry_lock:
+        _discovery_counter += 1
+        generation = _discovery_counter
+    if roots is None:
+        roots = _pack_roots(key[0], key[2])
+    if state is None:
+        state = _root_state(roots)
+    data = _load_default_registry_data(*key)
+    with _default_registry_lock:
+        current = _default_registry_cache.get(key)
+        if generation > _invalidation_generation and (current is None or generation > current[0]):
+            _default_registry_cache[key] = (generation, roots, state, data)
+            return data
+        return current[3] if current is not None else data
+
+
+def _registry_data(key):
+    while True:
+        with _default_registry_lock:
+            entry = _default_registry_cache.get(key)
+            if entry is not None:
+                return entry[3]
+            pending = _registry_inflight.get(key)
+            if pending is None:
+                pending = _registry_inflight[key] = Event()
+                owner = True
+            else:
+                owner = False
+        if not owner:
+            pending.wait()
+            continue
+        try:
+            return _discover_registry_data(key)
+        finally:
+            with _default_registry_lock:
+                if _registry_inflight.get(key) is pending:
+                    del _registry_inflight[key]
+                pending.set()
+
+
+def _refresh_if_roots_changed(key):
+    with _default_registry_lock:
+        entry = _default_registry_cache.get(key)
+    if entry is None:
+        return False
+    state = _root_state(entry[1])
+    if state == entry[2]:
+        return False
+    _discover_registry_data(key, roots=entry[1], state=state)
+    return True
+
+
+
 def _load_default_registry_data(
     project_root_key: str,
     include_missing_roots: bool,
@@ -243,46 +331,31 @@ def _load_default_registry_data(
 
 
 def clear_default_registry_cache() -> None:
-    """Drop the cached element corpus and SDK schema bindings together.
-
-    Test seam / hot-reload hook: tests that patch pack discovery must clear
-    this cache (the catalog's ``_clear_registry_cache`` does) so a re-discovered
-    corpus (e.g. a temp pack declaring a custom element kind) is re-parsed.
-    """
-    from astrid.core.element.catalog import _cached_registry
-
+    """Invalidate the shared corpus and SDK schema bindings."""
+    global _discovery_counter, _invalidation_generation
     with _default_registry_lock:
-        _load_default_registry_data.cache_clear()
-        _cached_registry.cache_clear()
-    # Keep timeline parameter validation coherent with provider discovery. The SDK owns
-    # its schema cache, so import lazily to avoid coupling registry initialization to it.
+        _discovery_counter += 1
+        _invalidation_generation = _discovery_counter
+        _default_registry_cache.clear()
+        _registry_inflight.clear()
     from astrid.sdk.timeline_address import clear_schema_cache
-
     clear_schema_cache()
 
 
 def lookup_default_registry(lookup, *, project_root=None):
-    """Resolve against the shared corpus, rediscovering once on a miss."""
-    with _default_registry_lock:
-        registry = (
-            load_default_registry()
-            if project_root is None
-            else load_default_registry(project_root=project_root)
-        )
+    """Resolve a miss again only when a pack root has changed."""
+    registry = (load_default_registry() if project_root is None
+                else load_default_registry(project_root=project_root))
+    result = lookup(registry)
+    root = Path(REPO_ROOT if project_root is None else project_root).resolve()
+    key = (str(root), False, ())
+    # Root mtimes do not detect edits inside an existing pack, or changes to
+    # managed source selection; those remain outside this refresh contract.
+    if result is None and _refresh_if_roots_changed(key):
+        registry = (load_default_registry() if project_root is None
+                    else load_default_registry(project_root=project_root))
         result = lookup(registry)
-        if result is None:
-            # Misses do not detect alias-to-exact arrivals (#1538), nested edits
-            # (#1497), managed-root mutations (#1496), or in-place Node
-            # Composition replacement (#1495). A removed pack can keep validating
-            # until restart, unless a later miss triggers rediscovery.
-            clear_default_registry_cache()
-            registry = (
-                load_default_registry()
-                if project_root is None
-                else load_default_registry(project_root=project_root)
-            )
-            result = lookup(registry)
-        return result, registry
+    return result, registry
 
 
 def load_default_registry(
@@ -298,10 +371,9 @@ def load_default_registry(
     """
     project_root = Path(project_root).resolve()
     extra_pack_roots = tuple(str(Path(root).resolve()) for root in extra_pack_roots)
-    with _default_registry_lock:
-        elements, element_kind_registry, diagnostics = _load_default_registry_data(
-            str(project_root), include_missing_roots, extra_pack_roots,
-        )
+    elements, element_kind_registry, diagnostics = _registry_data(
+        (str(project_root), include_missing_roots, extra_pack_roots)
+    )
     resolver = create_shared_alias_resolver()
     _register_pack_aliases(resolver, {})  # no aliases yet
     registry = ElementRegistry(

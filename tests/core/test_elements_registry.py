@@ -200,6 +200,7 @@ class ElementRegistryTest(unittest.TestCase):
             real_discover = registry_module.discover_packs
             with mock.patch.dict("os.environ", {"ASTRID_PACKS_PATH": str(packs)}):
                 clear_default_registry_cache()
+                clear_patch = None
                 try:
                     with mock.patch.object(registry_module, "discover_packs", wraps=real_discover) as discover:
                         registry_module.load_default_registry()
@@ -268,14 +269,23 @@ class ElementRegistryTest(unittest.TestCase):
             timeline_address._SCHEMA_PROVIDER_HINTS.pop(element, None)
             with mock.patch.dict("os.environ", {"ASTRID_PACKS_PATH": str(packs)}):
                 clear_default_registry_cache()
+                clear_patch = None
                 try:
-                    # Both consumers observe the initial absence; a stable miss clears shared discovery once.
-                    self.assertNotIn(element, catalog.list_effect_ids())
-                    with mock.patch.object(registry_module, "clear_default_registry_cache",
-                                           wraps=registry_module.clear_default_registry_cache) as clear:
+                    # A stable miss remains absent without clearing or repeating discovery.
+                    with mock.patch.object(registry_module, "discover_packs",
+                                           wraps=registry_module.discover_packs) as discover:
+                        self.assertNotIn(element, catalog.list_effect_ids())
+                        first_discovery_count = discover.call_count
                         with self.assertRaises(timeline_address.ElementPackNotInstalled):
                             timeline_address.element_schema(element)
-                        miss_clear_count = clear.call_count
+                        self.assertEqual(discover.call_count, first_discovery_count)
+
+                    clear_patch = mock.patch.object(
+                        registry_module,
+                        "clear_default_registry_cache",
+                        wraps=registry_module.clear_default_registry_cache,
+                    )
+                    clear = clear_patch.start()
 
                     write_pack_element(
                         packs / "demo", "effects", element, pack_id="demo", label="Installed")
@@ -313,8 +323,10 @@ class ElementRegistryTest(unittest.TestCase):
                         self.assertGreater(discovery_count, 0)
                         self.assertEqual(timeline_address.element_schema(element), schema)
                         self.assertEqual(discover.call_count, discovery_count)
-                    self.assertEqual(miss_clear_count, 1)
+                    self.assertEqual(clear.call_count, 0)
                 finally:
+                    if clear_patch is not None:
+                        clear_patch.stop()
                     timeline_address._SCHEMAS.pop(element, None)
                     timeline_address._SCHEMA_BINDINGS.pop(element, None)
                     timeline_address._SCHEMA_PROVIDER_HINTS.pop(element, None)
@@ -465,7 +477,7 @@ def test_lookup_default_registry_omits_default_root_keyword(monkeypatch, retry, 
     lookup_results = iter([None, "found"] if retry else ["found"])
 
     monkeypatch.setattr(element_registry, "load_default_registry", load_default_registry)
-    monkeypatch.setattr(element_registry, "clear_default_registry_cache", lambda: None)
+    monkeypatch.setattr(element_registry, "_refresh_if_roots_changed", lambda _key: retry)
 
     kwargs = {"project_root": project_root} if explicit_root else {}
     result, registry = element_registry.lookup_default_registry(
