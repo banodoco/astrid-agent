@@ -162,6 +162,21 @@ def test_fresh_process_command_counts(tmp_path, monkeypatch, real_runtime, tuple
 from collections import Counter
 counts = Counter()
 provenance = {}
+# The CLI and its children independently verify the same source closure as
+# the in-process Runtime. Apply the same test-only validation in each process.
+source_root = os.environ.get("ASTRID_COUNT_SOURCE_ROOT")
+if source_root:
+    from pathlib import Path
+    from pytest import MonkeyPatch
+    from runtime_protocol import source_identity
+    from tests.integrations._count_hosted_identity import hosted_identity_scope
+    identity_patch = MonkeyPatch()
+    identity_scope = hosted_identity_scope(identity_patch, source_identity, Path(source_root),
+        hosted=os.environ.get("ASTRID_CI_JOB") == "lanes-integration")
+    identity_scope.__enter__()
+    atexit.register(identity_scope.__exit__, None, None, None)
+    atexit.register(identity_patch.undo)
+    provenance["identity_scope"] = True
 import astrid, runtime_protocol, vibecomfy
 provenance.update(agent=str(astrid.__file__), runtime=str(runtime_protocol.__file__), vibecomfy=str(vibecomfy.__file__))
 fingerprint_depth = 0
@@ -243,6 +258,7 @@ atexit.register(save)
             env = os.environ.copy()
             env["PYTHONPATH"] = str(instrument) + os.pathsep + env.get("PYTHONPATH", "")
             env["ASTRID_COUNT_CAPTURE"] = str(count_path)
+            env["ASTRID_COUNT_SOURCE_ROOT"] = str(ROOT)
             result = subprocess.run(command, cwd=ROOT, env=env, capture_output=True, text=True, timeout=180)
             (tmp_path / f"cli-{index}.stdout").write_text(result.stdout)
             (tmp_path / f"cli-{index}.stderr").write_text(result.stderr)
@@ -316,6 +332,7 @@ atexit.register(save)
                 "Runtime launcher connection": 1,
             }
             expected_provenance = {
+                "identity_scope": True,
                 "agent": str(ROOT / "astrid" / "__init__.py"),
                 "runtime": str(Path(os.environ["ASTRID_RUNTIME_CHECKOUT"]) / "runtime_protocol" / "__init__.py"),
                 "vibecomfy": str(Path(os.environ["ASTRID_VIBECOMFY_CHECKOUT"]) / "vibecomfy" / "__init__.py"),
