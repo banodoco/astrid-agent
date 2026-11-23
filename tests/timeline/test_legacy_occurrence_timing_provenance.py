@@ -27,6 +27,29 @@ def test_start_shift_with_grown_occurrence_bound_reduces_legacy_overrun():
     validate_final_candidate(candidate, baseline=baseline)
 
 
+def test_unchanged_clip_retains_overrun_when_occurrence_bound_grows():
+    baseline = _baseline()
+    candidate = copy.deepcopy(baseline)
+    candidate["placements"][0]["duration_ms"] = 200
+
+    validate_final_candidate(candidate, baseline=baseline)
+
+
+@pytest.mark.parametrize("change", ["label", "asset"])
+def test_grown_bound_does_not_exempt_changed_clip_provenance(change):
+    baseline = _baseline()
+    candidate = copy.deepcopy(baseline)
+    candidate["placements"][0]["duration_ms"] = 200
+    internal = candidate["shots"]["chapter-shot"]["internal_timeline"]
+    if change == "label":
+        internal["clips"][0]["label"] = "changed"
+    else:
+        internal["registry"]["assets"]["picture"]["opaque"] = {"changed": True}
+
+    with pytest.raises(AuthoringBundleError, match="half-open bounds"):
+        validate_final_candidate(candidate, baseline=baseline)
+
+
 def test_start_shift_with_shrunk_occurrence_bound_retains_same_legacy_overrun():
     baseline = _baseline()
     candidate = copy.deepcopy(baseline)

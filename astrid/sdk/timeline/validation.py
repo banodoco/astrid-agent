@@ -513,11 +513,10 @@ def _validate_clip_list(
                 _fail(f"{clip_path}.track", "must reference an existing track")
         timing_changed = not _same_fields(
             clip, prior, ("at", "at_ms", "from", "to", "hold", "duration", "speed"))
-        # D12a checks the interval of a clip the candidate added or changed, or of any clip when the
-        # occurrence bound shrinks. An untouched clip keeps an existing overrun verbatim.
-        bound_shrank = bound != baseline_bound and not (
-            bound is not None and baseline_bound is not None and bound >= baseline_bound)
-        if timing_changed or bound_shrank:
+        # D12a checks the interval of a clip the candidate added or changed, or of any clip when its
+        # occurrence bound changes. A retained overrun must pass the provenance check below.
+        bound_changed = bound != baseline_bound
+        if timing_changed or bound_changed:
             start, duration = _clip_duration(clip, clip_path)
             if bound is not None and start + duration > bound:
                 if not _retained_overrun_does_not_worsen(
