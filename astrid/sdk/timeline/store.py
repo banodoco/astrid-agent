@@ -468,12 +468,20 @@ def fetch_bundle(project: str, timeline: str, *, revision_id: str | None = None,
     from astrid.sdk import AstridClient
 
     def read(c: Any) -> dict[str, Any]:
-        options = {"publication_id": publication_id} if publication_id is not None else {}
-        opened = c.timelines.open_bundle(project, timeline, revision_id=revision_id, **options)
+        current = revision_id is None and publication_id is None
+        timelines = c.timelines
+        verified = current and getattr(timelines, "supports_verified_timeline_head", False) is True
+        if verified:
+            opened = timelines.open_verified_bundle(project, timeline)
+        else:
+            options = {"publication_id": publication_id} if publication_id is not None else {}
+            opened = timelines.open_bundle(project, timeline, revision_id=revision_id, **options)
         if not opened.ok or not isinstance(opened.data, Mapping):
             raise TimelineEditError(f"could not open {timeline!r} in {project!r}: {_error_text(opened.error)}")
+        if verified:
+            return opened.data["bundle"]
         bundle = copy.deepcopy(dict(opened.data["bundle"]))
-        if revision_id is None and publication_id is None:
+        if current:
             # A restored revision can belong to several publications. Only
             # Runtime's scoped head pair identifies the current publication.
             project_id, timeline_id = bundle["project_id"], bundle["timeline_id"]

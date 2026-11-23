@@ -15,7 +15,7 @@ import stat
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, Mapping
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from astrid_runtime_client import WorkspaceClient as GeneratedWorkspaceClient
 from astrid_runtime_client.contract_metadata import PROTOCOL, SCHEMA_DIGEST
@@ -33,6 +33,7 @@ __all__ = [
 ]
 
 _DOCUMENT_CONTENT_UNSET = object()
+_VERIFIED_TIMELINE_HEAD_CAPABILITY = "timeline.verified_head.v1"
 
 RECONFIGURE_ACTION = "run the Astrid install line again"
 
@@ -227,8 +228,8 @@ def resolve_runtime_connection(
 class WorkspaceClient:
     """Small typed facade over the runtime's generated workspace client.
 
-    This class deliberately contains no HTTP protocol code or local discovery.
-    It translates only generated exceptions into Astrid's stable error type.
+    The generated transport handles requests, authentication, and decoding.
+    This facade translates its exceptions into Astrid's stable error type.
     """
 
     def __init__(self, endpoint: str, token: str):
@@ -264,7 +265,8 @@ class WorkspaceClient:
                 "select_project", "current_project", "create_timeline", "rename_timeline",
                 "create_timeline_document", "update_timeline_document", "list_timelines",
                 "get_timeline", "get_project_timeline", "list_timeline_history",
-                "commit_timeline", "list_timeline_commits", "replace_timeline_clip",
+                "commit_timeline", "list_timeline_commits", "get_project_timeline_verified_head",
+                "replace_timeline_clip",
                 "get_project_verified_document", "get_project_verified_document_object",
                 "diff_timeline", "archive_timeline",
                 "recover_timeline", "list_project_shots", "create_project_shot",
@@ -305,6 +307,8 @@ class WorkspaceClient:
             }
             if operation not in operations:
                 raise ValueError(f"unknown generated workspace operation: {operation!r}")
+            if operation == "get_project_timeline_verified_head":
+                return self._read_verified_timeline_head(*args, **kwargs)
             try:
                 generated = getattr(self._generated, operation)
             except AttributeError as exc:
@@ -375,6 +379,12 @@ class WorkspaceClient:
         value = self._call_generated("handshake", client_name, client_version, requested_scopes)
         self._last_handshake = value
         return value
+
+    @property
+    def supports_verified_timeline_head(self) -> bool:
+        handshake = self._last_handshake
+        capabilities = handshake.get("capabilities") if isinstance(handshake, Mapping) else None
+        return isinstance(capabilities, (list, tuple)) and _VERIFIED_TIMELINE_HEAD_CAPABILITY in capabilities
 
     def doctor(self) -> Any:
         return self._call_generated("doctor")
@@ -555,6 +565,17 @@ class WorkspaceClient:
             cursor=cursor,
             limit=limit,
         )
+
+    def get_project_timeline_verified_head(self, project_id: str, timeline_id: str) -> Any:
+        return self._call_generated("get_project_timeline_verified_head", project_id, timeline_id)
+
+    def _read_verified_timeline_head(self, project_id: str, timeline_id: str) -> Mapping[str, Any]:
+        # The capability is a workspace.v1 extension. Bind it to the same
+        # authenticated transport while the pinned core contract is unchanged.
+        project = quote(project_id, safe="")
+        timeline = quote(timeline_id, safe="")
+        _, _, body = self._generated._request("GET", f"/v1/projects/{project}/timelines/{timeline}/verified-head")
+        return self._generated._json(body)
 
     def get_project_verified_document(self, project_id: str, pin: Mapping[str, Any]) -> Any:
         return self._call_generated("get_project_verified_document", project_id, pin)

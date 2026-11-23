@@ -24,6 +24,54 @@ class _RemoteTimelineRevisionMixin:
             self, operation: str, *args: Any, key: str | None = None, **kwargs: Any,
         ) -> DomainResult[Any]: ...
 
+    def open_verified_bundle(self, project, ref):
+        """Open the exact current authoring closure from one verified head read."""
+        from astrid.sdk.timeline.commit import bundle_from_document
+
+        resolved = self._resolve_timeline(project, ref)
+        if not resolved.ok:
+            return resolved
+        scope = resolved.data if isinstance(resolved.data, Mapping) else {}
+        project_id, timeline_id = scope.get("project_id"), scope.get("timeline_id")
+        if not all(isinstance(value, str) and value.strip() for value in (project_id, timeline_id)):
+            return DomainResult.failure(ErrorObject(
+                "protocol_error", "timeline scope has no canonical project/timeline identity", {}
+            ))
+
+        opened = self._typed("get_project_timeline_verified_head", project_id, timeline_id)
+        if not opened.ok:
+            return opened
+        value = opened.data
+        if not isinstance(value, Mapping) or set(value) != {"project_id", "timeline_id", "head", "canonical_document"}:
+            return DomainResult.failure(ErrorObject("protocol_error", "invalid verified timeline head response", {}))
+        if (value["project_id"], value["timeline_id"]) != (project_id, timeline_id):
+            return DomainResult.failure(ErrorObject("integrity_error", "verified timeline head scope mismatch", {}))
+        head = value["head"]
+        if (not isinstance(head, Mapping) or set(head) != {"revision_id", "publication_id"}
+                or not all(isinstance(pin, str) and pin.strip() for pin in head.values())):
+            return DomainResult.failure(ErrorObject("protocol_error", "verified timeline head omitted its exact pair", {}))
+        revision = head["revision_id"]
+        try:
+            bundle = bundle_from_document(value["canonical_document"])
+        except (KeyError, TypeError, ValueError) as exc:
+            return DomainResult.failure(ErrorObject(
+                "integrity_error", f"could not open the verified timeline closure: {exc}",
+                {"project_id": project_id, "timeline_id": timeline_id, "revision_id": revision},
+            ))
+        if (bundle["project_id"], bundle["timeline_id"], bundle["base_parent"]["revision_id"]) != (
+            project_id, timeline_id, revision,
+        ):
+            return DomainResult.failure(ErrorObject("integrity_error", "verified timeline closure scope or pin mismatch", {}))
+        bundle["base_parent"]["publication_id"] = head["publication_id"]
+        return DomainResult.success({
+            "bundle": bundle,
+            "project_id": project_id,
+            "timeline_id": timeline_id,
+            "revision_id": revision,
+            "head_revision_id": revision,
+            "is_current_head": True,
+        })
+
     def open_bundle(self, project, ref, *, revision_id=None, publication_id=None):
         """Read one complete, read-only authoring bundle (parent → shots → internal timelines).
 
