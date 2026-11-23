@@ -17,6 +17,17 @@ from astrid.core.generation import cli_shared
 
 _logger = logging.getLogger(__name__)
 _generation_output: ContextVar[Any] = ContextVar('astrid_generation_cli_output', default=None)
+_dispatch_marks: ContextVar[tuple[float, float] | None] = ContextVar('astrid_generation_dispatch_marks', default=None)
+
+
+@contextlib.contextmanager
+def dispatch_timing(marks: tuple[float, float]):
+    """Carry gateway timing across the one-argument CLI entry point."""
+    token = _dispatch_marks.set(marks)
+    try:
+        yield
+    finally:
+        _dispatch_marks.reset(token)
 
 # One table of what each generation kind needs at the CLI boundary: its help
 # noun, the SDK keyword that carries its dimensions, whether a video prompt
@@ -983,6 +994,8 @@ def subcommand_names() -> tuple[str, ...]:
 def main(argv: list[str] | None = None, *, dispatch_marks: tuple[float, float] | None = None) -> int:
     stdout = sys.stdout
     entry = time.monotonic()
+    if dispatch_marks is None:
+        dispatch_marks = _dispatch_marks.get()
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] not in {"image", "video", "audio", "workflow"} or any(arg in {"-h", "--help"} for arg in argv):
         token = _generation_output.set(stdout)
