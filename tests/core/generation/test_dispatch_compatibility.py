@@ -1,5 +1,7 @@
 """Generation dispatch preserves the callable contract and startup timings."""
 
+from contextvars import copy_context
+
 import pytest
 
 from astrid.core.gateway import dispatch
@@ -56,3 +58,26 @@ def test_console_reports_dispatch_timing(monkeypatch, capsys):
     monkeypatch.setattr(cli, "_main_with_errors", lambda args: 0)
     assert console.main(["generate", "image", "input", "--timings"]) == 0
     assert "dispatch:" in capsys.readouterr().err
+
+
+def test_copied_dispatch_context_expires_after_nested_exception(monkeypatch):
+    children = []
+    original_init = command_timing.TimingCollector.__init__
+
+    def capture(self, *args, **kwargs):
+        children.append(kwargs.get("startup_child"))
+        original_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(command_timing.TimingCollector, "__init__", capture)
+    monkeypatch.setattr(cli, "_main_with_errors", lambda args: 0)
+    with cli.dispatch_timing((1.0, 2.0)):
+        outer = copy_context()
+        with pytest.raises(ValueError, match="inner"):
+            with cli.dispatch_timing((3.0, 4.0)):
+                inner = copy_context()
+                cli.main(["image"])
+                raise ValueError("inner")
+        cli.main(["image"])
+        inner.run(cli.main, ["image"])
+    outer.run(cli.main, ["image"])
+    assert children == [("dispatch", 3.0, 4.0), ("dispatch", 1.0, 2.0), None, None]
