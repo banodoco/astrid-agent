@@ -25,37 +25,131 @@ const repoRootOf = projectDirOf;
 const readText = (file) => {
   try {
     return fs.readFileSync(file, 'utf8');
-  } catch {
-    return null;
+  } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    throw new Error(`cannot read manifest file ${file}`, {cause: error});
   }
 };
 
-const readPackManifest = (packRoot, astridDir) => {
+// The original source-only reader handles a narrow block-mapping subset.
+// Reject representations it cannot interpret instead of losing an alias.
+const parseSimpleYamlManifest = (text, file) => {
+  const fail = (form) => { throw new Error(`unsupported YAML ${form} in ${file}`); };
+  const rendering = {};
+  let id;
+  let inRendering = false;
+  let sawRendering = false;
+  let entry = null;
+  let extraField = false;
+  const scalar = (raw, form) => {
+    const quoted = /^\s*(?:'([^'\\#]*)'|"([^"\\#]*)")\s*(?:#.*)?$/.exec(raw);
+    if (quoted) return quoted[1] ?? quoted[2];
+    const plain = /^\s*([^#\[\]{}&*!|>'"%`\\]+?)(?:\s+#.*)?\s*$/.exec(raw);
+    if (!plain || /:\s/.test(plain[1]) || /^[?@-]\s/.test(plain[1])) fail(form);
+    const value = plain[1].trim();
+    if (form !== 'id scalar' && /^(?:null|~|true|false|[-+]?[0-9]+(?:\.[0-9]+)?)$/i.test(value)) fail(form);
+    return value;
+  };
+  const finish = () => {
+    if (!entry) return;
+    const rawKind = entry.key.split('/', 1)[0];
+    if (ELEMENT_KINDS.has(rawKind) && (!entry.type || !entry.path)) fail('incomplete rendering declaration');
+  };
+  for (const line of text.split(/\r?\n/)) {
+    if (/^\s*(?:#.*)?$/.test(line)) continue;
+    if (/^\s*\t/.test(line) || /^\uFEFF/.test(line)) fail('tab indentation or byte-order mark');
+    if (/^\s*(?:---|\.\.\.)\s*(?:#.*)?$/.test(line)) fail('document marker');
+    if (/^\S/.test(line)) {
+      if (inRendering) finish();
+      inRendering = false;
+      entry = null;
+      if (/^<<\s*:/.test(line)) fail('root merge');
+      if (/^[!&*]/.test(line)) fail('root tag or alias');
+      if (/^(?:id|['"]id['"])\s*:/.test(line)) {
+        if (id !== undefined || !/^id\s*:/.test(line)) fail('id declaration');
+        id = scalar(line.replace(/^id\s*:/, ''), 'id scalar');
+      }
+      if (/^(?:rendering|['"]rendering['"])\s*:/.test(line)) {
+        if (sawRendering || !/^rendering\s*:/.test(line)) fail('rendering declaration');
+        sawRendering = true;
+        const rest = line.replace(/^rendering\s*:/, '').trim();
+        if (/^\{\}\s*(?:#.*)?$/.test(rest)) continue;
+        if (rest && !rest.startsWith('#')) fail('rendering flow or scalar form');
+        inRendering = true;
+      } else if (/^[{[]/.test(line)) {
+        fail('root flow form');
+      }
+      continue;
+    }
+    if (!inRendering) {
+      if (/^\s+(?:rendering|['"]rendering['"])\s*:/.test(line)) fail('rendering indentation');
+      continue;
+    }
+    if (/\t/.test(line) || /(?:^|\s)(?:[&*!]|<<:)/.test(line)) fail('rendering alias, tag or indentation');
+    const entryMatch = /^  ([^\s:#][^:#]*):\s*(?:#.*)?$/.exec(line);
+    if (entryMatch) {
+      finish();
+      const key = entryMatch[1].trim();
+      if (/['"\[\]{}&*!|>%`\\]/.test(key)) fail('rendering entry key');
+      if (Object.hasOwn(rendering, key)) fail('duplicate rendering entry');
+      entry = {key};
+      rendering[key] = entry;
+      extraField = false;
+      continue;
+    }
+    if (/^  \S/.test(line)) fail('rendering entry or flow form');
+    if (!entry) fail('rendering mapping');
+    const field = /^    ([A-Za-z0-9_-]+):\s*(.*)$/.exec(line);
+    if (field) {
+      const [, key, raw] = field;
+      if (key === 'type' || key === 'path') {
+        if (Object.hasOwn(entry, key)) fail(`duplicate ${key}`);
+        entry[key] = scalar(raw, `${key} scalar or flow form`);
+        extraField = false;
+      } else {
+        if (/^[\[{|>]/.test(raw)) fail(`${key} flow or multiline form`);
+        extraField = true;
+      }
+      continue;
+    }
+    if (!extraField || !/^    (?:-|\s)/.test(line)) fail('rendering field or indentation');
+  }
+  if (inRendering) finish();
+  return {id, rendering};
+};
+
+const readPackManifest = (packRoot, astridDir, remotionRoot) => {
   for (const name of MANIFEST_NAMES) {
     const text = readText(path.join(packRoot, name));
     if (text === null) continue;
     let manifest;
-    if (name.endsWith('.json')) {
+    try {
       manifest = JSON.parse(text);
-    } else {
-      let moduleRoot;
-      try { moduleRoot = nativeModuleDir(); }
-      catch { moduleRoot = path.join(astridDir, 'remotion'); }
-      const require = createRequire(path.join(moduleRoot, 'package.json'));
-      let yaml;
-      try {
-        yaml = require('js-yaml');
-      } catch (error) {
-        if (error.code !== 'MODULE_NOT_FOUND') throw error;
-        // Some provisioned hosts expose dependencies through the selected
-        // esbuild package's real installation rather than a flat node_modules.
-        yaml = createRequire(fs.realpathSync(require.resolve('esbuild')))('js-yaml');
+    } catch {
+      if (name.endsWith('.json')) throw new Error(`invalid JSON form in ${path.join(packRoot, name)}`);
+      let moduleRoot = remotionRoot;
+      if (moduleRoot === undefined) {
+        try { moduleRoot = nativeModuleDir(); }
+        catch { moduleRoot = path.join(astridDir, 'remotion'); }
       }
-      manifest = yaml.load(text);
+      const require = createRequire(path.join(moduleRoot, 'package.json'));
+      const installed = path.join(moduleRoot, 'node_modules/js-yaml');
+      const file = path.join(packRoot, name);
+      if (fs.existsSync(installed)) {
+        let yaml;
+        try { yaml = require(installed); }
+        catch (error) { throw new Error(`cannot load project YAML parser for ${file}`, {cause: error}); }
+        try { manifest = yaml.load(text); }
+        catch (error) { throw new Error(`invalid YAML form in ${file}`, {cause: error}); }
+      } else {
+        manifest = parseSimpleYamlManifest(text, file);
+      }
     }
-    if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest) ||
-        (manifest.rendering !== undefined && (!manifest.rendering || typeof manifest.rendering !== 'object' || Array.isArray(manifest.rendering)))) {
-      throw new Error(`invalid pack manifest: ${path.join(packRoot, name)}`);
+    if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) {
+      throw new Error(`invalid manifest mapping form in ${path.join(packRoot, name)}`);
+    }
+    if (manifest.rendering !== undefined && (!manifest.rendering || typeof manifest.rendering !== 'object' || Array.isArray(manifest.rendering))) {
+      throw new Error(`invalid rendering form in ${path.join(packRoot, name)}`);
     }
     return {id: manifest.id, rendering: manifest.rendering ?? {}};
   }
@@ -128,10 +222,10 @@ export const assertOutsidePublicRoot = (publicRoot, candidate) => {
   return resolved;
 };
 
-const collectDeclaredPackElementAliases = (packRoots, scope, {strict = false, astridDir = repoRootOf()} = {}) => {
+const collectDeclaredPackElementAliases = (packRoots, scope, {strict = false, astridDir = repoRootOf(), remotionRoot} = {}) => {
   const aliases = {};
   for (const packRoot of packRoots) {
-    const manifest = readPackManifest(packRoot, astridDir);
+    const manifest = readPackManifest(packRoot, astridDir, remotionRoot);
     const packId = manifest.id || path.basename(packRoot);
     for (const [rawKey, declaration] of Object.entries(manifest.rendering ?? {})) {
       if (!declaration || declaration.type !== 'element' || typeof declaration.path !== 'string') continue;
@@ -159,7 +253,7 @@ const collectDeclaredPackElementAliases = (packRoots, scope, {strict = false, as
 
 // V3 aliases come only from declared rendering entries. There is deliberately
 // no fallback scan of legacy `elements/` locations.
-export const packElementAliases = ({env = process.env, astridDir = repoRootOf()} = {}) => {
+export const packElementAliases = ({env = process.env, astridDir = repoRootOf(), remotionRoot} = {}) => {
   // A managed render supplies exactly the roots used by its Python registry.
   // Do not broaden that selection with this process's checkout or environment.
   if (Object.hasOwn(env, 'ASTRID_RENDER_PACK_ROOTS')) {
@@ -176,7 +270,7 @@ export const packElementAliases = ({env = process.env, astridDir = repoRootOf()}
       if (entry.kind_roots === undefined) {
         // Compatibility for standalone callers which still send the original
         // staged-pack carrier. Managed renders always send kind_roots.
-        selected = collectDeclaredPackElementAliases([entry.root], entry.scope, {strict: true, astridDir});
+        selected = collectDeclaredPackElementAliases([entry.root], entry.scope, {strict: true, astridDir, remotionRoot});
       } else {
         if (!entry.kind_roots || typeof entry.kind_roots !== 'object' || Array.isArray(entry.kind_roots)) {
           throw new Error('invalid render kind roots');
@@ -215,11 +309,11 @@ export const packElementAliases = ({env = process.env, astridDir = repoRootOf()}
   }
   const selected = {};
   for (const {root, scope} of JSON.parse(env.ASTRID_RENDER_PACK_ROOTS ?? '[]')) {
-    Object.assign(selected, collectDeclaredPackElementAliases([root], scope, {astridDir}));
+    Object.assign(selected, collectDeclaredPackElementAliases([root], scope, {astridDir, remotionRoot}));
   }
   return {
-    ...collectDeclaredPackElementAliases(inTree, undefined, {astridDir}),
-    ...collectDeclaredPackElementAliases(external, undefined, {astridDir}),
+    ...collectDeclaredPackElementAliases(inTree, undefined, {astridDir, remotionRoot}),
+    ...collectDeclaredPackElementAliases(external, undefined, {astridDir, remotionRoot}),
     ...selected,
     ...(inTree.some((root) => path.basename(root) === 'rendering')
       ? {'@astrid-rendering': path.resolve(astridDir, 'astrid/packs/rendering')} : {}),
@@ -241,7 +335,7 @@ export const selectedHostResource = ({remotionRoot, issuer, request, env = proce
       request === '../../astrid/core/timeline/schema/r13-legacy-elements.json' &&
       Object.hasOwn(env, 'ASTRID_RENDER_PACK_ROOTS')) {
     // Validate the complete carrier and refuse competing schema bindings.
-    packElementAliases({env, astridDir: projectDirOf(remotionRoot)});
+    packElementAliases({env, astridDir: projectDirOf(remotionRoot), remotionRoot});
     const schemas = JSON.parse(env.ASTRID_RENDER_PACK_ROOTS)
       .filter(entry => entry.legacy_schema !== undefined).map(entry => entry.legacy_schema);
     if (new Set(schemas).size > 1) throw new Error('conflicting legacy element schemas');
@@ -296,7 +390,7 @@ const hostResourcePlugin = (remotionRoot) => {
 
 const applyAliasesForRoot = (currentConfiguration, remotionRoot) => {
   const repoRoot = projectDirOf(remotionRoot);
-  const packAliases = packElementAliases({astridDir: repoRoot});
+  const packAliases = packElementAliases({astridDir: repoRoot, remotionRoot});
   const selectedRegistries = {};
   const rawRoots = process.env.ASTRID_RENDER_PACK_ROOTS;
   // Older standalone integrations use only {root, scope}. Keep their public

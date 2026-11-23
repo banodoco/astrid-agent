@@ -44,6 +44,218 @@ def test_external_aliases_do_not_scan_legacy_element_roots(tmp_path: Path) -> No
     assert "@pack-probe-elements-effects" not in result
 
 
+def test_source_only_parser_accepts_checked_in_rendering_pack_manifest(tmp_path: Path) -> None:
+    isolated_remotion = tmp_path / "isolated-remotion"
+    isolated_remotion.mkdir()
+    shutil.copy2(MODULE, isolated_remotion / MODULE.name)
+    assert not (isolated_remotion / "node_modules").exists()
+
+    node = shutil.which(os.environ.get("ASTRID_NODE_EXECUTABLE") or "node")
+    assert node, "pinned Node executable unavailable (set ASTRID_NODE_EXECUTABLE)"
+    script = """
+    import {pathToFileURL} from 'node:url';
+    const mod = await import(pathToFileURL(process.argv[1]).href);
+    console.log(JSON.stringify(mod.packElementAliases({
+      astridDir: process.argv[2], env: {},
+    })));
+    """
+    result = subprocess.run(
+        [node, "--no-global-search-paths", "--input-type=module", "-e", script,
+         str(isolated_remotion / MODULE.name), str(ROOT)],
+        cwd=isolated_remotion,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={"PATH": os.defpath, **({"SystemRoot": os.environ["SystemRoot"]} if "SystemRoot" in os.environ else {})},
+    )
+    assert result.returncode == 0, result.stderr
+    aliases = json.loads(result.stdout)
+    assert aliases["@pack-rendering-elements-effects"] == str(ROOT / "astrid/packs/rendering/rendering/elements/effects")
+
+
+def test_yaml_fallback_accepts_legacy_and_empty_but_rejects_flow_and_malformed(
+    tmp_path: Path,
+) -> None:
+    isolated_remotion = tmp_path / "isolated-remotion"
+    isolated_remotion.mkdir()
+    shutil.copy2(MODULE, isolated_remotion / MODULE.name)
+    assert not (isolated_remotion / "node_modules").exists()
+
+    pack = tmp_path / "external-pack"
+    effects = pack / "rendering" / "effects"
+    (effects / "probe").mkdir(parents=True)
+    (effects / "probe" / "element.yaml").write_text("id: probe-effect\n", encoding="utf-8")
+    manifest = pack / "pack.yaml"
+    node = shutil.which(os.environ.get("ASTRID_NODE_EXECUTABLE") or "node")
+    assert node, "pinned Node executable unavailable (set ASTRID_NODE_EXECUTABLE)"
+    script = """
+    import {pathToFileURL} from 'node:url';
+    const mod = await import(pathToFileURL(process.argv[1]).href);
+    console.log(JSON.stringify(mod.packElementAliases({
+      astridDir: process.argv[2], env: {ASTRID_PACKS_PATH: process.argv[3]},
+    })));
+    """
+
+    def run() -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [node, "--no-global-search-paths", "--input-type=module", "-e", script,
+             str(isolated_remotion / MODULE.name), str(tmp_path), str(pack)],
+            cwd=isolated_remotion, check=False, capture_output=True, text=True, timeout=30,
+            env={"PATH": os.defpath, **({"SystemRoot": os.environ["SystemRoot"]} if "SystemRoot" in os.environ else {})},
+        )
+
+    manifest.write_text(
+        "schema_version: 3\nid: probe\nrendering:\n  effects/probe:\n"
+        "    type: element\n    path: rendering/effects/probe/element.yaml\n",
+        encoding="utf-8",
+    )
+    legacy = run()
+    assert legacy.returncode == 0, legacy.stderr
+    assert json.loads(legacy.stdout)["@pack-probe-elements-effects"] == str(effects)
+
+    (effects / "probe title").mkdir()
+    (effects / "probe title" / "element.yaml").write_text("id: probe-title\n", encoding="utf-8")
+    manifest.write_text(
+        "id: probe\nrendering:\n  effects/probe title:\n"
+        "    type: 'element'\n    path: 'rendering/effects/probe title/element.yaml'\n",
+        encoding="utf-8",
+    )
+    quoted = run()
+    assert quoted.returncode == 0, quoted.stderr
+    assert json.loads(quoted.stdout)["@pack-probe-elements-effects"] == str(effects)
+
+    manifest.write_text("schema_version: 3\nid: probe\nrendering: {}\n", encoding="utf-8")
+    empty = run()
+    assert empty.returncode == 0, empty.stderr
+    assert json.loads(empty.stdout) == {}
+
+    manifest.write_text(
+        '{schema_version: 3, id: probe, rendering: {"effects/probe": {type: element}}}\n',
+        encoding="utf-8",
+    )
+    flow = run()
+    assert flow.returncode != 0
+    assert str(manifest) in flow.stderr
+    assert "unsupported YAML" in flow.stderr and "flow" in flow.stderr
+
+    manifest.write_text("schema_version: 3\nid: probe\nrendering: [broken}\n", encoding="utf-8")
+    malformed = run()
+    assert malformed.returncode != 0
+    assert str(manifest) in malformed.stderr
+    assert "unsupported YAML rendering flow or scalar form" in malformed.stderr
+
+    for unsupported in (
+        "id: probe\nrendering:\n  effects/probe: {type: element}\n",
+        "id: probe\nrendering:\n    effects/probe:\n      type: element\n",
+        "id: probe\nrendering:\n  effects/probe:\n    type: *alias\n    path: x\n",
+        "id: probe\nrendering:\n  effects/probe:\n    type: element\n    path: 'x#y'\n",
+    ):
+        manifest.write_text(unsupported, encoding="utf-8")
+        result = run()
+        assert result.returncode != 0
+        assert str(manifest) in result.stderr and "unsupported YAML" in result.stderr
+
+
+@pytest.mark.remotion
+def test_installed_yaml_parser_accepts_flow_and_rejects_malformed(tmp_path: Path) -> None:
+    isolated_remotion = tmp_path / "isolated-remotion"
+    isolated_remotion.mkdir()
+    shutil.copy2(MODULE, isolated_remotion / MODULE.name)
+    node_modules = isolated_remotion / "node_modules"
+    node_modules.mkdir()
+    shutil.copytree(ROOT / "remotion" / "node_modules" / "js-yaml", node_modules / "js-yaml")
+
+    pack = tmp_path / "external-pack"
+    effects = pack / "rendering" / "effects"
+    (effects / "probe").mkdir(parents=True)
+    (effects / "probe" / "element.yaml").write_text("id: probe-effect\n", encoding="utf-8")
+    manifest = pack / "pack.yaml"
+    node = shutil.which(os.environ.get("ASTRID_NODE_EXECUTABLE") or "node")
+    assert node, "pinned Node executable unavailable (set ASTRID_NODE_EXECUTABLE)"
+    script = """
+    import {pathToFileURL} from 'node:url';
+    const mod = await import(pathToFileURL(process.argv[1]).href);
+    console.log(JSON.stringify(mod.packElementAliases({
+      astridDir: process.argv[2], env: {ASTRID_PACKS_PATH: process.argv[3]},
+    })));
+    """
+
+    def run() -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [node, "--no-global-search-paths", "--input-type=module", "-e", script,
+             str(isolated_remotion / MODULE.name), str(tmp_path), str(pack)],
+            cwd=isolated_remotion, check=False, capture_output=True, text=True, timeout=30,
+            env={"PATH": os.defpath, **({"SystemRoot": os.environ["SystemRoot"]} if "SystemRoot" in os.environ else {})},
+        )
+
+    manifest.write_text(
+        '{schema_version: 3, id: probe, rendering: '
+        '{"effects/probe": {type: element, path: "rendering/effects/probe/element.yaml"}}}\n',
+        encoding="utf-8",
+    )
+    flow = run()
+    assert flow.returncode == 0, flow.stderr
+    assert json.loads(flow.stdout)["@pack-probe-elements-effects"] == str(effects)
+
+    manifest.write_text("{schema_version: 3, id: probe, rendering: [broken}\n", encoding="utf-8")
+    malformed = run()
+    assert malformed.returncode != 0
+    assert str(manifest) in malformed.stderr
+    assert "invalid YAML form" in malformed.stderr
+
+
+@pytest.mark.remotion
+def test_explicit_project_binding_resolves_yaml_parser_from_project(tmp_path: Path) -> None:
+    module_source = tmp_path / "module-source"
+    module_source.mkdir()
+    shutil.copy2(MODULE, module_source / MODULE.name)
+
+    explicit_project = tmp_path / "explicit-project"
+    explicit_project.mkdir()
+    node_modules = explicit_project / "node_modules"
+    node_modules.mkdir()
+    shutil.copytree(ROOT / "remotion" / "node_modules" / "js-yaml", node_modules / "js-yaml")
+    assert not (module_source / "node_modules").exists()
+
+    pack = tmp_path / "external-pack"
+    effects = pack / "rendering" / "effects"
+    (effects / "probe").mkdir(parents=True)
+    (effects / "probe" / "element.yaml").write_text("id: probe-effect\n", encoding="utf-8")
+    manifest = pack / "pack.yaml"
+    manifest.write_text(
+        '{schema_version: 3, id: probe, rendering: '
+        '{"effects/probe": {type: element, path: "rendering/effects/probe/element.yaml"}}}\n',
+        encoding="utf-8",
+    )
+
+    node = shutil.which(os.environ.get("ASTRID_NODE_EXECUTABLE") or "node")
+    assert node, "pinned Node executable unavailable (set ASTRID_NODE_EXECUTABLE)"
+    script = """
+    import {pathToFileURL} from 'node:url';
+    const mod = await import(pathToFileURL(process.argv[1]).href);
+    const config = mod.remotionPrimitiveAliasesFor(process.argv[2])({});
+    console.log(JSON.stringify(config.resolve.alias));
+    """
+    result = subprocess.run(
+        [node, "--no-global-search-paths", "--input-type=module", "-e", script,
+         str(module_source / MODULE.name), str(explicit_project)],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={
+            "PATH": os.defpath,
+            "ASTRID_PACKS_PATH": str(pack),
+            **({"SystemRoot": os.environ["SystemRoot"]} if "SystemRoot" in os.environ else {}),
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    aliases = json.loads(result.stdout)
+    assert aliases["@pack-probe-elements-effects"] == str(effects)
+
+
 def test_declared_public_resource_resolution_is_contained_and_nonrecursive() -> None:
     result = _node_json(
         """
@@ -95,7 +307,18 @@ def test_copied_frame_worker_clears_project_selectors_without_optional_sibling(t
     shutil.copy2(ROOT / "remotion" / "src" / "astrid-frame-worker.mjs",
                  copied_source / "astrid-frame-worker.mjs")
     shutil.copy2(ROOT / "remotion" / "shared-browser.mjs", copied_remotion / "shared-browser.mjs")
-    (copied_remotion / "node_modules").symlink_to(ROOT / "remotion" / "node_modules", target_is_directory=True)
+    assert not (copied_source / "frame-request-environment.mjs").exists()
+    renderer_package = copied_remotion / "node_modules" / "@remotion" / "renderer"
+    renderer_package.mkdir(parents=True)
+    (renderer_package / "package.json").write_text(
+        json.dumps({"type": "module", "exports": "./index.js"}), encoding="utf-8"
+    )
+    (renderer_package / "index.js").write_text(
+        "export const openBrowser = async () => {};\n"
+        "export const renderFrames = async () => {};\n"
+        "export const selectComposition = async () => {};\n",
+        encoding="utf-8",
+    )
 
     result = _node_json(
         """
