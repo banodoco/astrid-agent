@@ -229,7 +229,11 @@ with its implementation; an empty slot promises no command or behavior. -->
 
 ### WS-0a — Audio workflow readiness
 
-<!-- WS-0a: fill this subsection in the same change as the card. -->
+A raw audio graph need not choose a catalog audio mode. Use
+`generate workflow FILE --placement TARGET --dry-run --json` to check the
+actual graph; an inferred `workflow` mode is valid for explicit raw audio.
+The advisory need `audio_mode_unknown` alone does not block an explicit
+workflow. Other binding ambiguities and missing assets still need resolution.
 
 ### WS-0b — Unresolved model references
 
