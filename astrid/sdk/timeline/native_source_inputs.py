@@ -106,9 +106,31 @@ def read_verified_transcript(client: Any, project: str, pin: Mapping[str, Any]) 
     return {"pin": exact_pin, "document": copy.deepcopy(dict(document))}
 
 
+def read_retained_transcripts(client, project, document):
+    """Authenticate transcript inputs retained in a Runtime document's manifest."""
+    from ._shot_word_retime import retained_retime_pins
+
+    pins = retained_retime_pins(document)
+    if not pins:
+        return []
+    if document.get("project_id") != project:
+        raise TimelineEditError("retained document project scope does not match session")
+    media = {row["media_id"] for row in document["dependency_manifest"]["media"]}
+    captures = []
+    for pin in pins:
+        capture = read_verified_transcript(client, project, pin)
+        if capture["document"]["content"]["media_id"] not in media:
+            raise TimelineEditError("retained transcript media is outside the accepted manifest")
+        captures.append(capture)
+    return captures
+
+
 def materialize_transcript_inputs(bundle: dict[str, Any], commands: list[Mapping[str, Any]], *,
-                                  client: Any, project: str) -> dict[str, Any]:
-    """Hydrate exact transcript captures needed by pending or new anchors."""
+                                  client: Any, project: str, include_retained: bool = False) -> dict[str, Any]:
+    """Hydrate exact captures for pending, new, and optionally retained anchors."""
+    retained = (read_retained_transcripts(client, project, bundle.get("source_mapping", {}).get("_runtime_document"))
+                if include_retained else [])
+    authenticated = [row["pin"] for row in retained]
     pins: list[dict[str, Any]] = []
     for command in commands:
         if command.get("op") != "clip.anchor":
@@ -117,14 +139,15 @@ def materialize_transcript_inputs(bundle: dict[str, Any], commands: list[Mapping
         if not isinstance(choice, Mapping):
             continue
         pin = choice.get("document")
-        if isinstance(pin, Mapping) and dict(pin) not in pins:
+        if isinstance(pin, Mapping) and pin not in authenticated and pin not in pins:
             pins.append(dict(pin))
-    if not pins:
+    if not pins and not retained:
         return bundle
+    verified = retained + [read_verified_transcript(client, project, pin) for pin in pins]
     mapping = bundle.setdefault("source_mapping", {})
     captures = mapping.setdefault("pinned_documents", [])
-    for pin in pins:
-        capture = read_verified_transcript(client, project, pin)
+    for capture in verified:
+        pin = capture["pin"]
         captures[:] = [row for row in captures if not isinstance(row, Mapping) or row.get("pin") != pin]
         captures.append(capture)
     return bundle

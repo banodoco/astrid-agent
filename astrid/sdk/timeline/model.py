@@ -413,7 +413,11 @@ class Clip(_Suggest):
         """Move by seconds and/or frames. A clip on a moment keeps it: the nudge becomes its offset (``"viral" +2f``)."""
         current = intent.on(self.data)
         if current:
-            moment = mo.parse(current).with_offset(seconds=float(seconds), frames=int(frames))
+            declaration = mo.parse(current)
+            moment = declaration.with_offset(seconds=float(seconds), frames=int(frames))
+            guard = getattr(self._tl, "_guard_anchored_nudge", None)
+            if callable(guard) and moment != declaration:
+                guard(self, moment)
             return self.on(moment)
         delta = float(seconds) + frames / self._tl.fps
         new_start = self._tl.quantize(self.start + delta)
@@ -835,6 +839,12 @@ class Clip(_Suggest):
         return self
 
     def remove(self) -> None:
+        stage = getattr(self._tl, "_stage_command", None)
+        if self.shot_id == PARENT_SHOT and callable(stage):
+            stage({"schema_version": 1, "op": "clip.delete", "version": "1",
+                   "select": f"parent/clip:{self.id}", "args": {}, "intent": {}},
+                  label="Remove clip", capture=True)
+            return
         command = getattr(self._tl, "command", None)
         if self.shot_id == PARENT_SHOT and callable(command):
             from .capture import capture_clip_delete
@@ -863,8 +873,13 @@ class _TrackRef:
     def rename(self, label: str) -> "_TrackRef":
         if not isinstance(label, str) or not label.strip():
             raise TimelineEditError("track label must be a nonempty string")
+        stage = getattr(self._tl, "_stage_command", None)
         command = getattr(self._tl, "command", None)
-        if callable(command):
+        if callable(stage):
+            stage({"schema_version": 1, "op": "track.set", "version": "1",
+                   "select": f"parent/track:{self.id}", "args": {"values": {"label": label}, "clear": []}},
+                  label="Rename track", capture=True)
+        elif callable(command):
             from ._scalar_commands import capture_track_set
 
             captured = capture_track_set(self._tl.bundle, f"parent/track:{self.id}", values={"label": label})
