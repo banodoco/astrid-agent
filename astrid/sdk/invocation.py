@@ -18,6 +18,7 @@ import tempfile
 import time
 import uuid
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -127,15 +128,39 @@ def _expanded_config_hash(config: Mapping[str, Any]) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def discover(
+@dataclass(frozen=True)
+class _PreparedDiscovery:
+    executor_registry: Any
+    orchestrator_registry: Any
+    element_registry: Any
+    pack_permissions: Mapping[str, tuple[str, ...]]
+    metadata: tuple[tuple[dict[str, Any], ...], ...]
+
+    def projection_inputs(self) -> str | None:
+        def definitions_and_aliases(registry):
+            definitions = registry.list()
+            resolver = registry.alias_resolver
+            aliases = (() if resolver is None else
+                       tuple(resolver.get_aliases_for(definition.id) for definition in definitions))
+            return definitions, aliases
+
+        try:
+            inputs = (self.metadata, self.pack_permissions,
+                      definitions_and_aliases(self.executor_registry),
+                      definitions_and_aliases(self.orchestrator_registry), self.element_registry.list())
+            return json.dumps(_json_safe(inputs), allow_nan=False, separators=(",", ":"))
+        except (TypeError, ValueError, RecursionError):
+            return None  # Use normal projection for data without a stable JSON representation.
+
+
+def _prepare_discovery(
     *,
     project_root: str | Path | None = None,
     extra_pack_roots: tuple[str, ...] = (),
     banodoco_config: Any | None = None,
-    active_theme: str | Path | None = None,
     include_missing_roots: bool = False,
-    kind: str | None = None,
-) -> DiscoveryResult:
+) -> _PreparedDiscovery:
+    """Run discovery and registry admission before any SDK projection reuse."""
     sdk_module = _sdk_module()
     discovered_packs = sdk_module._discover_pack_inventory(
         project_root=project_root,
@@ -151,16 +176,36 @@ def discover(
     )
     if element_registry is None:
         raise CapabilityInvocationError("element registry was not loaded")
+    metadata = sdk_module._build_discovery_metadata(discovered_packs, element_registry=element_registry)
+    return _PreparedDiscovery(executor_registry, orchestrator_registry, element_registry,
+                              pack_permission_ids_by_pack_id, metadata)
+
+
+def discover(
+    *,
+    project_root: str | Path | None = None,
+    extra_pack_roots: tuple[str, ...] = (),
+    banodoco_config: Any | None = None,
+    active_theme: str | Path | None = None,
+    include_missing_roots: bool = False,
+    kind: str | None = None,
+    _prepared: _PreparedDiscovery | None = None,
+) -> DiscoveryResult:
+    sdk_module = _sdk_module()
+    prepared = (_prepare_discovery(project_root=project_root, extra_pack_roots=extra_pack_roots,
+                                   banodoco_config=banodoco_config, include_missing_roots=include_missing_roots)
+                if _prepared is None else _prepared)
+    executor_registry = prepared.executor_registry
+    orchestrator_registry = prepared.orchestrator_registry
+    element_registry = prepared.element_registry
+    pack_permission_ids_by_pack_id = prepared.pack_permissions
     (
         packs,
         generation_backends,
         element_kinds,
         generation_features,
         generation_modes,
-    ) = sdk_module._build_discovery_metadata(
-        discovered_packs,
-        element_registry=element_registry,
-    )
+    ) = prepared.metadata
 
     if pack_permission_ids_by_pack_id:
         executors = tuple(
