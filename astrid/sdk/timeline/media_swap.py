@@ -111,6 +111,11 @@ def capture_document_swaps(base, candidate, transport, verified_media=()):
     commands = emit_document_commands(base, working)
     inputs = _media_admission_inputs(base, working, transport)
     verified = _raw_inputs(transport, base['project_id'], inputs, verified_media)
+    missing = [{'pin': {'media_id': object_id, 'content_digest': object_id}}
+               for object_id, _ in replacements
+               if not any(row.get('object_id', row.get('selection', {}).get('object_id')) == object_id
+                          for row in verified)]
+    verified = _raw_inputs(transport, base['project_id'], missing, verified)
     for object_id, kind in replacements:
         for row in verified:
             if row.get('object_id', row.get('selection', {}).get('object_id')) == object_id:

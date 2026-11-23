@@ -895,6 +895,7 @@ class Timeline(Checkout):
                 if overlap is not None:
                     error = self.session.save_interrupted(
                         working._commands, base=original_base, label=commit_label, steps=steps,
+                        via=getattr(self, '_commit_via', 'python'),
                         merge=effective_merge, reads=reads, key=idempotency_key,
                         evaluation=evaluation, failure=overlap, release_flight=state.get("flight"),
                         release_dry_run=dry_run, pending_id=pending_id,
@@ -906,6 +907,7 @@ class Timeline(Checkout):
                 if dry_run or pending_id is not None:
                     raise TimelineEditError("session base changed; reopen before committing")
                 error = self.session.save_interrupted(working._commands, base=base, label=commit_label,
+                                                      via=getattr(self, '_commit_via', 'python'),
                                                       steps=steps, merge=effective_merge, reads=reads,
                                                       key=idempotency_key, evaluation=evaluation)
                 self._adopt(self._base_bundle)
@@ -937,6 +939,7 @@ class Timeline(Checkout):
                         base = _pin(latest["base"])
                         continue
                 error = self.session.save_interrupted(working._commands, base=original_base if function else base, label=commit_label,
+                                                      via=getattr(self, '_commit_via', 'python'),
                                                       steps=steps, merge=effective_merge, reads=reads,
                                                       key=idempotency_key, evaluation=evaluation,
                                                       pending_id=pending_id, pending_path=pending_path,

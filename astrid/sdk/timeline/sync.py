@@ -900,7 +900,8 @@ class TimelineSession:
 
     def save_interrupted(self, commands, *, base, label, steps, merge, reads, key, evaluation,
                          failure=None, release_flight=None, release_dry_run=False,
-                         pending_id=None, pending_path=None, pending_part=None, pending_identity=None):
+                         pending_id=None, pending_path=None, pending_part=None, pending_identity=None,
+                         via='python'):
         """Save captured intent without changing another writer's queue or flight."""
         from ._pending import clash, snapshot
 
@@ -908,7 +909,7 @@ class TimelineSession:
             raise TimelineEditError("idempotency key must be nonempty")
         body = {"api_version": 1, "project_id": self.project_id, "timeline_id": self.timeline_id,
                 "base_revision_id": base["revision_id"], "base_publication_id": base["publication_id"],
-                "commands": copy.deepcopy(commands), "source": {"via": "python"}, "dry_run": False,
+                "commands": copy.deepcopy(commands), "source": {"via": via}, "dry_run": False,
                 "label": label, "steps": copy.deepcopy(steps), "merge": merge}
         if reads is not None:
             body["reads"] = copy.deepcopy(reads)
