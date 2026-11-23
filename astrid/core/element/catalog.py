@@ -13,7 +13,6 @@ import hashlib
 import json
 import os
 import re
-from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -55,12 +54,7 @@ def _registry(theme: str | Path | None = None, *, project_slug: str | None = Non
     # Timeline theme slugs are authoring metadata.  They cannot select
     # executable element definitions; only discovered Astrid packs do that.
     del theme, project_slug
-    return _cached_registry(Path(TOOLS_DIR).resolve())
-
-
-@lru_cache(maxsize=16)
-def _cached_registry(project_root: Path) -> ElementRegistry:
-    return load_default_registry(project_root=project_root)
+    return load_default_registry(project_root=Path(TOOLS_DIR).resolve())
 
 
 def _clear_registry_cache() -> None:
