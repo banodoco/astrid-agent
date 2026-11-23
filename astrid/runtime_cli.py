@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -24,6 +25,10 @@ from astrid.sdk.storage_root import ensure_no_unmigrated_runtime, resolve_runtim
 RUNTIME_COMMAND_ENV = "ASTRID_RUNTIME_CLI"
 PROFILE = "astrid"
 OBSERVE_EFFECTS = ("observe",)
+_STARTUP_PHASES = {
+    "verifying_identity", "checking_realm", "checking_objects", "checking_history", "establishing_service",
+}
+_STARTUP_SCOPE_REQUIRED = "Runtime startup operations require the selected installed Runtime environment."
 
 
 class RuntimeCLIError(RuntimeError):
@@ -121,25 +126,30 @@ class RuntimeCLI:
         self,
         *,
         command: Sequence[str] | None = None,
-        runner: Any = subprocess.run,
+        runner: Any = None,
     ) -> None:
         self.command = tuple(command or _runtime_command())
         self._runner = runner
 
-    def invoke(self, args: Sequence[str], *, timeout: float = 120.0) -> RuntimeResult:
+    def invoke(self, args: Sequence[str], *, timeout: float | None = 120.0) -> RuntimeResult:
         argv = (*self.command, *map(str, args))
         try:
-            completed = self._runner(
-                list(argv),
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=timeout,
-            )
+            if timeout is None and self._runner is None:
+                # Stay attached to the exact Runtime child. Its lifecycle
+                # authority includes startup timing and cleanup.
+                with subprocess.Popen(list(argv), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as child:
+                    stdout, stderr = child.communicate()
+                    completed = subprocess.CompletedProcess(argv, child.returncode, stdout, stderr)
+            else:
+                runner = subprocess.run if self._runner is None else self._runner
+                completed = runner(list(argv), capture_output=True, text=True, check=False, timeout=timeout)
         except subprocess.TimeoutExpired as exc:
-            code = "observation_timeout" if timeout <= 5.0 else "runtime_unavailable"
+            code = "observation_timeout" if timeout is not None and timeout <= 5.0 else "runtime_unavailable"
+            message = "the Astrid Runtime CLI timed out"
+            if timeout is not None:
+                message += f" after {timeout:.3f}s"
             raise RuntimeCLIError(
-                f"the Astrid Runtime CLI timed out after {timeout:.3f}s",
+                message,
                 code=code,
                 result={"ok": False, "problem_code": code},
                 returncode=124,
@@ -165,6 +175,72 @@ class RuntimeCLI:
             args.extend(("--expected-realm-id", expected_realm_id))
         args.append("--json")
         return self.invoke(args, timeout=timeout)
+
+    def _startup_status(
+        self, support: Path, *, realm: Path | None = None, realm_id: str | None = None,
+    ) -> tuple[bool, RuntimeResult | None]:
+        args = ["startup-status", "--data-root", str(support)]
+        if realm is not None and realm_id is not None:
+            args.extend(("--realm-root", str(realm), "--expected-realm-id", realm_id))
+        result = self.invoke((*args, "--json"), timeout=5.0)
+        if result.returncode == 2 and "invalid choice: 'startup-status' (choose from " in result.stderr:
+            return False, None
+        if result.returncode == 1 and result.data == {"state": "unavailable"}:
+            return True, None
+
+        data = result.data
+        state = data.get("state")
+        operation = data.get("operation_id")
+        attempt = data.get("attempt_id")
+        count = data.get("objects_checked")
+        phase = data.get("phase")
+        if (result.returncode == 0 and data.keys() == {"operation_id", "phase", "state", "objects_checked"}
+                and isinstance(operation, str) and re.fullmatch(r"[a-f0-9]{32}", operation)
+                and isinstance(phase, str) and phase in _STARTUP_PHASES
+                and type(count) is int and 0 <= count < 2**63 and state in ("pending", "ended")):
+            if state == "ended":
+                return True, None
+            key = "startup_operation"
+        elif (result.returncode == 0 and data.keys() == {"attempt_id", "state"}
+              and isinstance(attempt, str) and re.fullmatch(r"[a-f0-9]{32}", attempt)
+              and state in ("inspecting_workspace", "starting_service", "failed")):
+            if state == "failed":
+                return True, None
+            key = "startup_attempt"
+        else:
+            raise RuntimeCLIError(
+                str(data.get("error") or "Runtime startup status could not be verified"), result=data,
+            )
+        return True, RuntimeResult(result.argv, 1, {
+            "ok": False,
+            "state": "startup_pending",
+            "problem_code": "startup_pending",
+            key: data,
+            "next_action": "observe with astrid-runtime startup-status using the same --data-root",
+        }, result.stderr)
+
+    def _inspect_for_up(
+        self, support: Path, *, realm: Path | None = None, realm_id: str | None = None,
+    ) -> tuple[RuntimeResult, bool]:
+        coordinated, pending = self._startup_status(support, realm=realm, realm_id=realm_id)
+        if pending is not None:
+            return pending, True
+        if not coordinated:
+            return self.inspect(support_root=support), False
+
+        selected = self.invoke(
+            ("workspace", "inspect", "--data-root", str(support), "--startup-operation", "--json"),
+            timeout=None,
+        )
+        if selected.returncode == 1 and selected.data == {"ok": False, "error": _STARTUP_SCOPE_REQUIRED}:
+            return self.inspect(support_root=support), False
+        if not selected.ok and selected.data.get("state") in ("startup_pending", "starting_service"):
+            # The owner can appear after the first status read. Reconfirm
+            # against the requested selection before making a pending receipt.
+            _, pending = self._startup_status(support, realm=realm, realm_id=realm_id)
+            if pending is not None:
+                return pending, True
+        return selected, True
 
     def configure(
         self,
@@ -195,8 +271,11 @@ class RuntimeCLI:
     def up(self, *, support_root: str | Path, expected_realm_id: str, realm_root: str | Path) -> RuntimeResult:
         support = _absolute_root(support_root, label="support root")
         realm = _absolute_root(realm_root, label="realm root")
-        selected = self.inspect(support_root=support)
+        selected, coordinated = self._inspect_for_up(support, realm=realm, realm_id=expected_realm_id)
         if not selected.ok:
+            if coordinated and (selected.data.get("problem_code") == "startup_pending"
+                                or selected.data.get("state") in ("startup_busy", "startup_attempt_failed")):
+                return selected
             raise RuntimeCLIError(
                 str(selected.data.get("error") or "selected workspace is unavailable"),
                 code=str(selected.data.get("problem_code") or "workspace_missing"),
@@ -209,7 +288,16 @@ class RuntimeCLI:
             expected_realm_root=realm,
             expected_support_root=support,
         )
-        result = self.invoke(("up", "--profile", PROFILE, "--data-root", str(support), "--json"))
+        command = ("up", "--profile", PROFILE, "--data-root", str(support), "--json")
+        if coordinated:
+            still_coordinated, pending = self._startup_status(support, realm=realm, realm_id=expected_realm_id)
+            if not still_coordinated:
+                raise RuntimeCLIError("Runtime startup status support changed after workspace inspection")
+            if pending is not None:
+                return pending
+            result = self.invoke(command, timeout=None)
+        else:
+            result = self.invoke(command)
         if result.ok:
             validate_started_workspace(
                 result.data,
@@ -383,7 +471,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.command in {"status", "doctor"}:
             result = runtime.observe(args.command, support_root=support)
         elif args.command in {"up", "restart"}:
-            selected = runtime.inspect(support_root=support)
+            if args.command == "up":
+                selected, _ = runtime._inspect_for_up(support)
+            else:
+                selected = runtime.inspect(support_root=support)
             if not selected.ok:
                 result = selected
             else:
