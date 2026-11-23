@@ -99,3 +99,63 @@ def test_native_capture_uses_the_exact_retained_parent_anchor(tmp_path, monkeypa
 
     assert reads == [(project, capture["pin"])] * (2 if route == "attach" and not revoked else 1)
     assert set(opens) == {(project, timeline, basis["revision_id"], basis["publication_id"])}
+
+
+def test_selected_param_flight_recovers_after_retained_transcript_revocation(tmp_path, monkeypatch):
+    from astrid.sdk.workspace_client import WorkspaceClientError
+    from tests.sdk import test_timeline_sync as transport_fixture
+
+    path = tmp_path / "selected-param-outbox.json"
+    generated = transport_fixture.Generated(path)
+    client = transport_fixture.Client(generated)
+    _, capture = _retained_anchor_swap()
+    pin = capture["pin"]
+    generated.bundles["r0"]["source_mapping"]["_runtime_document"] = {
+        "project_id": "p",
+        "dependency_manifest": {"documents": [pin], "media": []},
+    }
+    session = TimelineSession.open("p", "t", client=client, outbox_path=path)
+    command = {"schema_version": 1, "op": "clip.set-params", "version": "1", "select": "parent/clip:a",
+               "args": {"values": {"text": "Accepted"}, "clear": [], "schema_source": dict(pin)}}
+    with session.outbox.locked():
+        state = session._state()
+        state["pending"] = [command]
+        session.outbox.write(state)
+
+    # The transport fixture models the remote provider's acceptance. This test
+    # exercises the SDK's sealed request and exact receipt recovery.
+    def accept_selected(bundle, commands, **kwargs):
+        assert commands == [command]
+        return SimpleNamespace(bundle=copy.deepcopy(bundle), commands=commands, records=[])
+
+    monkeypatch.setattr(transport_fixture, "execute", accept_selected)
+    generated.lose_ack = True
+    with pytest.raises(WorkspaceClientError):
+        session.flush(idempotency_key="selected-lost-ack")
+    sealed = session.outbox.read()["flight"]
+    first = (sealed["body"].encode(), sealed["key"])
+    assert generated.calls == [first]
+
+    reads = []
+
+    def revoked(project, exact_pin):
+        reads.append((project, exact_pin))
+        error = RuntimeError("retained transcript revoked")
+        error.code = "not_found"
+        raise error
+
+    monkeypatch.setattr(client.timelines._client, "get_project_verified_document", revoked)
+    reopened = TimelineSession.open("p", "t", client=client, outbox_path=path)
+    attached = Checkout.attach(reopened)
+    assert reopened.outbox.read()["flight"] == sealed
+    result = attached.publish()
+    assert generated.calls == [first, first]
+    assert result["receipt"]["idempotency_key"] == "selected-lost-ack"
+    assert reopened.outbox.read()["flight"] is None
+    assert reads == [("p", pin)]
+
+    before = path.read_bytes()
+    with pytest.raises(TimelineEditError, match="exact transcript pin is missing or unavailable"):
+        attached.clip("a").set_duration(1.5)
+    assert path.read_bytes() == before
+    assert reads == [("p", pin), ("p", pin)]

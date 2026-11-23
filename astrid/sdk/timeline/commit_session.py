@@ -546,7 +546,9 @@ class Timeline(Checkout):
             return
         document, transport = self._retained_reflow_source()
         if not retained_retime_pins(document):
-            return
+            raise TimelineEditError(
+                f"{clip.address}: nudging a shot word anchor requires a retained transcript. {SHOT_WORD_ALTERNATIVE}"
+            )
         rows = read_retained_transcripts(transport, self.session.project_id, document)
         transcripts, captures = retime_transcripts(self.bundle, rows)
         words = as_words(project_words(self.bundle, transcripts))

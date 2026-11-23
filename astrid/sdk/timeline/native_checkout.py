@@ -15,7 +15,7 @@ from .checkout import Checkout
 from .commands import execute
 from .model import Clip, _is_formula_or_moment
 from .selection import Selection
-from .sync import _strip_retained_transcript_captures
+from .sync import _flight_kind, _strip_retained_transcript_captures
 from .units import from_canvas
 
 
@@ -150,9 +150,20 @@ class AttachedCheckout(Checkout):
                               revision_id=state['base']['revision_id'],
                               publication_id=state['base']['publication_id'], client=self.session.client)
         commands = [*state['pending'], *extra_commands]
-        materialize_transcript_inputs(
-            bundle, commands, client=self.session.client.timelines._client,
-            project=self.session.project_id, include_retained=bool(commands))
+        recovering_selected = (not extra_commands and _flight_kind(state['flight']) == 'commit'
+                               and any(command.get('op') == 'clip.set-params'
+                                       and isinstance(command.get('args', {}).get('schema_source'), dict)
+                                       for command in state['pending']))
+        try:
+            materialize_transcript_inputs(
+                bundle, commands, client=self.session.client.timelines._client,
+                project=self.session.project_id, include_retained=bool(commands))
+        except TimelineEditError:
+            # The exact request was already sealed. Its receipt can be
+            # recovered from the base preview without executing the draft.
+            if not recovering_selected:
+                raise
+            return bundle
         if not state['pending']:
             return bundle
         inputs = []
@@ -178,7 +189,7 @@ class AttachedCheckout(Checkout):
             except Exception:
                 # A selected PARAM flight already holds its original portable
                 # intent. Reopen its base for a verbatim acknowledgement retry.
-                if state['flight'] is None or extra_commands:
+                if not recovering_selected:
                     raise
                 return bundle
             inputs.extend(captured)
