@@ -1281,7 +1281,8 @@ def _execute_remotion_locked(
         remotion_env_additions["ASTRID_REMOTION_PROJECT_DIR"] = str(project_dir.resolve())
         from astrid.core.rendering.project_elements import PACK_ROOTS_ENV, REGISTRY_ROOT_ENV
 
-        remotion_env_additions[PACK_ROOTS_ENV] = json.dumps(stage_summary["render_pack_roots"])
+        if stage_summary.get("render_pack_roots") is not None:
+            remotion_env_additions[PACK_ROOTS_ENV] = json.dumps(stage_summary["render_pack_roots"])
         if stage_summary.get("project_pack_roots"):
             remotion_env_additions[REGISTRY_ROOT_ENV] = stage_summary["project_registry_root"]
         remotion_args = [

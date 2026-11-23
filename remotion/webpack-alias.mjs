@@ -182,13 +182,32 @@ export const packElementAliases = ({env = process.env, astridDir = repoRootOf()}
           !isDirectory(entry.root) || !hasManifest(entry.root)) {
         throw new Error('invalid render pack root');
       }
-      const selected = collectDeclaredPackElementAliases([entry.root], entry.scope, {strict: true});
+      let selected;
+      if (entry.kind_roots === undefined) {
+        // Compatibility for standalone callers which still send the original
+        // staged-pack carrier. Managed renders always send kind_roots.
+        selected = collectDeclaredPackElementAliases([entry.root], entry.scope, {strict: true});
+      } else {
+        if (!entry.kind_roots || typeof entry.kind_roots !== 'object' || Array.isArray(entry.kind_roots)) {
+          throw new Error('invalid render kind roots');
+        }
+        selected = {};
+        const realRoot = fs.realpathSync(entry.root);
+        for (const [kind, directory] of Object.entries(entry.kind_roots)) {
+          if (!['effects', 'animations', 'transitions'].includes(kind) ||
+              typeof directory !== 'string' || !path.isAbsolute(directory) ||
+              !isDirectory(directory) || path.basename(directory) !== kind ||
+              !isWithin(realRoot, fs.realpathSync(directory))) {
+            throw new Error('invalid render kind root');
+          }
+          selected[`@${entry.scope}-${kind}`] = fs.realpathSync(directory);
+        }
+      }
       if (entry.scope === 'pack-rendering-elements') selected['@astrid-rendering'] = entry.root;
       if (entry.legacy_schema !== undefined) {
         if (entry.scope !== 'pack-rendering-elements' || typeof entry.legacy_schema !== 'string' ||
             !path.isAbsolute(entry.legacy_schema) || path.basename(entry.legacy_schema) !== 'r13-legacy-elements.json' ||
             !fs.existsSync(entry.legacy_schema)) throw new Error('invalid legacy element schema');
-        selected['../../astrid/core/timeline/schema/r13-legacy-elements.json$'] = entry.legacy_schema;
       }
       for (const [key, value] of Object.entries(selected)) {
         if (Object.hasOwn(aliases, key) && aliases[key] !== value) {
@@ -217,6 +236,30 @@ export const packElementAliases = ({env = process.env, astridDir = repoRootOf()}
   };
 };
 
+// These imports belong to the host itself, not to arbitrary packs which may
+// happen to use the same relative spelling. Both webpack and esbuild use this
+// exact issuer-bound lookup.
+export const selectedHostResource = ({remotionRoot, issuer, request, env = process.env}) => {
+  if (typeof issuer !== 'string' || typeof request !== 'string') return undefined;
+  const owner = path.resolve(issuer);
+  const host = path.resolve(remotionRoot, 'src');
+  if (owner === path.join(host, 'host-registries.ts') && env.ASTRID_RENDER_REGISTRY_ROOT) {
+    const match = /^\.\/(effects|animations|transitions)\.generated$/.exec(request);
+    if (match) return path.resolve(env.ASTRID_RENDER_REGISTRY_ROOT, 'src', `${match[1]}.generated.ts`);
+  }
+  if (owner === path.join(host, 'r13-clip-presentation.tsx') &&
+      request === '../../astrid/core/timeline/schema/r13-legacy-elements.json' &&
+      Object.hasOwn(env, 'ASTRID_RENDER_PACK_ROOTS')) {
+    // Validate the complete carrier and refuse competing schema bindings.
+    packElementAliases({env, astridDir: projectDirOf(remotionRoot)});
+    const schemas = JSON.parse(env.ASTRID_RENDER_PACK_ROOTS)
+      .filter(entry => entry.legacy_schema !== undefined).map(entry => entry.legacy_schema);
+    if (new Set(schemas).size > 1) throw new Error('conflicting legacy element schemas');
+    if (schemas.length) return schemas[0];
+  }
+  return undefined;
+};
+
 const primitiveAliases = (projectDir) => {
   const activeThemeDir = path.resolve(projectDir, '_active_theme');
   const aliases = {
@@ -230,11 +273,34 @@ const primitiveAliases = (projectDir) => {
   return aliases;
 };
 
+const hostResourcePlugins = new Map();
+const hostResourcePlugin = (remotionRoot) => {
+  if (!hostResourcePlugins.has(remotionRoot)) {
+    hostResourcePlugins.set(remotionRoot, {apply(compiler) {
+      compiler.hooks.normalModuleFactory.tap('AstridHostResources', (factory) => {
+        factory.hooks.beforeResolve.tap('AstridHostResources', (data) => {
+          if (!data) return;
+          const selected = selectedHostResource({remotionRoot, issuer: data.contextInfo?.issuer,
+            request: data.request});
+          if (selected) data.request = selected;
+        });
+      });
+    }});
+  }
+  return hostResourcePlugins.get(remotionRoot);
+};
+
 const applyAliasesForRoot = (currentConfiguration, remotionRoot) => {
   const repoRoot = projectDirOf(remotionRoot);
   const packAliases = packElementAliases({astridDir: repoRoot});
   const selectedRegistries = {};
-  if (process.env.ASTRID_RENDER_REGISTRY_ROOT) {
+  const rawRoots = process.env.ASTRID_RENDER_PACK_ROOTS;
+  const roots = rawRoots === undefined ? null : JSON.parse(rawRoots);
+  // Older standalone integrations use only {root, scope}. Keep their public
+  // alias map stable; managed callers always supply kind_roots, even if empty.
+  const legacyCarrier = Array.isArray(roots) && roots.length > 0 &&
+    roots.every(entry => entry && entry.kind_roots === undefined);
+  if (legacyCarrier && process.env.ASTRID_RENDER_REGISTRY_ROOT) {
     for (const kind of ['effects', 'animations', 'transitions']) {
       selectedRegistries[`./${kind}.generated$`] = path.resolve(
         process.env.ASTRID_RENDER_REGISTRY_ROOT, 'src', `${kind}.generated.ts`,
@@ -243,6 +309,7 @@ const applyAliasesForRoot = (currentConfiguration, remotionRoot) => {
   }
   return {
     ...currentConfiguration,
+    plugins: [...(currentConfiguration.plugins ?? []), hostResourcePlugin(remotionRoot)],
     module: {
       ...currentConfiguration.module,
       rules: [

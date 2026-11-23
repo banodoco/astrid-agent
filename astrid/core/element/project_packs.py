@@ -35,7 +35,8 @@ ARTIFACT_ENV = "ASTRID_ELEMENT_ARTIFACT_ROOT"
 DOCUMENT_KIND = "astrid.project-pack"
 DOCUMENT_SCHEMA = "astrid.project-pack/v1"
 SOURCE_BINDING = "project-packs"
-_ALLOWED_IMPORTS = {"react", "react/jsx-runtime", "remotion"}
+_RENDERING_CONTRACT = "@astrid-rendering/shared/element_contracts"
+_ALLOWED_IMPORTS = {"react", "react/jsx-runtime", "remotion", _RENDERING_CONTRACT}
 _SOURCE_EXTENSIONS = {".ts", ".tsx", ".js", ".jsx", ".mjs", ".css"}
 
 
@@ -447,9 +448,27 @@ def _node_env() -> dict[str,str]:
 def _compile_components(staging: Path, components) -> None:
     from astrid.pack_build import compile_element_module
     node, api = _renderer_compiler()
+    needs_contract = any(_RENDERING_CONTRACT in path.read_text()
+                         for path in staging.rglob('*')
+                         if path.is_file() and path.suffix in _SOURCE_EXTENSIONS)
+    contract = None
+    if needs_contract:
+        from astrid.core.rendering import _effect_registry
+        roots = [row for row in _effect_registry.render_pack_roots()
+                 if row['scope'] == 'pack-rendering-elements']
+        if len(roots) != 1:
+            raise ValueError('Project element compilation requires one selected rendering pack')
+        rendering_root = Path(roots[0]['root']).resolve(strict=True)
+        contract = (rendering_root / 'shared' / 'element_contracts.ts').resolve(strict=True)
+        if not contract.is_relative_to(rendering_root) or not contract.is_file():
+            raise ValueError('Selected rendering contract escapes its pack')
+        before = hashlib.sha256(contract.read_bytes()).digest()
     for component in sorted(set(components)):
         target=staging/_compiled_path(component);target.parent.mkdir(parents=True,exist_ok=True)
-        target.write_bytes(compile_element_module(node,api,staging,component,_node_env()))
+        kwargs = {'rendering_contract': contract} if contract is not None else {}
+        target.write_bytes(compile_element_module(node,api,staging,component,_node_env(), **kwargs))
+    if contract is not None and hashlib.sha256(contract.read_bytes()).digest() != before:
+        raise ValueError('Selected rendering contract changed during project element compilation')
 
 
 def _selected_index(realm,project,document_id,row):

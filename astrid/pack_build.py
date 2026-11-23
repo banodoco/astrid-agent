@@ -127,7 +127,7 @@ class ElementBuildError(ValueError):
     """A project element component did not compile; the message names the cause."""
 
 
-def compile_element_module(node: Path, esbuild_api: Path, stage_root: Path, entry: str, env: Mapping[str, str] | None = None) -> bytes:
+def compile_element_module(node: Path, esbuild_api: Path, stage_root: Path, entry: str, env: Mapping[str, str] | None = None, *, rendering_contract: Path | None = None) -> bytes:
     """Bundle one admitted component to a single ESM module with the renderer's Node and esbuild.
 
     The caller resolves the Node and esbuild JS API (``node_modules/esbuild/lib/main.js``) as the render path does
@@ -135,6 +135,10 @@ def compile_element_module(node: Path, esbuild_api: Path, stage_root: Path, entr
     A compile failure is the component's verification.
     """
     request = {"stage_root": str(stage_root), "entry": entry, "esbuild_api": str(esbuild_api)}
+    if rendering_contract is not None:
+        if not rendering_contract.is_absolute() or not rendering_contract.is_file():
+            raise ElementBuildError("Selected rendering contract must be an absolute file")
+        request["rendering_contract"] = str(rendering_contract)
     try:
         result = subprocess.run([str(node), "-e", ELEMENT_BUILDER_SOURCE],
                                 input=json.dumps(request, allow_nan=False).encode("utf-8"), capture_output=True,

@@ -250,14 +250,16 @@ def _prepared_remotion_root_selected(
                 raise ValueError("render element registry changed during preparation")
     else:
         registry_state = backend._write_selected_element_registries(registry_root, element_registry)
-    render_pack_roots = (backend.gen_effect_registry.render_pack_roots(registry=element_registry)
-                         if backend.gen_effect_registry is not None else [])
+    render_pack_roots = (backend.gen_effect_registry.render_pack_roots(registry=element_registry, include_aliases=True)
+                         if backend.gen_effect_registry is not None else None)
     from astrid.core.env_vars import ASTRID_REMOTION_VALIDATION_LAUNCH
     if ASTRID_REMOTION_VALIDATION_LAUNCH in os.environ:
         from astrid.core.rendering.remotion_runtime import _validated_runtime
         validated_registry = _validated_runtime(project_dir)["registry"]
         if validated_registry["mode"] == "source_settled":
             selected_scopes = {row["scope"] for row in (pack_roots or [])}
+            if render_pack_roots is None:
+                raise ValueError("validated render pack roots are unavailable")
             base_roots = [row for row in render_pack_roots if row["scope"] not in selected_scopes]
             if base_roots != validated_registry["renderer"]["observation"]["render_pack_roots"]:
                 raise ValueError("render pack roots differ from launch validation")

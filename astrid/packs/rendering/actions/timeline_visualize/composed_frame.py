@@ -316,6 +316,86 @@ def _snapshot_config(snapshot: Mapping[str, Any]) -> Mapping[str, Any]:
     return config if isinstance(config, Mapping) else snapshot
 
 
+def _render_registry_cache_inputs(config: Mapping[str, Any] | None) -> tuple[list[dict[str, Any]], str]:
+    """Bind the generated imports and the shared sources they can resolve.
+
+    Project elements are re-staged from their verified snapshots. Their scope
+    is revision-specific, while the temporary staging directory is not part of
+    their identity. Other roots retain their selected absolute paths so that a
+    change of registry winner cannot reuse an old frame.
+    """
+    from astrid.core.rendering.project_elements import selections, stage_project_elements
+    from astrid.packs.rendering.rendering.renderers.remotion import run
+
+    generator = run.gen_effect_registry
+    project = Path(os.environ.get("ASTRID_REMOTION_PROJECT_DIR") or
+                   (generator.TOOLS_DIR / "remotion" if generator is not None else _checkout_root() / "remotion"))
+    composition_manifest = project / "node_modules/@banodoco/timeline-composition/package.json"
+    if generator is None or not composition_manifest.is_file():
+        # Source-only provisioned bundles still import the shared UI. Their
+        # selected rendering implementation is the module executing them. An
+        # unprovisioned project cannot resolve generated imports; bind that
+        # state distinctly until its Composition package becomes available.
+        roots: list[dict[str, Any]] = [{"unavailable": "generator" if generator is None else "composition"}]
+        rendering_roots = [Path(run.__file__).resolve().parents[3]]
+    else:
+        registry = generator._element_registry()
+
+        def collect(registry: Any, staged: list[dict[str, str]]) -> tuple[list[dict[str, Any]], list[Path]]:
+            mapping = generator.render_pack_roots(registry=registry, include_aliases=True)
+            project_roots = [(Path(row["root"]).resolve(), row["scope"]) for row in staged]
+
+            def stable(value: Any) -> Any:
+                if isinstance(value, dict):
+                    return {key: stable(item) for key, item in value.items()}
+                if isinstance(value, list):
+                    return [stable(item) for item in value]
+                if isinstance(value, str) and Path(value).is_absolute():
+                    path = Path(value)
+                    for root, scope in project_roots:
+                        if path.is_relative_to(root):
+                            relative = path.relative_to(root).as_posix()
+                            return f"project:{scope}/{relative}"
+                return value
+
+            selected_rendering = [Path(row["root"]) for row in mapping
+                                  if row.get("scope") == "pack-rendering-elements"]
+            # Alias conflicts are refused by the producer, so canonical order
+            # avoids letting temporary directory names reorder equal mappings.
+            normalized = [stable(row) for row in mapping]
+            normalized.sort(key=lambda row: json.dumps(row, sort_keys=True, separators=(",", ":")))
+            return normalized, selected_rendering
+
+        if selections(config or {}):
+            with tempfile.TemporaryDirectory(prefix="astrid-cache-registry-") as temporary:
+                selected, staged = stage_project_elements(config or {}, Path(temporary), registry=registry)
+                roots, rendering_roots = collect(selected, staged)
+        else:
+            roots, rendering_roots = collect(registry, [])
+
+    # Read bytes on every identity calculation. File timestamps alone do not
+    # establish that the shared executable closure is unchanged.
+    digest = hashlib.sha256()
+    for index, root in enumerate(rendering_roots):
+        for name in ("shared", "ui/threejs-live-editor"):
+            source = root / name
+            digest.update(f"{index}/{name}\0".encode())
+            if not source.is_dir():
+                digest.update(b"missing\0")
+                continue
+            for path in sorted(p for p in source.rglob("*") if p.is_file()):
+                if not path.resolve().is_relative_to(source.resolve()):
+                    raise ValueError(f"shared renderer source escapes its selected root: {path}")
+                if (path.name == ".env" or path.name.endswith(".env")
+                        or "credential" in path.name.lower() or ".codex" in path.parts):
+                    raise ValueError(f"shared renderer source contains a private file: {path}")
+                digest.update(path.relative_to(source).as_posix().encode())
+                digest.update(b"\0")
+                digest.update(path.read_bytes())
+                digest.update(b"\0")
+    return roots, digest.hexdigest()
+
+
 def _checkout_root() -> Path:
     return checkout_root()
 
@@ -365,6 +445,7 @@ def renderer_environment_identity(config: Mapping[str, Any] | None = None) -> st
         "timeline-composition-package-source",
         project / "node_modules/@banodoco/timeline-composition/package.json",
     ))
+    registry_aliases, rendering_shared = _render_registry_cache_inputs(config)
     parts = {
         "renderer": RENDERER_IDENTITY,
         "project_dir": project_dir,
@@ -372,6 +453,8 @@ def renderer_environment_identity(config: Mapping[str, Any] | None = None) -> st
         "theme": os.environ.get("ASTRID_ACTIVE_THEME"),
         "font_bundle": os.environ.get("ASTRID_FONT_BUNDLE_ID"),
         "pack_roots": _pack_root_digests(checkout, config),
+        "registry_aliases": registry_aliases,
+        "rendering_shared": rendering_shared,
         "sources": _digest_paths(paths),
     }
     return json.dumps(parts, sort_keys=True, separators=(",", ":"))

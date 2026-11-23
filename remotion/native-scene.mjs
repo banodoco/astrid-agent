@@ -2,7 +2,7 @@ import {readFile} from 'node:fs/promises';
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {build} from 'esbuild';
-import {remotionPrimitiveAliasesFor} from './webpack-alias.mjs';
+import {remotionPrimitiveAliasesFor, selectedHostResource} from './webpack-alias.mjs';
 import legacyLoader from './timeline-composition-legacy-loader.cjs';
 
 const loadHostSceneModule = async (project) => {
@@ -16,7 +16,7 @@ const loadHostSceneModule = async (project) => {
     nodePaths: [path.join(project, 'node_modules')], logLevel: 'silent',
     plugins: [{name: 'renderer-aliases', setup(builder) {
       builder.onResolve({filter: /^\.{1,2}\//}, (args) => {
-        const selectedRegistry = aliases[`${args.path}$`];
+        const selectedRegistry = selectedHostResource({remotionRoot: project, issuer: args.importer, request: args.path});
         if (selectedRegistry) return {path: selectedRegistry};
         if (args.importer !== adaptedEntry) return;
         // Keep the existing package registry instances shared with its

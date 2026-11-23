@@ -696,7 +696,7 @@ def _registry_observation() -> dict[str, Any]:
     clear_default_registry_cache()
     registry = generator._element_registry()
     state = generator.compute_generated_registry_state(registry=registry)  # include_local=True
-    render_pack_roots = generator.render_pack_roots(registry=registry)
+    render_pack_roots = generator.render_pack_roots(registry=registry, include_aliases=True)
     inventory = active_source_inventory(verify=True)
     packs = discover_pack_metadata(project_root=generator.TOOLS_DIR)
     roots = [str(Path(astrid.__file__).resolve().parent / 'packs')]

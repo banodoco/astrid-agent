@@ -321,7 +321,8 @@ def _import_scope_for_element(element: ElementDefinition) -> str:
     return "managed-elements"
 
 
-def render_pack_roots(*, registry: ElementRegistry | None = None) -> list[dict[str, str]]:
+def render_pack_roots(*, registry: ElementRegistry | None = None,
+                      include_aliases: bool = False) -> list[dict[str, Any]]:
     """Return the pack roots and scopes for the actual host imports.
 
     Use the same registry snapshot and selection rules as generation, including
@@ -342,6 +343,7 @@ def render_pack_roots(*, registry: ElementRegistry | None = None) -> list[dict[s
 
     aliases: dict[tuple[str, str], Path] = {}
     roots: set[tuple[str, str]] = set()
+    kind_roots: dict[tuple[str, str], dict[str, str]] = {}
     for plugin in imported:
         element_root = plugin.root.resolve()
         kind_root = element_root.parent
@@ -358,6 +360,7 @@ def render_pack_roots(*, registry: ElementRegistry | None = None) -> list[dict[s
         if pack_root is None:
             raise ValueError(f"render element has no owning pack manifest: {element_root}")
         roots.add((str(pack_root), scope))
+        kind_roots.setdefault((str(pack_root), scope), {})[plugin.kind] = str(kind_root)
     # Shared renderer contracts are needed even when Composition provides all
     # of the rendering pack's component implementations itself.
     for kind in sorted(OUTPUTS):
@@ -374,6 +377,8 @@ def render_pack_roots(*, registry: ElementRegistry | None = None) -> list[dict[s
             roots.add((str(pack_root), "pack-rendering-elements"))
     result = [{"root": root, "scope": scope} for root, scope in sorted(roots)]
     for entry in result:
+        if include_aliases:
+            entry["kind_roots"] = dict(sorted(kind_roots.get((entry["root"], entry["scope"]), {}).items()))
         if entry["scope"] == "pack-rendering-elements":
             from astrid.core.timeline import legacy_elements
             schema = Path(legacy_elements.__file__).resolve().parent / "schema" / "r13-legacy-elements.json"
