@@ -262,9 +262,15 @@ atexit.register(save)
             payloads.append(payload)
         return counts_per_command, payloads
 
+    from runtime_protocol import source_identity
+    from tests.integrations._count_hosted_identity import hosted_identity_scope
+
     try:
-        with _drive(("image", "t2i"), tmp_path, monkeypatch, runtime, tuple_sources,
-                    call=measure, target_kind="attached") as (client, _project, _provider, measured):
+        with (hosted_identity_scope(monkeypatch, source_identity, ROOT,
+                                    hosted=os.environ.get("ASTRID_CI_JOB") == "lanes-integration") as heads,
+              _drive(("image", "t2i"), tmp_path, monkeypatch, runtime, tuple_sources,
+                     call=measure, target_kind="attached") as (client, _project, _provider, measured)):
+            print("COMMAND_SOURCE_IDENTITIES " + json.dumps(heads, sort_keys=True), flush=True)
             vectors, payloads = measured
             task_ids = [payload["kernel_task_id"] for payload in payloads]
             assert len(set(task_ids)) == 2
