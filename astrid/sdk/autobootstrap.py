@@ -10,12 +10,15 @@ import subprocess
 import sys
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from importlib.util import find_spec
 from pathlib import Path
 from typing import Any, Iterator, Mapping
 
 from runtime_protocol import platform
+
+from astrid.sdk.command_timing import stage
+from astrid.sdk.lock_wait import thread_lock
 
 PROFILE = "astrid"
 RECONFIGURE_ACTION = "run the Astrid install line again"
@@ -346,15 +349,16 @@ def _invoke_launcher(
 ) -> Mapping[str, Any]:
     started = time.monotonic()
     try:
-        completed = subprocess.run(
-            command,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            check=False,
-            timeout=_launcher_timeout(),
-        )
+        with stage(f"Runtime launcher {action}"):
+            completed = subprocess.run(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+                timeout=_launcher_timeout(),
+            )
     except subprocess.TimeoutExpired as exc:
         raise AutoBootstrapError(
             f"neutral runtime {action} timed out; {RECONFIGURE_ACTION}",
@@ -455,7 +459,21 @@ def ensure_runtime(*, start_pack_host: bool = True, data_root: str | Path | None
         base.extend(("--source-manifest", str(manifest)))
     if data_root is not None:
         base.extend(("--data-root", str(data_root)))
-    with _ACQUISITION_LOCK, _acquisition_file_lock(Path(data_root)):
+    locks = ExitStack()
+    try:
+        with stage("Runtime acquisition lock"):
+            try:
+                locks.enter_context(thread_lock(_ACQUISITION_LOCK, "in-process Runtime acquisition lock"))
+            except TimeoutError as exc:
+                raise AutoBootstrapError(
+                    f"{exc}; {RECONFIGURE_ACTION}",
+                    code="runtime_acquisition_lock_timeout",
+                ) from exc
+            locks.enter_context(_acquisition_file_lock(Path(data_root)))
+    except BaseException:
+        locks.close()
+        raise
+    with locks:
         value: Mapping[str, Any] | None = None
         if data_root is not None and _discovery_present(Path(data_root)):
             connect_command = [*launcher, "connect", "--profile", PROFILE]
@@ -504,9 +522,10 @@ def ensure_runtime(*, start_pack_host: bool = True, data_root: str | Path | None
         from astrid.sdk.host_bootstrap import PackHostBootstrapError, ensure_pack_host
 
         try:
-            result.update(ensure_pack_host(
-                value, reconfigure_action=RECONFIGURE_ACTION, attach_healthy=True
-            ))
+            with stage("pack host attachment"):
+                result.update(ensure_pack_host(
+                    value, reconfigure_action=RECONFIGURE_ACTION, attach_healthy=True
+                ))
         except PackHostBootstrapError as exc:
             raise AutoBootstrapError(str(exc)) from exc
     return result

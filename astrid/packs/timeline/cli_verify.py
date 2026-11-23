@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import argparse
 
+from astrid.core.cli.domain_output import cli_print as print
+
 LABELS_HELP = (
     "With --at, draw each visible layer's address and box on the verification page."
 )

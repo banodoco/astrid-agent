@@ -2230,14 +2230,17 @@ class RemoteTasks(_RemoteFamily):
             settlement_effect = {**settlement_effect, "target_id": canonical_id}
         if capability == "vibecomfy.run":
             try:
-                preflight_receipt = _vibecomfy_invocation_preflight(
-                    self._client,
-                    submitted_spec,
-                    strict=(
-                        isinstance(normalized_request, Mapping)
-                        and "workflow" in normalized_request
-                    ),
-                )
+                from .command_timing import stage as timing_stage
+
+                with timing_stage("Remote admission preflight"):
+                    preflight_receipt = _vibecomfy_invocation_preflight(
+                        self._client,
+                        submitted_spec,
+                        strict=(
+                            isinstance(normalized_request, Mapping)
+                            and "workflow" in normalized_request
+                        ),
+                    )
             except Exception as exc:  # noqa: BLE001 - normalize admission boundary
                 return DomainResult.failure(
                     ErrorObject(
@@ -2992,14 +2995,17 @@ class RemoteAstridClient:
             )
         if capability_id == "vibecomfy.run":
             try:
-                preflight_receipt = _vibecomfy_invocation_preflight(
-                    self._transport,
-                    submitted_spec,
-                    strict=(
-                        isinstance(normalized_request, Mapping)
-                        and "workflow" in normalized_request
-                    ),
-                )
+                from .command_timing import stage as timing_stage
+
+                with timing_stage("Remote invoke preflight"):
+                    preflight_receipt = _vibecomfy_invocation_preflight(
+                        self._transport,
+                        submitted_spec,
+                        strict=(
+                            isinstance(normalized_request, Mapping)
+                            and "workflow" in normalized_request
+                        ),
+                    )
             except Exception as exc:  # noqa: BLE001 - normalize admission boundary
                 return DomainResult.failure(
                     ErrorObject(

@@ -257,10 +257,12 @@ def _validate_h3_prepared_handoff(inputs: dict[str, Any], files: dict[str, str])
 
 
 def run_prepared_job(entry: str, inputs: dict[str, Any], execution: dict[str, Any], bindings: dict[str, Any], out: Path,
-                      *, task: str, attempt: str, mode: str | None, align: str) -> dict[str, Any]:
+                      *, task: str, attempt: str, mode: str | None, align: str, discovery: Any = None) -> dict[str, Any]:
     """Execute a controller-prepared bundle; public inputs never include transport controls."""
     from astrid.core.generation import entries
 
+    if discovery is None:
+        discovery = entries._EntryDiscovery()
     workflow = execution.get("python") or execution.get("workflow") or execution.get("source")
     if not isinstance(workflow, str):
         raise JobFileError("a prepared job must ship its workflow")
@@ -269,30 +271,28 @@ def run_prepared_job(entry: str, inputs: dict[str, Any], execution: dict[str, An
         named = None
     else:
         try:
-            description, inputs = entries.resolve_entry_inputs(entry, inputs, mode=mode)
+            description, inputs = discovery.resolve_entry_inputs(entry, inputs, mode=mode)
         except (ValueError, KeyError, TypeError) as exc:
             raise JobInputError(f"job inputs are not valid for entry {entry!r}: {exc}") from exc
         mode = description.get("mode") or mode
         if not isinstance(mode, str):
             raise JobInputError(f"entry {entry!r} did not resolve a mode")
-        described = entries.find_entry(entry)
+        described = discovery.find_entry(entry)
         named = entry
         if described is None:
-            from astrid.core.model_catalog.registry import ModelRegistry
-            catalog = ModelRegistry.load_default().get(entry)
+            catalog = discovery.registry.get(entry)
             selected = catalog.modes.get(mode)
             backend = selected.backends.get("local") if selected is not None else None
             if backend is None or not backend.template:
                 raise JobFileError(f"entry {entry!r} has no local workflow for mode {mode!r}")
             named = str(backend.template)
-            described = entries.find_entry(named)
+            described = discovery.find_entry(named)
         if described is None:
             raise JobFileError(f"entry {entry!r} is not available on this machine")
         if entries.entry_hooks(described).get("build"):
-            if entry == "h3":
-                _validate_h3_prepared_handoff(inputs, files)
             return run_named_entry(described, entry, inputs, files if entry == "h3" else {}, out,
-                                    task=task, attempt=attempt, mode=mode, align=align, bindings=bindings)
+                                    task=task, attempt=attempt, mode=mode, align=align, bindings=bindings,
+                                    discovery=discovery, resolved=(description, inputs))
         # The facade has already bound this exact graph. Rebinding or rebuilding it
         # would discard its chosen seed, native controls and uploaded media bindings.
     from astrid.packs.vibecomfy.shared.bundle_inputs import staged_workflow_path
@@ -305,7 +305,8 @@ def run_prepared_job(entry: str, inputs: dict[str, Any], execution: dict[str, An
 
 def run_named_entry(described: dict[str, Any], named: str, inputs: dict[str, Any], files: dict[str, str],
                      out: Path, *, task: str, attempt: str, mode: str | None, align: str,
-                     bindings: dict[str, Any] | None = None) -> dict[str, Any]:
+                     bindings: dict[str, Any] | None = None, discovery: Any = None,
+                     resolved: tuple[dict[str, Any], dict[str, Any]] | None = None) -> dict[str, Any]:
     """A named entry through the contract the controller's facade applies (sdk/generation.py).
 
     * the CLI's own validation of the entry's public inputs; the resolved values (aliases to public
@@ -327,7 +328,12 @@ def run_named_entry(described: dict[str, Any], named: str, inputs: dict[str, Any
     from astrid.core.generation.preflight import require_generation_target_readiness
 
     try:
-        description, inputs = entries.resolve_entry_inputs(named, inputs, mode=mode)
+        if resolved is None:
+            if discovery is None:
+                discovery = entries._EntryDiscovery()
+            description, inputs = discovery.resolve_entry_inputs(named, inputs, mode=mode)
+        else:
+            description, inputs = resolved
     except (ValueError, KeyError, TypeError) as exc:
         raise JobInputError(f"job inputs are not valid for entry {named!r}: {exc}") from exc
     mode = description.get("mode") or mode

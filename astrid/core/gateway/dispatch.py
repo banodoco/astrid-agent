@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from astrid.core.contracts.errors import AstridError
@@ -86,11 +87,23 @@ def _dispatch_generate(args: list[str]) -> int:
     # first words go to listing, whose parser reports them.
     from astrid.core.generation.cli import main as cli_main
     from astrid.core.generation.cli import subcommand_names
-    if "--job" in args or (args and (args[0] in {"-h", "--help"} or (args[0] != "list" and args[0] in subcommand_names()))):
+    dispatch_marks = None
+    names = ()
+    if "--job" not in args and args and args[0] not in {"-h", "--help", "list"}:
+        dispatch_started = time.monotonic()
+        names = subcommand_names()
+        dispatch_ended = time.monotonic()
+        dispatch_marks = (dispatch_started, dispatch_ended)
+    if "--job" in args or (args and (args[0] in {"-h", "--help"} or (args[0] != "list" and args[0] in names))):
         main = cli_main
     else:
         from astrid.core.generation.listing import main
 
+    if main is cli_main and dispatch_marks is not None and args and args[0] in {"image", "workflow"}:
+        from astrid.core.generation.cli import dispatch_timing
+
+        with dispatch_timing(dispatch_marks):
+            return main(args)
     return main(args)
 
 
@@ -589,6 +602,37 @@ def _dispatch_pack(pack: str, args: list[str]) -> int:
 
 
 def _dispatch_product(args: list[str]) -> int:
+    if not args or args[0] != "timelines" or any(arg in {"-h", "--help"} for arg in args[1:]):
+        return _dispatch_product_inner(args)
+
+    import sys
+
+    from astrid.sdk.command_timing import (
+        TimingCollector,
+        TimingOutput,
+        command_started,
+        timing_scope,
+    )
+
+    collector = TimingCollector(started=command_started())
+    show_timings = "--timings" in args
+    # Verification already owns a --timings flag; preserve its behavior.
+    verify_timings = len(args) > 1 and ((args[1] == "check" and any(arg == "--at" or arg.startswith("--at=") for arg in args)) or (args[1] == "edit" and "--verify" in args))
+    forwarded = args if verify_timings else [arg for arg in args if arg != "--timings"]
+    output = TimingOutput(sys.stdout, collector, defer_success=True) if show_timings else sys.stdout
+    try:
+        with timing_scope(collector):
+            result = _dispatch_product_inner(forwarded, output_stream=output)
+    finally:
+        if show_timings:
+            output.finalize()
+    if show_timings:
+        for item in collector.snapshot():
+            print(f"{item['stage']}: {item['seconds']:.3f}s", file=sys.stderr)
+    return result
+
+
+def _dispatch_product_inner(args: list[str], *, output_stream: Any = None) -> int:
     """Run one product-family command through the remote SDK boundary."""
     from astrid.core.cli.domain_product import PRODUCT_FAMILY_SET, run_product_family
 
@@ -624,18 +668,21 @@ def _dispatch_product(args: list[str]) -> int:
                 start_pack_host=_product_command_needs_pack_host(family, rest)
             )
         with client_context as client:
-            return run_product_family(family, rest, client=client)
+            return run_product_family(family, rest, client=client, output_stream=output_stream)
     except Exception as exc:
         from astrid.sdk.exceptions import ServiceUnavailableError
 
         if not isinstance(exc, ServiceUnavailableError):
             raise
+        import sys
+
         from astrid.core.cli.domain_output import print_result
         from astrid.sdk.contracts import DomainResult
 
         return print_result(
             DomainResult.failure(exc.to_error_object()),
             as_json="--json" in rest,
+            stream=(output_stream if output_stream is not None else sys.stdout) if "--json" in rest else None,
         )
 
 

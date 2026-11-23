@@ -237,6 +237,14 @@ class WorkspaceClient:
         self._generated = GeneratedWorkspaceClient(
             self.endpoint, self.token, timeout=WORKSPACE_REQUEST_TIMEOUT_SECONDS
         )
+        # Keep the generated protocol untouched while timing each actual HTTP path.
+        from astrid.sdk.command_timing import stage
+        request = getattr(self._generated, "_request", None)
+        if callable(request):
+            def timed_request(method, path, **kwargs):
+                with stage(f"Runtime {method} {path.split('?')[0]}"):
+                    return request(method, path, **kwargs)
+            self._generated._request = timed_request
         # Populated after the explicit Astrid handshake.  On-demand local
         # Runtime work must use the authenticated actor as its executor.
         self.actor_id: str | None = None
@@ -1052,11 +1060,14 @@ class WorkspaceClient:
                 isinstance(wire_spec.get("execution_request"), Mapping)
                 and "workflow" in wire_spec["execution_request"]
             )
-            receipt = _vibecomfy_invocation_preflight(
-                self,
-                wire_spec,
-                strict=strict,
-            )
+            from .command_timing import stage as timing_stage
+
+            with timing_stage("Workspace admission preflight"):
+                receipt = _vibecomfy_invocation_preflight(
+                    self,
+                    wire_spec,
+                    strict=strict,
+                )
             if receipt is not None:
                 wire_spec["invocation_preflight"] = receipt
         admission = {
