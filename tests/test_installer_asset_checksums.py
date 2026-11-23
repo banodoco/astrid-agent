@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import io
+import subprocess
 import ssl
 import zipfile
 from pathlib import Path
@@ -358,3 +359,281 @@ def test_default_packs_main_uses_explicit_personal_root_and_transaction_inputs(
         "builds": builds,
         "toolchain": toolchain,
     })
+
+
+def _real_default_fixture(root: Path):
+    """Small local Git source for exercising the actual defaults transaction."""
+    from astrid.core.pack.identity import pack_digest
+
+    work, bare = root / "work", root / "source.git"
+    work.mkdir(parents=True)
+    def git(path, *args):
+        return subprocess.run(["git", "-C", str(path), *args], check=True,
+                              text=True, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE).stdout.strip()
+    git(work, "init", "-b", "main")
+    git(work, "config", "user.name", "Installer checksum test")
+    git(work, "config", "user.email", "installer@example.invalid")
+    pack = work / "astrid_motion"
+    pack.mkdir()
+    (pack / "pack.yaml").write_text(
+        'schema_version: 3\nid: astrid_motion\nname: Motion\nversion: 1.0.0\n'
+        'pack_api: "2.0"\ndocumentation: {kind: none, reason: Fixture.}\n',
+        encoding="utf-8")
+    payload = pack / "payload.txt"
+    payload.write_text("first generation\n", encoding="utf-8")
+    def publish():
+        git(work, "add", "-A")
+        git(work, "commit", "-m", "fixture")
+        revision = git(work, "rev-parse", "HEAD")
+        if bare.exists():
+            git(work, "push", str(bare), "HEAD:refs/heads/main")
+        return revision
+    revision = publish()
+    git(root, "clone", "--bare", str(work), str(bare))
+    def manifest():
+        return {"packs": {"astrid_motion": {
+            "repo": str(bare), "commit": revision,
+            "digest_rule": "pack-tree-v1", "digest": pack_digest(pack)}}}
+    def next_revision():
+        nonlocal revision
+        payload.write_text("second generation\n", encoding="utf-8")
+        revision = publish()
+        return manifest()
+    return manifest, next_revision
+
+
+def _default_child_backend(tmp_path, monkeypatch, manifest, *, packs_root, boundary=None):
+    """Route the real default_packs child through Backend's stdout protocol."""
+    import contextlib
+    import json
+    import subprocess
+    import sys
+    from astrid.installer import default_packs
+    from astrid.installer.backend import Backend
+    from astrid.installer.core import Version
+
+    monkeypatch.setenv("HOME", str(packs_root.parent.parent))
+    monkeypatch.setattr(default_packs, "_selected_root", lambda _override: packs_root)
+    monkeypatch.setattr(default_packs, "_validation_snapshot", lambda: ({}, {}))
+    monkeypatch.setattr(default_packs, "_build_inputs", lambda *_args: ({}, {}))
+    monkeypatch.setattr(default_packs, "_composition_roots", lambda *_args, **_kwargs: ())
+    core_root = tmp_path / "empty-core"
+    core_root.mkdir(exist_ok=True)
+    monkeypatch.setattr(default_packs, "_core_root", lambda: core_root)
+    if boundary is not None:
+        from astrid.core.pack import defaults
+        original = defaults.install_defaults
+        monkeypatch.setattr(default_packs, "install_defaults",
+                            lambda *args, **kwargs: original(*args, boundary=boundary, **kwargs))
+    candidate = tmp_path / "candidate"
+    candidate.mkdir(exist_ok=True)
+    manifest_path = candidate / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    version = Version(candidate, Path(sys.executable), candidate / "profile.json", {}, release=20)
+    backend = object.__new__(Backend)
+    backend.log = tmp_path / "install.log"
+    def run(_argv, **_kwargs):
+        output = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(output):
+                default_packs.main(str(manifest_path))
+        except Exception as exc:
+            raise subprocess.CalledProcessError(
+                1, [sys.executable, "-m", "astrid.installer.default_packs"],
+                output=output.getvalue(), stderr="") from exc
+        return output.getvalue()
+    backend.run = run
+    return backend, version
+
+
+def _run_installer_default(backend, version, manifest):
+    from astrid.installer.core import Installer
+
+    installer = Installer(version.root.parent.parent, version.root.parent.parent / "workspace",
+                          backend, say=lambda _line: None)
+    try:
+        installer._install_defaults(version, manifest)
+    except Exception:
+        pass
+    return installer
+
+
+def test_wrong_default_digest_rejects_first_install_before_group_publication(tmp_path, monkeypatch):
+    from astrid.core.pack.transaction import read_group
+
+    manifest, _ = _real_default_fixture(tmp_path / "repository")
+    pins = manifest()
+    pins["packs"]["astrid_motion"]["digest"] = "0" * 64
+    packs_root = tmp_path / "Astrid" / "packs"
+    backend, candidate = _default_child_backend(tmp_path, monkeypatch, pins, packs_root=packs_root)
+    installer = _run_installer_default(backend, candidate, pins)
+    assert installer.outcomes["default_packs"]["status"] == "rejected"
+    assert installer.outcomes["default_packs"]["transaction_id"] is None
+    snapshot = read_group(packs_root)
+    assert snapshot.revision == 0
+    assert snapshot.transaction_id is None
+    assert snapshot.paths == {}
+
+
+def test_wrong_default_digest_rejects_update_and_preserves_published_group(tmp_path, monkeypatch):
+    from astrid.core.pack.transaction import read_group
+
+    manifest, update_manifest = _real_default_fixture(tmp_path / "repository")
+    packs_root = tmp_path / "Astrid" / "packs"
+    backend, candidate = _default_child_backend(tmp_path, monkeypatch, manifest(), packs_root=packs_root)
+    initial_installer = _run_installer_default(backend, candidate, manifest())
+    assert initial_installer.outcomes["default_packs"]["status"] == "published"
+    initial = read_group(packs_root)
+    state_before = (packs_root / ".group.json").read_bytes()
+    payload_before = (read_group(packs_root).paths["astrid_motion"] / "payload.txt").read_bytes()
+    pins = update_manifest()
+    pins["packs"]["astrid_motion"]["digest"] = "0" * 64
+
+    backend, candidate = _default_child_backend(tmp_path, monkeypatch, pins, packs_root=packs_root)
+    rejected = _run_installer_default(backend, candidate, pins)
+    assert rejected.outcomes["default_packs"]["status"] == "rejected"
+    assert rejected.outcomes["default_packs"]["transaction_id"] is None
+    current = read_group(packs_root)
+    assert current.transaction_id == initial.transaction_id
+    assert current.revision == initial.revision
+    assert (packs_root / ".group.json").read_bytes() == state_before
+    assert (current.paths["astrid_motion"] / "payload.txt").read_bytes() == payload_before
+
+
+def test_default_group_commit_error_reports_published_identity_and_recovers(tmp_path, monkeypatch):
+    from astrid.core.pack import transaction
+    from astrid.core.pack.transaction import read_group, retry_refresh
+
+    manifest, update_manifest = _real_default_fixture(tmp_path / "repository")
+    packs_root = tmp_path / "Astrid" / "packs"
+    backend, candidate = _default_child_backend(tmp_path, monkeypatch, manifest(), packs_root=packs_root)
+    initial = _run_installer_default(backend, candidate, manifest())
+    assert initial.outcomes["default_packs"]["status"] == "published"
+    pins = update_manifest()
+    swapped = False
+    sync = transaction._sync_directory
+    def fail_after_exchange(path):
+        if swapped:
+            raise OSError("injected directory durability failure")
+        return sync(path)
+    def boundary(phase):
+        nonlocal swapped
+        if phase == "swapped":
+            swapped = True
+    monkeypatch.setattr(transaction, "_sync_directory", fail_after_exchange)
+
+    backend, candidate = _default_child_backend(tmp_path, monkeypatch, pins,
+                                                packs_root=packs_root, boundary=boundary)
+    updater = _run_installer_default(backend, candidate, pins)
+
+    snapshot = read_group(packs_root)
+    assert updater.outcomes["default_packs"]["status"] == "recovery-needed"
+    assert updater.outcomes["default_packs"]["transaction_id"] == snapshot.transaction_id
+    assert updater.outcomes["default_packs"]["revision"] == snapshot.revision == 2
+    assert snapshot.refresh_pending
+    assert (snapshot.paths["astrid_motion"] / "payload.txt").read_bytes() == b"second generation\n"
+    monkeypatch.setattr(transaction, "_sync_directory", sync)
+    assert retry_refresh(packs_root=packs_root, refresh=lambda **kw: {
+        "version": 1, "accepted": True, "revision": kw["committed_revision"], "reason": "ok"}) is False
+    assert not read_group(packs_root).refresh_pending
+
+
+def test_published_defaults_survive_busy_stop_and_reach_final_receipt(tmp_path, monkeypatch, capsys):
+    """The staged child result is retained in the run receipt when stop refuses."""
+    import sys
+    from astrid.core.pack.transaction import read_group
+    from astrid.installer import cli, core, r0_stop
+    from astrid.installer.core import RuntimeOperationError, Version
+    from astrid.installer.installation import State
+    from astrid.installer.outcome import RECORD, read_record
+
+    fixture_manifest, _ = _real_default_fixture(tmp_path / "repository")
+    root, data = tmp_path / "program", tmp_path / "workspace"
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(r0_stop, "is_r0_installation", lambda *_args: False)
+    old_root = tmp_path / "old"
+    old_root.mkdir()
+    old = Version(old_root, Path(sys.executable), old_root / "profile.json", {}, release=19)
+
+    packs_root = home / "Astrid" / "packs"
+    backend, candidate = _default_child_backend(
+        tmp_path, monkeypatch, {"release": 20, **fixture_manifest()}, packs_root=packs_root)
+    backend.service = None
+    backend.managed_by = None
+    backend.publish_launch_admission = lambda *_args: None
+    backend.existing = lambda _data: old
+    backend.stage = lambda _manifest, _root, _data: candidate
+    backend.has_workspace = lambda _data: False
+    backend.workspace = lambda *_args: {"realm_id": "realm-test"}
+    backend.validate_candidate = lambda *_args: None
+    def stop(_version, _data):
+        raise RuntimeOperationError("busy", details={"safe": False, "code": "busy"})
+    backend.stop = stop
+    # The default-packs helper uses the real published collection transaction;
+    # these host snapshots keep the fixture independent of installed packages.
+    monkeypatch.setattr(core.Installer, "_recover_update", lambda _self: None)
+    monkeypatch.setattr(core.Installer, "_observe_autostart", lambda _self: None)
+    monkeypatch.setattr(core, "install_runtime", lambda _root: None)
+    active = {"version": old}
+    monkeypatch.setattr(core, "current", lambda _root: active["version"])
+    monkeypatch.setattr(core, "switch", lambda _root, version: active.__setitem__("version", version))
+    monkeypatch.setattr(core, "schema_unchanged", lambda *_args: True)
+
+    installer = core.Installer(root, data, backend, say=lambda _line: None)
+    with pytest.raises(RuntimeOperationError, match="busy") as refusal:
+        installer.run("update", {"release": 20, **fixture_manifest()})
+
+    snapshot = read_group(packs_root)
+    assert set(snapshot.paths) == {"astrid_motion"}
+    assert (snapshot.paths["astrid_motion"] / "payload.txt").read_bytes() == b"first generation\n"
+    assert active["version"] is old
+    assert installer.outcomes["default_packs"]["status"] == "published"
+    assert installer.outcomes["default_packs"]["transaction_id"] == snapshot.transaction_id
+    assert installer.outcomes["default_packs"]["revision"] == snapshot.revision
+    report = installer.outcomes["default_packs"]
+    assert cli._receipt_outcomes(installer)["default_packs"] == report
+    state = State("direct", root, data, None, old, live_identity={"release": old.release})
+    monkeypatch.setattr(cli.Installation, "resolve", lambda *_args, **_kwargs: state)
+    log = tmp_path / "logs" / "install.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    run = cli._Run("update")
+    run.target, run.target_source = candidate.release, "manifest"
+    run.before, run.home, run.system, run.root = state, home, sys.platform, root
+    run.log, run.installer = log, installer
+    run.protected = []
+    run.started_journal = None
+    run.finish(failure=refusal.value)
+    receipt = read_record(log.with_name(RECORD))
+    assert receipt["default_packs"] == report
+    assert "Default packs were published" in receipt["headline"]
+    assert "nothing was changed" not in capsys.readouterr().out.lower()
+
+
+@pytest.mark.parametrize("status", ["rejected", "recovery-needed"])
+def test_backend_preserves_child_default_pack_failure_report(tmp_path, status):
+    """Backend failures retain the structured child result for the final receipt."""
+    import json
+    import subprocess
+    import sys
+    from astrid.installer.backend import Backend
+    from astrid.installer.core import Version
+
+    report = {"status": status, "transaction_id": None if status == "rejected" else "a" * 32,
+              "revision": 0 if status == "rejected" else 7,
+              "recovery": None if status == "rejected" else "retry collection durability and refresh"}
+    backend = object.__new__(Backend)
+    backend.log = tmp_path / "install.log"
+    def failed_child(*_args, **_kwargs):
+        raise subprocess.CalledProcessError(1, ["python", "default_packs"],
+                                            output=json.dumps(report), stderr="")
+    backend.run = failed_child
+    version = Version(tmp_path / "candidate", Path(sys.executable),
+                      tmp_path / "candidate" / "profile.json", {}, release=20)
+
+    with pytest.raises(RuntimeError) as failure:
+        backend.install_defaults(version, {})
+
+    assert failure.value.default_packs == report

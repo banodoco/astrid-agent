@@ -1619,17 +1619,38 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         stage_runtime_launcher(version)
         return version
 
-    def install_defaults(self, version: Version, manifest: dict) -> None:
+    def install_defaults(self, version: Version, manifest: dict) -> dict:
         """Publish defaults with the candidate's Agent and installed dependencies."""
         try:
-            self.run([version.python, "-X", "utf8", "-I", "-m",
+            output = self.run([version.python, "-X", "utf8", "-I", "-m",
                       "astrid.installer.default_packs", version.root / "manifest.json"],
-                     extra_env=version.env)
+                     extra_env=version.env, separate_stderr=True)
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-            raise RuntimeError(
-                "Default pack installation failed; publication may have occurred. "
-                f"See the installer log at {self.log} for recovery details."
-            ) from exc
+            try:
+                report = json.loads(exc.output) if exc.output else None
+            except (ValueError, TypeError):
+                report = None
+            if not isinstance(report, dict) or report.get("status") not in {"rejected", "recovery-needed"}:
+                report = {"status": "unknown", "transaction_id": None, "revision": None,
+                          "recovery": "Check the collection and installer log before retrying."}
+            detail = ("Default pack publication was rejected." if report["status"] == "rejected" else
+                      f"Default pack publication needs recovery: {report.get('recovery')} "
+                      f"Transaction {report.get('transaction_id')}, revision {report.get('revision')}."
+                      if report["status"] == "recovery-needed" else
+                      "Default pack publication may have occurred.")
+            failure = RuntimeError(f"{detail} See the installer log at {self.log} for details.")
+            failure.default_packs = report
+            raise failure from exc
+        try:
+            report = json.loads(output)
+        except (ValueError, TypeError):
+            report = None
+        if not isinstance(report, dict) or report.get("status") not in {"published", "no-change"}:
+            failure = RuntimeError("Invalid default pack installation result; check the collection and installer log.")
+            failure.default_packs = {"status": "unknown", "transaction_id": None, "revision": None,
+                                     "recovery": "Check the collection and installer log before retrying."}
+            raise failure
+        return report
 
     def validate_candidate(self, version: Version, data: Path, realm: dict) -> None:
         """Admit the staged package against the live workspace without changing it."""

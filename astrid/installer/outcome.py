@@ -141,6 +141,7 @@ class Outcome:
     skills: bool = True
     command: bool = True
     build: str | None = None
+    default_packs: dict | None = None
 
     @property
     def exit_code(self) -> int:
@@ -150,6 +151,17 @@ class Outcome:
 
     def headline(self) -> list[str]:
         lines = self._lines()
+        packs = self.default_packs or {}
+        status = packs.get("status")
+        if status == "published":
+            lines[0] += f" Default packs were published (revision {packs.get('revision')})."
+        elif status == "rejected":
+            lines[0] += " Default pack publication was rejected; the collection was not changed by it."
+        elif status == "recovery-needed":
+            lines[0] += (f" Default pack publication needs recovery (transaction {packs.get('transaction_id')}, "
+                         f"revision {packs.get('revision')}). {packs.get('recovery', '')}")
+        elif status == "unknown":
+            lines[0] += " Default pack publication may have occurred; check the collection and installer log."
         if self.kind in SUCCESS and self.warnings:
             lines += [_next_line(name) for name in self.warnings]
             if self.details:
@@ -186,7 +198,8 @@ class Outcome:
                 first += f"; {release(self.target)} is available." if self.target is not None else "."
             # Only a run that installed nothing may say nothing was changed: a release that was
             # installed but is not running is a change.
-            safe = ("Your projects are safe." if self.reason == "runtime-not-running"
+            safe = ("Your projects are safe." if self.reason == "runtime-not-running" or
+                    (self.default_packs or {}).get("status") in {"published", "recovery-needed", "unknown"}
                     else "Your projects are safe — nothing was changed.")
             return [first, f"Why: {why}", safe]
         if self.kind == "rolled-back":
