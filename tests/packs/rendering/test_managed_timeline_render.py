@@ -558,6 +558,21 @@ def test_editor_object_route_for_the_entrys_own_media_is_dropped() -> None:
     }
 
 
+def test_editor_object_route_for_digestless_object_id_is_dropped() -> None:
+    runtime = _Runtime(media=[{"media_id": "sha256:" + _ROUTE_HEX, "digest": _ROUTE_HEX}])
+    runtime.timeline["registry"] = {"assets": {"still": {
+        "file": "/v1/objects/sha256%3A" + _ROUTE_HEX,
+        "object_id": "sha256:" + _ROUTE_HEX,
+        "type": "image/png",
+    }}}
+    snapshot = _snapshot(runtime)
+    assert snapshot.registry["assets"]["still"] == {
+        "media_id": "sha256:" + _ROUTE_HEX,
+        "content_sha256": _ROUTE_HEX,
+        "type": "image/png",
+    }
+
+
 @pytest.mark.parametrize(
     ("clips", "usage"),
     [

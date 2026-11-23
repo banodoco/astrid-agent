@@ -87,6 +87,11 @@ def without_redundant_object_route(entry: Mapping[str, Any]) -> dict[str, Any]:
         digest = managed_asset_digest(entry)
     except ValueError:
         return cleaned
+    if digest is None:
+        # The managed digest helper reads media_id. If the selected object_id
+        # is itself content-addressed and the entry has no other digest, that
+        # identity safely supplies the digest for own-route comparison.
+        digest = match.group(1)
     if not isinstance(digest, str) or digest.removeprefix("sha256:") != match.group(1):
         return cleaned
     for field in _ROUTE_LOCATOR_FIELDS:
