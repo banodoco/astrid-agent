@@ -412,6 +412,17 @@ class Installer:
         elif self.backend.workspace(version, self.data)["realm_id"] != realm_id:
             raise VerificationError("The installed workspace identity changed.")
 
+    def _install_defaults(self, version: Version, manifest: dict) -> None:
+        try:
+            result = self.backend.install_defaults(version, manifest)
+        except Exception as exc:
+            report = getattr(exc, "default_packs", None)
+            if report is not None:
+                self.outcomes["default_packs"] = report
+            raise
+        if result is not None:
+            self.outcomes["default_packs"] = result
+
     def _phase(self, text: str):
         """One slow step a person cares about: a line, alive while it runs on a terminal."""
         return phase(self.say, text)
@@ -784,7 +795,7 @@ class Installer:
                 with self._phase("Checking it"):
                     self.backend.validate_candidate(candidate, self.data, realm)
                     if manifest.get("packs"):
-                        self.backend.install_defaults(candidate, manifest)
+                        self._install_defaults(candidate, manifest)
                         self.say("Default packs may remain installed if the update does not finish.")
                     same_schema = schema_unchanged(self.backend, old, candidate, realm)
                 prepared_candidate = candidate
@@ -860,7 +871,7 @@ class Installer:
             with self._phase(f"Downloading {new}"):
                 candidate_version = self.backend.stage(manifest, self.root, self.data)
             if manifest.get("packs"):
-                self.backend.install_defaults(candidate_version, manifest)
+                self._install_defaults(candidate_version, manifest)
                 self.say("Default packs may remain installed if setup does not finish.")
             if reinstall:
                 with self._phase("Opening your workspace"):
