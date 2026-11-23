@@ -789,6 +789,17 @@ class Clip(_Suggest):
         To change the media behind a key for every clip, use ``tl.replace_asset(KEY, HANDLE)``."""
         registry = self._tl._registry(self.shot_id)
         old_entry = copy.deepcopy(registry.get(str(self.data.get("asset"))) or {})
+        if isinstance(asset, Mapping) and "ref" not in asset:
+            media_id = asset.get("media_id") or asset.get("digest") or asset.get("object_id")
+            key = str(asset.get("key") or asset.get("name") or str(media_id)[-12:])
+            existing = registry.get(key)
+            if existing and existing.get("media_id") != media_id and any(
+                clip.shot_id == self.shot_id and clip.data is not self.data and clip.asset == key
+                for clip in self._tl.clips()
+            ):
+                raise TimelineEditError(
+                    f"asset key {key!r} is used by another clip; choose another key or use replace_asset to change all clips"
+                )
         key = self._tl._register_asset(self.shot_id, asset)
         self.data["asset"] = key
         new_entry = self._tl._registry(self.shot_id).get(key) or {}

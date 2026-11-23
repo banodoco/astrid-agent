@@ -677,6 +677,21 @@ def test_swap_asset_takes_a_media_handle(monkeypatch):
 
 
 
+def test_swap_asset_refuses_to_rebind_a_key_used_by_another_clip():
+    data = bundle()
+    shot = data["shots"]["A"]["internal_timeline"]
+    shot["clips"].append({"id": "second", "clipType": "am-sprite", "track": "sprite",
+                          "asset": "R", "at": 2, "hold": 1, "params": {"x": 42}})
+    shot["registry"]["assets"]["R"].update(type="image/png", source="original")
+    tl = Checkout(data)
+    before = copy.deepcopy(tl.bundle)
+
+    with pytest.raises(TimelineEditError, match="another clip.*replace_asset"):
+        tl.clip("a-rocket").swap_asset({"key": "R", "media_id": "replacement", "type": "image/png"})
+
+    assert tl.bundle == before
+
+
 def test_swap_asset_can_name_the_asset_it_brings_in(monkeypatch):
     """A handle's asset was always keyed by its file name (sprite-00, sprite-00-2 in the sheet);
     KEY=HANDLE (CLI) or {"key", "ref"} (Python) gives it a readable key instead."""
