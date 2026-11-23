@@ -237,7 +237,11 @@ with its implementation; an empty slot promises no command or behavior. -->
 
 ### WS-0c — Node pack catalog
 
-<!-- WS-0c: fill this subsection in the same change as the card. -->
+Resolve known node packs from VibeComfy's shipped catalog, not a working-directory
+`custom_nodes.lock`. Use its exact repository and commit when giving manual
+attached-target clone/checkout guidance. An explicitly supplied lock is scoped to
+that caller. Writable target locks describe the installed environment; never
+treat them as the implicit shipped catalog or write into the packaged resource.
 
 ### WS-0d — Save and replace an entry
 
