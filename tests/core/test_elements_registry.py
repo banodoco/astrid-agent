@@ -1,6 +1,8 @@
 import json
 import os
 import shutil
+import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -206,6 +208,10 @@ class ElementRegistryTest(unittest.TestCase):
                         timeline_address.clear_schema_cache()
                         clear_default_registry_cache()
                         fresh_schema = timeline_address.element_schema(element)
+                        fresh_process = json.loads(subprocess.check_output(
+                            [sys.executable, "-c", "import json; from astrid.sdk.timeline_address import element_schema; print(json.dumps(element_schema(\"exchange-element\")[\"properties\"]))"],
+                            text=True,
+                        ))
                 finally:
                     timeline_address._SCHEMAS.pop(element, None)
                     timeline_address._SCHEMA_BINDINGS.pop(element, None)
@@ -215,6 +221,7 @@ class ElementRegistryTest(unittest.TestCase):
         self.assertTrue(exchanged.is_set())
         self.assertEqual(schema["properties"], {"new": {"type": "string"}})
         self.assertEqual(schema, fresh_schema)
+        self.assertEqual(schema["properties"], fresh_process)
 
     def test_stable_tree_reuses_single_pack_discovery(self) -> None:
         from unittest import mock
