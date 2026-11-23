@@ -41,6 +41,7 @@
     "kind": "hook",
     "name": "Type On",
     "phase": "entrance",
+    "supportsEasing": true,
     "pack_id": "rendering"
   },
   "pack_id": "rendering",
