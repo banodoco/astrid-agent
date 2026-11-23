@@ -40,6 +40,10 @@ def _shot_clips(bundle):
     return bundle["shots"]["chapter-shot"]["internal_timeline"]["clips"]
 
 
+def _retained_documents(bundle):
+    return bundle["source_mapping"]["_runtime_document"]["dependency_manifest"]["documents"]
+
+
 @pytest.mark.parametrize(("word", "move_narration"), [
     pytest.param("stop", False, id="unique-clip-only"),
     pytest.param("stop", True, id="unique-ripple"),
@@ -109,6 +113,7 @@ def _with_provable_anchor(word="stop"):
     card["clipType"] = "text"
     card["at"] = 82 / 30 if word == "stop" else 1
     capture, = bundle["source_mapping"]["pinned_documents"]
+    _retained_documents(bundle).append(copy.deepcopy(capture["pin"]))
     document = capture["document"]
     content = document["content"]
     config = bundle["parent"]["config"]
@@ -124,7 +129,7 @@ def _with_provable_anchor(word="stop"):
     return bundle
 
 
-def test_exact_word_ripple_passes_and_reflow_moves_no_clip(monkeypatch):
+def test_exact_word_ripple_passes_and_reflow_moves_no_clip():
     baseline = _with_provable_anchor()
     candidate = copy.deepcopy(baseline)
     voice, card = _shot_clips(candidate)
@@ -133,12 +138,10 @@ def test_exact_word_ripple_passes_and_reflow_moves_no_clip(monkeypatch):
 
     validate_final_candidate(candidate, baseline=baseline)
 
-    document = candidate["source_mapping"]["pinned_documents"][0]["document"]
-    content = document["content"]
-    monkeypatch.setattr(Checkout, "_stored_transcripts", lambda self: {
-        content["media_id"]: {content["source_id"]: document},
-    })
     checkout = Checkout(copy.deepcopy(candidate))
+    capture, = candidate["source_mapping"]["pinned_documents"]
+    checkout._scene_client = _TranscriptPort(capture, None)
+    checkout._scene_project = candidate["project_id"]
     assert checkout.reflow() == []
 
 
@@ -276,6 +279,7 @@ def test_ripple_cannot_use_a_different_captured_transcript_version():
     capture, = candidate["source_mapping"]["pinned_documents"]
     capture["pin"]["version"] += 1
     capture["document"]["version"] += 1
+    _retained_documents(candidate)[0]["version"] += 1
 
     with pytest.raises(AuthoringBundleError, match=re.escape(GUIDANCE)):
         validate_final_candidate(candidate, baseline=baseline)
@@ -302,6 +306,7 @@ def test_partial_retained_manifest_reads_the_retained_narration_without_latest()
     internal["registry"]["assets"]["untracked-audio"] = {"media_id": "sha256:" + "c" * 64}
     internal["clips"].append({"id": "other-voice", "track": "voice", "asset": "untracked-audio",
                               "clipType": "media", "at": 0, "from": 0, "to": 2})
+    _shot_clips(bundle)[1]["app"]["astrid"]["on"] = '"stop" in voice'
     latest = copy.deepcopy(capture["document"])
     latest["version"] += 1
     latest["content"]["segments"][0]["words"][-1].update(start=5, end=5.5)
@@ -311,6 +316,78 @@ def test_partial_retained_manifest_reads_the_retained_narration_without_latest()
 
     assert checkout.reflow() == []
     assert port.reads == [(bundle["project_id"], capture["pin"])]
+
+
+def _with_unpinned_audio():
+    bundle, capture = _canonical_reflow_inputs()
+    internal = bundle["shots"]["chapter-shot"]["internal_timeline"]
+    media = "sha256:" + "d" * 64
+    internal["registry"]["assets"]["untracked-audio"] = {"media_id": media, "type": "audio"}
+    # Runtime can play this media, but no retained transcript or inline words
+    # establish what it says.
+    manifest = bundle["source_mapping"]["_runtime_document"]["dependency_manifest"]
+    manifest["media"].append({"media_id": media, "content_digest": media})
+    internal["clips"].append({
+        "id": "other-voice", "track": "voice", "asset": "untracked-audio",
+        "clipType": "media", "at": 0, "from": 0, "to": 4,
+    })
+    return bundle, capture
+
+
+def test_unqualified_word_with_unpinned_audio_refuses_commit_before_writes():
+    baseline, _ = _with_unpinned_audio()
+    candidate = copy.deepcopy(baseline)
+    voice, card = _shot_clips(candidate)[:2]
+    voice["at"] += 0.5
+    card["at"] += 0.5
+    before = copy.deepcopy(candidate)
+
+    with pytest.raises(AuthoringBundleError, match=re.escape(GUIDANCE)):
+        validate_final_candidate(candidate, baseline=baseline)
+    assert candidate == before
+
+
+def test_request_capture_without_retained_pin_cannot_prove_a_ripple():
+    baseline = _with_provable_anchor()
+    _retained_documents(baseline).clear()
+    candidate = copy.deepcopy(baseline)
+    for clip in _shot_clips(candidate):
+        clip["at"] += 0.5
+
+    with pytest.raises(AuthoringBundleError, match=re.escape(GUIDANCE)):
+        validate_final_candidate(candidate, baseline=baseline)
+
+
+def test_unqualified_word_with_unpinned_audio_refuses_reflow_before_writes():
+    bundle, capture = _with_unpinned_audio()
+    checkout = Checkout(bundle)
+    checkout._scene_client = port = _TranscriptPort(capture, None)
+    checkout._scene_project = bundle["project_id"]
+    checkout_before = copy.deepcopy(checkout.bundle)
+    with pytest.raises(TimelineEditError, match=re.escape(GUIDANCE)):
+        checkout.reflow()
+    assert checkout.bundle == checkout_before
+    assert port.reads == [(bundle["project_id"], capture["pin"])]
+
+
+def test_stale_reference_for_absent_audio_does_not_block_ripple_or_noop_reflow():
+    baseline, capture = _canonical_reflow_inputs()
+    absent = "sha256:" + "e" * 64
+    baseline["parent"]["config"]["bundle"]["transcriptReferences"]["associations"].append({
+        "documentId": transcript_document_id(baseline["project_id"], absent, "stale-source"), "mediaId": absent,
+        "sourceId": "stale-source",
+    })
+    candidate = copy.deepcopy(baseline)
+    voice, card = _shot_clips(candidate)
+    voice["at"] += 0.5
+    card["at"] += 0.5
+    validate_final_candidate(candidate, baseline=baseline)
+
+    checkout = Checkout(candidate)
+    checkout._scene_client = port = _TranscriptPort(capture, None)
+    checkout._scene_project = candidate["project_id"]
+    assert checkout.reflow() == []
+    assert port.reads == [(candidate["project_id"], capture["pin"])]
 
 
 @pytest.mark.parametrize("word", ["stop", "halt"])
@@ -326,6 +403,7 @@ def test_document_id_only_transcript_reference_selects_the_explicit_custom_docum
     custom["document"].update(document_id=custom_id, content=content)
     custom["pin"].update(document_id=custom_id, content_digest=_digest(content))
     baseline["source_mapping"]["pinned_documents"].append(custom)
+    _retained_documents(baseline).append(copy.deepcopy(custom["pin"]))
     baseline["parent"]["config"]["bundle"]["transcriptReferences"]["associations"] = [{
         "documentId": custom_id,
     }]
@@ -343,7 +421,7 @@ def test_document_id_only_transcript_reference_selects_the_explicit_custom_docum
 
 
 @pytest.mark.parametrize("anchor_at_word", [False, True])
-def test_word_ripple_on_first_audible_word_of_trimmed_narration_reflows_in_place(monkeypatch, anchor_at_word):
+def test_word_ripple_on_first_audible_word_of_trimmed_narration_reflows_in_place(anchor_at_word):
     baseline = _with_provable_anchor()
     voice, card = _shot_clips(baseline)
     voice.update({"from": 5, "at": 4, "app": {"astrid": {"segment": "voice"}}})
@@ -368,12 +446,10 @@ def test_word_ripple_on_first_audible_word_of_trimmed_narration_reflows_in_place
         return
     validate_final_candidate(candidate, baseline=baseline)
 
-    document = candidate["source_mapping"]["pinned_documents"][0]["document"]
-    content = document["content"]
-    monkeypatch.setattr(Checkout, "_stored_transcripts", lambda self: {
-        content["media_id"]: {content["source_id"]: document},
-    })
     checkout = Checkout(copy.deepcopy(candidate))
+    capture, = candidate["source_mapping"]["pinned_documents"]
+    checkout._scene_client = _TranscriptPort(capture, None)
+    checkout._scene_project = candidate["project_id"]
     assert checkout.reflow() == []
 
 

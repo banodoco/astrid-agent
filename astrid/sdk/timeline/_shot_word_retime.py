@@ -7,13 +7,14 @@ from functools import cached_property
 from astrid.core.timeline import moments
 from astrid.sdk.media_transcript import transcript_document_id
 from astrid.sdk.timeline._common import TimelineEditError
-from astrid.sdk.timeline._timing_evaluators import _ShotWordBinding, _duration, _fps
+from astrid.sdk.timeline._timing_evaluators import SHOT_WORD_ALTERNATIVE, _ShotWordBinding, _duration, _fps
 from astrid.sdk.timeline.compiler import TimingCompileError
 from astrid.sdk.timeline.doc import _row_start
 from astrid.sdk.timeline.native_word_anchor import binding
 from astrid.sdk.timeline.units import _time_fraction, quantize_time, source_to_timeline_time
 from astrid.sdk.timeline.words import (
-    as_words, choose_document, default_source_order, project_words, timeline_media_ids, transcript_references,
+    as_words, choose_document, default_source_order, project_words, reference_rows, timeline_media_ids,
+    transcript_references,
 )
 
 
@@ -40,12 +41,21 @@ def _start(placement, clip):
     return _time_fraction(start_ms, "occurrence start") / 1000 + _time_fraction(clip["at"], "clip start")
 
 
+def retained_retime_pins(bundle):
+    """Use the authenticated Runtime manifest, excluding request-only captures."""
+    source = bundle.get("source_mapping", {})
+    manifest = source.get("_runtime_document", {}).get("dependency_manifest", {})
+    return [pin for pin in manifest.get("documents", []) if pin["document_id"].startswith("transcript:")]
+
+
 def select_retime_pins(bundle, pins):
     """Find retained candidates, including explicit references without media metadata."""
     source_order = default_source_order()
-    identities = transcript_references(bundle) | {
+    audio = set(timeline_media_ids(bundle))
+    identities = {row["documentId"] for row in reference_rows(bundle)
+                  if row.get("mediaId") is None or row["mediaId"] in audio} | {
         transcript_document_id(bundle["project_id"], media, source)
-        for media in timeline_media_ids(bundle)
+        for media in audio
         for source in source_order
     }
     return [pin for pin in pins if pin["document_id"] in identities]
@@ -60,9 +70,6 @@ def retime_transcripts(bundle, capture_rows):
         media, source = (document["content"][key] for key in ("media_id", "source_id"))
         by_media.setdefault(media, {}).setdefault(source, []).append(capture)
     references = transcript_references(bundle)
-    if references - {rows[0]["document"]["document_id"] for sources in by_media.values()
-                     for rows in sources.values()}:
-        raise TimingCompileError("word retime requires the explicitly referenced transcript")
     source_order = default_source_order()
     transcripts, captures = {}, {}
     for media, sources in by_media.items():
@@ -81,9 +88,24 @@ def retime_transcripts(bundle, capture_rows):
     return transcripts, captures
 
 
+def require_retime_word_scope(bundle, captures, line):
+    """Prove that the declaration's managed audio search has exact retained coverage."""
+    required = set(timeline_media_ids(bundle, line=line))
+    present = {capture["pin"]["document_id"] for capture in captures.values()}
+    missing_reference = any(
+        row["documentId"] not in present
+        and (row.get("mediaId") in required or (row.get("mediaId") is None and bool(required)))
+        for row in reference_rows(bundle)
+    )
+    if required.difference(captures) or missing_reference:
+        raise TimingCompileError(
+            f"word retime requires retained transcripts for the word's audio search. {SHOT_WORD_ALTERNATIVE}"
+        )
+
+
 def _word_pool(bundle):
     capture_rows = bundle.get("source_mapping", {}).get("pinned_documents", [])
-    selected = select_retime_pins(bundle, [row["pin"] for row in capture_rows])
+    selected = select_retime_pins(bundle, retained_retime_pins(bundle))
     transcripts, captures = retime_transcripts(bundle, (row for row in capture_rows if row["pin"] in selected))
     # Use the same projection as reflow but require exactly one hit. Inline
     # words can make a match ambiguous but cannot prove an identity.
@@ -93,6 +115,7 @@ def _word_pool(bundle):
 def _exact_word(bundle, pool, owner, field, declaration):
     words, captures = pool
     moment = moments.parse(declaration)
+    require_retime_word_scope(bundle, captures, moment.line)
     if moment.n not in (None, 1):
         raise TimingCompileError("word retime requires a unique word")
     phrase, = moments.find_words(moment, words)

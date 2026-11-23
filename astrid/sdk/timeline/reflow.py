@@ -85,27 +85,31 @@ def _retained_word_reflow(method):
     def run(self, *args, **kwargs):
         if getattr(self, "_reflow_transcripts", None) is not None:
             return method(self, *args, **kwargs)
-        from astrid.sdk.timeline._shot_word_retime import retime_transcripts, select_retime_pins
+        from astrid.sdk.timeline._shot_word_retime import (
+            require_retime_word_scope, retained_retime_pins, retime_transcripts, select_retime_pins,
+        )
         from astrid.sdk.timeline.native_source_inputs import read_verified_transcript
 
-        source = self.bundle.get("source_mapping", {})
-        pins = (source.get("_runtime_document", {}).get("dependency_manifest", {}).get("documents", []))
-        if not pins or not any(
-            _direct_word(text)
-            for shot in self.bundle.get("shots", {}).values()
+        pins = retained_retime_pins(self.bundle)
+        if not pins:
+            return method(self, *args, **kwargs)
+        shot_lines = set(_word_lines(
+            clip for shot in self.bundle.get("shots", {}).values()
             for clip in shot.get("internal_timeline", {}).get("clips", [])
-            for text in (intent.on(clip), intent.until(clip))
-        ):
+        ))
+        if not shot_lines:
             return method(self, *args, **kwargs)
         selected = select_retime_pins(self.bundle, pins)
-        if not selected:
-            return method(self, *args, **kwargs)
         client = getattr(self, "_scene_client", None)
-        if client is None:
+        if selected and client is None:
             raise TimelineEditError("reflow requires the retained transcript versions for shot word anchors")
         transport = getattr(getattr(client, "_remote", None), "_transport", client)
-        captures = [read_verified_transcript(transport, self.bundle["project_id"], pin) for pin in selected]
-        self._reflow_transcripts, _ = retime_transcripts(self.bundle, captures)
+        rows = [read_verified_transcript(transport, self.bundle["project_id"], pin) for pin in selected]
+        transcripts, captures = retime_transcripts(self.bundle, rows)
+        lines = shot_lines | set(_word_lines(self.bundle.get("parent", {}).get("clips", [])))
+        for line in ({None} if None in lines else lines):
+            require_retime_word_scope(self.bundle, captures, line)
+        self._reflow_transcripts = transcripts
         try:
             return method(self, *args, **kwargs)
         finally:
@@ -113,13 +117,20 @@ def _retained_word_reflow(method):
     return run
 
 
-def _direct_word(text):
-    if not text:
-        return False
-    try:
-        return mo.parse(text).kind == "word"
-    except mo.MomentError:
-        return False
+def _word_lines(clips):
+    for clip in clips:
+        for text in (intent.on(clip), intent.until(clip)):
+            if not text:
+                continue
+            try:
+                moment = mo.parse(text)
+            except mo.MomentError:
+                continue
+            while moment is not None:
+                if moment.kind == "word":
+                    yield moment.line
+                    break
+                moment = moment.base
 
 
 class _ReflowMixin:
