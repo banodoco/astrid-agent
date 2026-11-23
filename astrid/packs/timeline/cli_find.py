@@ -4,6 +4,8 @@ from __future__ import annotations
 import argparse
 from typing import Any
 
+from astrid.core.cli.domain_output import cli_print as print
+
 
 def configure_find(parser: argparse.ArgumentParser, add_project_arg: Any) -> None:
     parser.description = (

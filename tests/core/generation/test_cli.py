@@ -310,6 +310,27 @@ def test_generate_rejects_claim_controls_with_machine_claim_guidance(monkeypatch
     assert "astrid machines claim" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("flag_args", [
+    ["--max-usd", "2"], ["--max-hourly-usd", "1.5"], ["--deadline", "2030-01-01T00:00:00Z"],
+    ["--offer-digest", "digest"], ["--preparation-seconds", "60"],
+    ["--execution-seconds", "60"], ["--idle-seconds", "60"],
+    ["--capacity-timeout", "2m"], ["--no-wait-for-capacity"],
+    ["--gpu", "RTX 4090"], ["--datacenter", "EU-FAKE"], ["--consent", "paid"],
+    ["--max-usd=2"], ["--max-hourly-usd=1.5"], ["--deadline=2030-01-01T00:00:00Z"],
+    ["--offer-digest=digest"], ["--preparation-seconds=60"],
+    ["--execution-seconds=60"], ["--idle-seconds=60"],
+    ["--capacity-timeout=2m"], ["--no-wait-for-capacity=true"],
+    ["--gpu=RTX 4090"], ["--datacenter=EU-FAKE"], ["--consent=paid"],
+])
+def test_workflow_rejects_claim_controls_with_machine_claim_guidance(monkeypatch, capsys, flag_args):
+    monkeypatch.setattr(cli, '_open_client', lambda: pytest.fail('removed option opened Runtime'))
+    monkeypatch.setattr(cli, '_generate_facade', lambda: pytest.fail('removed option reached generation'))
+    with pytest.raises(SystemExit) as stopped:
+        cli.main(["workflow", "workflow.json", "--placement", "runpod", *flag_args])
+    assert stopped.value.code == 2
+    assert "astrid machines claim" in capsys.readouterr().err
+
+
 def test_runpod_generate_with_live_machine_uses_existing_runpod_target(monkeypatch, capsys):
     from astrid.core.generation import placement
 

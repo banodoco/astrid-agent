@@ -91,6 +91,7 @@ def _run_job(entry: str, job: dict[str, Any], out: str | Path, *, mode: str | No
     write_progress("prepare")
     if align is not None and align not in ALIGN_MODES:
         raise JobFileError(f"align must be one of {', '.join(ALIGN_MODES)}")
+    discovery = entries._EntryDiscovery()
     inputs = dict(job["inputs"])
     execution = job.get("execution")
     if execution is not None:
@@ -106,14 +107,14 @@ def _run_job(entry: str, job: dict[str, Any], out: str | Path, *, mode: str | No
         if not isinstance(bindings, dict):
             raise JobFileError("job entry bindings must be an object")
         return run_prepared_job(entry, inputs, execution, bindings, Path(out), task=task, attempt=attempt,
-                               mode=mode or job.get("mode"), align=align or job["align"])
+                               mode=mode or job.get("mode"), align=align or job["align"], discovery=discovery)
     if entry == "workflow":
         shipped = next((inputs.pop(name) for name in _WORKFLOW_INPUTS if name in inputs), None)
         if shipped is None:
             raise JobFileError("a workflow-file job must ship its workflow")
         workflow, named = Path(str(shipped)), None
     else:
-        described = entries.find_entry(entry)
+        described = discovery.find_entry(entry)
         if described is None:
             raise JobFileError(f"entry {entry!r} is not available on this machine")
         workflow, named = entries.bundle_path(described), entry
@@ -127,4 +128,4 @@ def _run_job(entry: str, job: dict[str, Any], out: str | Path, *, mode: str | No
     if described is None:
         raise JobFileError(f"entry {entry!r} is not available on this machine")
     return run_named_entry(described, named, inputs, files, Path(out), task=task, attempt=attempt,
-                           mode=mode or job.get("mode"), align=align or job["align"])
+                           mode=mode or job.get("mode"), align=align or job["align"], discovery=discovery)

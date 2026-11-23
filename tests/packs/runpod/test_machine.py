@@ -1509,6 +1509,53 @@ def test_machines_setup_explicit_any_clears_saved_datacenter(monkeypatch):
     assert saved["datacenter_id"] == "US-TX-1"
 
 
+def test_machines_setup_json_explicit_any_clears_saved_datacenter(monkeypatch, capsys):
+    from types import SimpleNamespace
+    from astrid.core import machines_cli
+    from astrid.core.generation import settings
+
+    state = {"provider_account_ref": "acct", "image": "registry/image@sha256:" + "a" * 64,
+             "credential_ref": "env:RUNPOD_API_KEY", "gpu_types": ["RTX A"], "budget_cap_usd": 5}
+    reads = []
+
+    def read_policy(*args, **kwargs):
+        reads.append(dict(state))
+        return state
+
+    def save_policy(policy):
+        state.clear()
+        state.update(policy)
+        return SimpleNamespace(ok=True)
+
+    monkeypatch.setattr(settings, "machine_policy", read_policy)
+    observed = []
+    inventory = lambda dc, volume: observed.append((dc, volume)) or ["RTX A"]
+    assert machines_cli.main(["setup", "--datacenter", "US-TX-1", "--gpu", "RTX A",
+                              "--budget-usd", "5", "--json"],
+                             volumes=lambda: [], offered_gpus=inventory, setup=save_policy) == 0
+    assert json.loads(capsys.readouterr().out)["ok"] is True
+    assert state["datacenter_id"] == "US-TX-1"
+
+    observed.clear()
+    assert machines_cli.main(["setup", "--datacenter", "any", "--json"], volumes=lambda: [],
+                             offered_gpus=inventory, setup=save_policy) == 0
+    assert json.loads(capsys.readouterr().out)["ok"] is True
+    assert reads[1]["datacenter_id"] == "US-TX-1"
+    assert observed == [(None, False)]
+    assert "datacenter_id" not in state
+
+    observed.clear()
+    assert machines_cli.main(["setup", "--volume", "vol", "--datacenter", "any", "--json"],
+                             volumes=lambda: [{"id": "vol", "name": "data", "dataCenterId": "US-TX-1",
+                                               "size_gb": 50}],
+                             offered_gpus=inventory, setup=save_policy) == 0
+    assert json.loads(capsys.readouterr().out)["ok"] is True
+    assert reads[2].get("datacenter_id") is None
+    assert observed == [("US-TX-1", True)]
+    assert state["datacenter_id"] == "US-TX-1"
+    assert state["volume"]["id"] == "vol"
+
+
 @pytest.mark.parametrize("json_flag", [[], ["--json"]])
 @pytest.mark.parametrize("failure", ["inventory", "gpu_inventory", "action_exception", "action_result"])
 def test_machines_setup_hides_external_error_details(monkeypatch, capsys, caplog, json_flag, failure):

@@ -28,7 +28,7 @@ import argparse
 import importlib
 from collections.abc import Sequence as SequenceABC
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Sequence, TextIO
 
 from astrid.core.cli.registration import CommandSpec
 
@@ -347,6 +347,7 @@ def run_product_family(
     args: Sequence[str],
     *,
     client: Any,
+    output_stream: TextIO | None = None,
     _parser_modules: Mapping[str, str] | None = None,
 ) -> int:
     """Run one product-family command with the composed *client*.
@@ -413,4 +414,7 @@ def run_product_family(
         raise ProductRegistryError(
             f"family {family!r} parser did not configure a handler"
         )
-    return int(handler(parsed))
+    from astrid.core.cli.domain_output import output_stream_scope
+
+    with output_stream_scope(output_stream):
+        return int(handler(parsed))

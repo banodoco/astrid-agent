@@ -312,6 +312,10 @@ def ordinary_move_requested(parsed):
 
 def dispatch_ordinary_edit(parsed):
     """Dispatch the supported ordinary native edit, or leave legacy edits alone."""
+    if getattr(parsed, "operations", None) is not None:
+        from astrid.packs.timeline.cli_operations import commit_operations
+
+        return commit_edit(parsed, edit=commit_operations)
     if parsed.client is not None and not parsed.file and not parsed.draft and parsed.add_layer == 'media':
         return commit_edit(parsed, edit=commit_add_media)
     if ordinary_move_requested(parsed):
@@ -338,7 +342,9 @@ def commit_add_media(session, parsed, options):
     if unsupported:
         raise TimelineEditError('media add does not support ' + ', '.join('--' + name.replace('_', '-')
                                 for name in unsupported) + '; add the clip first, then edit it')
-    if store.find_draft(parsed.project, parsed.ref, client=parsed.client) is not None:
+    draft = store.draft_path(session.project_id, session.timeline_id,
+                             store.current_draft(session.project_id, session.timeline_id))
+    if draft.is_file():
         raise TimelineEditError('a detached working copy is pending; commit it first, or run '
                                 f'astrid timelines discard {parsed.ref} --project {parsed.project}')
     if not parsed.layer_asset:
@@ -583,6 +589,11 @@ def commit_edit(parsed, *, sheet=False, edit=None, inverse=False):
                 "astrid", "timelines", "history", parsed.ref, "--project", parsed.project, "--json",
             ]))
             error = ErrorObject(error.code, error.message, details)
+        imports = getattr(exc, "_cli_batch_imports", None)
+        if imports:
+            details = dict(error.details)
+            details["imports"] = imports
+            error = ErrorObject(error.code, error.message + "; media imported before this result remains in the catalog", details)
         shown = DomainResult.failure(error, idempotency_key=parsed.idempotency_key or "")
     return print_result(shown, as_json=parsed.json,
                         human_renderer=lambda value: _render_commit_result(value, dry_run=parsed.dry_run))

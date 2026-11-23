@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from functools import lru_cache
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -92,13 +92,14 @@ def contributed_entries(*, exclude: Any = ()) -> list[dict[str, Any]]:
     return rows
 
 
-def _ready_entries_for(entry_id: str | None = None) -> list[dict[str, Any]]:
-    """Project repository metadata, leaving unclassified modes explicit."""
+def _ready_entry_rows(entry_id: str | None = None, *, registry: Any = None,
+                      before_projection: Callable[[], None] | None = None,
+                      load_registry: Callable[[], Any] | None = None) -> list[dict[str, Any]]:
+    """Project cheap repository metadata without loading workflow graphs."""
     try:
         # vibecomfy is an optional install (not in the wheel's runtime lock):
         # without it there are simply no ready-template entries, as before.
         from vibecomfy import resources
-        from vibecomfy.errors import ShippedResourceMissingError
     except ModuleNotFoundError as exc:
         # Only an absent vibecomfy means "no entries"; a present one at the
         # wrong revision (missing submodule or name) must still fail loudly.
@@ -108,20 +109,19 @@ def _ready_entries_for(entry_id: str | None = None) -> list[dict[str, Any]]:
     root = resources.ready_templates_root().parent
     index = resources.template_index()['templates']
     coverage = resources.coverage_manifest()['workflows']
+    if before_projection is not None:
+        before_projection()
     task_modes = {'text_to_image': 't2i', 'text_to_image_single_frame': 't2i', 'image_to_image': 'i2i', 'image_edit': 'edit',
                   'text_to_video': 't2v', 'image_to_video': 'i2v', 'first_last_frame': 'flf',
                   'first_last_frame_video': 'flf', 'text_to_audio_song': 'music', 'music': 'music',
                   'video_to_audio_foley': 'sfx', 'tts': 'tts',
                   'text_to_speech_custom_voice': 'tts', 'text_to_speech_voice_clone': 'tts',
                   'text_to_speech_voice_design': 'tts'}
-    from vibecomfy.entries import LOADER_ROLES
-    from vibecomfy.model_assets import _referenced_model_values
-    from vibecomfy.registry.ready import _discover_ready_templates, workflow_from_ready
-
     from astrid.core.model_catalog.registry import ModelRegistry
-    discovery = _discover_ready_templates(include_dynamic=False, include_json_references=False)
     catalog_by_template = {}
-    for model in ModelRegistry.load_default().list_all(include_closed=True):
+    if registry is None:
+        registry = load_registry() if load_registry is not None else ModelRegistry.load_default()
+    for model in registry.list_all(include_closed=True):
         for mode, spec in model.modes.items():
             local = spec.backends.get('local')
             if local and local.template:
@@ -146,40 +146,72 @@ def _ready_entries_for(entry_id: str | None = None) -> list[dict[str, Any]]:
             elif 'image' in value: kinds.add('image')
         kind = next(iter(kinds)) if len(kinds) == 1 else None
         ambiguity = None if kind and modes else 'kind or mode requires review'
-        try:
-            workflow = workflow_from_ready(item['id'], _discovery=discovery)
-            # A transient projection of the owning workflow declaration. Never
-            # persist or maintain a separate asset list alongside the template.
-            model_assets = workflow.metadata.get('model_assets', [])
-            needs = [{**ref, 'role': LOADER_ROLES.get(ref['class_type']),
-                      **({'ambiguity': 'unknown loader role'} if ref['class_type'] not in LOADER_ROLES else {})}
-                     for ref in _referenced_model_values(workflow)]
-            binds = {name: name for name in workflow.inputs}
-        except ShippedResourceMissingError:
-            raise
-        except Exception:  # noqa: BLE001 - best-effort fallback; diagnostic at debug, never a user-facing traceback
-            # Workflow metadata is best-effort; preserve declared entry visibility on load errors.
-            logger.debug('Could not load ready workflow metadata for %s',
-                         item.get('id') if isinstance(item, dict) else None, exc_info=True)
-            needs, binds = [], {}
-            model_assets = []
-            ambiguity = 'ready workflow metadata could not be loaded'
         registry_ids = {catalog_by_template[(item['id'], mode)] for mode in modes
                         if (item['id'], mode) in catalog_by_template}
+        custom_nodes = item.get('custom_nodes', [])
         rows.append({'id': item['id'], 'kind': kind, 'modes': sorted(modes),
-                     'bundle': str((root / item['path']).resolve()), 'needs': needs, 'binds': binds,
+                     'bundle': str((root / item['path']).resolve()), 'needs': [], 'binds': {},
                      'defaults': {}, 'inputs': item.get('public_inputs', []), 'source': 'ready-template',
-                     'requirements': {'custom_nodes': item.get('custom_nodes', []), 'models': needs},
-                     'model_assets': model_assets,
+                     'requirements': {'custom_nodes': custom_nodes, 'models': []},
+                     'model_assets': [],
                      'registry_id': next(iter(registry_ids)) if len(registry_ids) == 1 else None,
                      'ambiguity': ambiguity,
                      **({'license_notice': item['license_notice']} if item.get('license_notice') else {})})
     return rows
 
 
-@lru_cache(maxsize=1)
+def _discover_ready_workflows() -> Any:
+    try:
+        import vibecomfy  # noqa: F401 - distinguish an absent package from a broken installation
+    except ModuleNotFoundError as exc:
+        if exc.name != 'vibecomfy':
+            raise
+        return None
+    from vibecomfy.registry.ready import _discover_ready_templates
+    return _discover_ready_templates(include_dynamic=False, include_json_references=False)
+
+
+def _complete_ready_entry(row: dict[str, Any], *, discovery: Any) -> dict[str, Any]:
+    """Fill graph-derived fields for one already projected ready entry."""
+    from vibecomfy.entries import LOADER_ROLES
+    from vibecomfy.errors import ShippedResourceMissingError
+    from vibecomfy.model_assets import _referenced_model_values
+    from vibecomfy.registry.ready import workflow_from_ready
+
+    try:
+        workflow = workflow_from_ready(row['id'], _discovery=discovery)
+        # A transient projection of the owning workflow declaration. Never
+        # persist or maintain a separate asset list alongside the template.
+        model_assets = workflow.metadata.get('model_assets', [])
+        needs = [{**ref, 'role': LOADER_ROLES.get(ref['class_type']),
+                  **({'ambiguity': 'unknown loader role'} if ref['class_type'] not in LOADER_ROLES else {})}
+                 for ref in _referenced_model_values(workflow)]
+        binds = {name: name for name in workflow.inputs}
+    except ShippedResourceMissingError:
+        raise
+    except Exception:  # noqa: BLE001 - best-effort fallback; diagnostic at debug, never a user-facing traceback
+        logger.debug('Could not load ready workflow metadata for %s', row.get('id'), exc_info=True)
+        needs, binds, model_assets = [], {}, []
+        row['ambiguity'] = 'ready workflow metadata could not be loaded'
+    row.update(needs=needs, binds=binds, model_assets=model_assets)
+    row['requirements']['models'] = needs
+    return row
+
+
+def _ready_entries_for(entry_id: str | None = None) -> list[dict[str, Any]]:
+    """Project repository metadata and complete each row with workflow metadata."""
+    discovery: list[Any] = []
+    rows = _ready_entry_rows(entry_id, before_projection=lambda: discovery.append(_discover_ready_workflows()))
+    return [_complete_ready_entry(row, discovery=discovery[0]) for row in rows]
+
+
 def ready_entries() -> list[dict[str, Any]]:
     return _ready_entries_for()
+
+
+_DEFAULT_READY_ENTRIES = ready_entries
+_DEFAULT_READY_ENTRIES_FOR = _ready_entries_for
+_DEFAULT_READY_ENTRY_ROWS = _ready_entry_rows
 
 
 def action_entries(discovery: Any | None = None) -> list[dict[str, Any]]:
@@ -233,14 +265,23 @@ def bundle_path(entry: dict[str, Any]) -> Path:
     return path / 'workflow.py' if path.is_dir() else path
 
 
-def find_entry(entry_id: str) -> dict[str, Any] | None:
-    matches = [entry for entry in user_entries() if entry['id'] == entry_id]
-    actions = [entry for entry in action_entries() if entry['id'] == entry_id]
+def find_entry(entry_id: str, *, _discovery: _EntryDiscovery | None = None) -> dict[str, Any] | None:
+    users = _discovery.users() if _discovery is not None else user_entries()
+    declared = _discovery.actions() if _discovery is not None else action_entries()
+    matches = [entry for entry in users if entry['id'] == entry_id]
+    actions = [entry for entry in declared if entry['id'] == entry_id]
+
+    def ready_rows():
+        if _discovery is not None:
+            return _discovery.ready_for(entry_id)
+        return _ready_entries_for(entry_id)
+
     if actions:
-        ready = _ready_entries_for(entry_id)
+        ready = ready_rows()
         from astrid.core.model_catalog.registry import ModelRegistry
         try:
-            ModelRegistry.load_default().get(entry_id)
+            catalog = _discovery.registry if _discovery is not None else ModelRegistry.load_default()
+            catalog.get(entry_id)
         except KeyError:
             catalog_match = False
         else:
@@ -252,7 +293,7 @@ def find_entry(entry_id: str) -> dict[str, Any] | None:
         raise ValueError(f'ambiguous workflow entry {entry_id!r}')
     if matches:
         return {**matches[0], 'source': 'user-entry'}
-    return next(iter(_ready_entries_for(entry_id)), None)
+    return next(iter(ready_rows()), None)
 
 
 def _input_type(value: Any) -> str:
@@ -517,7 +558,7 @@ def _declared_inputs(entry: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 
 def describe_entry(entry_id: str, mode: str | None = None, *, registry: Any = None,
-                   _native: bool = False) -> dict[str, Any]:
+                   _native: bool = False, _discovery: _EntryDiscovery | None = None) -> dict[str, Any]:
     """Project the shared entry contract using local declarations only.
 
     No target inventory, readiness checks, Runtime client, provider or installer
@@ -530,8 +571,8 @@ def describe_entry(entry_id: str, mode: str | None = None, *, registry: Any = No
         catalog = registry.get(entry_id)
     except KeyError:
         catalog = None
-    users = [row for row in user_entries() if row['id'] == entry_id]
-    actions = [row for row in action_entries() if row['id'] == entry_id]
+    users = [row for row in (_discovery.users() if _discovery is not None else user_entries()) if row['id'] == entry_id]
+    actions = [row for row in (_discovery.actions() if _discovery is not None else action_entries()) if row['id'] == entry_id]
     if len(users) > 1 or len(actions) > 1 or (actions and (users or catalog or entry_id in _ready_ids())):
         raise ValueError(f'ambiguous generation entry {entry_id!r}')
     if actions:
@@ -544,7 +585,8 @@ def describe_entry(entry_id: str, mode: str | None = None, *, registry: Any = No
         schemas = {name: [{**port, 'type': _input_type(port.get('type'))} for port in entry['inputs']]
                    for name in modes}
     elif users or catalog is None:
-        matches = users or _ready_entries_for(entry_id)
+        matches = users or (_discovery.ready_for(entry_id) if _discovery is not None
+                            else _ready_entries_for(entry_id))
         if len(matches) != 1:
             raise ValueError(f'unknown generation entry {entry_id!r}')
         entry = {**matches[0], 'source': 'user-entry' if users else 'ready-template'}
@@ -785,8 +827,10 @@ def validate_inputs(description: dict[str, Any], inputs: Mapping[str, Any], *, r
 
 
 def resolve_entry_inputs(entry_id: str, inputs: Mapping[str, Any], *, mode: str | None = None,
-                         kind: str | None = None, registry: Any = None) -> tuple[dict[str, Any], dict[str, Any]]:
-    description = describe_entry(entry_id, mode=mode, registry=registry, _native=True)
+                         kind: str | None = None, registry: Any = None,
+                         _discovery: _EntryDiscovery | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
+    description = (_discovery.describe_entry(entry_id, mode=mode, registry=registry, _native=True)
+                   if _discovery is not None else describe_entry(entry_id, mode=mode, registry=registry, _native=True))
     if kind is not None and description['kind'] != kind:
         raise ValueError(f'entry {entry_id!r} does not support {kind}')
     if description['mode'] is None:
@@ -822,7 +866,129 @@ def resolve_entry_inputs(entry_id: str, inputs: Mapping[str, Any], *, mode: str 
             if explicit_text.intersection(values):
                 raise ValueError('duplicate/conflicting TTS prompt and text; pass only --input text=...')
             values = {('text' if name == 'prompt' else name): value for name, value in values.items()}
-    return public_description(description), validate_inputs(description, values)
+    values = validate_inputs(description, values)
+    if _discovery is not None and mode is None:
+        _discovery.remember_selected_mode(entry_id, registry, description)
+    return public_description(description), values
+
+
+_DEFAULT_FIND_ENTRY = find_entry
+_DEFAULT_DESCRIBE_ENTRY = describe_entry
+_DEFAULT_RESOLVE_ENTRY_INPUTS = resolve_entry_inputs
+
+
+class _EntryDiscovery:
+    """The registry and discovery observations shared by one generation request."""
+
+    def __init__(self, load_registry: Callable[[], Any] | None = None) -> None:
+        if load_registry is None:
+            from astrid.core.model_catalog.registry import ModelRegistry
+            from astrid.sdk.command_timing import timed_call
+
+            def load_registry():
+                return timed_call('model registry', ModelRegistry.load_default)
+        self._load_registry = load_registry
+        self._registry = None
+        self._users: list[dict[str, Any]] | None = None
+        self._actions: list[dict[str, Any]] | None = None
+        self._ready: dict[str, list[dict[str, Any]]] = {}
+        self._ready_candidates: list[dict[str, Any]] | None = None
+        self._pending_ready: set[int] = set()
+        self._workflow_discovery = None
+        self._found: dict[str, dict[str, Any] | None] = {}
+        self._descriptions: dict[tuple[str, str | None, int], dict[str, Any]] = {}
+
+    @property
+    def registry(self) -> Any:
+        if self._registry is None:
+            self._registry = self._load_registry()
+        return self._registry
+
+    def users(self) -> list[dict[str, Any]]:
+        if self._users is None:
+            self._users = user_entries()
+        return self._users
+
+    def actions(self) -> list[dict[str, Any]]:
+        if self._actions is None:
+            self._actions = action_entries()
+        return self._actions
+
+    def ready_for(self, entry_id: str) -> list[dict[str, Any]]:
+        if entry_id not in self._ready:
+            if _ready_entries_for is not _DEFAULT_READY_ENTRIES_FOR:
+                self._ready[entry_id] = _ready_entries_for(entry_id)
+            else:
+                if self._ready_candidates is not None:
+                    if self._workflow_discovery is None:
+                        self._workflow_discovery = _discover_ready_workflows()
+                    rows = [row for row in self._ready_candidates if row['id'] == entry_id]
+                elif _ready_entry_rows is not _DEFAULT_READY_ENTRY_ROWS:
+                    if self._workflow_discovery is None:
+                        self._workflow_discovery = _discover_ready_workflows()
+                    rows = [row for row in self._ready_rows() if row['id'] == entry_id]
+                else:
+                    def discover() -> None:
+                        if self._workflow_discovery is None:
+                            self._workflow_discovery = _discover_ready_workflows()
+                    rows = _ready_entry_rows(entry_id, before_projection=discover,
+                                             load_registry=lambda: self.registry)
+                    self._pending_ready.update(id(row) for row in rows)
+                self._ready[entry_id] = [self.complete_ready(row) for row in rows]
+        return self._ready[entry_id]
+
+    def _ready_rows(self) -> list[dict[str, Any]]:
+        if self._ready_candidates is None:
+            self._ready_candidates = _ready_entry_rows(registry=self.registry)
+            self._pending_ready = {id(row) for row in self._ready_candidates}
+        return self._ready_candidates
+
+    def ready_candidates(self) -> list[dict[str, Any]]:
+        if ready_entries is not _DEFAULT_READY_ENTRIES:
+            return [{**row, 'source': 'ready-template'} for row in ready_entries()]
+        return self._ready_rows()
+
+    def complete_ready(self, row: dict[str, Any]) -> dict[str, Any]:
+        identity = id(row)
+        if identity in self._pending_ready:
+            if self._workflow_discovery is None:
+                self._workflow_discovery = _discover_ready_workflows()
+            _complete_ready_entry(row, discovery=self._workflow_discovery)
+            self._pending_ready.remove(identity)
+        return row
+
+    def find_entry(self, entry_id: str) -> dict[str, Any] | None:
+        if entry_id not in self._found:
+            options = {'_discovery': self} if find_entry is _DEFAULT_FIND_ENTRY else {}
+            self._found[entry_id] = find_entry(entry_id, **options)
+        return self._found[entry_id]
+
+    def describe_entry(self, entry_id: str, *, mode: str | None = None, registry: Any = None,
+                       _native: bool = False) -> dict[str, Any]:
+        if describe_entry is not _DEFAULT_DESCRIBE_ENTRY:
+            options = {'registry': registry, '_native': _native} if registry is not None or _native else {}
+            return describe_entry(entry_id, mode=mode, **options)
+        registry = self.registry if registry is None else registry
+        key = (entry_id, mode, id(registry))
+        if key not in self._descriptions:
+            self._descriptions[key] = describe_entry(entry_id, mode=mode, registry=registry,
+                                                     _native=True, _discovery=self)
+        description = self._descriptions[key]
+        return description if _native else public_description(description)
+
+    def remember_selected_mode(self, entry_id: str, registry: Any, description: dict[str, Any]) -> None:
+        if describe_entry is not _DEFAULT_DESCRIBE_ENTRY:
+            return
+        registry = self.registry if registry is None else registry
+        native = self._descriptions[entry_id, None, id(registry)]
+        selected = {key: description[key] for key in ('mode', 'inputs', 'availability', 'reason', 'fix')}
+        self._descriptions.setdefault((entry_id, description['mode'], id(registry)), {**native, **selected})
+
+    def resolve_entry_inputs(self, entry_id: str, inputs: Mapping[str, Any], *, mode: str | None = None,
+                             kind: str | None = None, registry: Any = None) -> tuple[dict[str, Any], dict[str, Any]]:
+        options = ({'registry': registry, '_discovery': self}
+                   if resolve_entry_inputs is _DEFAULT_RESOLVE_ENTRY_INPUTS else {})
+        return resolve_entry_inputs(entry_id, inputs, mode=mode, kind=kind, **options)
 
 
 def infer_kind(workflow: Any) -> str:

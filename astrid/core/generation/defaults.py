@@ -61,16 +61,18 @@ def pack_candidates(registry: Any = None) -> list[Candidate]:
     return rows
 
 
-def known_entries(registry: Any = None) -> list[dict[str, Any]]:
+def known_entries(registry: Any = None, *, discovery: Any = None,
+                  candidates: Iterable[Candidate] | None = None) -> list[dict[str, Any]]:
     """Real entries as ``{pack, entry, kind, modes}``; a pin must name one of these."""
     rows: list[dict[str, Any]] = []
-    for candidate in pack_candidates(registry):
+    for candidate in (pack_candidates(registry) if candidates is None else candidates):
         rows.append({"pack": candidate.pack, "entry": candidate.entry, "kind": candidate.kind,
                      "modes": {candidate.mode}})
     try:
         from astrid.core.model_catalog.registry import ModelRegistry
 
-        for model in ModelRegistry.load_default().list_all(include_closed=True):
+        model_registry = discovery.registry if discovery is not None else ModelRegistry.load_default()
+        for model in model_registry.list_all(include_closed=True):
             rows.append({"pack": "generation", "entry": model.id, "kind": model.modality,
                          "modes": set(model.modes)})
     except Exception:  # noqa: BLE001 - best-effort fallback; diagnostic at debug, never a user-facing traceback
@@ -80,9 +82,11 @@ def known_entries(registry: Any = None) -> list[dict[str, Any]]:
     try:
         from astrid.core.generation import entries as workflow_entries
 
-        for row in [*workflow_entries.user_entries(), *workflow_entries.ready_entries()]:
+        workflow_rows = ([*discovery.users(), *discovery.ready_candidates()] if discovery is not None
+                         else [*workflow_entries.user_entries(), *workflow_entries.ready_entries()])
+        for row in workflow_rows:
             rows.append({"pack": "vibecomfy", "entry": row["id"], "kind": row["kind"], "modes": set(row["modes"])})
-        for row in workflow_entries.action_entries():
+        for row in (discovery.actions() if discovery is not None else workflow_entries.action_entries()):
             rows.append({"pack": "generation", "entry": row["id"], "kind": row["kind"], "modes": set(row["modes"])})
     except Exception:  # noqa: BLE001 - best-effort fallback; diagnostic at debug, never a user-facing traceback
         _logger.debug("Could not discover workflow and action entries for generation defaults", exc_info=True)
@@ -145,9 +149,12 @@ def ordered_ids(kind: str, mode: str, snapshot: settings.Snapshot | None = None,
     pins = snapshot.content.get("defaults", {})
     candidates = pack_candidates(registry)
     resolved = resolve(kind, mode, pins=pins, candidates=candidates)
-    ids: list[str] = []
-    if resolved.source == "user pin" and resolved.entry is not None:
-        ids.append(resolved.entry)
+    pin = resolved.entry if resolved.source == "user pin" else None
+    return _order(kind, mode, pin, candidates)
+
+
+def _order(kind: str, mode: str, pin: str | None, candidates: Iterable[Candidate]) -> tuple[str, ...]:
+    ids = [pin] if pin is not None else []
     ids += [c.entry for c in sorted((c for c in candidates if (c.kind, c.mode) == (kind, mode)),
                                     key=lambda c: (-c.priority, c.pack, c.entry)) if c.entry not in ids]
     return tuple(ids)
@@ -158,6 +165,30 @@ def pinned_entry(kind: str, mode: str, snapshot: settings.Snapshot) -> str | Non
     if pin is None:
         return None
     return check_pin(f"{kind}.{mode}", pin, known_entries())["entry"]
+
+
+_DEFAULT_ORDERED_IDS = ordered_ids
+_DEFAULT_PINNED_ENTRY = pinned_entry
+
+
+def dispatch_ids(kind: str, mode: str, snapshot: settings.Snapshot, *, discovery: Any,
+                 automatic: bool) -> tuple[str | None, tuple[str, ...]]:
+    """Validate the slot pin and rank its defaults using this command's declarations."""
+    if ordered_ids is not _DEFAULT_ORDERED_IDS or pinned_entry is not _DEFAULT_PINNED_ENTRY:
+        pin = pinned_entry(kind, mode, snapshot) if automatic else None
+        return pin, ordered_ids(kind, mode, snapshot)
+
+    slot = f"{kind}.{mode}"
+    pin = snapshot.content.get("defaults", {}).get(slot)
+    if pin is None:
+        return None, _order(kind, mode, None, pack_candidates())
+
+    from astrid.core.extensions.registry import ExtensionRegistry
+
+    registry = ExtensionRegistry().load()
+    candidates = pack_candidates(registry)
+    identifier = check_pin(slot, pin, known_entries(registry, discovery=discovery, candidates=candidates))["entry"]
+    return identifier if automatic else None, _order(kind, mode, identifier, candidates)
 
 
 def _placement_name(placement: Mapping[str, Any], client: Any = None) -> tuple[str, str | None]:
