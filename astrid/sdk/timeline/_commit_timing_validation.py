@@ -84,7 +84,7 @@ def _reference_shape(clip: Mapping[str, Any], assets: Mapping[str, Any] | None =
 
 
 _WORD_TIMING_FIELDS = ("id", "track", "at", "at_ms", "from", "to", "hold", "duration", "speed",
-                       "asset", "asset_id")
+                       "asset", "asset_id", "source_window", "time_map", "timeMap")
 _WORD_TIMING_DECLARATIONS = ("on", "until", "for", "cut", "fixed_start", "word_anchors")
 
 
@@ -117,6 +117,7 @@ class _BasisReader:
         self._words: dict[str, Any] | None = None
         self._owners: dict[tuple[str, str], dict[str, Any]] = {}
         self._text: dict[Any, str] = {}
+        self._shot_placements: dict[str, list] | None = None
 
     def _json(self, name: Any, value: Any) -> str:
         """The canonical text of one shared part of a basis, built once per bundle."""
@@ -137,16 +138,27 @@ class _BasisReader:
         except (TypeError, ValueError, moments.MomentError):
             word = False
         if word and key[0] != "parent":
-            # A shot clip's word declaration never has an authorized binding, whatever its siblings,
-            # placements or other shots say: the finding depends on this clip's timing alone, not on
-            # which element it shows or its params.
+            # Preserve an inherited unresolved declaration only while the target's own timing
+            # and placement are unchanged. Which element it shows and its params are immaterial.
             timing = {name: clip[name] for name in _WORD_TIMING_FIELDS if name in clip}
             if _fixed_visual_duration(clip, self._assets(key[0], key[1])):
                 timing.pop("asset", None)
                 timing.pop("asset_id", None)
             app = intent._app(clip)
             declarations = {name: app.get(name) for name in _WORD_TIMING_DECLARATIONS}
-            return json.dumps({"clip": timing, "declarations": declarations}, sort_keys=True, default=str)
+            if self._shot_placements is None:
+                self._shot_placements = {}
+                for row in self.bundle.get("placements", []):
+                    geometry = row.get("placement") or {}
+                    placement = {
+                        name: row[name] for name in ("occurrence_id", "duration_ms", "source_offset",
+                                                     "source_offset_ms", "speed", "time_map", "timeMap")
+                        if name in row
+                    }
+                    placement["start_ms"] = geometry.get("start_ms", row.get("at_ms", 0))
+                    self._shot_placements.setdefault(row["shot_id"], []).append(placement)
+            return json.dumps({"clip": timing, "declarations": declarations,
+                               "placements": self._shot_placements.get(key[1])}, sort_keys=True, default=str)
         basis = self.basis(key, clip, declaration)
         own = {"clip": basis["clip"]}
         parts = [json.dumps(own, sort_keys=True, default=str), self._json("documents", basis["documents"])]
@@ -808,12 +820,46 @@ def validate_candidate_timing(
     A new, changed or unattributable failure refuses as before. A clean commit runs no probe.
     """
     exemptions = _legacy_exemptions(candidate, baseline, source_bundles)
+    before_bindings, after_bindings = [], []
+    old_intervals, new_intervals = {}, {}
+    if baseline is not None:
+        from ._shot_word_retime import ShotWordRetimeInputs, prove_shot_word_retime
+
+        before = dict(_legacy_rows(baseline))
+        old_words, new_words = ShotWordRetimeInputs(baseline), ShotWordRetimeInputs(candidate)
+        for key, clip in _legacy_rows(candidate):
+            if key[0] != "shot":
+                continue
+            for field, text in _legacy_declarations(clip).items():
+                if (key, field) in exemptions:
+                    continue
+                try:
+                    if moments.parse(text).kind != "word":
+                        continue
+                except moments.MomentError:
+                    continue
+                proof = prove_shot_word_retime(new_words, old_words, key, clip, before.get(key), field, text)
+                if proof is None:
+                    continue
+                old, new, old_interval, new_interval = proof
+                before_bindings.append(old)
+                after_bindings.append(new)
+                old_intervals[old.target] = old_interval
+                new_intervals[new.target] = new_interval
+    if before_bindings:
+        selected = {(("shot", item.target[1], item.target[2]), item.field) for item in before_bindings}
+        try:
+            _validate_candidate_timing(baseline, baseline, False, (), (),
+                                       _legacy_exemptions(baseline, baseline) - selected,
+                                       before_bindings, old_intervals)
+        except (TimingCompileError, KeyError, TypeError, ValueError) as exc:
+            raise TimingCompileError(f"cannot verify the prior shot word anchor. {SHOT_WORD_ALTERNATIVE}") from exc
     spent: set[tuple[tuple[Any, ...], str]] = set()
     while True:
         try:
             return _validate_candidate_timing(
                 candidate, baseline, _allow_physical_context_fallback, source_bundles,
-                restoration_records, exemptions)
+                restoration_records, exemptions, after_bindings, new_intervals)
         except (TimingCompileError, KeyError, TypeError, ValueError) as exc:
             if baseline is None or not (
                     _known_unresolvable_message(str(exc)) or "ambiguous cut identity" in str(exc)):
@@ -835,6 +881,8 @@ def _validate_candidate_timing(
     source_bundles: Sequence[Mapping[str, Any]],
     restoration_records: Sequence[Mapping[str, Any]],
     exemptions: set[tuple[tuple[Any, ...], str]],
+    shot_bindings: Sequence = (),
+    shot_intervals: Mapping = (),
 ) -> None:
     """Compile a detached validation view, leaving authored JSON and pins intact.
 
@@ -868,12 +916,12 @@ def _validate_candidate_timing(
     _adapt_projection(projection, candidate, publication, source_bundles)
 
     sources = candidate.get("source_mapping", {}).get("pinned_documents", [])
-    bindings = []
+    bindings = list(shot_bindings)
     for shot in projection["shots"].values():
         for clip in shot["internal_timeline"]["clips"]:
             refs = intent._app(clip).get("word_anchors", {})
             if not isinstance(refs, dict) or set(refs) - {"on", "until"}:
-                raise TimingCompileError("invalid authored word anchor fields")
+                raise TimingCompileError(f"invalid authored word anchor fields. {SHOT_WORD_ALTERNATIVE}")
             if refs:
                 raise TimingCompileError(f"word anchors require parent ownership. {SHOT_WORD_ALTERNATIVE}")
     for clip in projection["parent"].get("clips", []):
@@ -918,8 +966,17 @@ def _validate_candidate_timing(
         legacy_declarations=legacy_declarations,
     )
     try:
-        compile_timing(inputs)
+        result = compile_timing(inputs)
+        if shot_bindings:
+            from ._shot_word_retime import confirm_shot_word_intervals
+
+            if not confirm_shot_word_intervals(result, shot_intervals, _fps(projection)):
+                raise TimingCompileError(f"shot word anchor disagrees with the stored interval. {SHOT_WORD_ALTERNATIVE}")
     except TimingCompileError as exc:
+        if shot_bindings:
+            if SHOT_WORD_ALTERNATIVE in str(exc):
+                raise
+            raise TimingCompileError(f"{exc}. {SHOT_WORD_ALTERNATIVE}") from exc
         if (not _allow_physical_context_fallback
                 or not any(marker in str(exc) for marker in (
                     "ambiguous cut identity", "clip starts before its occurrence"))

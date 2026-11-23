@@ -416,14 +416,12 @@ def evaluate(bundle, sources, bindings, policy, legacy_declarations=(), collect=
         dependencies = []
         bound = None
         if moment.kind == "word":
+            alternative = f". {SHOT_WORD_ALTERNATIVE}" if owner[1] else ""
             if moment.n is not None and moment.n < 1:
-                raise TimingCompileError("word occurrence must be positive")
+                raise TimingCompileError(f"word occurrence must be positive{alternative}")
             pin = pins.get((owner, field))
             if pin is None or pin.declaration != text:
-                message = f"missing exact word binding for {owner}.{field}"
-                if owner[1]:
-                    message += f". {SHOT_WORD_ALTERNATIVE}"
-                raise TimingCompileError(message)
+                raise TimingCompileError(f"missing exact word binding for {owner}.{field}{alternative}")
             used.add((owner, field))
             bound = _bound_words(bundle, documents, pin, clips, internals)
             dependencies = [node(pin.source, "start")]

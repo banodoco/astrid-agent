@@ -7,6 +7,7 @@ import math
 import statistics
 from collections.abc import Callable
 from contextlib import contextmanager
+from functools import wraps
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -76,6 +77,49 @@ def _is_seconds(text: str) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _retained_word_reflow(method):
+    """Keep a proved shot retime and its reflow on the same retained transcripts."""
+    @wraps(method)
+    def run(self, *args, **kwargs):
+        if getattr(self, "_reflow_transcripts", None) is not None:
+            return method(self, *args, **kwargs)
+        from astrid.sdk.timeline._shot_word_retime import retime_transcripts, select_retime_pins
+        from astrid.sdk.timeline.native_source_inputs import read_verified_transcript
+
+        source = self.bundle.get("source_mapping", {})
+        pins = (source.get("_runtime_document", {}).get("dependency_manifest", {}).get("documents", []))
+        if not pins or not any(
+            _direct_word(text)
+            for shot in self.bundle.get("shots", {}).values()
+            for clip in shot.get("internal_timeline", {}).get("clips", [])
+            for text in (intent.on(clip), intent.until(clip))
+        ):
+            return method(self, *args, **kwargs)
+        selected = select_retime_pins(self.bundle, pins)
+        if not selected:
+            return method(self, *args, **kwargs)
+        client = getattr(self, "_scene_client", None)
+        if client is None:
+            raise TimelineEditError("reflow requires the retained transcript versions for shot word anchors")
+        transport = getattr(getattr(client, "_remote", None), "_transport", client)
+        captures = [read_verified_transcript(transport, self.bundle["project_id"], pin) for pin in selected]
+        self._reflow_transcripts, _ = retime_transcripts(captures)
+        try:
+            return method(self, *args, **kwargs)
+        finally:
+            self._reflow_transcripts = None
+    return run
+
+
+def _direct_word(text):
+    if not text:
+        return False
+    try:
+        return mo.parse(text).kind == "word"
+    except mo.MomentError:
+        return False
 
 
 class _ReflowMixin:
@@ -167,6 +211,7 @@ class _ReflowMixin:
         return n
 
     @music_keyword
+    @_retained_word_reflow
     def reflow(self, *, gaps: Mapping[str, float] | None = None, points: Mapping[str, float] | None = None) -> list[str]:
         """Lay the voice track out again (each piece's speech end + its gap) and ripple everything downstream.
 
@@ -367,6 +412,7 @@ class _ReflowMixin:
         self.report = report
         return report
 
+    @_retained_word_reflow
     def retime(self) -> list[tuple[str, float, float]]:
         """Resolve every moment (after a VO change, a gap, an edit). Returns what moved.
 
