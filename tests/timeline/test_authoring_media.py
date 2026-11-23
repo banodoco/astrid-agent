@@ -438,6 +438,56 @@ def test_document_publish_captures_verified_media_before_document_patches():
     assert commands[0]["reads"]
 
 
+def test_document_publish_preserves_authored_resolution_change():
+    from astrid.sdk.timeline.commands import execute
+    from astrid.sdk.timeline.native_occurrence_media_commands import capture_occurrence_swap_media
+
+    script = Path(__file__).parents[2] / "astrid/packs/rendering/docs/scripts/timeline_document.py"
+    spec = importlib.util.spec_from_file_location("timeline_document_resolution_test", script)
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+    base = bundle_with_runtime_source()
+    base["base_parent"]["publication_id"] = "original-publication"
+    base["placements"][0].update(source_offset=0, speed=1)
+    base["base_placements"]["occ-1"].update(source_offset=0, speed=1)
+    shot = next(iter(base["shots"].values()))
+    shot["internal_timeline"]["registry"]["assets"]["old-picture"].update(
+        generationId="generation-old", variantId="variant-old"
+    )
+    old = {"asset": "old-picture", "generation_id": "generation-old", "variant_id": "variant-old",
+           "object_id": OLD, "catalog_digest": "sha256:" + "a" * 64}
+    new = {"asset": "old-picture", "generation_id": "generation-new", "variant_id": "variant-new",
+           "object_id": "sha256:" + "2" * 64, "catalog_digest": "sha256:" + "b" * 64}
+    verified = [
+        {"selection": old, "media_type": "image/png", "size": 10},
+        {"selection": new, "media_type": "image/png", "size": 10, "width": 16, "height": 12},
+    ]
+    owner = "occurrence:occ-1"
+    clip = next(row for row in shot["internal_timeline"]["clips"] if row.get("asset") == "old-picture")
+    swap = capture_occurrence_swap_media(
+        base, owner + "/clip:" + clip["id"], old, new, verified_media=verified
+    )
+    candidate = execute(base, [swap], verified_media=verified).bundle
+    entry = next(iter(candidate["shots"].values()))["internal_timeline"]["registry"]["assets"]["old-picture"]
+    entry["resolution"] = "32x24"
+
+    commands = helper.emit_document_publish_commands(
+        base, candidate, {(owner, "old-picture"): {"old": old, "new": new}}, verified
+    )
+
+    assert [command["op"] for command in commands] == ["occurrence.swap-media", "doc.patch"]
+    assert commands[0]["args"]["old_media"] == old
+    assert commands[0]["args"]["media"] == new
+    changes = commands[1]["args"]["changes"]
+    assert len(changes) == 1
+    assert changes[0]["ref"].startswith("internal-revision:")
+    assert {key: value for key, value in changes[0].items() if key != "ref"} == {
+        "op": "set",
+        "path": ["registry", "assets", "old-picture", "resolution"],
+        "before": {"state": "present", "value": "16x12"}, "value": "32x24",
+    }
+
+
 def _genuine_compound_source(tmp_path):
     """Create the retained-manifest source through the current Runtime API."""
     from tests.helpers.runtime import use_runtime
