@@ -119,6 +119,13 @@ def _json_payload(stdout: str, stderr: str) -> Mapping[str, Any]:
     }
 
 
+def _startup_selection_args(support: Path, realm: Path | None, realm_id: str | None) -> tuple[str, ...]:
+    args = ("--data-root", str(support), "--require-configured-selection")
+    if realm is not None and realm_id is not None:
+        return (*args, "--realm-root", str(realm), "--expected-realm-id", realm_id)
+    return args
+
+
 class RuntimeCLI:
     """Invoke, but never reimplement, the installed Runtime command surface."""
 
@@ -179,10 +186,8 @@ class RuntimeCLI:
     def _startup_status(
         self, support: Path, *, realm: Path | None = None, realm_id: str | None = None,
     ) -> tuple[bool, RuntimeResult | None]:
-        args = ["startup-status", "--data-root", str(support)]
-        if realm is not None and realm_id is not None:
-            args.extend(("--realm-root", str(realm), "--expected-realm-id", realm_id))
-        result = self.invoke((*args, "--json"), timeout=5.0)
+        selection = _startup_selection_args(support, realm, realm_id)
+        result = self.invoke(("startup-status", *selection, "--json"), timeout=5.0)
         if result.returncode == 2 and "invalid choice: 'startup-status' (choose from " in result.stderr:
             return False, None
         if result.returncode == 1 and result.data == {"state": "unavailable"}:
@@ -228,18 +233,19 @@ class RuntimeCLI:
         if not coordinated:
             return self.inspect(support_root=support), False
 
-        selected = self.invoke(
-            ("workspace", "inspect", "--data-root", str(support), "--startup-operation", "--json"),
-            timeout=None,
-        )
+        selection = _startup_selection_args(support, realm, realm_id)
+        selected = self.invoke(("workspace", "inspect", "--startup-operation", *selection, "--json"), timeout=None)
         if selected.returncode == 1 and selected.data == {"ok": False, "error": _STARTUP_SCOPE_REQUIRED}:
             return self.inspect(support_root=support), False
-        if not selected.ok and selected.data.get("state") in ("startup_pending", "starting_service"):
+        if not selected.ok and selected.data.get("state") in (
+            "startup_pending", "starting_service", "inspecting_workspace",
+        ):
             # The owner can appear after the first status read. Reconfirm
             # against the requested selection before making a pending receipt.
             _, pending = self._startup_status(support, realm=realm, realm_id=realm_id)
             if pending is not None:
                 return pending, True
+            return RuntimeResult(selected.argv, 1, {"ok": False, "state": "startup_busy"}), True
         return selected, True
 
     def configure(
