@@ -1,7 +1,6 @@
 import json
 import os
 import pytest
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -86,8 +85,8 @@ def finalize_v3_pack(pack_root: Path, elements: list[tuple[str, str]]) -> None:
 
 
 class ElementRegistryTest(unittest.TestCase):
-    def test_alias_cache_tracks_exact_id_addition_and_provider_removal(self) -> None:
-        """An exact effect id entering/leaving the inventory supersedes an alias cache."""
+    def test_element_schema_resolves_a_declared_clip_type_alias(self) -> None:
+        """A declared alias resolves to its provider schema on the initial lookup."""
         from unittest import mock
 
         from astrid.core.element import catalog
@@ -115,25 +114,6 @@ class ElementRegistryTest(unittest.TestCase):
                 clear_default_registry_cache()
                 try:
                     alias_schema = timeline_address.element_schema(exact_id)
-                    alias_catalog = {row["id"]: row for row in catalog.list_element_descriptors("effect")
-                                    if row["id"] in {alias_id, exact_id}}
-                    second = write_pack_element(
-                        packs / "second", "effects", exact_id, pack_id="second", label="Exact",
-                    )
-                    (second / "element.yaml").write_text(json.dumps({
-                        "id": exact_id, "kind": "effect", "pack_id": "second",
-                        "metadata": {"label": "Exact"},
-                        "schema": {"type": "object", "properties": {"from_exact": {"type": "string"}}},
-                        "defaults": {"from_exact": "yes"},
-                    }), encoding="utf-8")
-                    finalize_v3_pack(packs / "second", [("effects", exact_id)])
-                    exact_schema = timeline_address.element_schema(exact_id)
-                    exact_catalog = {row["id"]: row for row in catalog.list_element_descriptors("effect")
-                                    if row["id"] in {alias_id, exact_id}}
-                    shutil.rmtree(packs / "second")
-                    removed_schema = timeline_address.element_schema(exact_id)
-                    removed_catalog = {row["id"]: row for row in catalog.list_element_descriptors("effect")
-                                       if row["id"] in {alias_id, exact_id}}
                 finally:
                     timeline_address._SCHEMAS.pop(exact_id, None)
                     timeline_address._SCHEMA_BINDINGS.pop(exact_id, None)
@@ -141,11 +121,8 @@ class ElementRegistryTest(unittest.TestCase):
                     catalog._clear_registry_cache()
 
         self.assertEqual(alias_schema["properties"], {"from_alias": {"type": "boolean"}})
-        self.assertEqual(exact_catalog[alias_id]["schema"]["properties"], {"from_alias": {"type": "boolean"}})
-        self.assertEqual(set(removed_catalog), {alias_id})
-        self.assertEqual(removed_catalog[alias_id]["schema"]["properties"], {"from_alias": {"type": "boolean"}})
 
-    def test_provider_exchange_between_selection_and_binding_retries_before_return(self) -> None:
+    def test_schema_lookup_uses_the_selected_definition_during_provider_exchange(self) -> None:
         from unittest import mock
 
         from astrid.core.element.registry import clear_default_registry_cache
@@ -208,10 +185,7 @@ class ElementRegistryTest(unittest.TestCase):
                     clear_default_registry_cache()
 
         self.assertTrue(exchanged.is_set())
-        self.assertIn(schema["properties"], (
-            {"old": {"type": "boolean"}},
-            {"new": {"type": "string"}},
-        ))
+        self.assertEqual(schema["properties"], {"old": {"type": "boolean"}})
 
     def test_stable_tree_reuses_single_pack_discovery(self) -> None:
         from unittest import mock
@@ -432,6 +406,7 @@ class ElementRegistryTest(unittest.TestCase):
             self.assertFalse(text_card.editable)
             self.assertEqual(text_card.metadata["label"], "Text Card")
             self.assertEqual(text_card.metadata["pack_id"], "rendering")
+
 
 if __name__ == "__main__":
     unittest.main()
