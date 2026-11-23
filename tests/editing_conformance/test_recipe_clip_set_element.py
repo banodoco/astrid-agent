@@ -173,6 +173,23 @@ def test_grouped_with_params_roundtrips_in_one_batch():
     assert inverse(undone.bundle, undone.records).bundle == plan.bundle
 
 
+def test_owner_qualified_placements_apply_to_each_occurrence_in_one_plan():
+    """The same source clip id in two occurrences has independent element refs."""
+    original = seeded()
+    second = 'occurrence:occ-2/clip:picture-1'
+    # The authoring fixture has a second occurrence of this same clip. Seed
+    # its existing ref so both writes exercise retargeting, not first placement.
+    clip(original, second)['elementRef'] = copy.deepcopy(DRAFT)
+    commands = [call(ADMITTED, REF), call(ADMITTED, second)]
+
+    plan = execute(original, commands)
+
+    assert clip(plan.bundle, REF)['elementRef'] == ADMITTED
+    assert clip(plan.bundle, second)['elementRef'] == ADMITTED
+    assert [record['writes'][0]['ref'] for record in plan.records] == [REF, second]
+    assert inverse(plan.bundle, plan.records).bundle == original
+
+
 def test_parent_clip_leaves_legacy_mirror_and_app_elements_alone():
     original = bundle()
     ref = 'parent/clip:direct'

@@ -101,6 +101,29 @@ result = tl.commit(lambda t: t.clip("c30.cover").until("Astrid"),
 
 Python functions are the taught edit path; load `timeline` for the main path
 and `timeline-narrated` for word and shot edits.
+
+For an admitted project-pack element, stage its placement with the rest of the
+edit in one commit. Use the exact owner-qualified reference from admission:
+
+```python
+element = {"packId": "<pack-id>", "id": "<element-id>",
+           "kind": "effect", "revision": "<admitted-revision>"}
+
+def edit(t):
+    t.clip("<clip-id>").set_element(element)
+    t.clip("<clip-id>").params["<setting>"] = "<value>"
+
+tl = Timeline.open("P", "TL")
+receipt = tl.commit(edit, label="Place admitted effect",
+                    idempotency_key="effect-edit-42")
+```
+
+Put all affected placements and related edits in the same function. Admission
+and commit are separate operations: admit the pack first, then commit the
+timeline edit. Keep the function free of external side effects because it may
+run again after a conflict. `timelines place-element` remains the one-target
+CLI path for a standalone placement.
+
 The detached `Checkout` surface below edits the local copy. This candidate-file route is supported
 (CLI only; a Python preview or reviewed list is not a file). Save an explicit candidate, then commit it through Runtime:
 
