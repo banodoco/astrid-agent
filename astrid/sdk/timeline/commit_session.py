@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
 import uuid
 from collections.abc import Mapping
 from datetime import datetime, timezone
@@ -338,11 +339,13 @@ class Timeline(Checkout):
         else:
             pin, verified = _selection(self.session, self.bundle, local_path)
         object_id = pin["object_id"]
+        if not isinstance(object_id, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", object_id):
+            raise TimelineEditError("invalid local media object digest")
         if not any(row.get("selection") == verified.get("selection") for row in self._verified_media):
             self._verified_media.append({**copy.deepcopy(verified), "object_id": object_id,
                                          "pin": {"media_id": object_id, "content_digest": object_id}})
         media_entry = {"key": pin["asset"], "media_id": object_id,
-                       "content_sha256": object_id, "type": verified.get("media_type"),
+                       "content_sha256": object_id[7:], "type": verified.get("media_type"),
                        "generationId": pin["generation_id"], "variantId": pin["variant_id"]}
         if verified.get("duration_seconds") is not None:
             media_entry["duration"] = verified["duration_seconds"]
