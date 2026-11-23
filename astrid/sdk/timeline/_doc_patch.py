@@ -171,6 +171,17 @@ class Closure:
         mapping = self.bundle['source_mapping']['shots'].get(local, {}).get('item_id_map', {})
         return _remap_known_item_references(shot['payload'], {v: k for k, v in mapping.items()})
 
+    def read(self, physical, path):
+        """Read a captured value without materializing unrelated parent fields.
+
+        Parent occurrences are a projection of placements and published links,
+        so root and occurrence reads still use the complete projected payload.
+        value_at owns the returned value; the borrowed parent never escapes.
+        """
+        if physical == 'parent' and path and path[0] != 'occurrences':
+            return value_at(self.bundle['parent'], physical, path)
+        return value_at(self.payload(physical), physical, path)
+
     def binding(self, submitted, physical, **boundary):
         image = self.images[physical]
         result = {'ref': submitted, 'physical_ref': physical,
@@ -376,12 +387,12 @@ def validate_submitted_change(change):
                 raise CommandError('replacement changes provider-managed edges', kind='managed_closure_write', ref=ref, path=path)
 
 
-def apply_change(root, change, *, physical=None):
+def apply_change(root, change, *, physical=None, _old_root=None):
     """Apply one guarded payload change; closure authority stays with the caller."""
     ref, path, op = change['ref'], change['path'], change['op']
     physical = physical or ref
     validate_submitted_change(change)
-    old_root = copy.deepcopy(root)
+    old_root = copy.deepcopy(root) if _old_root is None else _old_root
     if op.startswith('list.'):
         state = value_at(root, physical, path)
         rows = state.get('value')
@@ -491,7 +502,7 @@ def patch(ctx, command):
             raise CommandError('root alias changed its physical binding', kind='binding_changed', ref=ref, path=path)
         root = closure.payload(physical)
         old_root = copy.deepcopy(root)
-        root, before = apply_change(root, change, physical=physical)
+        root, before = apply_change(root, change, physical=physical, _old_root=old_root)
         verify_media(ctx, physical, old_root, root)
         created = allocations(closure, physical, old_root, root)
         ctx.record['created'].extend(created)
