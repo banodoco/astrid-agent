@@ -132,6 +132,83 @@ def test_explicit_registry_override_still_controls_type_output():
     )
 
 
+def test_known_unannotated_animation_and_transition_do_not_refresh_registry(monkeypatch):
+    default = load_default_registry()
+    animation = replace(default.get("animations", "fade"), outputs=())
+    transition = replace(
+        default.get("transitions", "fade"),
+        id="known-unannotated-transition",
+        outputs=(),
+    )
+    supplied = ElementRegistry([animation, transition])
+    loads: list[object] = []
+    clears: list[bool] = []
+
+    def load(**_kwargs):
+        loads.append(True)
+        return supplied
+
+    monkeypatch.setattr(element_registry_module, "load_default_registry", load)
+    monkeypatch.setattr(
+        element_registry_module,
+        "clear_default_registry_cache",
+        lambda: clears.append(True),
+    )
+
+    assert not is_visual_clip_element("fade", None)
+    assert not is_visual_clip_element("known-unannotated-transition", None)
+
+    assert len(loads) == 2
+    assert clears == []
+
+
+def test_absent_custom_element_miss_clears_once_and_rediscovers(monkeypatch):
+    custom = replace(
+        load_default_registry().get("effects", "text-card"),
+        id="custom-after-start",
+    )
+    empty = ElementRegistry([])
+    installed = ElementRegistry([custom])
+    loads: list[ElementRegistry] = []
+    clears: list[bool] = []
+
+    def load(**_kwargs):
+        registry = empty if not loads else installed
+        loads.append(registry)
+        return registry
+
+    monkeypatch.setattr(element_registry_module, "load_default_registry", load)
+    monkeypatch.setattr(
+        element_registry_module,
+        "clear_default_registry_cache",
+        lambda: clears.append(True),
+    )
+
+    assert is_visual_clip_element("custom-after-start", None)
+    assert len(loads) == 2
+    assert clears == [True]
+
+
+def test_explicit_registry_is_a_fixed_snapshot(monkeypatch):
+    default = load_default_registry()
+    definition = replace(default.get("effects", "text-card"), id="caller-snapshot-effect")
+    supplied = ElementRegistry([definition])
+
+    def fail_default_lookup(*_args, **_kwargs):
+        raise AssertionError("explicit registry must not consult the default registry cache")
+
+    monkeypatch.setattr(element_registry_module, "lookup_default_registry", fail_default_lookup)
+    monkeypatch.setattr(
+        catalog,
+        "list_element_ids",
+        lambda kind, **_kwargs: ["caller-snapshot-effect"] if kind == "effects" else [],
+    )
+
+    assert is_visual_clip_element(
+        "caller-snapshot-effect", None, supplied, ARTIFACT_TYPE_REGISTRY
+    )
+
+
 def test_transition_validation_still_refuses_when_catalog_guard_fails(monkeypatch):
     refusal = RuntimeError("transition catalog integrity failure")
 
