@@ -253,7 +253,12 @@ with its implementation; an empty slot promises no command or behavior. -->
 
 ### WS-7a — Node recipe declarations
 
-<!-- WS-7a: fill this subsection in the same change as the card. -->
+Read each `extra.nodes` item as `{repo, commit, requirements_txt?, pip_no_deps?}`.
+The optional requirements file is relative to the pinned repository; the optional
+`pip_no_deps` list keeps its declared order. These are declarations, not permission
+to install. A recipe hash covers both fields, including their defaults. Changing
+the requirements path, a package requirement or its order changes that hash.
+Never execute a pack's `install.py` or turn a recipe declaration into a shell command.
 
 ### WS-7b — Controlled recipe installation
 
@@ -261,7 +266,16 @@ with its implementation; an empty slot promises no command or behavior. -->
 
 ### LE-1a — Read issues and next steps
 
-<!-- LE-1a: fill this subsection in the same change as the card. -->
+Keep the existing `ready`, `ready_with_warnings` and `blocked` statuses. For setup
+issues carrying `fix_ids`, resolve those IDs in `fixes` and follow the array order.
+Each fix names `who` (`agent` or `human`) and either an argument array `argv`, or
+an `instruction` with `step` and `then_argv`. Show a human step to the person;
+never treat it as an automatic command or skip it to run a later fix.
+
+Replace every `<NAME>` in a command using that fix's `placeholders` explanation
+before running it. Keep `attempt_count` with the result; it counts actual setup
+attempts, not reads or displays. A warning does not authorize a repair. Legacy
+issues without these fields retain their existing guidance; do not invent a fix.
 
 ### LE-1b — Missing assets and failed checks
 
@@ -269,7 +283,16 @@ with its implementation; an empty slot promises no command or behavior. -->
 
 ### LE-2a — Approval identity and consent tokens
 
-<!-- LE-2a: fill this subsection in the same change as the card. -->
+Treat workflow source refs and saved code approvals separately. An approval
+records `{identity: {repo, commit}, recipe_sha256, approval_sha256, placement_class}`.
+The commit is a full 40-character hash, and placement is resolved to `local`,
+`attached` or `runpod` before asking. A token is the first 12 hex characters of
+the approval hash. Changing the source, recipe or placement invalidates it.
+
+The entry's `code-approvals.json` keeps these records beside `entry.json`; a
+source declaration alone grants no approval. The token is a confirmation of
+what was shown, not proof of who typed it. Do not write approval records by hand
+or assume that their presence makes a pack safe to run.
 
 ### LE-2b — Consent to unreviewed code
 
@@ -349,7 +372,9 @@ with its implementation; an empty slot promises no command or behavior. -->
 
 ### WS-6a — Workflow setup guidance
 
-<!-- WS-6a: fill this subsection in the same change as the card. -->
+Use the populated subsections for the behavior they describe. An empty subsection
+does not introduce a command, install path or permission. Keep the user's requested
+placement and the reported next step together throughout setup.
 
 ### WS-6b — Complete setup walkthrough
 
