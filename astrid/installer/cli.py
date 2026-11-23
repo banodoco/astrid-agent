@@ -509,8 +509,7 @@ class _Run:
         choices = self.choices or {}
         outcome = replace(outcome, log=str(self.log) if self.log is not None else None,
                           skills=choices.get("skills", True), command=choices.get("command", True),
-                          build=self.build,
-                          default_packs=(_receipt_outcomes(self.installer, rolled_back=rolled_back) or {}).get("default_packs"))
+                          build=self.build)
         if self.log is not None:
             # Beside install.log, which diagnostics already read; never in a selected root.
             write_record(self.log.with_name(RECORD), outcome, *self.protected,
