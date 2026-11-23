@@ -105,7 +105,7 @@ def _retained_word_reflow(method):
             raise TimelineEditError("reflow requires the retained transcript versions for shot word anchors")
         transport = getattr(getattr(client, "_remote", None), "_transport", client)
         captures = [read_verified_transcript(transport, self.bundle["project_id"], pin) for pin in selected]
-        self._reflow_transcripts, _ = retime_transcripts(captures)
+        self._reflow_transcripts, _ = retime_transcripts(self.bundle, captures)
         try:
             return method(self, *args, **kwargs)
         finally:

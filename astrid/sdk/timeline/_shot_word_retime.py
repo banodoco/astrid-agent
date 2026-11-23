@@ -2,18 +2,19 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import replace
 from functools import cached_property
 
 from astrid.core.timeline import moments
 from astrid.sdk.media_transcript import transcript_document_id
 from astrid.sdk.timeline._common import TimelineEditError
-from astrid.sdk.timeline._timing_evaluators import _duration, _fps
+from astrid.sdk.timeline._timing_evaluators import _ShotWordBinding, _duration, _fps
 from astrid.sdk.timeline.compiler import TimingCompileError
 from astrid.sdk.timeline.doc import _row_start
 from astrid.sdk.timeline.native_word_anchor import binding
 from astrid.sdk.timeline.units import _time_fraction, quantize_time, source_to_timeline_time
-from astrid.sdk.timeline.words import as_words, default_source_order, project_words, reference_rows, timeline_media_ids
+from astrid.sdk.timeline.words import (
+    as_words, choose_document, default_source_order, project_words, timeline_media_ids, transcript_references,
+)
 
 
 def _placement(bundle, shot):
@@ -40,31 +41,41 @@ def _start(placement, clip):
 
 
 def select_retime_pins(bundle, pins):
-    """Select one retained transcript for each audio media using Main's source identities."""
-    selected = []
-    references = reference_rows(bundle)
+    """Find retained candidates, including explicit references without media metadata."""
     source_order = default_source_order()
-    for media in timeline_media_ids(bundle):
-        identities = {row["documentId"] for row in references if row.get("mediaId") == media}
-        if not identities:
-            identities = {transcript_document_id(bundle["project_id"], media, source) for source in source_order}
-        matches = [pin for pin in pins if pin["document_id"] in identities]
-        if len(matches) != 1:
-            return ()
-        selected.append(matches[0])
-    return selected
+    identities = transcript_references(bundle) | {
+        transcript_document_id(bundle["project_id"], media, source)
+        for media in timeline_media_ids(bundle)
+        for source in source_order
+    }
+    return [pin for pin in pins if pin["document_id"] in identities]
 
 
-def retime_transcripts(capture_rows):
-    captures = {}
-    transcripts = {}
+def retime_transcripts(bundle, capture_rows):
+    by_media = {}
     for capture in capture_rows:
         document = capture["document"]
         if document["kind"] != "media.transcript":
             continue
         media, source = (document["content"][key] for key in ("media_id", "source_id"))
-        if media in captures:
-            raise TimingCompileError("word retime requires one exact transcript per audio source")
+        by_media.setdefault(media, {}).setdefault(source, []).append(capture)
+    references = transcript_references(bundle)
+    if references - {rows[0]["document"]["document_id"] for sources in by_media.values()
+                     for rows in sources.values()}:
+        raise TimingCompileError("word retime requires the explicitly referenced transcript")
+    source_order = default_source_order()
+    transcripts, captures = {}, {}
+    for media, sources in by_media.items():
+        docs = {source: rows[0]["document"] for source, rows in sources.items()}
+        if sum(doc["document_id"] in references for doc in docs.values()) > 1:
+            raise TimingCompileError("word retime requires one referenced transcript per audio media")
+        chosen = choose_document(docs, references, source_order)
+        if chosen is None:
+            continue
+        source, document = chosen
+        if len(sources[source]) != 1:
+            raise TimingCompileError("word retime requires one retained version of the selected transcript")
+        capture = sources[source][0]
         captures[media] = capture
         transcripts[media] = {source: document}
     return transcripts, captures
@@ -73,9 +84,7 @@ def retime_transcripts(capture_rows):
 def _word_pool(bundle):
     capture_rows = bundle.get("source_mapping", {}).get("pinned_documents", [])
     selected = select_retime_pins(bundle, [row["pin"] for row in capture_rows])
-    transcripts, captures = retime_transcripts(row for row in capture_rows if row["pin"] in selected)
-    if set(timeline_media_ids(bundle)) - captures.keys():
-        raise TimingCompileError("word retime requires exact transcript coverage of the audio sources")
+    transcripts, captures = retime_transcripts(bundle, (row for row in capture_rows if row["pin"] in selected))
     # Use the same projection as reflow but require exactly one hit. Inline
     # words can make a match ambiguous but cannot prove an identity.
     return as_words(project_words(bundle, transcripts)), captures
@@ -117,7 +126,11 @@ def _exact_word(bundle, pool, owner, field, declaration):
     if any(not start <= onset < finish <= end for onset, finish in edges):
         raise TimingCompileError("word retime requires the whole phrase inside the played clip interval")
     edge = edges[-1][1] if moment.edge == "end" else edges[0][0]
-    return replace(exact, target=owner, declaration=declaration), edge
+    projected = _ShotWordBinding(
+        owner, field, declaration, exact.source, exact.document_id, exact.version,
+        exact.content_digest, exact.word_ids, timeline_line=word.segment, first_audible=phrase[0].index == 0,
+    )
+    return projected, edge
 
 
 class ShotWordRetimeInputs:

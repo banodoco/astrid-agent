@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from fractions import Fraction
 from types import MappingProxyType, SimpleNamespace
 from typing import Any
@@ -12,7 +12,8 @@ from astrid.core.timeline.authoring_bundle import _digest
 from astrid.sdk import timeline_intent as intent
 from astrid.sdk.media_transcript import SCHEMA, transcript_document_id
 from astrid.sdk.timeline._common import TimelineEditError
-from astrid.sdk.timeline.compiler import TimingCompileError, TimingCycleError
+from astrid.sdk.timeline.compiler import TimingCompileError, TimingCycleError, WordBinding
+from astrid.sdk.timeline.model import Voice
 from astrid.sdk.timeline.units import (
     _playback_rate,
     _time_fraction,
@@ -25,6 +26,14 @@ from astrid.sdk.timeline_checkout import Checkout
 # Declarations the timing kernel refuses outright; older timelines carry them as authored data.
 UNSUPPORTED_DECLARATIONS = ("sequence", "sequence_fit", "formulas", "orphan", "gap_after_s")
 SHOT_WORD_ALTERNATIVE = "Use a cut-relative timing declaration such as +0.8s."
+
+
+@dataclass(frozen=True)
+class _ShotWordBinding(WordBinding):
+    """Evidence from the reflow word projection, outside the stable word identity."""
+
+    timeline_line: str = field(compare=False)
+    first_audible: bool = field(compare=False)
 
 
 def unsupported_declaration(declarations: Mapping[str, Any], name: str) -> bool:
@@ -101,6 +110,8 @@ class _ReadLookup(Checkout):
         self.bundle, self.fps = bundle, fps
 
     def _internal(self, shot_id):
+        if not shot_id:
+            return self.bundle["parent"]
         return self.bundle["shots"][shot_id]["internal_timeline"]
 
 
@@ -328,6 +339,10 @@ def evaluate(bundle, sources, bindings, policy, legacy_declarations=(), collect=
     # Reuse main's group membership, picture choice, ordering and cut aliases.
     lookup = _ReadLookup(bundle, fps)
     groups = lookup._cut_groups()
+    pictures = set()
+    if any(isinstance(binding, _ShotWordBinding) and binding.first_audible for binding in bindings):
+        pictures = {(group["picture"].shot_id, group["picture"].id)
+                    for group in lookup._cut_groups(by_occurrence=True) if group["picture"] is not None}
     # The bundle is fixed for this evaluation, so a cut text resolves the same way every time: look each
     # one up once, and group the clips once, instead of regrouping them for every declaration.
     lookup._cut_groups = lambda groups=groups: groups
@@ -415,6 +430,7 @@ def evaluate(bundle, sources, bindings, policy, legacy_declarations=(), collect=
         moment = mo.parse(text)
         dependencies = []
         bound = None
+        line_in_point = None
         if moment.kind == "word":
             alternative = f". {SHOT_WORD_ALTERNATIVE}" if owner[1] else ""
             if moment.n is not None and moment.n < 1:
@@ -425,6 +441,18 @@ def evaluate(bundle, sources, bindings, policy, legacy_declarations=(), collect=
             used.add((owner, field))
             bound = _bound_words(bundle, documents, pin, clips, internals)
             dependencies = [node(pin.source, "start")]
+            if (isinstance(pin, _ShotWordBinding) and field == "on" and owner[1:] in pictures
+                    and pin.first_audible and moment.edge == "start"
+                    and not moment.offset_s and not moment.offset_frames):
+                try:
+                    first = Voice(lookup, pin.timeline_line).clips[0]
+                except TimelineEditError:
+                    pass
+                else:
+                    line_in_point = (by_clip[first.shot_id, first.id] if first.shot_id
+                                     else ("parent", "", first.id))
+                    if line_in_point != pin.source:
+                        dependencies.append(node(line_in_point, "start"))
         elif moment.kind in ("beat", "downbeat"):
             # Main's legacy beat grammar is resolved from the authored numeric
             # grid, not from a generic marker publication.  Depend on every
@@ -480,7 +508,9 @@ def evaluate(bundle, sources, bindings, policy, legacy_declarations=(), collect=
                         raise TimingCompileError("bound word is outside the half-open source clip interval")
                     words.append(SimpleNamespace(text=word["text"], segment=segment, index=index,
                                                  start=start, end=end))
-                if moment.line is not None and any(w.segment != moment.line for w in words):
+                line_ids = ((pin.timeline_line,) if isinstance(pin, _ShotWordBinding)
+                            else tuple(w.segment for w in words))
+                if moment.line is not None and any(line != moment.line for line in line_ids):
                     raise TimingCompileError("bound words do not belong to the declared line")
                 want = [mo._norm(t) for t in moment.text.split() if mo._norm(t)]
                 if len(want) != len(words):
@@ -490,7 +520,12 @@ def evaluate(bundle, sources, bindings, policy, legacy_declarations=(), collect=
                 # Exact IDs already selected the phrase. Resolve its edge directly;
                 # even a bounded text search must not select the anchor again.
                 t = words[-1].end if moment.edge == "end" else words[0].start
-                if (in_point and moment.edge == "start" and words[0].index == 0
+                if line_in_point is not None:
+                    first = clips[line_in_point]
+                    t = (values[node(line_in_point, "start")] - _timing_number(_value(first, "from"))
+                         / _playback_rate(_value(first, "speed", 1)))
+                elif (not isinstance(pin, _ShotWordBinding) and in_point
+                        and moment.edge == "start" and words[0].index == 0
                         and not moment.offset_s and not moment.offset_frames):
                     t = source_start - source_in / speed
                 else:

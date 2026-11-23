@@ -7,6 +7,7 @@ import re
 import pytest
 
 from astrid.core.timeline.authoring_bundle import AuthoringBundleError, _digest
+from astrid.sdk.media_transcript import build_transcript, transcript_document_id
 from astrid.sdk.timeline._common import TimelineEditError
 from astrid.sdk.timeline.commit import bundle_from_document, document_from_bundle
 from astrid.sdk.timeline.validation import validate_final_candidate
@@ -291,3 +292,99 @@ def test_word_ripple_preserves_shot_footage_source_and_duration():
 
     validate_final_candidate(candidate, baseline=baseline)
     assert candidate == expected
+
+
+def test_partial_retained_manifest_reads_the_retained_narration_without_latest():
+    bundle, capture = _canonical_reflow_inputs()
+    # A second managed audio source has no exact transcript in the manifest.
+    # Its presence must not make reflow discard the narration's retained pin.
+    internal = bundle["shots"]["chapter-shot"]["internal_timeline"]
+    internal["registry"]["assets"]["untracked-audio"] = {"media_id": "sha256:" + "c" * 64}
+    internal["clips"].append({"id": "other-voice", "track": "voice", "asset": "untracked-audio",
+                              "clipType": "media", "at": 0, "from": 0, "to": 2})
+    latest = copy.deepcopy(capture["document"])
+    latest["version"] += 1
+    latest["content"]["segments"][0]["words"][-1].update(start=5, end=5.5)
+    checkout = Checkout(bundle)
+    checkout._scene_client = port = _TranscriptPort(capture, latest)
+    checkout._scene_project = bundle["project_id"]
+
+    assert checkout.reflow() == []
+    assert port.reads == [(bundle["project_id"], capture["pin"])]
+
+
+@pytest.mark.parametrize("word", ["stop", "halt"])
+def test_document_id_only_transcript_reference_selects_the_explicit_custom_document(word):
+    baseline = _with_provable_anchor()
+    capture, = baseline["source_mapping"]["pinned_documents"]
+    custom = copy.deepcopy(capture)
+    media = custom["document"]["content"]["media_id"]
+    custom_id = transcript_document_id(baseline["project_id"], media, "custom")
+    content = build_transcript(media, "line", "again again halt",
+                               [[2, 2.5, "again"], [3, 3.5, "again"], [5.5, 6, "halt"]],
+                               source_id="custom")
+    custom["document"].update(document_id=custom_id, content=content)
+    custom["pin"].update(document_id=custom_id, content_digest=_digest(content))
+    baseline["source_mapping"]["pinned_documents"].append(custom)
+    baseline["parent"]["config"]["bundle"]["transcriptReferences"]["associations"] = [{
+        "documentId": custom_id,
+    }]
+    _shot_clips(baseline)[1]["app"]["astrid"]["on"] = f'"{word}"'
+    candidate = copy.deepcopy(baseline)
+    voice, card = _shot_clips(candidate)
+    voice["at"] += 0.5
+    card["at"] += 0.5
+
+    if word == "halt":
+        validate_final_candidate(candidate, baseline=baseline)
+    else:
+        with pytest.raises(AuthoringBundleError, match=re.escape(GUIDANCE)):
+            validate_final_candidate(candidate, baseline=baseline)
+
+
+@pytest.mark.parametrize("anchor_at_word", [False, True])
+def test_word_ripple_on_first_audible_word_of_trimmed_narration_reflows_in_place(monkeypatch, anchor_at_word):
+    baseline = _with_provable_anchor()
+    voice, card = _shot_clips(baseline)
+    voice.update({"from": 5, "at": 4, "app": {"astrid": {"segment": "voice"}}})
+    internal = baseline["shots"]["chapter-shot"]["internal_timeline"]
+    internal["tracks"].append({"id": "plate", "kind": "visual"})
+    # A later literal picture already ends at the placement bound, so reflow
+    # has no unrelated film-length adjustment to make.
+    internal["clips"].append({"id": "last-plate", "track": "plate", "clipType": "text",
+                              "at": 8, "hold": 2})
+    card["track"] = "plate"
+    # The take's in-point precedes its first audible word, which was not the
+    # first word of the untrimmed transcript.
+    card["at"] = 127 / 30 if anchor_at_word else 1.5
+    candidate = copy.deepcopy(baseline)
+    voice, card = _shot_clips(candidate)[:2]
+    voice["at"] += 0.5
+    card["at"] += 0.5
+
+    if anchor_at_word:
+        with pytest.raises(AuthoringBundleError, match=re.escape(GUIDANCE)):
+            validate_final_candidate(candidate, baseline=baseline)
+        return
+    validate_final_candidate(candidate, baseline=baseline)
+
+    document = candidate["source_mapping"]["pinned_documents"][0]["document"]
+    content = document["content"]
+    monkeypatch.setattr(Checkout, "_stored_transcripts", lambda self: {
+        content["media_id"]: {content["source_id"]: document},
+    })
+    checkout = Checkout(copy.deepcopy(candidate))
+    assert checkout.reflow() == []
+
+
+def test_line_qualified_ripple_accepts_timeline_line_id_distinct_from_segment_id():
+    baseline = _with_provable_anchor()
+    _, card = _shot_clips(baseline)
+    card["app"]["astrid"]["on"] = '"stop" in voice'
+    # The fixture already has transcript segment id "line" and timeline id "voice".
+    candidate = copy.deepcopy(baseline)
+    voice, card = _shot_clips(candidate)
+    voice["at"] += 0.5
+    card["at"] += 0.5
+
+    validate_final_candidate(candidate, baseline=baseline)
