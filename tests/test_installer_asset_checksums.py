@@ -168,3 +168,49 @@ def test_multi_archive_manifest_preserves_digest_order():
     pins = manifest(value)
     assert tools.validate_manifest(pins) is pins
     assert tools.asset_downloads(value) == list(zip(value["urls"], value["sha256"]))
+
+
+MOTION_PACK_PIN = {
+    "repo": "https://github.com/banodoco/poms_packs",
+    "commit": "2379ab54aca522019ff4f869cfdf9375bdb56dfc",
+    "digest_rule": "pack-tree-v1",
+    "digest": "75234c10217e67ec0f111a4cb6be4a6252e172a9cd382506498d07ce1d241029",
+}
+
+
+def _manifest_with_pack_pins(packs):
+    value, _ = asset()
+    pins = manifest(value)
+    pins["packs"] = packs
+    return pins
+
+
+def test_manifest_accepts_the_approved_astrid_motion_pack_pin():
+    pins = _manifest_with_pack_pins({"astrid_motion": MOTION_PACK_PIN.copy()})
+    assert tools.validate_manifest(pins) is pins
+
+
+@pytest.mark.parametrize("changes", [
+    {"commit": "2379ab54"},
+    {"digest_rule": "sha256"},
+    {"digest": None},
+])
+def test_manifest_rejects_invalid_astrid_motion_pack_pin(changes):
+    pin = MOTION_PACK_PIN.copy()
+    pin.update(changes)
+    if changes == {"digest": None}:
+        del pin["digest"]
+    with pytest.raises(ValueError, match="pack|manifest|commit|digest"):
+        tools.validate_manifest(_manifest_with_pack_pins({"astrid_motion": pin}))
+
+
+@pytest.mark.parametrize("second_pin", [
+    {**MOTION_PACK_PIN, "repo": "https://github.com/another/packs"},
+    {**MOTION_PACK_PIN, "commit": "b" * 40},
+])
+def test_manifest_rejects_default_packs_from_different_repository_or_commit(second_pin):
+    with pytest.raises(ValueError, match="pack|manifest|repository|commit"):
+        tools.validate_manifest(_manifest_with_pack_pins({
+            "astrid_motion": MOTION_PACK_PIN.copy(),
+            "another_default": second_pin,
+        }))

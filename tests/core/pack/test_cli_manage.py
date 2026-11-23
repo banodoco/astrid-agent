@@ -118,7 +118,25 @@ def test_packs_add_with_a_pending_host_refresh_prints_the_one_availability_line(
     captured = capsys.readouterr()
     assert "refresh" not in seen  # one registrar: the host acknowledges at its next start
     lines = captured.out.splitlines()
-    assert lines[-1] == "The pack is available after the host's next start."
+    assert lines[-1] == "The pack is installed. Host refresh is pending."
     assert lines.count(lines[-1]) == 1
     assert "Refresh acknowledgment" not in captured.out + captured.err
     assert "retry the committed transaction refresh" not in captured.out + captured.err
+
+
+def test_pending_pack_add_reports_only_the_known_transaction_state(tmp_path, monkeypatch, capsys):
+    import argparse
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(cli_manage, "_build_inputs", lambda *a, **k: ({}, None))
+    monkeypatch.setattr(cli_manage, "_validation_snapshot", lambda: ({}, {}))
+    monkeypatch.setattr(cli_manage, "_core_root", lambda: tmp_path)
+    monkeypatch.setattr(cli_manage, "_composition_roots", lambda *a, **k: ())
+    monkeypatch.setattr(cli_manage, "install_group", lambda **kwargs: SimpleNamespace(
+        paths={"demo": tmp_path / "packs" / "demo"}, transaction_id="tx", refresh_pending=True))
+    args = argparse.Namespace(pack_id="demo", subpath="demo", source=str(tmp_path / "src"),
+                              revision="a" * 40, packs_root=None, toolchain=None, yes=True)
+
+    assert cli_manage._handle_add(args) == 0
+    assert capsys.readouterr().out.splitlines()[-1] == "The pack is installed. Host refresh is pending."

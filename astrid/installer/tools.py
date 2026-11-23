@@ -104,9 +104,31 @@ def validate_manifest(value: dict) -> dict:
     omp_source(value["tools"]["omp"])
     if value["tools"]["node"]["version"] != "20.19.4":
         raise ValueError("Remotion requires Node 20.19.4.")
+    validate_default_packs(value.get("packs", {}))
     if "pack_build" in value:
         validate_pack_build(value["pack_build"])
     return value
+
+
+def validate_default_packs(packs: object) -> None:
+    """Check default pins without importing the staged Agent's dependencies."""
+    if not isinstance(packs, dict):
+        raise ValueError("Release manifest packs must be a mapping.")
+    repositories, revisions = set(), set()
+    for pack_id, pin in packs.items():
+        if (not isinstance(pack_id, str) or not re.fullmatch(r"[a-z][a-z0-9_]*", pack_id)
+                or not isinstance(pin, dict) or set(pin) != {"repo", "commit", "digest_rule", "digest"}):
+            raise ValueError("Invalid default pack pin.")
+        repo, commit, digest = pin["repo"], pin["commit"], pin["digest"]
+        if (not isinstance(repo, str) or not repo.strip()
+                or not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit)
+                or pin["digest_rule"] != "pack-tree-v1"
+                or not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest)):
+            raise ValueError("Default packs require a repository, full commit, pack-tree-v1 rule and digest.")
+        repositories.add(repo.strip())
+        revisions.add(commit)
+    if len(repositories) > 1 or len(revisions) > 1:
+        raise ValueError("Default packs must share one repository and commit.")
 
 
 def validate_pack_build(spec: object) -> dict:
