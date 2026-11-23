@@ -1619,16 +1619,6 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         stage_runtime_launcher(version)
         return version
 
-    def install_defaults(self, version: Version, manifest: dict) -> None:
-        """Publish defaults with the candidate's Agent and installed dependencies."""
-        try:
-            self.run([version.python, "-X", "utf8", "-I", "-m",
-                      "astrid.installer.default_packs", version.root / "manifest.json"],
-                     extra_env=version.env)
-        except subprocess.CalledProcessError as exc:
-            detail = (exc.output or "Default pack publication failed.").strip()
-            raise RuntimeError(detail) from exc
-
     def validate_candidate(self, version: Version, data: Path, realm: dict) -> None:
         """Admit the staged package against the live workspace without changing it."""
         from .core import inspect_schema

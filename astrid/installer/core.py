@@ -856,8 +856,6 @@ class Installer:
         try:
             with self._phase(f"Downloading {new}"):
                 candidate_version = self.backend.stage(manifest, self.root, self.data)
-            if manifest.get("packs") and not reinstall:
-                self.backend.install_defaults(candidate_version, manifest)
             if reinstall:
                 with self._phase("Opening your workspace"):
                     realm = self.backend.attach_existing(candidate_version, self.data)
