@@ -29,7 +29,7 @@ _client = None
 # the project itself is already the host-fixed projectDir and is not repeated here.
 _ADMITTED_RENDER_ENVIRONMENT = frozenset({
     "TMPDIR", "TMP", "TEMP", "ASTRID_TIMELINE_COMPOSITION_SRC", "PYTHONPATH",
-    "ASTRID_RENDER_PACK_ROOTS",
+    "ASTRID_RENDER_PACK_ROOTS", "ASTRID_RENDER_REGISTRY_ROOT",
 })
 
 
@@ -111,7 +111,7 @@ class HostRemotionSession:
         self._stdout_reader = self._stderr_reader = self._stdin_writer = None
         self._idle_seconds = 45.0
 
-    def lease(self, environment, *, attempt, requested_idle=None):
+    def lease(self, environment, *, attempt, requested_idle=None, source=None):
         with self._lock:
             if self._closed:
                 raise RuntimeError("host Remotion owner is closed")
@@ -136,7 +136,14 @@ class HostRemotionSession:
             lease_environment = dict(environment)
             if "HOME" not in lease_environment and "USERPROFILE" in lease_environment:
                 lease_environment["HOME"] = lease_environment["USERPROFILE"]
-            lease = _HostLease(self, project, node, cli, lease_environment, attempt)
+            from .remotion_host_project import prepare_project_selection
+            selection = prepare_project_selection(project, attempt, lease_environment, source)
+            try:
+                lease = _HostLease(self, project, node, cli, lease_environment, attempt, selection)
+            except BaseException:
+                if selection is not None:
+                    selection["temporary"].cleanup()
+                raise
             # A new task cancels any pending idle expiry of the warm child.
             lease.hold = self._holds.lease(self, stop=self._expire, lock=self._lock)
             self._leases.add(lease)
@@ -291,6 +298,11 @@ class HostRemotionSession:
             raise ValueError("renderer composition source differs from admitted project")
         if "PYTHONPATH" in environment and environment["PYTHONPATH"] != lease.environment.get("ASTRID_TIMELINE_SCHEMA_PYTHONPATH"):
             raise ValueError("renderer schema environment differs from admission")
+        project_selection = lease.project_selection
+        if "ASTRID_RENDER_REGISTRY_ROOT" in environment and project_selection is None:
+            raise ValueError("renderer request environment is outside admitted projection: native/inline or "
+                             "unanchored command project source lacks digest-bound handoff authority; "
+                             "render through the command worker with an admitted revision")
         if "ASTRID_RENDER_PACK_ROOTS" in environment:
             from astrid.core.rendering.remotion_runtime import _validated_runtime
 
@@ -300,9 +312,52 @@ class HostRemotionSession:
                 selected = binding["renderer"]["observation"]["render_pack_roots"]
             except (ValueError, TypeError, KeyError) as error:
                 raise ValueError("renderer selected pack roots are unavailable") from error
-            if (binding.get("mode") != "source_settled" or not isinstance(selected, list)
+            if project_selection is not None:
+                project_selection["source"].validate(project_selection["timeline"], project_selection["assets"])
+                expected = project_selection["roots"]
+                staged = {row["scope"]: Path(row["root"]) for row in project_selection["staged"]}
+                if not isinstance(requested, list) or len(requested) != len(expected):
+                    raise ValueError("renderer project roots differ from host selection")
+                normalized = []
+                for row in requested:
+                    if not isinstance(row, dict) or not isinstance(row.get("scope"), str):
+                        raise ValueError("renderer project roots differ from host selection")
+                    if row["scope"] not in staged:
+                        normalized.append(row)
+                        continue
+                    root = self._inside(row.get("root", ""), lease.attempt)
+                    owned_root = staged[row["scope"]]
+                    if (root.name != owned_root.name or root.parent.name != owned_root.parent.name
+                            or not root.parent.parent.name.startswith(".project-elements-")):
+                        raise ValueError("renderer project roots differ from host selection")
+                    from .remotion_host_project import same_staged_tree
+                    if not same_staged_tree(root, owned_root):
+                        raise ValueError("renderer staged project bytes differ from host selection")
+                    normalized_row = dict(row, root=str(owned_root))
+                    kinds = row.get("kind_roots")
+                    if not isinstance(kinds, dict):
+                        raise ValueError("renderer project roots differ from host selection")
+                    normalized_row["kind_roots"] = {
+                        kind: str(owned_root / self._inside(path, root).relative_to(root))
+                        for kind, path in kinds.items()
+                    }
+                    normalized.append(normalized_row)
+                order = lambda row: json.dumps(row, sort_keys=True, separators=(",", ":"))
+                if (sorted(normalized, key=order) != sorted(expected, key=order)
+                        or "ASTRID_RENDER_REGISTRY_ROOT" not in environment):
+                    raise ValueError("renderer project roots differ from host selection")
+                registry_path = self._inside(environment["ASTRID_RENDER_REGISTRY_ROOT"], lease.attempt)
+                if registry_path.name != "host" or not registry_path.parent.name.startswith(".project-elements-"):
+                    raise ValueError("renderer project registry differs from host selection")
+                # The child can describe its staging, but only host-created
+                # roots and registries are ever forwarded to the renderer.
+                environment["ASTRID_RENDER_PACK_ROOTS"] = json.dumps(expected)
+                environment["ASTRID_RENDER_REGISTRY_ROOT"] = project_selection["registry_root"]
+            elif (binding.get("mode") != "source_settled" or not isinstance(selected, list)
                     or not isinstance(requested, list) or requested != selected):
                 raise ValueError("renderer pack roots differ from launch validation")
+        elif project_selection is not None or "ASTRID_RENDER_REGISTRY_ROOT" in environment:
+            raise ValueError("renderer project roots are required for the admitted command source")
 
     def request(self, lease, frame):
         with self._lock:
@@ -332,6 +387,9 @@ class HostRemotionSession:
     def release(self, lease):
         with self._lock:
             self._leases.discard(lease)
+            if lease.project_selection is not None:
+                lease.project_selection["temporary"].cleanup()
+                lease.project_selection = None
             if lease.hold is not None:
                 # After the last lease the host's warm hold arms one idle
                 # deadline; an uncertain or absent child is not kept warm.
@@ -405,9 +463,10 @@ class HostRemotionSession:
 
 
 class _HostLease:
-    def __init__(self, owner, project, node, cli, environment, attempt):
+    def __init__(self, owner, project, node, cli, environment, attempt, project_selection=None):
         self.owner, self.project, self.node, self.cli, self.environment = owner, project, node, cli, environment
         self.attempt = attempt
+        self.project_selection = project_selection
         self.hold = None
         self.input_identities = {p: _file_identity(p) for p in (node, cli, project / "src/astrid-frame-worker.mjs")}
         project_stat = project.stat()
