@@ -1212,6 +1212,41 @@ def _workflow_description(entry: Mapping[str, Any]) -> dict[str, Any]:
     return {'id': entry.get('id'), 'engine': 'comfyui'}
 
 
+def _deferred_missing_node_classes(workflow: Any) -> list[str]:
+    """Missing pack evidence for a placement whose live inventory is not available.
+
+    The import report is request-scoped; saved canonical entries also retain
+    ingest's missing_nodes. Only active classes without a known or explicitly
+    pinned provider are unresolved. Known/pinned providers remain subject to
+    the owning host's install, consent and live object_info checks.
+    """
+    from vibecomfy.node_packs import unresolved_class_types
+
+    report = getattr(workflow, '_astrid_import_report', None) or {}
+    requirements = getattr(workflow, 'requirements', None)
+    missing = {name for name in getattr(requirements, 'missing_nodes', ()) if isinstance(name, str)}
+    for diagnostic in report.get('diagnostics', ()):
+        if (isinstance(diagnostic, Mapping)
+                and diagnostic.get('code') in {'unresolved_runtime_class', 'unknown_class_type'}
+                and isinstance(diagnostic.get('class_type'), str)):
+            missing.add(diagnostic['class_type'])
+    missing.intersection_update(node.class_type for node in workflow.runtime_nodes().values())
+    if not missing:
+        return []
+    # Existing canonical imports can carry stale missing_nodes. A schema now
+    # known to the authoring provider is not evidence of a missing pack.
+    provider = _schema_provider()
+    missing = {name for name in missing if provider.get_schema(name) is None}
+    if not missing:
+        return []
+    import re
+    declared = {name for ref in getattr(requirements, 'typed_custom_node_refs', ())
+                if ref.source == 'git' and ref.url and isinstance(ref.commit, str)
+                and re.fullmatch(r'[0-9a-fA-F]{40}', ref.commit)
+                for name in ref.classes}
+    return unresolved_class_types(missing - declared)
+
+
 def target_schema(entry: dict[str, Any], workflow: Any, client: Any, *, engine: str | None = None,
                   pending_target: Mapping[str, Any] | None = None, align: str = 'check'):
     """Check the selected target's node and exact loader inventory.
@@ -1222,25 +1257,33 @@ def target_schema(entry: dict[str, Any], workflow: Any, client: Any, *, engine: 
     for need in entry.get("needs", []):
         if need.get("ambiguity"):
             raise ValueError(f"entry requires review: {need['ambiguity']}")
-    if client is None:
-        return None
     from types import SimpleNamespace
 
     from astrid.core.generation.backends.comfy_schema import TargetSchemaProvider
     from astrid.core.generation.backends.comfy_target import _resolve_roles
-    observed = client.object_info()
-    if not isinstance(observed, dict):
-        raise ValueError("target model inventory is malformed")
-    if align == 'trust':
-        from .target_inventory import trust_declared_loader_choices
-        observed = trust_declared_loader_choices(observed, workflow)
     from astrid.core.generation.preflight import GenerationReadinessError, readiness_envelope
+
+    if client is None:
+        missing_classes = _deferred_missing_node_classes(workflow)
+        observed = {}
+    else:
+        observed = client.object_info()
+        if not isinstance(observed, dict):
+            raise ValueError("target model inventory is malformed")
+        if align == 'trust':
+            from .target_inventory import trust_declared_loader_choices
+            observed = trust_declared_loader_choices(observed, workflow)
+        missing_classes = sorted({node.class_type for node in workflow.runtime_nodes().values()} - observed.keys())
+
     issues = []
-    for class_type in sorted({node.class_type for node in workflow.runtime_nodes().values()} - observed.keys()):
+    for class_type in missing_classes:
+        message = (f'target is missing node {class_type!r}; '
+                   'install it on the requested ComfyUI target, '
+                   'or choose a target that provides it.') if client is not None else (
+                   f'no known providing pack for workflow node {class_type!r}; '
+                   'identify the providing pack before preparing the requested target.')
         issues.append({'code': 'missing_node_pack', 'severity': 'error',
-                       'message': (f'target is missing node {class_type!r}; '
-                                   'install it on the requested ComfyUI target, '
-                                   'or choose a target that provides it.'),
+                       'message': message,
                        'details': {'engine_code': 'comfyui.missing_node', 'node': class_type, 'bytes': None}})
     roles = {}
     needs_by_key = {}
@@ -1251,7 +1294,8 @@ def target_schema(entry: dict[str, Any], workflow: Any, client: Any, *, engine: 
         key = str(index)
         roles[key] = SimpleNamespace(node_class=node_class, input=field, names=(value,))
         needs_by_key[key] = need
-    _, failures = _resolve_roles(SimpleNamespace(model_roles=roles), observed)
+    _, failures = (_resolve_roles(SimpleNamespace(model_roles=roles), observed)
+                   if client is not None else ({}, {}))
     for key in failures:
         need = needs_by_key[key]
         if need['class_type'] not in observed:
@@ -1261,13 +1305,23 @@ def target_schema(entry: dict[str, Any], workflow: Any, client: Any, *, engine: 
                        'details': {'engine_code': 'comfyui.models_missing', 'model': need['value'],
                                    'node': need['class_type'], 'field': need['field'], 'bytes': need.get('bytes')}})
     if issues:
-        from .asset_gaps import align_argv
+        if client is None:
+            target = pending_target or {'engine': engine or 'comfyui', 'placement': 'local',
+                                        'state': 'pending_host_readiness'}
+            fixes = [{'argv': ['vibecomfy', 'nodes', 'lookup', '--', name], 'scope': 'read_only',
+                      'details': {'action': 'Identify the providing pack before declaring its pinned source.'}}
+                     for name in missing_classes]
+        else:
+            from .asset_gaps import align_argv
+            target = getattr(client, 'generation_target', None)
+            fixes = [{'argv': align_argv(entry.get('registry_id') or entry.get('id')),
+                      'scope': 'user_env', 'details': {'action': 'Install missing locked assets; unlocked assets require a manifest.'}}]
         raise GenerationReadinessError(readiness_envelope(entry={
             **_workflow_description(entry),
             'inputs': input_inventory(_workflow_inputs(entry, entry.get('mode', 'workflow'), workflow=workflow))},
-            target=getattr(client, 'generation_target', None), issues=issues,
-            fixes=[{'argv': align_argv(entry.get('registry_id') or entry.get('id')),
-                    'scope': 'user_env', 'details': {'action': 'Install missing locked assets; unlocked assets require a manifest.'}}]))
+            target=target, issues=issues, fixes=fixes))
+    if client is None:
+        return None
     custody = {}
     if align != 'trust' and client.target.kind == "managed" and client.target.facts.get("model_root") is not None:
         from .model_root import validate_model_root_binding

@@ -342,11 +342,19 @@ def _canonicalize_ui_workflow(
         from vibecomfy.security.provenance import Provenance
         from vibecomfy.workflow_bundle import load_bundle
 
-        return load_bundle(python_path, trust=Provenance.USER_CONFIRMED), schema_digest, seed_controls
+        bundle = load_bundle(python_path, trust=Provenance.USER_CONFIRMED)
     except Exception as exc:
         raise ProductionEngineError(
             f"VibeComfy canonical UI workflow bundle could not be loaded: {exc}"
         ) from exc
+    # The report is observation, not a second graph authority. Retain it on
+    # this in-memory workflow for controller readiness and later lookup; do
+    # not change the sealed bundle's metadata, provenance or revision.
+    report = artifacts.report
+    if not isinstance(report, Mapping) or not isinstance(report.get("diagnostics"), list):
+        raise ProductionEngineError("VibeComfy import did not report diagnostics")
+    bundle.workflow._astrid_import_report = report
+    return bundle, schema_digest, seed_controls
 
 
 def load_workflow_path(

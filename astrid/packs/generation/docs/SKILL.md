@@ -253,7 +253,12 @@ workflow. Other binding ambiguities and missing assets still need resolution.
 
 ### WS-0g — Missing classes on every placement
 
-<!-- WS-0g: fill this subsection in the same change as the card. -->
+A dry run checks missing node classes on every placement. A live target's
+`object_info` determines what is actually loaded there; a managed or rented
+target with deferred host readiness refuses unresolved providers before any
+machine is claimed. A `missing_node_pack` issue names the missing class;
+identify its providing pack before declaring a pinned source. A catalog or
+bundle declaration is not proof the host has installed or loaded the pack.
 
 ### WS-7a — Node recipe declarations
 
