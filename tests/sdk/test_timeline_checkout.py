@@ -692,6 +692,33 @@ def test_swap_asset_refuses_to_rebind_a_key_used_by_another_clip():
     assert tl.bundle == before
 
 
+@pytest.mark.parametrize("as_ref", [False, True])
+def test_swap_asset_preserves_shared_binding_even_when_media_id_matches(monkeypatch, as_ref):
+    from astrid.sdk.timeline import edits
+
+    data = bundle()
+    shot = data["shots"]["A"]["internal_timeline"]
+    shot["clips"].append({"id": "second", "clipType": "am-sprite", "track": "sprite",
+                          "asset": "R", "at": 2, "hold": 1, "params": {}})
+    entry = {"media_id": "m-r", "content_sha256": "m-r", "type": "image/png",
+             "generationId": "old", "source": "run:old/sprites#0"}
+    shot["registry"]["assets"]["R"] = copy.deepcopy(entry)
+    tl = Checkout(data)
+    before = copy.deepcopy(tl.bundle)
+    changed = {**entry, "generationId": "new"}
+    monkeypatch.setattr(edits._store, "resolve_handle_entry", lambda *_: changed)
+    asset = {"key": "R", "ref": "run:old/sprites#0"} if as_ref else {"key": "R", **changed}
+
+    with pytest.raises(TimelineEditError, match="another clip.*replace_asset"):
+        tl.clip("a-rocket").swap_asset(asset)
+    assert tl.bundle == before
+
+    monkeypatch.setattr(edits._store, "resolve_handle_entry", lambda *_: copy.deepcopy(entry))
+    same = {"key": "R", "ref": "run:old/sprites#0"} if as_ref else {"key": "R", **entry}
+    tl.clip("a-rocket").swap_asset(same)
+    assert tl.bundle == before
+
+
 def test_swap_asset_can_name_the_asset_it_brings_in(monkeypatch):
     """A handle's asset was always keyed by its file name (sprite-00, sprite-00-2 in the sheet);
     KEY=HANDLE (CLI) or {"key", "ref"} (Python) gives it a readable key instead."""
