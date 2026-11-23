@@ -125,6 +125,19 @@ def test_yaml_fallback_accepts_legacy_and_empty_but_rejects_flow_and_malformed(
     assert quoted.returncode == 0, quoted.stderr
     assert json.loads(quoted.stdout)["@pack-probe-elements-effects"] == str(effects)
 
+    (effects / "probe %!& markers").mkdir()
+    (effects / "probe %!& markers" / "element.yaml").write_text("id: markers\n", encoding="utf-8")
+    manifest.write_text(
+        "id: probe\nmetadata:\n  rendering:\n    ignored: value\n"
+        "description: |\n  literal rendering: text\nrendering:\n"
+        "  effects/probe %!& markers:\n    type: element\n"
+        "    path: rendering/effects/probe %!& markers/element.yaml\n",
+        encoding="utf-8",
+    )
+    nested_and_scalar = run()
+    assert nested_and_scalar.returncode == 0, nested_and_scalar.stderr
+    assert json.loads(nested_and_scalar.stdout)["@pack-probe-elements-effects"] == str(effects)
+
     manifest.write_text("schema_version: 3\nid: probe\nrendering: {}\n", encoding="utf-8")
     empty = run()
     assert empty.returncode == 0, empty.stderr
@@ -155,6 +168,146 @@ def test_yaml_fallback_accepts_legacy_and_empty_but_rejects_flow_and_malformed(
         result = run()
         assert result.returncode != 0
         assert str(manifest) in result.stderr and "unsupported YAML" in result.stderr
+
+    for unsupported, expected in (
+        ("? rendering\nid: probe\n", "root key"),
+        ('"rendering":\n  effects/probe:\n    type: element\n    path: x\n', "rendering declaration"),
+        ("id: probe\nrendering:\n", "empty rendering block"),
+        ("id: probe\nrendering:\n  effects/probe:\n    type:element\n    path: x\n", "rendering field"),
+        ("id: probe\nrendering:\n  effects/probe:\n    type: element\n    path:x\n", "rendering field"),
+        ('{"id":"probe","rendering":{},"rendering":{}}\n', "duplicate JSON key"),
+    ):
+        manifest.write_text(unsupported, encoding="utf-8")
+        result = run()
+        assert result.returncode != 0
+        assert str(manifest) in result.stderr and expected in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("filename", "manifest_text", "expected_alias", "expected_error"),
+    [
+        (
+            "pack.yaml",
+            "id: probe\nrendering:\n  effects/probe:\n    type: element\n"
+            "    path: rendering/effects/probe/element.yaml\n",
+            True,
+            None,
+        ),
+        (
+            "pack.json",
+            '{"id":"probe","rendering":{"effects/probe":{"type":"element",'
+            '"path":"rendering/effects/probe/element.yaml"}}}\n',
+            True,
+            None,
+        ),
+        ("pack.yaml", "id: probe\nrendering: {}\n", False, None),
+        (
+            "pack.yaml",
+            "id: probe\nmetadata:\n  rendering:\n    ignored: true\n"
+            "description: |\n  literal rendering: text\nrendering:\n"
+            "  effects/probe:\n    type: element\n"
+            "    path: rendering/effects/probe/element.yaml\n",
+            True,
+            None,
+        ),
+        (
+            "pack.yaml",
+            "id: probe\nrendering:\n  effects/probe %!&:\n    type: element\n"
+            "    path: rendering/effects/probe %!&/element.yaml\n",
+            True,
+            None,
+        ),
+        ("pack.yaml", "? rendering\nid: probe\n", False, "root key"),
+        (
+            "pack.yaml",
+            '"rendering":\n  effects/probe:\n    type: element\n    path: x\n',
+            False,
+            "rendering declaration",
+        ),
+        ("pack.yaml", "id: probe\nrendering:bad\n", False, "rendering separator"),
+        ("pack.yaml", "id: probe\nrendering:\n", False, "empty rendering block"),
+        (
+            "pack.yaml",
+            "id: probe\nrendering: {effects/probe: {type: element}}\n",
+            False,
+            "rendering flow",
+        ),
+        (
+            "pack.yaml",
+            "id: probe\nrendering:\n  effects/probe:\n    type: !tag element\n    path: x\n",
+            False,
+            "alias or tag",
+        ),
+        (
+            "pack.yaml",
+            "id: probe\nrendering:\n  effects/probe:\n    type:element\n    path:x\n",
+            False,
+            "rendering field",
+        ),
+        (
+            "pack.json",
+            '{"id":"probe","rendering":{},"rendering":{}}\n',
+            False,
+            "duplicate JSON key",
+        ),
+        (
+            "pack.yaml",
+            "id: probe\nrendering:\n  effects/probe:\n    type: element\n"
+            "    path: x\n  effects/probe:\n    type: element\n    path: y\n",
+            False,
+            "duplicate rendering entry",
+        ),
+        ("pack.yaml", "id: probe\nunexpected root scalar\n", False, "document line form"),
+        ("pack.yaml", "  id: probe\n", False, "root indentation"),
+    ],
+)
+def test_source_only_yaml_parser_whitelist(
+    tmp_path: Path,
+    filename: str,
+    manifest_text: str,
+    expected_alias: bool,
+    expected_error: str | None,
+) -> None:
+    isolated_remotion = tmp_path / "isolated-remotion"
+    isolated_remotion.mkdir()
+    shutil.copy2(MODULE, isolated_remotion / MODULE.name)
+    assert not (isolated_remotion / "node_modules").exists()
+
+    pack = tmp_path / "external-pack"
+    effects = pack / "rendering" / "effects"
+    (effects / "probe").mkdir(parents=True)
+    (effects / "probe" / "element.yaml").write_text("id: probe-effect\n", encoding="utf-8")
+    manifest = pack / filename
+    manifest.write_text(manifest_text, encoding="utf-8")
+    node = shutil.which(os.environ.get("ASTRID_NODE_EXECUTABLE") or "node")
+    assert node, "pinned Node executable unavailable (set ASTRID_NODE_EXECUTABLE)"
+    script = """
+    import {pathToFileURL} from 'node:url';
+    const mod = await import(pathToFileURL(process.argv[1]).href);
+    console.log(JSON.stringify(mod.packElementAliases({
+      astridDir: process.argv[2], env: {ASTRID_PACKS_PATH: process.argv[3]},
+    })));
+    """
+    result = subprocess.run(
+        [node, "--no-global-search-paths", "--input-type=module", "-e", script,
+         str(isolated_remotion / MODULE.name), str(tmp_path), str(pack)],
+        cwd=isolated_remotion,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={"PATH": os.defpath, **({"SystemRoot": os.environ["SystemRoot"]} if "SystemRoot" in os.environ else {})},
+    )
+    if expected_error is not None:
+        assert result.returncode != 0
+        assert str(manifest) in result.stderr and expected_error in result.stderr
+        return
+    assert result.returncode == 0, result.stderr
+    aliases = json.loads(result.stdout)
+    if expected_alias:
+        assert aliases["@pack-probe-elements-effects"] == str(effects)
+    else:
+        assert aliases == {}
 
 
 @pytest.mark.remotion
@@ -203,6 +356,12 @@ def test_installed_yaml_parser_accepts_flow_and_rejects_malformed(tmp_path: Path
     assert malformed.returncode != 0
     assert str(manifest) in malformed.stderr
     assert "invalid YAML form" in malformed.stderr
+
+    manifest.write_text('{"id":"probe","rendering":{},"rendering":{}}\n', encoding="utf-8")
+    duplicate = run()
+    assert duplicate.returncode != 0
+    assert str(manifest) in duplicate.stderr
+    assert "invalid YAML form" in duplicate.stderr
 
 
 @pytest.mark.remotion
@@ -254,6 +413,50 @@ def test_explicit_project_binding_resolves_yaml_parser_from_project(tmp_path: Pa
     assert result.returncode == 0, result.stderr
     aliases = json.loads(result.stdout)
     assert aliases["@pack-probe-elements-effects"] == str(effects)
+
+
+@pytest.mark.remotion
+def test_explicit_project_without_parser_does_not_use_module_source_parser(tmp_path: Path) -> None:
+    explicit_project = tmp_path / "explicit-project"
+    explicit_project.mkdir()
+    assert not (explicit_project / "node_modules").exists()
+
+    pack = tmp_path / "external-pack"
+    effects = pack / "rendering" / "effects"
+    (effects / "probe").mkdir(parents=True)
+    (effects / "probe" / "element.yaml").write_text("id: probe-effect\n", encoding="utf-8")
+    manifest = pack / "pack.yaml"
+    manifest.write_text(
+        '{schema_version: 3, id: probe, rendering: '
+        '{"effects/probe": {type: element, path: "rendering/effects/probe/element.yaml"}}}\n',
+        encoding="utf-8",
+    )
+
+    node = shutil.which(os.environ.get("ASTRID_NODE_EXECUTABLE") or "node")
+    assert node, "pinned Node executable unavailable (set ASTRID_NODE_EXECUTABLE)"
+    script = """
+    import {pathToFileURL} from 'node:url';
+    const mod = await import(pathToFileURL(process.argv[1]).href);
+    const config = mod.remotionPrimitiveAliasesFor(process.argv[2])({});
+    console.log(JSON.stringify(config.resolve.alias));
+    """
+    result = subprocess.run(
+        [node, "--no-global-search-paths", "--input-type=module", "-e", script,
+         str(MODULE), str(explicit_project)],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={
+            "PATH": os.defpath,
+            "ASTRID_PACKS_PATH": str(pack),
+            **({"SystemRoot": os.environ["SystemRoot"]} if "SystemRoot" in os.environ else {}),
+        },
+    )
+    assert result.returncode != 0
+    assert str(manifest) in result.stderr
+    assert "unsupported YAML" in result.stderr and "flow" in result.stderr
 
 
 def test_declared_public_resource_resolution_is_contained_and_nonrecursive() -> None:
