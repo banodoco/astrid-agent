@@ -671,13 +671,15 @@ def _dispatch_product_inner(args: list[str], *, output_stream: Any = None) -> in
 
         if not isinstance(exc, ServiceUnavailableError):
             raise
+        import sys
+
         from astrid.core.cli.domain_output import print_result
         from astrid.sdk.contracts import DomainResult
 
         return print_result(
             DomainResult.failure(exc.to_error_object()),
             as_json="--json" in rest,
-            stream=output_stream if "--json" in rest else None,
+            stream=(output_stream if output_stream is not None else sys.stdout) if "--json" in rest else None,
         )
 
 
