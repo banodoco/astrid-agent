@@ -94,7 +94,7 @@
     "astrid/packs/rendering/ui/transcript/extension.tsx": "sha256:870ef0dadec02b41246161fdd74653756a26fc5d53c4458d7221af67202bee1e",
     "astrid/packs/rendering/ui/video-editor/entry.json": "sha256:ae53de8e3eb3b8fe6157a18f7bdaabda7d0f6886a120f45482e05c982a6523b0",
     "astrid/tools/catalog.json": "sha256:3738e4aaa4e522636a7c4c99820c73f7beb789643efc497276e8fd73f4824ba5",
-    "cli-surface.json": "sha256:48dfa04353660e7f60d2c54c9e3288ea100d1216c60ebe264dc9804c98984535",
+    "cli-surface.json": "sha256:0251204d685d57324b16ae9e3a84f06558b049b78f403059d1ba0b02a358377c",
     "remotion/public/fonts/DepartureMono-Regular.woff2": "sha256:5b4fed1daa90708aa9c6ee1190abca9dc22164a1c1def0020386e46b61038cfb",
     "remotion/public/fonts/FONT_PROVENANCE.md": "sha256:f67cf424fcb63d4fc17e5cef0e4dbeea837aae1eb3f1eb1e081170c5822e2eec",
     "remotion/public/fonts/Gelasio-Bold.woff2": "sha256:2fdaa469d51ef618d648e27819f10a1df08721ed2331614c3123850162cc147a",
@@ -116,5 +116,5 @@
     "schemas/public-boundary/fixtures/redaction.json": "sha256:d827821a8b1c1bd9b50fa695550deeb770175e283b9949635d1c85ee03bece46"
   },
   "producer": "astrid-agent",
-  "version": "sha256:4a5e0d94064f37d4e09e53dd427110711c555c09384ceac88566016251919030"
+  "version": "sha256:51f4f0ca6238a98dd3503c89bf90ca524c9d5b5e4425542e84ba1ec49e045c2f"
 }

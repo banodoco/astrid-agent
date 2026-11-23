@@ -451,67 +451,6 @@ def _configure_relate(subparser: argparse.ArgumentParser) -> None:
     subparser.set_defaults(handler=_cmd_relate)
 
 
-def _cmd_silent_video(parsed: argparse.Namespace) -> int:
-    from astrid.core.media_silent import parse_size, silent_video
-
-    size = None
-    if parsed.size is not None:
-        try:
-            size = parse_size(parsed.size)
-        except ValueError as exc:
-            print(f"error: {exc}", file=sys.stderr)
-            return 2
-    result = silent_video(
-        parsed.client,
-        project=parsed.project,
-        ref=parsed.ref,
-        duration=parsed.duration,
-        fps=parsed.fps,
-        size=size,
-        sample_rate=parsed.sample_rate,
-        dry_run=parsed.dry_run,
-        idempotency_key=parsed.idempotency_key,
-    )
-    return print_result(result, as_json=parsed.json)
-
-
-def _configure_silent_video(subparser: argparse.ArgumentParser) -> None:
-    subparser.description = (
-        "Make a short video with a silent audio track from one managed still image, "
-        "into a NEW media item. Use it as the source of a source-backed edit so a "
-        "model animates a listener without inventing speech. The duration is a whole "
-        "number of frames and the audio has exactly the same length. The still is "
-        "untouched; the result is imported like 'media import' and linked to the still "
-        "by a derived_from relation."
-    )
-    _add_project_arg(subparser)
-    subparser.add_argument("ref", help="Exact project-scoped still image media id.")
-    subparser.add_argument(
-        "--duration", type=float, required=True, metavar="SECONDS",
-        help="Length in seconds; must land on a frame at --fps (2.5 s at 24 fps is 60 frames).",
-    )
-    subparser.add_argument(
-        "--fps", type=int, default=24, metavar="N",
-        help="Frames per second, a whole number (default: 24, H3's grid).",
-    )
-    subparser.add_argument(
-        "--size", default=None, metavar="WIDTHxHEIGHT",
-        help="Output size in pixels (even numbers). The still is scaled to cover it and "
-        "cropped to fit (default: the still's own size).",
-    )
-    subparser.add_argument(
-        "--sample-rate", dest="sample_rate", type=int, default=48000, metavar="HZ",
-        help="Audio sample rate of the silent stereo track (default: 48000).",
-    )
-    subparser.add_argument(
-        "--dry-run", dest="dry_run", action="store_true", default=False,
-        help="Print the frame, sample and size plan; import nothing.",
-    )
-    _add_idempotency_key(subparser)
-    _add_json_flag(subparser)
-    subparser.set_defaults(handler=_cmd_silent_video)
-
-
 def _cmd_trim(parsed: argparse.Namespace) -> int:
     from astrid.core.media_trim import parse_range, trim_media
 
@@ -729,12 +668,6 @@ COMMANDS: tuple[CommandSpec, ...] = (
         help="Trim one video to a frame-exact time range into a new media item "
         "(--range START,END; source untouched).",
         configure=_configure_trim,
-    ),
-    CommandSpec(
-        "silent-video",
-        help="Make a short video with a silent audio track from one still "
-        "(--duration SECONDS; still untouched).",
-        configure=_configure_silent_video,
     ),
     CommandSpec(
         "mask",

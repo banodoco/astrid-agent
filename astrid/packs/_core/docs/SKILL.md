@@ -192,15 +192,6 @@ source digest. For an H3 continuation, use the range from the take's `h3/take.js
 
 ### Crop still images and video
 
-Use `media silent-video` to turn one still into a short video with a silent audio track, for example as the
-source of a source-backed edit where a model should animate a listener without inventing speech. It creates a
-NEW managed media item and never changes the still. The duration must land on a frame at `--fps` (default 24):
-
-```bash
-"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" media silent-video STILL_MEDIA_ID --project <project> --duration 2.5 --size 1024x576 --dry-run --json
-"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" media silent-video STILL_MEDIA_ID --project <project> --duration 2.5 --size 1024x576 --json
-```
-
 Use `media crop` when a source has black letterbox bars baked into its pixels,
 or when a reference needs a sub-rectangle. It creates a NEW managed media item
 and never changes the source:
