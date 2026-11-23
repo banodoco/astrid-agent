@@ -218,6 +218,184 @@ there with its kind, modes and default slots; `astrid generate describe` then sh
 it. Keep one contribution minimal: one workflow file, one entry, and a dry run that
 passes.
 
+## Workflow setup: missing packs or models
+
+Read the readiness result before running a workflow. Keep its issues and target
+together when asking for help. The existing placement and missing-assets
+instructions above apply until a subsection supplies a supported next step.
+
+<!-- Plan 56 WS-6a: one editing slot per source card. Populate each slot
+with its implementation; an empty slot promises no command or behavior. -->
+
+### WS-0a — Audio workflow readiness
+
+<!-- WS-0a: fill this subsection in the same change as the card. -->
+
+### WS-0b — Unresolved model references
+
+<!-- WS-0b: fill this subsection in the same change as the card. -->
+
+### WS-0c — Node pack catalog
+
+Resolve known node packs from VibeComfy's shipped catalog, not a working-directory
+`custom_nodes.lock`. Use its exact repository and commit when giving manual
+attached-target clone/checkout guidance. An explicitly supplied lock is scoped to
+that caller. Writable target locks describe the installed environment; never
+treat them as the implicit shipped catalog or write into the packaged resource.
+
+### WS-0d — Save and replace an entry
+
+<!-- WS-0d: fill this subsection in the same change as the card. -->
+
+### WS-0e — Align a saved entry
+
+<!-- WS-0e: fill this subsection in the same change as the card. -->
+
+### WS-0g — Missing classes on every placement
+
+<!-- WS-0g: fill this subsection in the same change as the card. -->
+
+### WS-7a — Node recipe declarations
+
+Read each `extra.nodes` item as `{repo, commit, requirements_txt?, pip_no_deps?}`.
+The optional requirements file is relative to the pinned repository; the optional
+`pip_no_deps` list keeps its declared order. These are declarations, not permission
+to install. A recipe hash covers both fields, including their defaults. Changing
+the requirements path, a package requirement or its order changes that hash.
+Never execute a pack's `install.py` or turn a recipe declaration into a shell command.
+
+### WS-7b — Controlled recipe installation
+
+<!-- WS-7b: fill this subsection in the same change as the card. -->
+
+### LE-1a — Read issues and next steps
+
+Keep the existing `ready`, `ready_with_warnings` and `blocked` statuses. For setup
+issues carrying `fix_ids`, resolve those IDs in `fixes` and follow the array order.
+Each fix names `who` (`agent` or `human`) and either an argument array `argv`, or
+an `instruction` with `step` and `then_argv`. Show a human step to the person;
+never treat it as an automatic command or skip it to run a later fix.
+
+Replace every `<NAME>` in a command using that fix's `placeholders` explanation
+before running it. Keep `attempt_count` with the result; it counts actual setup
+attempts, not reads or displays. A warning does not authorize a repair. Legacy
+issues without these fields retain their existing guidance; do not invent a fix.
+
+### LE-1b — Missing assets and failed checks
+
+<!-- LE-1b: fill this subsection in the same change as the card. -->
+
+### LE-2a — Approval identity and consent tokens
+
+Treat workflow source refs and saved code approvals separately. An approval
+records `{identity: {repo, commit}, recipe_sha256, approval_sha256, placement_class}`.
+The commit is a full 40-character hash. Resolve placement before asking:
+
+- `local`: Astrid's managed ComfyUI on the local machine. The `managed` selector
+  resolves to this placement class.
+- `attached`: the person's own ComfyUI, including one at a loopback address.
+  Sharing the local host does not make it Astrid's managed target.
+- `runpod`: a rented RunPod machine.
+
+Use the resolved placement, never `auto` or the `managed` selector as the class.
+A token is the first 12 hex characters of the approval hash. Changing the source,
+recipe or placement invalidates it.
+
+The entry's `code-approvals.json` keeps these records beside `entry.json`; a
+source declaration alone grants no approval. The token is a confirmation of
+what was shown, not proof of who typed it. Do not write approval records by hand
+or assume that their presence makes a pack safe to run.
+
+### LE-2b — Consent to unreviewed code
+
+<!-- LE-2b: fill this subsection in the same change as the card. -->
+
+### LE-3 — Add a pinned node pack
+
+<!-- LE-3: fill this subsection in the same change as the card. -->
+
+### LE-4 — Lookup availability
+
+<!-- LE-4: fill this subsection in the same change as the card. -->
+
+### LE-5 — Candidates and manual lookup
+
+<!-- LE-5: fill this subsection in the same change as the card. -->
+
+### LE-6 — Check the target after setup
+
+<!-- LE-6: fill this subsection in the same change as the card. -->
+
+### LE-8 — Model downloads and available space
+
+<!-- LE-8: fill this subsection in the same change as the card. -->
+
+### LE-9 — Declare a missing model
+
+<!-- LE-9: fill this subsection in the same change as the card. -->
+
+### LE-10 — Recorded and installed versions
+
+<!-- LE-10: fill this subsection in the same change as the card. -->
+
+### LE-11 — Explain the warning
+
+<!-- LE-11: fill this subsection in the same change as the card. -->
+
+### LE-12 — Preview, replace and run again
+
+<!-- LE-12: fill this subsection in the same change as the card. -->
+
+### LE-13 — Declare an unlisted recipe
+
+<!-- LE-13: fill this subsection in the same change as the card. -->
+
+### LE-14 — Target failures and recovery
+
+<!-- LE-14: fill this subsection in the same change as the card. -->
+
+### LE-15 — Workflow inputs
+
+<!-- LE-15: fill this subsection in the same change as the card. -->
+
+### LE-16 — Several node packs
+
+<!-- LE-16: fill this subsection in the same change as the card. -->
+
+### LE-17 — Pins that conflict
+
+<!-- LE-17: fill this subsection in the same change as the card. -->
+
+### LE-18b — Terminal and JSON results
+
+<!-- LE-18b: fill this subsection in the same change as the card. -->
+
+### RS1 — Consent boundary review
+
+<!-- RS1: fill this subsection in the same change as the card. -->
+
+### WS-L — Live SAM proof
+
+<!-- WS-L: fill this subsection in the same change as the card. -->
+
+### WS-5 — Manager lookup
+
+<!-- WS-5: fill this subsection in the same change as the card. -->
+
+### WS-6a — Workflow setup guidance
+
+Use the populated subsections for the behavior they describe. An empty subsection
+does not introduce a command, install path or permission. Keep the user's requested
+placement and the reported next step together throughout setup.
+
+### WS-6b — Complete setup walkthrough
+
+<!-- WS-6b: fill this subsection in the same change as the card. -->
+
+### R — Integrated review
+
+<!-- R: fill this subsection in the same change as the card. -->
+
 ## Defaults
 
 Each `(kind, mode)` slot has one entry. Packs offer defaults as data

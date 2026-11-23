@@ -87,19 +87,26 @@ _CORE_CODES = {
 }
 
 
-def readiness_envelope(*, entry=None, target=None, issues=(), fixes=()) -> ReadinessEnvelope:
+def readiness_envelope(*, entry=None, target=None, issues=(), fixes=(), attempt_count=None) -> ReadinessEnvelope:
     """Project observations once; unknown version facts do not become issues."""
     from copy import deepcopy
-    issues = [{**issue, 'details': deepcopy(issue.get('details', {}))} for issue in issues]
+
+    from .setup_contract import uses_setup_contract, validate_setup_envelope
+    issues = [deepcopy({**issue, 'details': issue.get('details', {})}) for issue in issues]
     # An attached target's fix names what the person does on their own ComfyUI; it has no argv to run.
-    fixes = [{**fix, **({'argv': list(fix['argv'])} if 'argv' in fix else {}),
-              'details': deepcopy(fix.get('details', {}))}
+    fixes = [deepcopy({**fix, **({'argv': list(fix['argv'])} if isinstance(fix.get('argv'), tuple) else {}),
+              'details': fix.get('details', {})})
              for fix in fixes]
     status = ('blocked' if any(issue['severity'] == 'error' for issue in issues) else
               'ready_with_warnings' if issues else 'ready')
-    return {'entry': deepcopy(entry),
+    envelope = {'entry': deepcopy(entry),
             'target': deepcopy(target.as_dict() if hasattr(target, 'as_dict') else target),
             'status': status, 'issues': issues, 'fixes': fixes}
+    if attempt_count is not None or uses_setup_contract(envelope):
+        # The caller counts actual attempts; constructing/serializing is not one.
+        envelope['attempt_count'] = 0 if attempt_count is None else attempt_count
+        validate_setup_envelope(envelope)
+    return envelope
 
 
 class GenerationReadinessError(AstridError, ValueError):
@@ -108,14 +115,19 @@ class GenerationReadinessError(AstridError, ValueError):
     def __init__(self, envelope: ReadinessEnvelope, *, task_id: str | None = None):
         from astrid.core.contracts.errors import _redact_credential_data
         self.readiness = readiness_envelope(**{key: envelope[key] for key in
-            ('entry', 'target', 'issues', 'fixes')})
+            ('entry', 'target', 'issues', 'fixes', 'attempt_count') if key in envelope})
         self.readiness = _redact_credential_data(self.readiness)
         self.task_id = task_id
-        issue = self.readiness['issues'][0]
+        if 'attempt_count' in self.readiness and self.readiness['status'] != 'blocked':
+            raise ValueError('a setup readiness error requires a blocking issue')
+        if not self.readiness['issues']:
+            raise ValueError('a readiness error needs an issue')
+        issue = next((item for item in self.readiness['issues'] if item['severity'] == 'error'), self.readiness['issues'][0])
         fix = self.readiness['fixes'][0] if self.readiness['fixes'] else None
         import shlex
         # An attached fix is a person's action on their own ComfyUI, not a command to run.
-        recovery = shlex.join(fix['argv']) if fix and 'argv' in fix else None
+        recovery = (shlex.join(fix['argv']) if fix and 'argv' in fix
+                    and fix.get('who', 'agent') == 'agent' and not fix.get('placeholders') else None)
         if issue['code'] == 'generation_route_unqualified':
             recovery = issue['details'].get('fix') or recovery
         super().__init__(issue['message'], code=issue['code'],
@@ -124,11 +136,12 @@ class GenerationReadinessError(AstridError, ValueError):
                          state_snapshot={'readiness': self.readiness})
 
     def to_envelope(self) -> dict[str, Any]:
-        return {**self.readiness, 'status': 'blocked', 'task_id': self.task_id}
+        from copy import deepcopy
+        return {**deepcopy(self.readiness), 'status': 'blocked', 'task_id': self.task_id}
 
 
 def generation_error(error: Any, *, entry=None, target=None, code=None,
-                     details=None, fixes=(), task_id=None) -> GenerationReadinessError:
+                     details=None, fixes=(), task_id=None, attempt_count=None) -> GenerationReadinessError:
     """Normalize old engine/ExecError spellings at the generation boundary."""
     if isinstance(error, GenerationReadinessError):
         return error
@@ -181,8 +194,12 @@ def generation_error(error: Any, *, entry=None, target=None, code=None,
                     detail.setdefault('fields', names)
         detail.setdefault('constraint', message)
     issue = {'code': normalized, 'severity': 'error', 'message': message, 'details': detail}
+    from .setup_contract import uses_setup_contract
+    fixes = list(fixes)
+    if uses_setup_contract({'issues': [issue], 'fixes': fixes}):
+        issue['fix_ids'] = [fix['id'] for fix in fixes if 'id' in fix]
     return GenerationReadinessError(readiness_envelope(entry=entry, target=target,
-        issues=[issue], fixes=fixes), task_id=task_id)
+        issues=[issue], fixes=fixes, attempt_count=attempt_count), task_id=task_id)
 
 
 def compare_versions(recorded: dict[str, Any], observed: dict[str, Any]) -> list[ReadinessIssue]:
