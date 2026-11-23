@@ -50,7 +50,7 @@ def user_bundle(tmp_path, monkeypatch):
         assert entry["bundle"] == str(folder / "workflow.py")
         return workflow
     monkeypatch.setattr(entries, "_load_entry_workflow", load)
-    return SimpleNamespace(workflow=workflow, repo=repo, revision=revision)
+    return SimpleNamespace(workflow=workflow, repo=repo, revision=revision, directory=folder)
 
 
 def test_bundle_pin_overrides_same_named_shipped_pin_and_unpinned_is_reported(user_bundle):
@@ -62,6 +62,7 @@ def test_bundle_pin_overrides_same_named_shipped_pin_and_unpinned_is_reported(us
         "name": "ComfyUI-HunyuanVideo_Foley", "repository": user_bundle.repo,
         "revision": user_bundle.revision, "classes": ["BundleOnlyNode"],
         "requires_code_consent": True,
+        "bundle_install_pending": True,
     }]
     assert mode["unlocked"] == [{
         "kind": "node_pack", "name": "Unpinned", "missing": ["locked_repository_and_sha"],
@@ -79,7 +80,12 @@ def test_unfamiliar_bundle_pack_apply_refuses_before_mutation(user_bundle, monke
         alignment._align_selected(manifests, target, entry_id="bundle-align", apply=True, deadline=0)
 
 
-def test_unfamiliar_bundle_pack_is_never_installed_after_state_changes(user_bundle, monkeypatch):
+def test_approved_bundle_pack_is_never_installed_by_legacy_path_after_state_changes(user_bundle, monkeypatch):
+    from astrid.core.generation.node_approvals import approval_record, write_entry_approvals
+
+    write_entry_approvals(user_bundle.directory, [
+        approval_record({"repo": user_bundle.repo, "commit": user_bundle.revision}, placement_class="local"),
+    ])
     manifests = alignment.catalog_manifests("bundle-align")
     [pack] = manifests[0]["modes"][0]["node_packs"]
     target = SimpleNamespace(cached_object_info=lambda: None, verify_installation=lambda **kwargs: None)
@@ -90,6 +96,35 @@ def test_unfamiliar_bundle_pack_is_never_installed_after_state_changes(user_bund
     monkeypatch.setattr(alignment, "_pack_state", lambda *args: "missing")
     def forbidden(*args, **kwargs):
         pytest.fail("unapproved node code installer invoked")
-    with pytest.raises(alignment.AlignmentError, match="user_env consent does not authorize"):
+    assert "requires_code_consent" not in pack
+    assert pack["bundle_install_pending"]
+    with pytest.raises(alignment.AlignmentError, match="controlled node-code setup path"):
         alignment._align_selected(manifests, target, entry_id="bundle-align", apply=True,
                                   deadline=0, installer=forbidden)
+
+
+@pytest.mark.parametrize("placement,recipe", [
+    ("attached", {}),
+    ("local", {"pip_no_deps": ["different-package"]}),
+])
+def test_wrong_placement_or_recipe_approval_does_not_authorize_bundle(user_bundle, placement, recipe):
+    from astrid.core.generation.node_approvals import approval_record, write_entry_approvals
+
+    write_entry_approvals(user_bundle.directory, [
+        approval_record({"repo": user_bundle.repo, "commit": user_bundle.revision, **recipe},
+                        placement_class=placement),
+    ])
+    [manifest] = alignment.catalog_manifests("bundle-align")
+    [pack] = manifest["modes"][0]["node_packs"]
+    assert pack["requires_code_consent"]
+
+
+def test_unapproved_verified_bundle_pack_still_refuses_apply(user_bundle, monkeypatch):
+    manifests = alignment.catalog_manifests("bundle-align")
+    [pack] = manifests[0]["modes"][0]["node_packs"]
+    target = SimpleNamespace(cached_object_info=lambda: None)
+    monkeypatch.setattr(alignment, "inspect_assets", lambda *args, **kwargs: {
+        "entries": [{"modes": [{"models": [], "node_packs": [{**pack, "status": "verified"}]}]}],
+    })
+    with pytest.raises(alignment.AlignmentError, match="no matching shipped pin or local code approval"):
+        alignment._align_selected(manifests, target, entry_id="bundle-align", apply=True, deadline=0)
