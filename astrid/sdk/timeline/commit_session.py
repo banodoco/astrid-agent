@@ -14,6 +14,44 @@ from .checkout import Checkout
 from .sync import CommitConflict, CommitRefused, TimelineSession, _OutboxChanged, _enrich_pending_diff, _pending_clash, _part_identity, _pin
 
 
+def _retain_clip_rows(before, after):
+    """Keep live clip and parameter references when staging replaces a bundle."""
+    def merge(old, new):
+        if isinstance(old, dict) and isinstance(new, dict):
+            for key in list(old):
+                if key not in new:
+                    del old[key]
+            for key, value in new.items():
+                old[key] = merge(old[key], value) if key in old else value
+            return old
+        if isinstance(old, list) and isinstance(new, list):
+            old[:] = [merge(old[i], value) if i < len(old) else value
+                      for i, value in enumerate(new)]
+            return old
+        return new
+
+    def retain(old_rows, new_rows):
+        if not isinstance(old_rows, list) or not isinstance(new_rows, list):
+            return
+        for index, row in enumerate(new_rows):
+            if not isinstance(row, dict) or not row.get('id'):
+                continue
+            matches = [old for old in old_rows if isinstance(old, dict) and old.get('id') == row['id']]
+            if len(matches) == 1 and sum(isinstance(item, dict) and item.get('id') == row['id']
+                                         for item in new_rows) == 1:
+                new_rows[index] = merge(matches[0], row)
+
+    old_parent, new_parent = before.get('parent', {}), after.get('parent', {})
+    retain(old_parent.get('clips'), new_parent.get('clips'))
+    old_config, new_config = old_parent.get('config', {}), new_parent.get('config', {})
+    if isinstance(old_config, dict) and isinstance(new_config, dict):
+        retain(old_config.get('clips'), new_config.get('clips'))
+    for shot_id, shot in after.get('shots', {}).items():
+        old_shot = before.get('shots', {}).get(shot_id, {})
+        retain(old_shot.get('internal_timeline', {}).get('clips'),
+               shot.get('internal_timeline', {}).get('clips'))
+
+
 def _function_rerun_conflict(session, original_base, current_base, before_bundle, after_bundle):
     """Return the existing conflict shape when a rerun rewrites intervening work."""
     from . import clash
@@ -546,7 +584,9 @@ class Timeline(Checkout):
         # request/step reads. The provider captures against the pinned base.
         self._commands.extend(copy.deepcopy(commands))
         self._steps.append(step)
-        self.bundle = copy.deepcopy(plan.bundle)
+        staged = copy.deepcopy(plan.bundle)
+        _retain_clip_rows(self.bundle, staged)
+        self.bundle = staged
         self._runtime_document = self.bundle.get("source_mapping", {}).pop("_runtime_document", self._runtime_document)
         self._command_bundle = copy.deepcopy(self.bundle)
         self._refresh()
