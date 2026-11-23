@@ -261,10 +261,14 @@ def clear_default_registry_cache() -> None:
     clear_schema_cache()
 
 
-def lookup_default_registry(lookup, *, project_root=REPO_ROOT):
+def lookup_default_registry(lookup, *, project_root=None):
     """Resolve against the shared corpus, rediscovering once on a miss."""
     with _default_registry_lock:
-        registry = load_default_registry(project_root=project_root)
+        registry = (
+            load_default_registry()
+            if project_root is None
+            else load_default_registry(project_root=project_root)
+        )
         result = lookup(registry)
         if result is None:
             # Misses do not detect alias-to-exact arrivals (#1538), nested edits
@@ -272,7 +276,11 @@ def lookup_default_registry(lookup, *, project_root=REPO_ROOT):
             # Composition replacement (#1495). A removed pack can keep validating
             # until restart, unless a later miss triggers rediscovery.
             clear_default_registry_cache()
-            registry = load_default_registry(project_root=project_root)
+            registry = (
+                load_default_registry()
+                if project_root is None
+                else load_default_registry(project_root=project_root)
+            )
             result = lookup(registry)
         return result, registry
 

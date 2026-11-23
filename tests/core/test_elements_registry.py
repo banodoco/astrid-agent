@@ -1,5 +1,6 @@
 import json
 import os
+import pytest
 import shutil
 import subprocess
 import sys
@@ -10,6 +11,7 @@ from pathlib import Path
 
 from astrid.core import element as element_module
 from astrid.core.element import load_default_registry
+from astrid.core.element import registry as element_registry
 
 
 _KIND_SINGULAR = {
@@ -472,3 +474,31 @@ def test_schema_warm_reader_survives_concurrent_miss_clear(monkeypatch):
     assert not worker.is_alive()
     assert "error" not in outcome, repr(outcome.get("error"))
     assert outcome["schema"] is schema
+
+
+@pytest.mark.parametrize("retry", [False, True], ids=["initial", "retry"])
+@pytest.mark.parametrize("explicit_root", [False, True], ids=["default-root", "explicit-root"])
+def test_lookup_default_registry_omits_default_root_keyword(monkeypatch, retry, explicit_root):
+    project_root = Path("/tmp/explicit-project")
+    calls = []
+    registries = [object(), object()]
+
+    def load_default_registry(**kwargs):
+        calls.append(kwargs)
+        return registries[len(calls) - 1]
+
+    lookup_results = iter([None, "found"] if retry else ["found"])
+
+    monkeypatch.setattr(element_registry, "load_default_registry", load_default_registry)
+    monkeypatch.setattr(element_registry, "clear_default_registry_cache", lambda: None)
+
+    kwargs = {"project_root": project_root} if explicit_root else {}
+    result, registry = element_registry.lookup_default_registry(
+        lambda _registry: next(lookup_results),
+        **kwargs,
+    )
+
+    assert result == "found"
+    assert registry is registries[1 if retry else 0]
+    expected_call = {"project_root": project_root} if explicit_root else {}
+    assert calls == [expected_call] * (2 if retry else 1)
