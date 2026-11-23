@@ -259,6 +259,52 @@ def test_yaml_fallback_accepts_legacy_and_empty_but_rejects_flow_and_malformed(
         ),
         ("pack.yaml", "id: probe\nunexpected root scalar\n", False, "document line form"),
         ("pack.yaml", "  id: probe\n", False, "root indentation"),
+        ("pack.yaml", "id: null\nrendering: {}\n", False, "id scalar"),
+        ("pack.yaml", "id: probe\n  continued\nrendering: {}\n", False, "id continuation"),
+        (
+            "pack.yaml",
+            "description: [one,,two]\nid: probe\nrendering: {}\n",
+            False,
+            "document flow",
+        ),
+        (
+            "pack.yaml",
+            "schema_version: 3\nschema_version: 3\nid: probe\nrendering: {}\n",
+            False,
+            "duplicate mapping key",
+        ),
+        (
+            "pack.yaml",
+            "metadata:\n  labels:\n    owner: one\n    owner: two\nid: probe\nrendering: {}\n",
+            False,
+            "duplicate mapping key",
+        ),
+        (
+            "pack.yaml",
+            "description: {owner: one, owner: two}\nid: probe\nrendering: {}\n",
+            False,
+            "duplicate flow mapping key",
+        ),
+        (
+            "pack.yaml",
+            "description:\n  arbitrary continuation\nid: probe\nrendering: {}\n",
+            False,
+            "document line form",
+        ),
+        (
+            "pack.yaml",
+            "description: text\n    [bad] continuation\nid: probe\nrendering: {}\n",
+            False,
+            "document line form",
+        ),
+        (
+            "pack.yaml",
+            "id: probe\nrendering:\n  effects/probe:\n    type: element\n"
+            "    path: rendering/effects/probe/element.yaml\n    data: arbitrary\n"
+            "      arbitrary continuation\n",
+            False,
+            "document line form",
+        ),
     ],
 )
 def test_source_only_yaml_parser_whitelist(
@@ -457,6 +503,60 @@ def test_explicit_project_without_parser_does_not_use_module_source_parser(tmp_p
     assert result.returncode != 0
     assert str(manifest) in result.stderr
     assert "unsupported YAML" in result.stderr and "flow" in result.stderr
+
+
+@pytest.mark.remotion
+def test_project_yaml_parser_entry_symlink_outside_project_is_rejected(tmp_path: Path) -> None:
+    explicit_project = tmp_path / "explicit-project"
+    package = explicit_project / "node_modules" / "js-yaml"
+    package.mkdir(parents=True)
+    outside_entry = tmp_path / "outside-parser.mjs"
+    outside_entry.write_text(
+        "export function load() { throw new Error('outside parser was executed'); }\n",
+        encoding="utf-8",
+    )
+    (package / "package.json").write_text(
+        json.dumps({"name": "js-yaml", "type": "module", "main": "./entry.mjs"}),
+        encoding="utf-8",
+    )
+    (package / "entry.mjs").symlink_to(outside_entry)
+
+    pack = tmp_path / "external-pack"
+    effects = pack / "rendering" / "effects"
+    (effects / "probe").mkdir(parents=True)
+    (effects / "probe" / "element.yaml").write_text("id: probe-effect\n", encoding="utf-8")
+    manifest = pack / "pack.yaml"
+    manifest.write_text(
+        '{schema_version: 3, id: probe, rendering: '
+        '{"effects/probe": {type: element, path: "rendering/effects/probe/element.yaml"}}}\n',
+        encoding="utf-8",
+    )
+
+    node = shutil.which(os.environ.get("ASTRID_NODE_EXECUTABLE") or "node")
+    assert node, "pinned Node executable unavailable (set ASTRID_NODE_EXECUTABLE)"
+    script = """
+    import {pathToFileURL} from 'node:url';
+    const mod = await import(pathToFileURL(process.argv[1]).href);
+    const config = mod.remotionPrimitiveAliasesFor(process.argv[2])({});
+    console.log(JSON.stringify(config.resolve.alias));
+    """
+    result = subprocess.run(
+        [node, "--no-global-search-paths", "--input-type=module", "-e", script,
+         str(MODULE), str(explicit_project)],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={
+            "PATH": os.defpath,
+            "ASTRID_PACKS_PATH": str(pack),
+            **({"SystemRoot": os.environ["SystemRoot"]} if "SystemRoot" in os.environ else {}),
+        },
+    )
+    assert result.returncode != 0
+    assert str(manifest) in result.stderr
+    assert "parser entry escapes the Remotion project" in result.stderr
 
 
 def test_declared_public_resource_resolution_is_contained_and_nonrecursive() -> None:

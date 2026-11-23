@@ -34,7 +34,8 @@ const readText = (file) => {
 // The original source-only reader handles a narrow block-mapping subset.
 // Reject representations it cannot interpret instead of losing an alias.
 const parseSimpleYamlManifest = (text, file) => {
-  const fail = (form) => { throw new Error(`unsupported YAML ${form} in ${file}`); };
+  let lineNumber = 0;
+  const fail = (form) => { throw new Error(`unsupported YAML ${form} in ${file}:${lineNumber}`); };
   const rendering = {};
   let id;
   let inRendering = false;
@@ -48,13 +49,26 @@ const parseSimpleYamlManifest = (text, file) => {
   let continuationIndent = null;
   let quotedContinuation = null;
   let rootSequence = false;
+  let afterId = false;
+  const mappings = [];
+  const recordKey = (indent, key, sequenceItem = false) => {
+    const depth = indent + (sequenceItem ? 2 : 0);
+    while (mappings.length && mappings[mappings.length - 1].indent > (sequenceItem ? indent : depth)) mappings.pop();
+    let frame = mappings[mappings.length - 1];
+    if (!frame || frame.indent !== depth) {
+      frame = {indent: depth, keys: new Set()};
+      mappings.push(frame);
+    }
+    if (frame.keys.has(key)) fail('duplicate mapping key');
+    frame.keys.add(key);
+  };
   const scalar = (raw, form) => {
     const quoted = /^\s*(?:'([^'\\#]*)'|"([^"\\#]*)")\s*(?:#.*)?$/.exec(raw);
     if (quoted) return quoted[1] ?? quoted[2];
     const plain = /^\s*([^#\[\]{}|>'"`\\]+?)(?:\s+#.*)?\s*$/.exec(raw);
     if (!plain || /:\s/.test(plain[1]) || /^[&*!%@`]/.test(plain[1]) || /^[?-]\s/.test(plain[1])) fail(form);
     const value = plain[1].trim();
-    if (form !== 'id scalar' && /^(?:null|~|true|false|[-+]?[0-9]+(?:\.[0-9]+)?)$/i.test(value)) fail(form);
+    if (/^(?:null|~|true|false|[-+]?[0-9]+(?:\.[0-9]+)?)$/i.test(value)) fail(form);
     return value;
   };
   const finish = () => {
@@ -80,6 +94,68 @@ const parseSimpleYamlManifest = (text, file) => {
     }
     return false;
   };
+  const validateIgnoredFlow = (raw) => {
+    let position = 0;
+    const space = () => { while (/\s/.test(raw[position] ?? '')) position++; };
+    const token = (key) => {
+      space();
+      const quote = raw[position];
+      if (quote === "'" || quote === '"') {
+        if (key) fail('document flow mapping key form');
+        position++;
+        while (position < raw.length) {
+          const char = raw[position++];
+          if (quote === '"' && char === '\\') {
+            const escape = raw[position++];
+            if ('0abtnvfre /"\\N_LP'.includes(escape ?? '')) continue;
+            const digits = {x: 2, u: 4, U: 8}[escape];
+            if (!digits || !new RegExp(`^[0-9a-fA-F]{${digits}}$`).test(raw.slice(position, position + digits))) {
+              fail('document flow escape form');
+            }
+            position += digits;
+          } else if (char === quote) {
+            if (quote === "'" && raw[position] === "'") { position++; continue; }
+            return;
+          }
+        }
+        fail('document flow quoted scalar form');
+      }
+      const start = position;
+      while (position < raw.length && !/[,\[\]{}]/.test(raw[position]) && !(key && raw[position] === ':')) position++;
+      const plain = raw.slice(start, position).trim();
+      if (!plain || /^[&*!%@`]/.test(plain) || /#/.test(plain)) fail('document flow scalar form');
+      if (key && !/^[A-Za-z_][A-Za-z0-9_./-]*$/.test(plain)) fail('document flow mapping key form');
+      return plain;
+    };
+    const value = () => {
+      space();
+      if (raw[position] !== '[' && raw[position] !== '{') { token(false); return; }
+      const mapping = raw[position++] === '{';
+      const close = mapping ? '}' : ']';
+      const keys = new Set();
+      space();
+      if (raw[position] === close) { position++; return; }
+      while (position < raw.length) {
+        if (mapping) {
+          const key = token(true);
+          if (keys.has(key)) fail('duplicate flow mapping key');
+          keys.add(key);
+          space();
+          if (raw[position++] !== ':') fail('document flow mapping form');
+          if (raw[position] && !/[\s\[\]{},]/.test(raw[position])) fail('document flow mapping separator');
+        }
+        value();
+        space();
+        if (raw[position] === close) { position++; return; }
+        if (raw[position++] !== ',') fail('document flow separator');
+        space();
+        if (raw[position] === close) { position++; return; }
+      }
+      fail('document flow form');
+    };
+    value();
+    if (!/^\s*(?:#.*)?$/.test(raw.slice(position))) fail('document flow form');
+  };
   const validateIgnoredValue = (raw, indent) => {
     if (!raw || /^\s*#/.test(raw)) return;
     if (/^[&*!]/.test(raw)) fail('document alias or tag');
@@ -88,37 +164,19 @@ const parseSimpleYamlManifest = (text, file) => {
       return;
     }
     if (raw[0] === '[' || raw[0] === '{') {
-      const stack = [];
-      let quote = null;
-      for (let index = 0; index < raw.length; index++) {
-        const char = raw[index];
-        if (quote) {
-          if (quote === '"' && char === '\\') { index++; continue; }
-          if (char === quote) {
-            if (quote === "'" && raw[index + 1] === "'") { index++; continue; }
-            quote = null;
-          }
-          continue;
-        }
-        if (char === "'" || char === '"') { quote = char; continue; }
-        if (char === '[' || char === '{') stack.push(char);
-        else if (char === ']' || char === '}') {
-          if (stack.pop() !== (char === ']' ? '[' : '{')) fail('document flow form');
-          if (!stack.length && !/^\s*(?:#.*)?$/.test(raw.slice(index + 1))) fail('document flow form');
-        }
-      }
-      if (quote || stack.length) fail('document flow form');
+      validateIgnoredFlow(raw);
     }
   };
-  const ignoredLine = (line) => {
+  const ignoredLine = (line, allowContinuation = true) => {
     const indent = /^ */.exec(line)[0].length;
     if (blockIndent !== null) {
       if (indent > blockIndent) return;
       blockIndent = null;
     }
-    const mapping = /^( *)(?:-\s+)?([A-Za-z_][A-Za-z0-9_./-]*):(?:\s+(.*))?$/.exec(line);
+    const mapping = /^( *)(-\s+)?([A-Za-z_][A-Za-z0-9_./-]*):(?:\s+(.*))?$/.exec(line);
     if (mapping) {
-      const raw = mapping[3] ?? '';
+      const raw = mapping[4] ?? '';
+      recordKey(indent, mapping[3], Boolean(mapping[2]));
       if (indent === 0 && line.startsWith('-') && !rootSequence) fail('root sequence form');
       if (indent === 0 && !line.startsWith('-')) rootSequence = !raw;
       if (/^[|>][+-]?(?:\s+#.*)?$/.test(raw)) blockIndent = indent;
@@ -129,16 +187,23 @@ const parseSimpleYamlManifest = (text, file) => {
     const sequence = /^( *)-(?:\s+(.*))?$/.exec(line);
     if (sequence) {
       if (indent === 0 && !rootSequence) fail('root sequence form');
+      while (mappings.length && mappings[mappings.length - 1].indent > indent) mappings.pop();
       validateIgnoredValue(sequence[2] ?? '', indent);
       continuationIndent = sequence[2] ? indent : null;
       return;
     }
-    if (continuationIndent !== null && indent > continuationIndent) return;
+    if (allowContinuation && continuationIndent !== null && indent > continuationIndent &&
+        !/^[\s]*[\[\]{}!&*?|>@%]/.test(line) && !/:\s/.test(line)) return;
     fail('document line form');
   };
   for (const line of text.split(/\r?\n/)) {
+    lineNumber++;
     if (/^\s*(?:#.*)?$/.test(line)) continue;
     if (/^\s*\t/.test(line) || /^\uFEFF/.test(line)) fail('tab indentation or byte-order mark');
+    if (afterId) {
+      if (/^\s/.test(line)) fail('id continuation');
+      afterId = false;
+    }
     if (quotedContinuation) {
       if (/^ */.exec(line)[0].length <= quotedContinuation.indent) fail('quoted scalar form');
       if (quoteEnd(line, quotedContinuation.quote, 0)) quotedContinuation = null;
@@ -169,10 +234,12 @@ const parseSimpleYamlManifest = (text, file) => {
         const raw = line.replace(/^id\s*:/, '');
         if (raw && !/^\s/.test(raw)) fail('id separator');
         id = scalar(raw, 'id scalar');
+        afterId = true;
       }
       if (/^(?:rendering|['"]rendering['"])\s*:/.test(line)) {
         if (sawRendering || !/^rendering\s*:/.test(line)) fail('rendering declaration');
         sawRendering = true;
+        recordKey(0, 'rendering');
         const raw = line.replace(/^rendering\s*:/, '');
         if (raw && !/^\s/.test(raw)) fail('rendering separator');
         const rest = raw.trim();
@@ -201,6 +268,7 @@ const parseSimpleYamlManifest = (text, file) => {
       const key = entryMatch[1].trim();
       if (/^[-?&*!%@`]/.test(key) || /['"\[\]{}|>`\\]/.test(key)) fail('rendering entry key');
       if (Object.hasOwn(rendering, key)) fail('duplicate rendering entry');
+      recordKey(2, key);
       entry = {key};
       rendering[key] = entry;
       extraField = false;
@@ -212,6 +280,7 @@ const parseSimpleYamlManifest = (text, file) => {
     if (field) {
       const key = field[1];
       const raw = field[2] ?? '';
+      recordKey(4, key);
       if (key === 'type' || key === 'path') {
         if (Object.hasOwn(entry, key)) fail(`duplicate ${key}`);
         entry[key] = scalar(raw, `${key} scalar or flow form`);
@@ -223,6 +292,7 @@ const parseSimpleYamlManifest = (text, file) => {
       continue;
     }
     if (!extraField || !/^    (?:-|\s)/.test(line)) fail('rendering field or indentation');
+    ignoredLine(line, false);
   }
   if (inRendering) finishRendering();
   if (quotedContinuation) fail('quoted scalar form');
@@ -306,10 +376,13 @@ const readPackManifest = (packRoot, astridDir, remotionRoot) => {
       if (installedExists) {
         let yaml;
         try {
-          if (!isWithin(fs.realpathSync(moduleRoot), fs.realpathSync(installed))) {
+          const projectRoot = fs.realpathSync(moduleRoot);
+          if (!isWithin(projectRoot, fs.realpathSync(installed))) {
             throw new Error('YAML parser escapes the Remotion project');
           }
-          yaml = require(installed);
+          const parserEntry = fs.realpathSync(require.resolve(installed));
+          if (!isWithin(projectRoot, parserEntry)) throw new Error('YAML parser entry escapes the Remotion project');
+          yaml = require(parserEntry);
         }
         catch (error) { throw new Error(`cannot load project YAML parser for ${file}`, {cause: error}); }
         try { manifest = yaml.load(text); }
