@@ -1,11 +1,13 @@
 """Measure command work counts through a fresh CLI process and real Runtime."""
 from __future__ import annotations
 
+import ast
 import json
 import os
 import re
 import secrets
 import subprocess
+import sys
 import sysconfig
 from collections import Counter
 from pathlib import Path
@@ -16,6 +18,76 @@ from tests.integrations.test_runpod_host_endpoint_r5 import tuple_sources  # noq
 from tests.integrations.test_runpod_slot_path_cpu import _drive
 
 pytestmark = pytest.mark.integration
+
+
+def test_inventory_count_hook_control(tmp_path):
+    """The production sitecustomize hook distinguishes one hit from full walks."""
+    source = Path(__file__).read_text(encoding="utf-8")
+    module = ast.parse(source)
+    hook = next(
+        ast.literal_eval(node.args[0])
+        for node in ast.walk(module)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "write_text"
+        and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and isinstance(node.args[0].value, str)
+        and "original_tree_fingerprint = discovery._tree_fingerprint" in node.args[0].value
+    )
+    instrument = tmp_path / "instrument"
+    instrument.mkdir()
+    (instrument / "sitecustomize.py").write_text(hook, encoding="utf-8")
+    capture = tmp_path / "counts.json"
+    runner = r'''
+import os, sys
+from pathlib import Path
+from types import SimpleNamespace
+from astrid.core.pack import discovery, loader, source_setup
+
+root = Path(sys.argv[1])
+root.mkdir(parents=True, exist_ok=True)
+home = root / "home"
+home.mkdir()
+Path.home = classmethod(lambda cls: home)
+loader.packs_root = lambda: root / "bundled"
+(root / "bundled").mkdir()
+source_setup.active_source_inventory = lambda: SimpleNamespace(sources=(), identity="fixture")
+discovery._discovery_fingerprint = lambda *args, **kwargs: "same-key"
+
+walks = []
+def scan(*args, **kwargs):
+    walks.append(1)
+    return ()
+def lookup():
+    return discovery.discover_pack_metadata(project_root=root, personal_packs_root=root / "personal", discover_packs_fn=scan)
+with discovery.pack_discovery_scope():
+    lookup()
+    first = len(walks)
+    assert first > 0
+    lookup()
+    assert len(walks) == first
+lookup()
+assert len(walks) > first
+second = len(walks)
+lookup()
+assert len(walks) > second
+'''
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join((str(instrument), env.get("PYTHONPATH", "")))
+    env["ASTRID_COUNT_CAPTURE"] = str(capture)
+    result = subprocess.run(
+        [sys.executable, "-c", runner, str(tmp_path / "fixture")],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    counts = json.loads(capture.read_text(encoding="utf-8"))["counts"]
+    assert counts["pack_inventory"] == 4, counts
+    assert counts["pack_inventory_cached_hit"] == 1, counts
+    assert counts["pack_inventory_full_walk"] == 3, counts
 
 
 def _workflow_file() -> Path:
@@ -110,16 +182,31 @@ def counted_file_digest(stream, digest, *args, **kwargs):
     return original_file_digest(stream, digest, *args, **kwargs)
 discovery._tree_fingerprint = counted_tree_fingerprint
 hashlib.file_digest = counted_file_digest
-original_deepcopy = discovery.deepcopy
-def counted_deepcopy(value):
+import inspect
+inventory_code = inspect.unwrap(discovery.discover_pack_metadata).__code__
+original_cache_read = discovery._DiscoveryCache.read
+def counted_cache_read(self, key):
+    result = original_cache_read(self, key)
     caller = sys._getframe(1)
-    if caller.f_code.co_name == "discover_pack_metadata" and caller.f_globals.get("__name__") == "astrid.core.pack.discovery":
-        cache = caller.f_locals.get("cache")
-        key = caller.f_locals.get("fingerprint")
-        if key is not None and cache is not None and cache.get(key) is value:
-            counts["pack_inventory_cached_hit"] += 1
-    return original_deepcopy(value)
-discovery.deepcopy = counted_deepcopy
+    if caller.f_code is inventory_code and result is not discovery._CACHE_MISS:
+        counts["pack_inventory_cached_hit"] += 1
+    return result
+discovery._DiscoveryCache.read = counted_cache_read
+# Count the actual admission path after the cache-return branch. The line is
+# resolved from source so unrelated edits cannot silently move the probe.
+source_lines, first_line = inspect.getsourcelines(discovery.discover_pack_metadata)
+walk_line = first_line + next(i for i, line in enumerate(source_lines) if line.strip() == "managed_by_root = {")
+walked_frames = set()
+def trace(frame, event, arg):
+    if frame.f_code is inventory_code:
+        if event == "line" and frame.f_lineno == walk_line and frame not in walked_frames:
+            counts["pack_inventory_full_walk"] += 1
+            walked_frames.add(frame)
+        elif event == "return":
+            walked_frames.discard(frame)
+        return trace
+    return None
+sys.settrace(trace)
 def profile(frame, event, arg):
     if event != "call": return
     module = frame.f_globals.get("__name__", "")
@@ -138,7 +225,6 @@ sys.setprofile(profile)
 def save():
     path = os.environ.get("ASTRID_COUNT_CAPTURE")
     if path:
-        counts["pack_inventory_full_walk"] = counts["pack_inventory"] - counts["pack_inventory_cached_hit"]
         with open(path, "w", encoding="utf-8") as output:
             json.dump({"counts": dict(counts), "provenance": provenance}, output, sort_keys=True)
 atexit.register(save)
@@ -205,6 +291,7 @@ atexit.register(save)
                 "workflow_build",
                 "model_registry_load",
                 "pack_inventory_full_walk",
+                "pack_inventory_cached_hit",
                 "tree_fingerprint_calls",
             }
             expected_api = {
