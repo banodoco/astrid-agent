@@ -461,8 +461,8 @@ def commit_trim(session, parsed, options):
 
 
 def commit_swap(session, parsed, options):
-    from astrid.sdk.timeline.commit_session import Timeline
     from astrid.sdk.timeline._common import TimelineEditError
+    from astrid.sdk.timeline.commit_session import Timeline
 
     if not parsed.swap_asset:
         raise TimelineEditError('--swap-asset needs a media file, handle, or asset key')
