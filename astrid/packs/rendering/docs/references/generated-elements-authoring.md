@@ -4,7 +4,7 @@ Effects have one source and execution path: an Astrid V3 rendering element pack 
 
 ## One place for effects
 
-Author every new or changed effect in the project's pack: `project-pack init` → edit files → `validate` → `admit` → `timelines update-element`. Do not start a second pack, copy the effect elsewhere, or put code in the timeline.
+Author every new or changed effect in the project's pack: `project-pack init` → edit files → `validate` → `admit` → one timeline commit for the edit. Do not start a second pack, copy the effect elsewhere, or put code in the timeline.
 
 Promote to the Personal pack only when the user asks for reuse. Ask first; promotion is not automated yet.
 
@@ -48,6 +48,32 @@ Derived per-pack indexes are reconstructible caches, not authority. Invalid or c
 
 After a successful admission, every editor (dev, built and hosted) shows the admitted project-pack elements with no app deploy: the editor loads the compiled module from the Runtime.
 
+## Admit, then make one commit
+
+Use the exact owner-qualified reference returned for the admitted element. Stage placements with the other timeline edits in one `Timeline.commit` function:
+
+```python
+from astrid.sdk.timeline.api import Timeline
+
+element = {
+    "packId": "<pack-id>",
+    "id": "<element-id>",
+    "kind": "effect",
+    "revision": "<admitted-revision>",
+}
+
+tl = Timeline.open("<project-id>", "<timeline-id>")
+
+def edit(t):
+    t.clip("<first-clip-id>").set_element(element)
+    t.clip("<second-clip-id>").set_element(element)
+    t.clip("<first-clip-id>").params["<setting>"] = "<value>"
+
+receipt = tl.commit(edit, label="Place the admitted effect")
+```
+
+Put every placement and its related parameter, text, or timing edits in that function. The commit function may be evaluated again after a conflict, so keep external side effects out of it. A successful receipt is the evidence that the edit was saved. Admission and the timeline commit are separate calls: admission makes the code available, and the commit changes the timeline.
+
 ## Update the same placement and confirm
 
 Use the returned exact admitted pack/element/revision and the captured timeline head:
@@ -62,6 +88,6 @@ astrid-tools timelines update-element --project <project-id> <timeline-id> \
 
 Omit duration when timing was not requested; omit params when source/schema alone changed. Existing settings are preserved and intended keys merge. The command updates one existing generated hold effect using the canonical authoring bundle and expected-head publication. It preserves start/track, other media, registries, transcript references and pinned child closure. A stale head fails without automatic rebase; inspect the new state before deciding a fresh edit. Do not add a duplicate overlay to replace an existing effect.
 
-To point an existing built-in effect clip (for example `am-discord` or `am-footage`, including inside a shot) at a forked project element, run `astrid-tools timelines place-element --project <project-id> <timeline-id> --realm <realm-id> --target occurrence:<occurrence-id>/clip:<clip-id> --pack <pack-id> --element <forked-element-id> --kind effect --revision <admitted-revision> --expected-head <captured-head>`; it sets the clip type and element ref together and keeps the clip's params, timing and media.
+For a single existing built-in effect clip (for example `am-discord` or `am-footage`, including inside a shot), the one-target `place-element` command remains available: `astrid-tools timelines place-element --project <project-id> <timeline-id> --realm <realm-id> --target occurrence:<occurrence-id>/clip:<clip-id> --pack <pack-id> --element <forked-element-id> --kind effect --revision <admitted-revision> --expected-head <captured-head>`. It sets the clip type and element ref together and keeps the clip's params, timing and media. Use `Clip.set_element(element)` inside `Timeline.commit` when the placement belongs with other edits in one commit.
 
-Only a successful durable `new_head` receipt establishes a saved edit. A file write, validation, admission, emitted JSON or optimistic prose does not. Report partial failures honestly. Refresh the existing editor after the saved receipt, inspect controls in the editor (no render unless the user asks; composed `visualize` frames are fine), and verify normal reload. Never resend user queued chat messages for verification.
+Only a successful durable `new_head` receipt establishes a saved edit. A file write, validation, admission, emitted JSON or optimistic prose does not. Report partial failures honestly. After the saved receipt, check that the open editor shows the change without a reload and inspect its controls (no render unless the user asks; composed `visualize` frames are fine). Never resend user queued chat messages for verification.

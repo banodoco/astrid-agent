@@ -13,12 +13,12 @@ import hashlib
 import json
 import os
 import re
-from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 from astrid.core.element.registry import (
     ElementRegistry,
+    lookup_default_registry,
     clear_default_registry_cache,
     load_default_registry,
 )
@@ -53,30 +53,11 @@ def _validate_kind(kind: str) -> ElementKind:
 def _registry(theme: str | Path | None = None, *, project_slug: str | None = None) -> ElementRegistry:
     # Timeline theme slugs are authoring metadata.  They cannot select
     # executable element definitions; only discovered Astrid packs do that.
-    del theme
-    return _cached_registry(
-        project_slug,
-        _path_cache_key(TOOLS_DIR),
-    )
-
-
-def _path_cache_key(path: str | Path | None) -> str | None:
-    if path is None:
-        return None
-    return str(Path(path).resolve())
-
-
-@lru_cache(maxsize=None)
-def _cached_registry(
-    project_slug: str | None,
-    project_root_key: str | None,
-) -> ElementRegistry:
-    project_root = Path(project_root_key) if project_root_key is not None else TOOLS_DIR
-    return load_default_registry(project_root=project_root)
+    del theme, project_slug
+    return load_default_registry(project_root=TOOLS_DIR)
 
 
 def _clear_registry_cache() -> None:
-    _cached_registry.cache_clear()
     clear_default_registry_cache()
 
 
@@ -318,7 +299,14 @@ def _element(
     theme: str | Path | None = None,
     project_slug: str | None = None,
 ):
-    return _registry(theme, project_slug=project_slug).get(kind, element_id)
+    def find(registry):
+        try:
+            return registry.get(kind, element_id)
+        except KeyError:
+            return None
+
+    found, registry = lookup_default_registry(find, project_root=TOOLS_DIR)
+    return found if found is not None else registry.get(kind, element_id)
 
 
 def read_element_schema(

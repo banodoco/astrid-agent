@@ -33,12 +33,13 @@ def resolve_clip_to_artifact_type(
     or when the matched element has no annotated outputs (SD3 opaque
     fallthrough).
     """
-    return _resolve_clip_to_artifact_type(
+    _, resolved = _resolve_clip_to_artifact_type(
         clip_type,
         theme,
         element_registry,
         artifact_type_registry,
     )
+    return resolved
 
 
 def _resolve_clip_to_artifact_type(
@@ -48,13 +49,14 @@ def _resolve_clip_to_artifact_type(
     artifact_type_registry: "ArtifactTypeRegistry",
     *,
     membership_registry: "ElementRegistry | None" = None,
-) -> str | None:
+) -> tuple[bool, str | None]:
     """Resolve a clip using an optional already-admitted membership registry.
 
     Direct callers retain the catalog membership guard.  The default
     ``is_visual_clip_element`` path passes the default registry it has already
     loaded as both the type source and membership snapshot; that registry is
     the same authoritative source the catalog would assemble again.
+    The first result distinguishes a found but unannotated element from a miss.
     """
     from astrid.core.element import catalog as _catalog
     from astrid.core.element.schema import to_capability_handle
@@ -78,11 +80,11 @@ def _resolve_clip_to_artifact_type(
             handle = to_capability_handle(candidate)
             for output in handle.outputs:
                 if output.artifact_type is not None:
-                    return output.artifact_type
+                    return True, output.artifact_type
         if kind == "effects":
-            return "clip/visual"
-        return None  # element found but has no annotated output — opaque
-    return None  # not found in any kind
+            return True, "clip/visual"
+        return True, None  # element found but has no annotated output — opaque
+    return False, None  # not found in any kind
 
 
 def is_visual_clip_element(
@@ -97,23 +99,26 @@ def is_visual_clip_element(
     not provide explicit registries; this keeps registry setup in the one
     type-resolution implementation rather than a compatibility shim.
     """
-    use_loaded_registry_for_membership = element_registry is None
-    if element_registry is None:
-        from astrid.core.element.registry import load_default_registry
-
-        element_registry = load_default_registry()
     if artifact_type_registry is None:
         from astrid.core.contracts.artifact_types import ARTIFACT_TYPE_REGISTRY
 
         artifact_type_registry = ARTIFACT_TYPE_REGISTRY
-    if use_loaded_registry_for_membership:
-        resolved = _resolve_clip_to_artifact_type(
-            clip_type,
-            theme,
-            element_registry,
-            artifact_type_registry,
-            membership_registry=element_registry,
-        )
+    if element_registry is None:
+        from astrid.core.element.registry import lookup_default_registry
+
+        def resolve(registry):
+            # None signals a miss to lookup_default_registry; wrap successful
+            # opaque results so they do not trigger rediscovery.
+            if clip_type == "media":
+                return (None,)
+            found, value = _resolve_clip_to_artifact_type(
+                clip_type, theme, registry, artifact_type_registry,
+                membership_registry=registry,
+            )
+            return (value,) if found else None
+
+        resolved, _ = lookup_default_registry(resolve)
+        resolved = resolved[0] if resolved is not None else None
     else:
         resolved = resolve_clip_to_artifact_type(
             clip_type, theme, element_registry, artifact_type_registry

@@ -20,7 +20,7 @@ _COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 _PIN_FIELDS = {"repo", "commit", "digest_rule", "digest"}
 _GROUP_OPTIONS = {
-    "selected", "release_pins", "import_contract", "builds", "toolchain",
+    "selected", "selected_roots", "core_root", "release_pins", "import_contract", "builds", "toolchain",
     "refresh", "boundary",
 }
 
