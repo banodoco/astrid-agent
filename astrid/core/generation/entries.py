@@ -108,9 +108,9 @@ def _ready_entry_rows(entry_id: str | None = None, *, registry: Any = None,
         return []
     root = resources.ready_templates_root().parent
     index = resources.template_index()['templates']
+    coverage = resources.coverage_manifest()['workflows']
     if before_projection is not None:
         before_projection()
-    coverage = resources.coverage_manifest()['workflows']
     task_modes = {'text_to_image': 't2i', 'text_to_image_single_frame': 't2i', 'image_to_image': 'i2i', 'image_edit': 'edit',
                   'text_to_video': 't2v', 'image_to_video': 'i2v', 'first_last_frame': 'flf',
                   'first_last_frame_video': 'flf', 'text_to_audio_song': 'music', 'music': 'music',
