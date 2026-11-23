@@ -192,10 +192,10 @@ def counted_cache_read(self, key):
         counts["pack_inventory_cached_hit"] += 1
     return result
 discovery._DiscoveryCache.read = counted_cache_read
-# Count the actual admission path after the cache-return branch. The line is
-# resolved from source so unrelated edits cannot silently move the probe.
+# Count the actual source scanner invocation after the cache-return branch.
+# Resolve its line from source so unrelated edits cannot silently move the probe.
 source_lines, first_line = inspect.getsourcelines(discovery.discover_pack_metadata)
-walk_line = first_line + next(i for i, line in enumerate(source_lines) if line.strip() == "managed_by_root = {")
+walk_line = first_line + next(i for i, line in enumerate(source_lines) if line.strip().startswith("source_packs = ("))
 walked_frames = set()
 def trace(frame, event, arg):
     if frame.f_code is inventory_code:
