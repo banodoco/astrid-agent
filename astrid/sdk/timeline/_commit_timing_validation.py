@@ -840,15 +840,23 @@ def validate_candidate_timing(
                 if (key, field) in exemptions:
                     # The exemption signature tracks the target and its
                     # placement. Its source can drift independently of both.
-                    old_word, new_word = old_words.resolve(key, field, text), new_words.resolve(key, field, text)
-                    if old_word != new_word or (
-                        old_word is None
-                        and old_words.search_inputs(moment.line) != new_words.search_inputs(moment.line)
-                    ):
-                        raise TimingCompileError(
-                            f"cannot verify shot word anchor after its source changed. {SHOT_WORD_ALTERNATIVE}"
-                        )
-                    continue
+                    old_word, new_word = old_words.word(key, field, text), new_words.word(key, field, text)
+                    if old_word is None:
+                        old_search = old_words.search_inputs(moment.line)
+                        new_search = new_words.search_inputs(moment.line)
+                        if old_search != new_search and new_search.retains_referenced_pins(old_search):
+                            continue
+                        if new_word is None:
+                            if old_search == new_search:
+                                continue
+                            old_hits = old_words.ambiguous_inputs(moment, old_search)
+                            if old_hits is not None and old_hits == new_words.ambiguous_inputs(moment, new_search):
+                                continue
+                    elif old_word == new_word:
+                        continue
+                    raise TimingCompileError(
+                        f"cannot verify shot word anchor after its source changed. {SHOT_WORD_ALTERNATIVE}"
+                    )
                 proof = prove_shot_word_retime(new_words, old_words, key, clip, before.get(key), field, text)
                 if proof is None:
                     continue

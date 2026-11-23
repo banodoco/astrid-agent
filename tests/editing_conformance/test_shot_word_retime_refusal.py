@@ -201,6 +201,45 @@ def test_stationary_ambiguous_word_requires_unchanged_narration_search():
     assert candidate == before
 
 
+@pytest.mark.parametrize("trim_source", [
+    pytest.param(False, id="preserve-narration"),
+    pytest.param(True, id="trim-narration-after-matches"),
+])
+def test_other_occurrence_tail_change_checks_stationary_ambiguous_word_sources(trim_source):
+    baseline = _with_provable_anchor("again")
+    other = copy.deepcopy(baseline["shots"]["chapter-shot"])
+    other["shot_id"] = "other-shot"
+    other["payload"]["name"] = other["base_payload"]["name"] = "Other"
+    other["payload"]["internal_timeline_revision_id"] = "other-internal-revision"
+    other["base_payload"]["internal_timeline_revision_id"] = "other-internal-revision"
+    other["internal_timeline"]["clips"].pop()  # Keep the narration without the word target.
+    baseline["shots"]["other-shot"] = other
+
+    source = copy.deepcopy(baseline["source_mapping"]["shots"]["chapter-shot"])
+    source.update(shot_id="other-shot", revision_id="other-shot-revision",
+                  internal_timeline_id="other-timeline", internal_timeline_revision_id="other-internal-revision")
+    baseline["source_mapping"]["shots"]["other-shot"] = source
+    placement = copy.deepcopy(baseline["placements"][0])
+    placement.update(occurrence_id="occ-b", shot_id="other-shot", shot_revision_id="other-shot-revision",
+                     duration_ms=5000, placement={"start_ms": 12000, "track": "picture"})
+    baseline["placements"].append(placement)
+    candidate = copy.deepcopy(baseline)
+    candidate["placements"][1]["duration_ms"] = 4500
+    voice, = candidate["shots"]["other-shot"]["internal_timeline"]["clips"]
+    if trim_source:
+        voice["to"] = 5.75  # Both occurrences of "again" retain their projected times.
+    before = copy.deepcopy(candidate)
+
+    if trim_source:
+        with pytest.raises(AuthoringBundleError, match=re.escape(GUIDANCE)):
+            validate_final_candidate(candidate, baseline=baseline)
+    else:
+        validate_final_candidate(candidate, baseline=baseline)
+
+    assert candidate == before
+    assert _shot_clips(candidate) == _shot_clips(baseline)
+
+
 def test_occurrence_duration_change_preserves_stationary_word_anchored_clip():
     baseline = _with_provable_anchor()
     candidate = copy.deepcopy(baseline)
