@@ -379,6 +379,8 @@ class _RemoteFamily:
             elif operation == "get_project_shot": value = self._client.get_project_shot(*args, **kwargs)
             elif operation == "get_project_shot_revision": value = self._client.get_project_shot_revision(*args, **kwargs)
             elif operation == "get_project_timeline_revision": value = self._client.get_project_timeline_revision(*args, **kwargs)
+            elif operation == "get_project_timeline_verified_head":
+                return DomainResult.success(self._client.get_project_timeline_verified_head(*args, **kwargs))
             elif operation == "get_project_parent_composition_revision": value = self._client.get_project_parent_composition_revision(*args, **kwargs)
             elif operation == "import_timeline": value = self._client.import_timeline(*args, **kwargs)
             elif operation == "get_source_frame_thumbnail":
@@ -468,6 +470,10 @@ class RemoteTimelines(_RemoteFamily, _RemoteTimelineRevisionMixin):
     def __init__(self, client, *, invoker=None):
         super().__init__(client)
         self._invoker = invoker
+
+    @property
+    def supports_verified_timeline_head(self) -> bool:
+        return getattr(self._client, "supports_verified_timeline_head", False) is True
 
     @staticmethod
     def _retired_document_route(operation: str, *, idempotency_key=None):
