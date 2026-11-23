@@ -26,6 +26,51 @@ configured = test_project_packs.configured
 TARGET = 'occurrence:occ-a/clip:clip-a'
 
 
+def test_retain_clip_rows_id_comparisons_grow_linearly_and_preserve_duplicates():
+    from astrid.sdk.timeline.commit_session import _retain_clip_rows
+
+    comparisons = 0
+
+    class CountedId(str):
+        __hash__ = str.__hash__
+
+        def __eq__(self, other):
+            nonlocal comparisons
+            comparisons += 1
+            return str.__eq__(self, other)
+
+    def measured(size):
+        nonlocal comparisons
+        before = {'parent': {'clips': [{'id': CountedId(f'clip-{i}'), 'params': {'old': i}}
+                                       for i in range(size)]}}
+        after = {'parent': {'clips': [{'id': CountedId(f'clip-{i}'), 'params': {'new': i}}
+                                      for i in range(size)]}}
+        comparisons = 0
+        _retain_clip_rows(before, after)
+        return comparisons
+
+    small, large = measured(64), measured(128)
+    assert large <= small * 2.5
+
+    old_unique = {'id': CountedId('unique'), 'params': {'held': []}}
+    old_duplicate = {'id': CountedId('duplicate'), 'params': {'held': []}}
+    before = {'parent': {'clips': [old_unique, old_duplicate,
+                                    {'id': CountedId('duplicate'), 'params': {'held': []}}]}}
+    unique_new = {'id': CountedId('unique'), 'params': {'held': [], 'written': True}}
+    duplicate_new = {'id': CountedId('duplicate'), 'params': {'written': True}}
+    duplicate_new_again = {'id': CountedId('duplicate'), 'params': {'written': True}}
+    after = {'parent': {'clips': [unique_new, duplicate_new, duplicate_new_again]}}
+    held_params = old_unique['params']
+    held_list = held_params['held']
+    _retain_clip_rows(before, after)
+    assert after['parent']['clips'][0] is old_unique
+    assert old_unique['params'] is held_params
+    assert old_unique['params']['held'] is held_list
+    assert old_unique['params']['written'] is True
+    assert after['parent']['clips'][1] is duplicate_new
+    assert after['parent']['clips'][2] is duplicate_new_again
+
+
 def _setup(monkeypatch, tmp_path, configured):
     from astrid.core.element.registry import load_default_registry
     fixture_pack = Path(__file__).parents[1] / 'fixtures/packs/astrid_motion'
