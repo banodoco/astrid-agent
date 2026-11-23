@@ -2165,7 +2165,16 @@ def _worker_import_environment(record: 'CapabilityRecord', environment: Mapping[
             env['PYTHONPATH'] = os.pathsep.join((*network_hook_roots,
                 str(Path(__file__).resolve().parents[3]), *_dependency_pythonpath(environment)))
     elif not installed:
-        env['PYTHONPATH'] = _command_worker_pythonpath(record, env.get('PYTHONPATH', ''))
+        existing = env.get('PYTHONPATH', '')
+        if network_hook_roots:
+            hook_prefix = os.pathsep.join(network_hook_roots)
+            if existing == hook_prefix:
+                existing = ''
+            elif existing.startswith(hook_prefix + os.pathsep):
+                existing = existing[len(hook_prefix) + 1:]
+            else:
+                raise HostError('host network hook context differs before command dispatch')
+        env['PYTHONPATH'] = os.pathsep.join((*network_hook_roots, _command_worker_pythonpath(record, existing)))
     return env
 
 
@@ -10436,7 +10445,14 @@ class GenericPackHost:
         from astrid.core.rendering.verified_source import PreparedTimelineInputs
 
         PreparedTimelineInputs.handoff_source(prepared_inputs, env)
+        network_hook_roots = (str(attempt / '.astrid-network-hook'),) if env.get('ASTRID_NETWORK_POLICY') else ()
+        if network_hook_roots:
+            hook_prefix = network_hook_roots[0]
+            inherited_path = env.get('PYTHONPATH', '')
+            if inherited_path != hook_prefix and not inherited_path.startswith(hook_prefix + os.pathsep):
+                raise HostError('host network hook context differs before command dispatch')
         env = _worker_import_environment(record, env, kind='command', selected=selected_map, relocations=selected_relocations,
+                                          network_hook_roots=network_hook_roots,
                                           installed=os.environ.get('ASTRID_HOST_EXECUTION_PROFILE') == 'installed')
         cwd = _confined_cwd(
             binding.cwd,
@@ -10492,7 +10508,7 @@ class GenericPackHost:
             argv[worker_index:worker_index] = ["--external-source-fd", str(source_channel.fileno())]
             # The descriptor proves Runtime selection/custody; execution reads raw source.
             if os.environ.get('ASTRID_HOST_EXECUTION_PROFILE') != 'installed':
-                env["PYTHONPATH"] = os.pathsep.join((package_parent, *_dependency_pythonpath()))
+                env["PYTHONPATH"] = os.pathsep.join((*network_hook_roots, package_parent, *_dependency_pythonpath()))
         if selected_command:
             control = {"pack_id": str(record.definition.metadata["source_pack"]), "root": str(pack_root),
                        "source_digest": (admission or {}).get("source_digest") or _source_digest_for_roots((pack_root,)),
@@ -10515,7 +10531,6 @@ class GenericPackHost:
                 argv[worker_index:worker_index] = ["--external-source-fd", str(source_channel.fileno())]
             # Keep the host-created network hook visible to strict startup, as
             # invoke_capability does; arbitrary child PYTHONPATH stays excluded.
-            network_hook_roots = (str(attempt / ".astrid-network-hook"),) if env.get("ASTRID_NETWORK_POLICY") else ()
             if os.environ.get('ASTRID_HOST_EXECUTION_PROFILE') != 'installed':
                 env["PYTHONPATH"] = os.pathsep.join((*network_hook_roots, package_parent, *_dependency_pythonpath()))
         remotion_lease = None
