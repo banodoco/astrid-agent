@@ -557,6 +557,144 @@ def test_public_function_stale_edit_uses_conservative_scope_guard(
         assert State(landed).entity(target).get('elementRef') is None
 
 
+def test_public_held_clip_views_retarget_twice_then_undo(monkeypatch, tmp_path, configured):
+    """Two held Clip views remain writable after sequential element retargets."""
+    from astrid.sdk.timeline import commit_session, sync
+    from astrid.sdk.timeline.commit import _digest, _manifest, create_runtime_commit_service
+    from astrid.core.receipts.canonical import canonical_json
+    from tests.sdk.test_timeline_commit_provider import DetachedPort, DetachedRealm, detached, runtime_abi
+
+    runtime_abi.__wrapped__(monkeypatch)
+    real_ack = sync._ack
+    owner, ref, pin, initial = _setup(monkeypatch, tmp_path, configured)
+    monkeypatch.setattr(sync, '_ack', real_ack)
+
+    document = copy.deepcopy(initial['source_mapping']['_runtime_document'])
+    internal = document['internal_timeline_revisions'][0]
+    internal['payload']['clips'][0].update(
+        id='effect-a', params={'seed': 4, 'future': {'keep': [None, False, {}]}})
+    internal['content_digest'] = _digest(internal['payload'])
+    shot = copy.deepcopy(document['shot_revisions'][0])
+    shot.update(shot_id='chapter-shot-b', revision_id='shot-2')
+    internal_b = copy.deepcopy(internal)
+    internal_b.update(timeline_id='chapter-two', revision_id='internal-2')
+    internal_b['payload']['clips'][0].update(
+        id='effect-b', params={'seed': 4, 'future': {'keep': [None, False, {}]}})
+    internal_b['content_digest'] = _digest(internal_b['payload'])
+    shot['internal_timeline_revision_id'] = 'internal-2'
+    shot['payload']['internal_timeline_revision_id'] = 'internal-2'
+    shot['payload']['items'][0]['item_id'] = 'item-2'
+    shot['content_digest'] = _digest(shot['payload'])
+    document['shot_revisions'].append(shot)
+    document['internal_timeline_revisions'].append(internal_b)
+    occurrence = copy.deepcopy(document['parent_revision']['payload']['occurrences'][0])
+    occurrence.update(occurrence_id='occ-b', shot_id='chapter-shot-b', shot_revision_id='shot-2')
+    document['parent_revision']['payload']['occurrences'].append(occurrence)
+    document['parent_revision']['content_digest'] = _digest(document['parent_revision']['payload'])
+    document['dependency_manifest'] = _manifest(
+        document['shot_revisions'], document['internal_timeline_revisions'],
+        document['dependency_manifest']['media'], document['dependency_manifest']['documents'])
+    baseline = bundle_from_document(document)
+
+    realm = DetachedRealm(document)
+    realm.entries[0]['receipt']['project_id'] = 'project'
+    source, snapshots = owner.schema_inputs[0]
+    realm.live_sources[_digest(pin)] = detached(source)
+    realm.snapshot_objects = detached(snapshots)
+    owner._client._last_handshake = {'realm_id': 'realm', 'actor_id': 'actor-1'}
+    service = create_runtime_commit_service()
+
+    def head_bundle(revision_id=None, publication_id=None):
+        revision_id = revision_id or realm.head['revision_id']
+        publication_id = publication_id or realm.head['publication_id']
+        result = bundle_from_document(copy.deepcopy(realm.documents[revision_id]))
+        result['base_parent']['publication_id'] = publication_id
+        return result
+
+    owner.open_bundle.side_effect = lambda _p, _t, *, revision_id=None, publication_id=None: DomainResult.success({
+        'bundle': head_bundle(revision_id, publication_id), 'project_id': 'project',
+        'timeline_id': 'film', 'head_revision_id': realm.head['revision_id'],
+        'revision_id': revision_id or realm.head['revision_id']})
+    owner.history.side_effect = lambda *_a, **_kw: DomainResult.success({
+        'head': copy.deepcopy(realm.head), 'items': copy.deepcopy(realm.entries), 'next_cursor': None})
+
+    path = '/v1/projects/project/timelines/film/commit'
+
+    def runtime_accept(body, key):
+        invocation = {'operation': 'commitTimeline', 'path': path,
+                      'publisher': 'actor-1', 'request': copy.deepcopy(body)}
+        context = {'request': body, 'invocation': invocation, 'idempotency_key': key,
+                   'request_hash': hashlib.sha256(canonical_json(invocation).encode()).hexdigest(),
+                   'realm_id': 'realm', 'publisher': 'actor-1'}
+        port = DetachedPort(realm, context)
+        port.context['request'].setdefault('rationale', '')
+        accepted = service.commit(context, port)
+        receipt = copy.deepcopy(accepted['receipt'])
+        receipt['project_id'] = 'project'
+        receipt['project_seq'] = [receipt['project_seq'][0], receipt['project_seq'][0]]
+        realm.entries[-1]['receipt']['project_id'] = 'project'
+        realm.entries[-1]['receipt']['project_seq'] = copy.deepcopy(receipt['project_seq'])
+        realm.accepted[-1]['receipt']['project_id'] = 'project'
+        realm.accepted[-1]['receipt']['project_seq'] = copy.deepcopy(receipt['project_seq'])
+        return accepted['data'], receipt
+
+    def commit(_project, _timeline, body, *, idempotency_key):
+        data, receipt = runtime_accept(body, idempotency_key)
+        return DomainResult.success(data, receipt=CommandReceipt.from_dict(receipt),
+                                    idempotency_key=idempotency_key)
+
+    owner.commit.side_effect = commit
+    def send(project, timeline_id, body, *, idempotency_key):
+        result = owner.commit(project, timeline_id, body, idempotency_key=idempotency_key)
+        assert result.ok, result.as_dict()
+        return {'data': result.data, 'receipt': result.receipt.as_dict()}
+
+    owner._client.commit_timeline = send
+    client = SimpleNamespace(_remote=SimpleNamespace(_transport=owner._client), timelines=owner,
+                             documents=configured, media=configured.media)
+    timeline = commit_session.open('project', 'film', client=client,
+                                   outbox_path=tmp_path / 'held-clip-views.json')
+
+    held, retained = {}, {}
+
+    def edit(working):
+        held['a'] = next(clip for clip in working.clips() if clip.id == 'effect-a')
+        held['b'] = next(clip for clip in working.clips() if clip.id == 'effect-b')
+        retained['a'] = held['a'].params
+        retained['b'] = held['b'].params
+        held['a'].set_element(ref)
+        held['b'].set_element(ref)
+        held['a'].params['seed'] = 8
+        held['b'].params['seed'] = 9
+        retained['a']['future']['keep'].append('held-a')
+        retained['b']['future']['keep'].append('held-b')
+
+    accepted = timeline.commit(edit, label='Retarget both held clips', key='held-views')
+    landed = bundle_from_document(accepted['data']['canonical_document'])
+    targets = [('occurrence:occ-a/clip:effect-a', 8, 'held-a'),
+               ('occurrence:occ-b/clip:effect-b', 9, 'held-b')]
+    for target, seed, marker in targets:
+        row = State(landed).entity(target)
+        assert row['elementRef'] == ref
+        assert row['params'] == {'seed': seed, 'future': {'keep': [None, False, {}, marker]}}
+
+    undone = timeline.undo(publications=[accepted['receipt']['receipt_id']])
+    restored = bundle_from_document(undone['data']['canonical_document'])
+    restored_document = document_from_bundle(restored)
+    original_document = document_from_bundle(baseline)
+    expected = copy.deepcopy(original_document)
+    expected['dependency_manifest']['documents'] = [pin]
+    expected['parent_revision']['revision_id'] = restored_document['parent_revision']['revision_id']
+    parent_revision_id = restored_document['parent_revision']['revision_id']
+    assert parent_revision_id.startswith('authoring-parent-revision-')
+    digest = parent_revision_id.removeprefix('authoring-parent-revision-')
+    assert len(digest) == 64 and all(character in '0123456789abcdef' for character in digest)
+    assert restored_document['dependency_manifest']['documents'] == [pin]
+    assert restored_document['parent_revision']['payload'] == original_document['parent_revision']['payload']
+    assert restored_document['parent_revision']['content_digest'] == original_document['parent_revision']['content_digest']
+    assert restored_document == expected
+
+
 # --- pointing an existing built-in effect clip at an admitted project effect ---------------------------------
 
 def _builtin_clip(bundle, clip_type, **fields):
