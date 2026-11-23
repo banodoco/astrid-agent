@@ -75,7 +75,12 @@ _OCCURRENCE_CLOSURE_ERROR = "closure membership or provenance changed; use a sem
 
 def _occurrence_timing_candidate(before, after):
     """Extract only existing timing leaves, leaving all closure identity in the basis."""
-    from .emitter import DocumentPatchError, _outside, _same
+    try:
+        from .emitter import DocumentPatchError, _outside, _same
+    except ModuleNotFoundError as exc:
+        if exc.name != "astrid.sdk.timeline.emitter":
+            raise
+        raise TimelineEditError("free edits require the G3 document emitter; use command() until it is available") from exc
 
     base_rows, requested = before.get("placements"), after.get("placements")
     if _same(base_rows, requested):
@@ -1137,7 +1142,7 @@ class Timeline(Checkout):
                     evaluation = state.get("evaluation") or evaluation
                 continue
             if dry_run:
-                self._add_preview_diff(result, working.bundle)
+                working._add_preview_diff(result, working.bundle)
             if function and count > 1:
                 result["attempts"] = count
                 result["data"]["attempts"] = count
@@ -1278,18 +1283,18 @@ class Timeline(Checkout):
             self._add_preview_diff(result, self.bundle)
         return self._accepted(result)
 
-    def _add_preview_diff(self, result, before_bundle):
+    def _add_preview_diff(self, result, before_bundle=None):
         """Pair Runtime's preview commands with a diff of authored document fields."""
+        if before_bundle is None:
+            result, before_bundle = self, result
+        elif self._runtime_document is not None:
+            before_bundle = self._execution_bundle(before_bundle)
         from .commit import bundle_from_document
         from .emitter import _diff, _payload_for_emit, _root_pairs
 
         data = result.get("data", {})
         document = data.get("canonical_document")
         if isinstance(document, Mapping):
-            # Live SDK bundles omit the private canonical input. Physical
-            # occurrence roots still need that exact session input for the
-            # read-only preview diff, just as command capture does.
-            before_bundle = self._execution_bundle(before_bundle)
             after_bundle = bundle_from_document(document)
             changes = []
             # Canonical reopening may replace local shot IDs (for example when

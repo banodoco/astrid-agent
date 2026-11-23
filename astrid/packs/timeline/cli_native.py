@@ -321,7 +321,12 @@ def ordinary_swap_requested(parsed):
     if not all(name in accepted or getattr(parsed, name) == default
                for name, default in parsed.native_trim_defaults.items() if name != 'help'):
         return False
-    return store.find_draft(parsed.project, parsed.ref, client=parsed.client) is None
+    try:
+        return store.find_draft(parsed.project, parsed.ref, client=parsed.client) is None
+    except AttributeError as exc:
+        if exc.obj is parsed.client and exc.name == "timelines":
+            return False
+        raise
 
 
 def dispatch_ordinary_edit(parsed):
