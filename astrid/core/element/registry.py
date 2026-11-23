@@ -1,10 +1,13 @@
 """Element registry and canonical pack-source discovery."""
 
 import logging
+import os
 import sys
+from copy import deepcopy
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
-from functools import lru_cache
 from pathlib import Path
+from threading import Lock
 from typing import Iterable
 
 from astrid.core.foundation.paths import REPO_ROOT
@@ -194,16 +197,91 @@ class ElementRegistry(CapabilityRegistry[tuple[str, str], ElementDefinition]):
         """
         return {key: definitions[0] for key, definitions in self._entries.items()}
 
-@lru_cache(maxsize=None)
+_default_registry_lock = Lock()
+_default_registry_cache = {}
+# Pass the resolved root through the public loader without changing its arguments.
+_resolved_lookup_root = ContextVar("resolved_lookup_root", default=None)
+
+
+def _project_root_key(project_root):
+    return str(Path(project_root).resolve())
+
+
+def _pack_roots(project_root, extra_pack_roots):
+    from astrid.core.pack import loader
+    from astrid.core.pack.source_setup import active_sources
+
+    roots = [loader.packs_root(), Path.home() / "Astrid" / "packs",
+             Path(project_root) / "astrid" / "packs"]
+    roots.extend(source.pack_root for source in active_sources(verify=False))
+    roots.extend(extra_pack_roots)
+    roots.extend(filter(None, os.environ.get("ASTRID_PACKS_PATH", "").split(os.pathsep)))
+    paths = []
+    for raw in roots:
+        path = Path(raw).expanduser()
+        if not path.is_absolute():
+            path = Path(project_root) / path
+        path = Path(os.path.abspath(path))
+        if path not in paths:
+            paths.append(path)
+    return tuple(paths)
+
+
+def _root_state(roots):
+    state = []
+    for root in roots:
+        try:
+            state.append(root.stat().st_mtime_ns)
+        except FileNotFoundError:
+            state.append(None)
+    return tuple(state)
+
+
+def _assemble_registry(data):
+    elements, kinds, diagnostics = data
+    resolver = create_shared_alias_resolver()
+    _register_pack_aliases(resolver, {})
+    return ElementRegistry(elements, alias_resolver=resolver,
+                           element_kind_registry=kinds, diagnostics=diagnostics)
+
+
+def _publish(key=None, lookup=None, *, clear=False):
+    """Serialize every publication, including invalidation and first load."""
+    global _default_registry_cache
+    with _default_registry_lock:
+        if clear:
+            _default_registry_cache = {}
+            return
+        entry = _default_registry_cache.get(key)
+        if entry is not None and lookup is not None:
+            registry = deepcopy(entry[2])
+            result = lookup(registry)
+            if result is not None:
+                return result, registry
+        if entry is None:
+            roots = _pack_roots(key[0], key[2])
+            state = _root_state(roots)
+        elif lookup is not None:
+            roots = _pack_roots(key[0], key[2])
+            state = _root_state(roots)
+        else:
+            return deepcopy(entry[2])
+        if entry is not None and (roots, state) == entry[:2]:
+            return result, registry
+        entry = (roots, state, _assemble_registry(_load_default_registry_data(*key)))
+        _default_registry_cache = {**_default_registry_cache, key: entry}
+        registry = deepcopy(entry[2])
+        return (lookup(registry), registry) if lookup is not None else registry
+
+
 def _load_default_registry_data(
     project_root_key: str,
     include_missing_roots: bool,
     extra_pack_roots_key: tuple[str, ...],
 ) -> tuple[tuple[ElementDefinition, ...], ElementKindRegistry, tuple[SkippedElement, ...]]:
-    """Parse the static element corpus once; return raw definitions.
+    """Parse the element corpus once per cache key; return raw definitions.
 
-    The corpus (packs + default element sources) is static repo content.  A
-    fresh parse costs seconds of YAML work per call (measured: ~2s per load,
+    A fresh parse costs seconds of YAML work per call (measured: ~2s per load,
     ~189 ``yaml.safe_load`` calls — a 93-event timeline replay that validates
     four config events spends ~6s total).  Callers rebuild a fresh
     :class:`ElementRegistry` from the cached raw definitions, so per-call
@@ -240,18 +318,31 @@ def _load_default_registry_data(
 
 
 def clear_default_registry_cache() -> None:
-    """Drop the cached element corpus and SDK schema bindings together.
-
-    Test seam / hot-reload hook: tests that patch pack discovery must clear
-    this cache (the catalog's ``_clear_registry_cache`` does) so a re-discovered
-    corpus (e.g. a temp pack declaring a custom element kind) is re-parsed.
-    """
-    _load_default_registry_data.cache_clear()
-    # Keep timeline parameter validation coherent with provider discovery. The SDK owns
-    # its schema cache, so import lazily to avoid coupling registry initialization to it.
+    """Invalidate the shared corpus and SDK schema bindings."""
+    _publish(clear=True)
     from astrid.sdk.timeline_address import clear_schema_cache
-
     clear_schema_cache()
+
+
+def lookup_default_registry(lookup, *, project_root=None):
+    """Resolve misses against a serialized, pre-discovery root stamp.
+
+    Root mtimes cannot see in-place edits or a pack landing after the stamp
+    read until a later miss (issue #1584).
+    """
+    root_key = _project_root_key(REPO_ROOT if project_root is None else project_root)
+    key = (root_key, False, ())
+    original_root = REPO_ROOT if project_root is None else project_root
+    token = _resolved_lookup_root.set((original_root, root_key))
+    try:
+        registry = (load_default_registry() if project_root is None
+                    else load_default_registry(project_root=project_root))
+    finally:
+        _resolved_lookup_root.reset(token)
+    result = lookup(registry)
+    if result is not None:
+        return result, registry
+    return _publish(key, lookup)
 
 
 def load_default_registry(
@@ -260,26 +351,17 @@ def load_default_registry(
     include_missing_roots: bool = False,
     extra_pack_roots: tuple[str, ...] = (),
 ) -> ElementRegistry:
-    """Load the default element registry (corpus parse is cached).
-
-    Registry assembly stays per-call so callers may register additional
-    elements without polluting the shared corpus cache.
-    """
-    elements, element_kind_registry, diagnostics = _load_default_registry_data(
-        str(Path(project_root).resolve()),
-        include_missing_roots,
-        tuple(str(Path(root).resolve()) for root in extra_pack_roots),
-    )
-    resolver = create_shared_alias_resolver()
-    _register_pack_aliases(resolver, {})  # no aliases yet
-    registry = ElementRegistry(
-        alias_resolver=resolver,
-        element_kind_registry=element_kind_registry,
-        diagnostics=diagnostics,
-    )
-    for element in elements:
-        registry.register(element)
-    return registry
+    """Return an independently mutable registry from the published corpus."""
+    resolved = _resolved_lookup_root.get()
+    if resolved is not None and project_root == resolved[0]:
+        _resolved_lookup_root.set(None)
+        project_root = resolved[1]
+    else:
+        project_root = _project_root_key(project_root)
+    extra_pack_roots = tuple(str(Path(root).resolve()) for root in extra_pack_roots)
+    key = (project_root, include_missing_roots, extra_pack_roots)
+    entry = _default_registry_cache.get(key)
+    return deepcopy(entry[2]) if entry is not None else _publish(key)
 
 
 def default_sources(*, project_root: str | Path = REPO_ROOT) -> tuple[ElementSource, ...]:

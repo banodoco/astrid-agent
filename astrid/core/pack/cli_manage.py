@@ -309,7 +309,7 @@ def _build_inputs(source: str, revision: str | None, packs: Mapping[str, str],
     return builds, (_toolchain(selected_toolchain) if builds else None)
 
 
-PACK_AVAILABLE_AFTER_HOST_START = "The pack is available after the host's next start."
+PACK_AVAILABLE_AFTER_HOST_START = "The pack is installed. Host refresh is pending."
 
 
 def _handle_add(args: argparse.Namespace) -> int:
