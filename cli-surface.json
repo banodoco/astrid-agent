@@ -524,6 +524,38 @@
           ],
           "verbs": {}
         },
+        "silent-video": {
+          "flags": {
+            "--dry-run": {
+              "required": false
+            },
+            "--duration": {
+              "required": true
+            },
+            "--fps": {
+              "required": false
+            },
+            "--idempotency-key": {
+              "required": false
+            },
+            "--json": {
+              "required": false
+            },
+            "--project": {
+              "required": true
+            },
+            "--sample-rate": {
+              "required": false
+            },
+            "--size": {
+              "required": false
+            }
+          },
+          "positionals": [
+            "ref"
+          ],
+          "verbs": {}
+        },
         "thumbnails": {
           "flags": {},
           "positionals": [],
