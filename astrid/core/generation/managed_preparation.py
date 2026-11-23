@@ -25,6 +25,10 @@ from .engine_contracts import (
 )
 from .engine_local_endpoint import DEFAULT_ENGINE
 
+# Shared entry-owned approval shape for the LE-2b admission boundary. Defining
+# the record does not change which sources preparation may restore today.
+from .node_approvals import NodeApproval as NodeApproval
+
 SCHEMA = "astrid.managed-engine-preparation.v1"
 _ENGINE_STOP_TIMEOUT_SECONDS = 30.0
 _PREPARATION_CONTEXT = ContextVar("astrid_managed_engine_preparation", default=None)
