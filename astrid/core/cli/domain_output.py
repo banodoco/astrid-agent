@@ -56,7 +56,18 @@ EXIT_FAILURE = 1
 EXIT_USAGE = 2
 """Command-line usage/parse error (argparse's conventional exit code)."""
 
-_output_stream: ContextVar[TextIO | None] = ContextVar(
+class _OutputScope:
+    """A shared, revocable reference, including in copied contexts."""
+
+    def __init__(self, stream: TextIO | None):
+        self.stream = stream
+
+    @property
+    def pending(self):
+        return getattr(self.stream, "pending", None)
+
+
+_output_stream: ContextVar[_OutputScope | None] = ContextVar(
     "astrid_product_output_stream", default=None
 )
 
@@ -64,10 +75,12 @@ _output_stream: ContextVar[TextIO | None] = ContextVar(
 @contextmanager
 def output_stream_scope(stream: TextIO | None):
     """Route product success and JSON output to *stream* for this dispatch."""
-    token = _output_stream.set(stream)
+    scope = _OutputScope(stream)
+    token = _output_stream.set(scope)
     try:
         yield
     finally:
+        scope.stream = None
         _output_stream.reset(token)
 
 
@@ -81,7 +94,8 @@ def cli_print(
     """``print`` for product handlers, honoring a dispatch-scoped stdout sink."""
     stream = file
     if stream is None:
-        stream = _output_stream.get()
+        scope = _output_stream.get()
+        stream = scope.stream if scope is not None else None
     builtins.print(*values, sep=sep, end=end, file=stream, flush=flush)
 
 
@@ -240,7 +254,8 @@ def print_result(
     receives the complete result envelope; JSON output and typed failure
     rendering remain unchanged.
     """
-    scoped_stream = _output_stream.get()
+    scope = _output_stream.get()
+    scoped_stream = scope.stream if scope is not None else None
     out = (
         stream
         if stream is not None
