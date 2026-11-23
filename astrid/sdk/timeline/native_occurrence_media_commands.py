@@ -60,8 +60,13 @@ def _consume(ctx, owner, ids):
 def _binding(pin, kind, *, verified=None):
     entry = {'media_id': pin['object_id'], 'type': kind,
              'generationId': pin['generation_id'], 'variantId': pin['variant_id']}
-    if kind in ('video', 'audio') and verified is not None:
-        entry['duration'] = verified['duration_seconds']
+    if verified is not None:
+        if kind in ('video', 'audio'):
+            entry['duration'] = verified['duration_seconds']
+        width, height = verified.get('width'), verified.get('height')
+        if (kind in ('image', 'video') and type(width) is int and type(height) is int
+                and width > 0 and height > 0):
+            entry['resolution'] = f'{width}x{height}'
     return entry
 
 
@@ -138,10 +143,15 @@ def _registry(ctx, owner, pin, kind, *, create=False, alias=None, retained=False
     if ctx.state.get(ref, []) == ABSENT and create:
         ctx.create_asset(owner, identity, expected)
     elif create:
-        if kind in ('video', 'audio') and equal(entry, _binding(pin, kind)):
-            ctx.write(ref, ['duration'], expected['duration'])
-        elif not equal(entry, expected):
+        # A legacy exact binding may lack intrinsic metadata; fill only missing
+        # fields and reject mismatches or unrelated registry changes.
+        if (not isinstance(entry, dict) or any(key not in expected or not equal(value, expected[key])
+                                               for key, value in entry.items())
+                or any(key not in entry for key in _binding(pin, kind))):
             raise CommandError('existing registry binding differs from exact selection', kind='dependency_changed')
+        for key in ('duration', 'resolution'):
+            if key in expected and key not in entry:
+                ctx.write(ref, [key], expected[key])
     elif retained:
         # A different-alias swap leaves this entire entry untouched. Authenticate
         # its object, including legacy digest mirrors, without inventing catalog
@@ -286,7 +296,10 @@ def _swap(ctx, command, owner, limit):
         if not affected:
             raise CommandError('media alias has no affected consumers', kind='identity_conflict')
         _registry(ctx, owner, old, kind, alias=alias)
-        for key, replacement in _binding(pin, kind, verified=value).items():
+        binding = _binding(pin, kind, verified=value)
+        if 'resolution' not in binding and 'resolution' in ctx.state.registry(owner)['assets'][alias]:
+            ctx.clear(owner + '/asset:' + alias, ['resolution'])
+        for key, replacement in binding.items():
             ctx.write(owner + '/asset:' + alias, [key], replacement)
         _replace_payload_media(ctx, owner, old['object_id'], pin['object_id'])
     else:
