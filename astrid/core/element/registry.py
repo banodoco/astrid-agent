@@ -4,6 +4,7 @@ import logging
 import os
 import sys
 from copy import deepcopy
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from pathlib import Path
 from threading import Lock
@@ -198,21 +199,12 @@ class ElementRegistry(CapabilityRegistry[tuple[str, str], ElementDefinition]):
 
 _default_registry_lock = Lock()
 _default_registry_cache = {}
-_project_root_keys = {}
+# Pass the resolved root through the public loader without changing its arguments.
+_resolved_lookup_root = ContextVar("resolved_lookup_root", default=None)
 
 
 def _project_root_key(project_root):
-    # Normalize relative paths without I/O; resolve each spelling only once
-    # until cache invalidation, including its current working directory.
-    path = os.fspath(project_root)
-    if not os.path.isabs(path):
-        path = os.path.join(os.getcwd(), path)
-    keys = _project_root_keys
-    key = keys.get(path)
-    if key is None:
-        key = str(Path(path).resolve())
-        keys[path] = key
-    return key
+    return str(Path(project_root).resolve())
 
 
 def _pack_roots(project_root, extra_pack_roots):
@@ -255,19 +247,15 @@ def _assemble_registry(data):
 
 def _publish(key=None, lookup=None, *, clear=False):
     """Serialize every publication, including invalidation and first load."""
-    global _default_registry_cache, _project_root_keys
+    global _default_registry_cache
     with _default_registry_lock:
         if clear:
             _default_registry_cache = {}
-            _project_root_keys = {}
             return
         entry = _default_registry_cache.get(key)
         if entry is not None and lookup is not None:
-            if entry is getattr(lookup, "observed_entry", None):
-                result, registry = lookup.previous_result
-            else:
-                registry = deepcopy(entry[2])
-                result = lookup(registry)
+            registry = deepcopy(entry[2])
+            result = lookup(registry)
             if result is not None:
                 return result, registry
         if entry is None:
@@ -344,18 +332,17 @@ def lookup_default_registry(lookup, *, project_root=None):
     """
     root_key = _project_root_key(REPO_ROOT if project_root is None else project_root)
     key = (root_key, False, ())
-    observed = _default_registry_cache.get(key)
-    registry = (load_default_registry() if project_root is None
-                else load_default_registry(project_root=project_root))
+    original_root = REPO_ROOT if project_root is None else project_root
+    token = _resolved_lookup_root.set((original_root, root_key))
+    try:
+        registry = (load_default_registry() if project_root is None
+                    else load_default_registry(project_root=project_root))
+    finally:
+        _resolved_lookup_root.reset(token)
     result = lookup(registry)
     if result is not None:
         return result, registry
-    def retry(current):
-        return lookup(current)
-
-    retry.observed_entry = observed
-    retry.previous_result = (result, registry)
-    return _publish(key, retry)
+    return _publish(key, lookup)
 
 
 def load_default_registry(
@@ -365,7 +352,12 @@ def load_default_registry(
     extra_pack_roots: tuple[str, ...] = (),
 ) -> ElementRegistry:
     """Return an independently mutable registry from the published corpus."""
-    project_root = _project_root_key(project_root)
+    resolved = _resolved_lookup_root.get()
+    if resolved is not None and project_root == resolved[0]:
+        _resolved_lookup_root.set(None)
+        project_root = resolved[1]
+    else:
+        project_root = _project_root_key(project_root)
     extra_pack_roots = tuple(str(Path(root).resolve()) for root in extra_pack_roots)
     key = (project_root, include_missing_roots, extra_pack_roots)
     entry = _default_registry_cache.get(key)
