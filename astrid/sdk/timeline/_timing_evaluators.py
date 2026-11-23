@@ -643,15 +643,15 @@ def _collect_declaration_failures(collect, identity, declarations, owner, check)
     """
     anchors = declarations.get("word_anchors")
     anchors = anchors if isinstance(anchors, dict) else {}
-    for field in ("on", "until"):
-        text = declarations.get(field)
-        if field in anchors or not isinstance(text, str) or not text.strip():
+    for declaration_field in ("on", "until"):
+        text = declarations.get(declaration_field)
+        if declaration_field in anchors or not isinstance(text, str) or not text.strip():
             continue
         try:
             if mo.parse(text).kind != "word":
-                check(field, text)
+                check(declaration_field, text)
         except (TimingCompileError, mo.MomentError, ValueError, TypeError, KeyError) as exc:
-            collect.append((identity, field, str(exc)))
+            collect.append((identity, declaration_field, str(exc)))
 
 
 def legacy_declaration_failures(bundle, sources=()):

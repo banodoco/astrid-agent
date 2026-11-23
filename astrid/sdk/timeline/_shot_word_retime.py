@@ -11,14 +11,30 @@ from astrid.sdk import timeline_intent as intent
 from astrid.sdk.media_transcript import transcript_document_id
 from astrid.sdk.timeline._common import TimelineEditError
 from astrid.sdk.timeline._recording import active
-from astrid.sdk.timeline._timing_evaluators import SHOT_WORD_ALTERNATIVE, _ShotWordBinding, _duration, _fps
+from astrid.sdk.timeline._timing_evaluators import (
+    SHOT_WORD_ALTERNATIVE,
+    _duration,
+    _fps,
+    _ShotWordBinding,
+)
 from astrid.sdk.timeline.compiler import TimingCompileError
 from astrid.sdk.timeline.doc import _row_start
 from astrid.sdk.timeline.native_word_anchor import binding
 from astrid.sdk.timeline.units import _time_fraction, quantize_time, source_to_timeline_time
 from astrid.sdk.timeline.words import (
-    _clip_media_id, _holder_clips, _holder_tracks, _occurrences, _registry_assets, _source_window, _track_is_audio,
-    as_words, choose_document, default_source_order, project_words, reference_rows, timeline_media_ids,
+    _clip_media_id,
+    _holder_clips,
+    _holder_tracks,
+    _occurrences,
+    _registry_assets,
+    _source_window,
+    _track_is_audio,
+    as_words,
+    choose_document,
+    default_source_order,
+    project_words,
+    reference_rows,
+    timeline_media_ids,
     transcript_references,
 )
 
