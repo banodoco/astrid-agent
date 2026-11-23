@@ -6,6 +6,7 @@ import json
 from dataclasses import asdict
 from typing import Any
 
+from astrid.core.cli.domain_output import cli_print as print
 from astrid.sdk.timeline._common import TimelineEditError
 from astrid.sdk.timeline.revisions import (
     Revision,

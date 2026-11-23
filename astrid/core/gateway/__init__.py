@@ -69,11 +69,21 @@ SPRINT1_UNBOUND_ALLOWLIST_CONTRACT: tuple[tuple[str, ...], ...] = (
 )
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, started_at: float | None = None) -> int:
     global _MAIN_CALLS
-    os.environ["ASTRID_CLI_START_MONO"] = str(_GATEWAY_IMPORTED_MONO if _MAIN_CALLS == 0 else time.monotonic())
+    entry = time.monotonic()
+    # The installed console may provide its earlier process-entry timestamp,
+    # captured before importing OMP and the gateway. Always overwrite the
+    # environment marker so embedded calls cannot inherit a stale value.
+    start = started_at if started_at is not None else (
+        _GATEWAY_IMPORTED_MONO if _MAIN_CALLS == 0 else time.monotonic()
+    )
+    os.environ["ASTRID_CLI_START_MONO"] = str(start)
     _MAIN_CALLS += 1
     raw = sys.argv[1:] if argv is None else list(argv)
+    from astrid.console import _STARTUP_MARKS
+    marks = _STARTUP_MARKS.get()
+    token = _STARTUP_MARKS.set(marks if marks is not None else (entry, "command entry", None, None))
     try:
         return _main_impl(raw)
     except SystemExit as exc:
@@ -94,6 +104,8 @@ def main(argv: list[str] | None = None) -> int:
             state_snapshot={"argv": raw, "entrypoint": "astrid.core.gateway.main"},
         )
         return render_astrid_error(bug)
+    finally:
+        _STARTUP_MARKS.reset(token)
 
 
 def _main_impl(raw: list[str]) -> int:

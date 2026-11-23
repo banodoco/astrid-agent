@@ -14,8 +14,9 @@ import sys
 from collections.abc import Mapping
 from typing import Any
 
-from astrid.pack_api import print_result
 from astrid.core.cli.domain_output import DomainResult
+from astrid.core.cli.domain_output import cli_print as print
+from astrid.pack_api import print_result
 from astrid.packs.timeline.cli_common import clips_changed, short_rev, working_copy_view
 from astrid.sdk.contracts import ErrorObject
 
