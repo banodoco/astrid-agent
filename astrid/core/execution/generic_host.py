@@ -5366,7 +5366,22 @@ class RuntimeProtocolClient:
         # Waiting for it must not strand the attempt's deadline observer.
         timeout = self.execution_policy.authority_window_seconds / 150
         remaining = timeout if deadline is None else min(timeout, max(0.0, deadline - time.monotonic()))
-        if not self._heartbeat_lock.acquire(timeout=remaining):
+        lock_wait_started = time.monotonic()
+        acquired = self._heartbeat_lock.acquire(timeout=remaining)
+        lock_wait_seconds = time.monotonic() - lock_wait_started
+
+        def log_lock_wait(reason):
+            try:
+                log_lease_diagnostic(
+                    task_id=str(task_id), attempt_id=attempt_id, category="heartbeat_lock_wait",
+                    last_acknowledged_heartbeat=None, elapsed_seconds=None,
+                    reason=reason, wait_seconds=lock_wait_seconds,
+                )
+            except Exception:
+                pass  # Diagnostics must not change heartbeat behavior.
+
+        if not acquired:
+            log_lock_wait("timed_out")
             raise TimeoutError("runtime heartbeat authority is busy")
         try:
             self._heartbeat_sequence += 1
@@ -5392,6 +5407,8 @@ class RuntimeProtocolClient:
             return client.heartbeat_attempt(attempt_id, **payload)
         finally:
             self._heartbeat_lock.release()
+            if lock_wait_seconds >= 0.001:
+                log_lock_wait("acquired")
 
     def claim(self, task_id: str, worker_id: str, lease_token: str):
         raise HostError("per-task claim is not a canonical operation; use claim_task")
@@ -11529,6 +11546,19 @@ class GenericPackHost:
                         elapsed_seconds=time.monotonic() - lifetime.started_at,
                         runtime_code=diagnostic.get("runtime_code"), verdict=verdict)
 
+        def log_lease_pump_event(category, *, reason=None, wait_seconds=None):
+            """Log one bounded lease-pump event without request or payload data."""
+            diagnostic = terminal["lease_diagnostic"]
+            try:
+                log_lease_diagnostic(
+                    task_id=str(data["id"]), attempt_id=exact_attempt, category=category,
+                    last_acknowledged_heartbeat=diagnostic["last_successful_heartbeat_at_utc"],
+                    elapsed_seconds=time.monotonic() - lifetime.started_at,
+                    reason=reason, wait_seconds=wait_seconds,
+                )
+            except Exception:
+                pass  # Diagnostics must not change attempt behavior.
+
         def record_publication_refusal(error):
             reason = _runtime_authority_refusal(error, operation="settle")
             record_lease_diagnostic("publication_refused", error=error, verdict="lease_lost")
@@ -11614,29 +11644,63 @@ class GenericPackHost:
                 # keeps its producer-only progress and its original RPC cadence.
                 progress = {**(progress or {}), "phase": str(terminal["stage"])}
                 token = (terminal["stage"], _canonical_digest(progress))
+            skip_reason = None
             with completion_lock:
-                if (stop.is_set() or terminal.get("recorded") or terminal.get("forced")
-                        or (lifetime.expired() and not terminal.get("publication_pending"))):
-                    return
-                changed = token != terminal.get("renewed_progress")
-                if terminal.get("renewal_inflight") or not (changed or liveness):
-                    return
-                terminal["renewal_inflight"] = True
+                if stop.is_set():
+                    skip_reason = "pump_stopped"
+                elif terminal.get("recorded"):
+                    skip_reason = "attempt_recorded"
+                elif terminal.get("forced"):
+                    skip_reason = "attempt_forced"
+                elif lifetime.expired() and not terminal.get("publication_pending"):
+                    skip_reason = "attempt_deadline_expired"
+                elif terminal.get("renewal_inflight"):
+                    skip_reason = "renewal_inflight"
+                else:
+                    changed = token != terminal.get("renewed_progress")
+                    if not (changed or liveness):
+                        skip_reason = "progress_unchanged"
+                    else:
+                        terminal["renewal_inflight"] = True
+            if skip_reason is not None:
+                log_lease_pump_event("heartbeat_skipped", reason=skip_reason)
+                return
             kwargs = {"attempt_id": exact_attempt, "fence": exact_fence}
             if (progress is not None and token[1] != terminal.get("sent_progress")
                     and token[1] != terminal.get("rejected_progress")):
                 kwargs["progress"] = progress
+            heartbeat_started = time.monotonic()
+            failure_logged = False
             try:
                 progress_error = None
                 try:
                     result = lease_call(self.client.heartbeat, str(data["id"]), lease_token, **kwargs)
                 except Exception as exc:
                     if "progress" not in kwargs or getattr(exc, "code", None) != "validation_error":
+                        error_name = type(exc).__name__
+                        reason = (error_name if error_name.isascii()
+                                  and error_name.replace("_", "").isalnum() else "heartbeat_error")
+                        log_lease_pump_event("heartbeat_failed", reason=reason,
+                                             wait_seconds=time.monotonic() - heartbeat_started)
+                        failure_logged = True
                         raise
                     progress_error = exc
+                    log_lease_pump_event("heartbeat_failed", reason="progress_rejected",
+                                         wait_seconds=time.monotonic() - heartbeat_started)
+                    failure_logged = True
                     terminal["rejected_progress"] = token[1]
                     kwargs.pop("progress")
-                    result = lease_call(self.client.heartbeat, str(data["id"]), lease_token, **kwargs)
+                    retry_started = time.monotonic()
+                    try:
+                        result = lease_call(self.client.heartbeat, str(data["id"]), lease_token, **kwargs)
+                    except Exception as retry_error:
+                        error_name = type(retry_error).__name__
+                        reason = (error_name if error_name.isascii()
+                                  and error_name.replace("_", "").isalnum() else "heartbeat_error")
+                        log_lease_pump_event("heartbeat_failed", reason=reason,
+                                             wait_seconds=time.monotonic() - retry_started)
+                        raise
+                    failure_logged = False
                 def field(name):
                     return result.get(name) if isinstance(result, Mapping) else getattr(result, name, None)
                 fields = {name: field(name) for name in (
@@ -11656,23 +11720,47 @@ class GenericPackHost:
                                        ("task_id", str(data["id"])), ("lease_id", lease_token),
                                        ("runtime_epoch", exact_epoch)):
                     if field(name) is not None and expected is not None and field(name) != expected:
+                        log_lease_pump_event("heartbeat_failed", reason="ack_identity_mismatch",
+                                             wait_seconds=time.monotonic() - heartbeat_started)
+                        failure_logged = True
                         record_lease_diagnostic(f"heartbeat_{name}_changed")
                         force_abort("lease_lost")
                         return
                 expiry = field("lease_expires_at")
+                skip_reason = None
                 with completion_lock:
-                    if (terminal.get("forced") or terminal.get("recorded") or stop.is_set()
-                            or (lifetime.expired() and not terminal.get("publication_pending"))):
-                        return
-                    terminal["renewed_progress"] = token
-                    if "progress" in kwargs:
-                        terminal["sent_progress"] = token[1]
-                    diagnostic = dict(terminal["lease_diagnostic"])
-                    diagnostic["last_successful_heartbeat_at_utc"] = datetime.now(timezone.utc).isoformat()
-                    diagnostic["last_successful_heartbeat_expiry"] = safe_lease_value(expiry, limit=96)
-                    terminal["lease_diagnostic"] = diagnostic
+                    if terminal.get("forced"):
+                        skip_reason = "attempt_forced"
+                    elif terminal.get("recorded"):
+                        skip_reason = "attempt_recorded"
+                    elif stop.is_set():
+                        skip_reason = "pump_stopped"
+                    elif lifetime.expired() and not terminal.get("publication_pending"):
+                        skip_reason = "attempt_deadline_expired"
+                    else:
+                        terminal["renewed_progress"] = token
+                        if "progress" in kwargs:
+                            terminal["sent_progress"] = token[1]
+                        diagnostic = dict(terminal["lease_diagnostic"])
+                        diagnostic["last_successful_heartbeat_at_utc"] = datetime.now(timezone.utc).isoformat()
+                        diagnostic["last_successful_heartbeat_expiry"] = safe_lease_value(expiry, limit=96)
+                        terminal["lease_diagnostic"] = diagnostic
+                if skip_reason is not None:
+                    log_lease_pump_event("heartbeat_skipped", reason=skip_reason,
+                                         wait_seconds=time.monotonic() - heartbeat_started)
+                    return
+                log_lease_pump_event("heartbeat_acknowledged", reason="accepted",
+                                     wait_seconds=time.monotonic() - heartbeat_started)
                 record_lease_diagnostic("heartbeat_progress_invalid" if progress_error else cycle_category,
                                         current=current, error=progress_error, condition="heartbeat")
+            except Exception as exc:
+                if not failure_logged:
+                    error_name = type(exc).__name__
+                    reason = (error_name if error_name.isascii()
+                              and error_name.replace("_", "").isalnum() else "heartbeat_error")
+                    log_lease_pump_event("heartbeat_failed", reason=reason,
+                                         wait_seconds=time.monotonic() - heartbeat_started)
+                raise
             finally:
                 with completion_lock:
                     terminal["renewal_inflight"] = False
@@ -11726,7 +11814,7 @@ class GenericPackHost:
                 if terminal.get("root") is not None:
                     self._write_task_result(terminal)
 
-        def pump_lease():
+        def _pump_lease_loop():
             poll_seconds = (_LEASE_POLL_SECONDS * self.execution_policy.authority_window_seconds
                             / _DEFAULT_EXECUTION_POLICY.authority_window_seconds)
             next_poll = time.monotonic() + poll_seconds
@@ -11748,21 +11836,32 @@ class GenericPackHost:
                 if time.monotonic() < next_poll or self.client is None:
                     continue
                 next_poll = time.monotonic() + poll_seconds
+                task_read_started = time.monotonic()
                 try:
                     current = task_snapshot()
                 except BaseException as exc:
+                    task_read_wait = time.monotonic() - task_read_started
+                    log_lease_pump_event("task_read_gate", reason="read_failed", wait_seconds=task_read_wait)
+                    log_lease_pump_event("heartbeat_skipped", reason="task_read_failed")
                     if lease_transport_fault("task_read_exception", exc):
                         continue
                     force_abort("timeout" if lifetime.expired() else "lease_lost")
                     return
+                task_read_wait = time.monotonic() - task_read_started
                 if terminal.get("publication_pending") and (
                         current["status"] in {"completed", "succeeded", "failed", "cancelled"}
                         or current["attempt_id"] != exact_attempt or current["fence"] != exact_fence
                         or current["runtime_epoch"] != exact_epoch):
                     # The publication owner consumes this authoritative read.
                     # Do not race it with an unrelated lifecycle failure.
+                    log_lease_pump_event("task_read_gate", reason="publication_owner_changed",
+                                         wait_seconds=task_read_wait)
+                    log_lease_pump_event("heartbeat_skipped", reason="publication_owner_changed")
                     return
                 if current["status"] in {"cancel_requested", "cancelled"}:
+                    log_lease_pump_event("task_read_gate", reason="cancel_requested",
+                                         wait_seconds=task_read_wait)
+                    log_lease_pump_event("heartbeat_skipped", reason="cancel_requested")
                     record_lease_diagnostic("cancel_requested", current=current,
                                             verdict="cancelled" if terminal.get("publication_pending") else None)
                     if terminal.get("publication_pending"):
@@ -11782,25 +11881,39 @@ class GenericPackHost:
                     except (AttributeError, TypeError, ValueError):
                         cycle_category = "lease_metadata_invalid"
                 if state not in {None, "running"}:
+                    log_lease_pump_event("task_read_gate", reason="task_state_changed",
+                                         wait_seconds=task_read_wait)
+                    log_lease_pump_event("heartbeat_skipped", reason="task_state_changed")
                     record_lease_diagnostic("task_state_changed", current=current)
                     force_abort("lease_lost")
                     return
                 if current.get("attempt_id", exact_attempt) != exact_attempt:
+                    log_lease_pump_event("task_read_gate", reason="attempt_changed",
+                                         wait_seconds=task_read_wait)
+                    log_lease_pump_event("heartbeat_skipped", reason="attempt_changed")
                     record_lease_diagnostic("attempt_changed", current=current)
                     force_abort("lease_lost")
                     return
                 if current.get("fence", exact_fence) != exact_fence:
+                    log_lease_pump_event("task_read_gate", reason="fence_changed",
+                                         wait_seconds=task_read_wait)
+                    log_lease_pump_event("heartbeat_skipped", reason="fence_changed")
                     record_lease_diagnostic("fence_changed", current=current)
                     force_abort("lease_lost")
                     return
                 if current["runtime_epoch"] != exact_epoch:
                     if type(current["runtime_epoch"]) is int:
+                        log_lease_pump_event("task_read_gate", reason="runtime_epoch_changed",
+                                             wait_seconds=task_read_wait)
+                        log_lease_pump_event("heartbeat_skipped", reason="runtime_epoch_changed")
                         record_lease_diagnostic("runtime_epoch_changed", current=current)
                         force_abort("lease_lost")
                         return
                     cycle_category = "task_metadata_invalid"
                 if observation_conditions.get("task", ("observing",))[0] == "task_read_exception":
                     record_lease_diagnostic("observing", current=current)
+                log_lease_pump_event("task_read_gate", reason="owner_matches",
+                                     wait_seconds=task_read_wait)
                 # Main execution/child guards validate full interactive
                 # authority. The observer must keep its deadline clock
                 # available if those authority reads themselves stall.
@@ -11813,9 +11926,29 @@ class GenericPackHost:
                         # Settlement may have committed between the task read
                         # and heartbeat. Its owner must resolve the stale ACK;
                         # a lifecycle abort would race successful readback.
+                        log_lease_pump_event("heartbeat_skipped", reason="publication_pending")
                         return
                     force_abort("timeout" if lifetime.expired() else "lease_lost")
                     return
+
+        def pump_lease():
+            log_lease_pump_event("lease_pump_enter", reason="started")
+            try:
+                _pump_lease_loop()
+            finally:
+                if stop.is_set():
+                    reason = "stop_requested"
+                elif terminal.get("recorded"):
+                    reason = "attempt_recorded"
+                elif terminal.get("forced"):
+                    reason = "attempt_forced"
+                elif lifetime.expired():
+                    reason = "deadline_expired"
+                elif self._shutdown.is_set():
+                    reason = "host_shutdown"
+                else:
+                    reason = "loop_finished"
+                log_lease_pump_event("lease_pump_exit", reason=reason)
 
         terminal.update(completion_call=completion_call, ensure_failure=ensure_failure,
                         read_progress=read_progress, renew_progress=renew_progress, force_abort=force_abort,

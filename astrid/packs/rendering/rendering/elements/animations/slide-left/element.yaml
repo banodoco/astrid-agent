@@ -37,6 +37,7 @@
     "kind": "wrapper",
     "name": "Slide Left",
     "phase": "entrance",
+    "supportsEasing": true,
     "pack_id": "rendering"
   },
   "pack_id": "rendering",
