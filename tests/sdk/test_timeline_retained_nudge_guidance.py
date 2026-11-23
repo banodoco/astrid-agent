@@ -11,7 +11,7 @@ import pytest
 from astrid.core.timeline.authoring_bundle import _digest
 from astrid.sdk.timeline import Timeline
 from astrid.sdk.timeline._common import TimelineEditError
-from astrid.sdk.timeline.commit import bundle_from_document, document_from_bundle
+from astrid.sdk.timeline.commit import _manifest, bundle_from_document, document_from_bundle
 from tests.editing_conformance.test_shot_word_retime_refusal import GUIDANCE, _with_provable_anchor
 
 
@@ -90,4 +90,41 @@ def test_public_word_anchor_nudge_refuses_with_cut_relative_guidance(monkeypatch
     assert not working._commands and not working._steps
     assert "pinned_documents" not in working.bundle["source_mapping"]
     assert transport.reads == [(bundle["project_id"], capture["pin"])]
+    assert latest_reads == []
+
+
+def test_public_shot_nudge_with_only_inline_words_refuses_before_mutation(monkeypatch):
+    bundle, capture = _canonical_nudge_inputs("stop")
+    document = bundle["source_mapping"]["_runtime_document"]
+    parent = document["parent_revision"]
+    parent["payload"]["config"]["bundle"].pop("transcriptReferences")
+    parent["content_digest"] = _digest(parent["payload"])
+    internal, = document["internal_timeline_revisions"]
+    voice, _ = internal["payload"]["clips"]
+    voice["app"] = {"words": [[1.75, 2, "stop"]]}
+    internal["content_digest"] = _digest(internal["payload"])
+    document["dependency_manifest"] = _manifest(
+        document["shot_revisions"], document["internal_timeline_revisions"],
+        document["dependency_manifest"]["media"], [],
+    )
+    timeline, transport, _ = _open_retained_timeline(monkeypatch, bundle_from_document(document), capture)
+    latest_reads = []
+    monkeypatch.setattr("astrid.sdk.media_transcript.read_transcript", lambda *args: latest_reads.append(args))
+    before = copy.deepcopy(timeline.bundle)
+    state_before = copy.deepcopy(timeline.session._state())
+    working_timelines = []
+
+    def shift(working):
+        working_timelines.append(working)
+        working.clip("card").nudge(frames=15)
+
+    with pytest.raises(TimelineEditError, match=re.escape(GUIDANCE)):
+        timeline.commit(shift, label="Probe inline word retime", dry_run=True)
+
+    working, = working_timelines
+    assert timeline.bundle == before
+    assert timeline.session._state() == state_before
+    assert working.bundle == before
+    assert not working._commands and not working._steps
+    assert transport.reads == []
     assert latest_reads == []
