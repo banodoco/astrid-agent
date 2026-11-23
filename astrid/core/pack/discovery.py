@@ -20,14 +20,17 @@ import hashlib
 import logging
 import os
 import stat
-from contextlib import contextmanager
-from contextvars import ContextVar
-from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
-from threading import Lock
 from typing import Any, Callable
 
+from astrid._pack_discovery_scope import (
+    _CACHE_MISS,
+    _DiscoveryCache as _DiscoveryCache,
+    _active_discovery_cache,
+    _discovery_cache as _discovery_cache,
+    pack_discovery_scope,
+)
 from astrid.core.foundation.paths import PACKAGE_ROOT, REPO_ROOT
 from astrid.core.pack import (
     PackDefinition,
@@ -58,62 +61,50 @@ LOCAL_PACK_ID = ExternalPackSource.LOCAL.value
 MANAGED_SOURCE_KIND = "managed"
 ASTRID_PACKS_PATH_ENV = "ASTRID_PACKS_PATH"
 
-# Opt-in, request-local reuse for generation input resolution. Other discovery
-# callers continue to scan normally. Never retain an inventory across requests.
-class _DiscoveryCache(dict):
-    """A shared owner that can revoke caches held by copied contexts."""
+class _RootSnapshot:
+    """Remember tree membership and Linux metadata for inexpensive rechecks."""
 
-    def __init__(self):
-        super().__init__()
-        self.active = True
-        self._lock = Lock()
+    def __init__(self, root: Path):
+        self.entries = {}
+        self.identity = None
 
-    def read(self, key):
-        with self._lock:
-            if self.active and key in self:
-                return deepcopy(self[key])
-            return _CACHE_MISS
+        def visit(path):
+            try:
+                info = path.lstat()
+            except FileNotFoundError:
+                self.entries[path] = None
+                return
+            self.entries[path] = self._signature(info)
+            if stat.S_ISDIR(info.st_mode):
+                for child in sorted(path.iterdir()):
+                    visit(child)
+            elif not (stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)):
+                raise OSError(f"cannot fingerprint non-regular pack resource: {path}")
 
-    def publish(self, key, value):
-        snapshot = deepcopy(value)
-        with self._lock:
-            if self.active:
-                self[key] = snapshot
+        visit(root)
 
-    def revoke(self):
-        with self._lock:
-            self.active = False
-            self.clear()
+    @staticmethod
+    def _signature(info):
+        return (info.st_dev, info.st_ino, info.st_mode, info.st_size,
+                info.st_mtime_ns, info.st_ctime_ns)
 
-
-_CACHE_MISS = object()
-_discovery_cache: ContextVar[_DiscoveryCache | None] = ContextVar("pack_discovery_cache", default=None)
-
-
-def _active_discovery_cache() -> _DiscoveryCache | None:
-    cache = _discovery_cache.get()
-    return cache if cache is not None and cache.active else None
-
-
-@contextmanager
-def pack_discovery_scope():
-    """Reuse admitted packs only while their complete discovery inputs match."""
-    if _active_discovery_cache() is not None:
-        yield
-        return
-    cache = _DiscoveryCache()
-    token = _discovery_cache.set(cache)
-    try:
-        yield
-    finally:
-        cache.revoke()
-        _discovery_cache.reset(token)
+    def unchanged(self):
+        for path, signature in self.entries.items():
+            try:
+                current = self._signature(path.lstat())
+            except FileNotFoundError:
+                current = None
+            except OSError:
+                return False
+            if current != signature:
+                return False
+        return True
 
 
 def _tree_fingerprint(root: Path) -> str:
     """Read contents, names and file kinds, including untracked resources.
 
-    A stat-only key misses same-size edits with restored timestamps. Tracking
+    An mtime-only key misses same-size edits with restored timestamps. Tracking
     the entire tree also covers added manifests, alternate manifests, deleted
     resources and new symlinks that canonical admission must reject.
     """
@@ -158,7 +149,7 @@ def _discovery_fingerprint(
         return None
     project_root = Path(project_root).resolve()
     raw_env = os.environ.get(ASTRID_PACKS_PATH_ENV, "")
-    roots = [loader.packs_root(), Path.home() / "Astrid" / "packs", project_root / "astrid" / "packs",
+    roots = [loader.packs_root(), PACKAGE_ROOT / "core" / "hivemind", Path.home() / "Astrid" / "packs", project_root / "astrid" / "packs",
              Path(__file__).with_name("schemas")]
     if personal_packs_root is not None:
         roots.append(Path(personal_packs_root).expanduser())
@@ -167,7 +158,10 @@ def _discovery_fingerprint(
         root = Path(raw_root).expanduser()
         roots.append(root if root.is_absolute() else project_root / root)
     try:
-        trees = tuple((str(root), str(root.resolve()), _tree_fingerprint(root.resolve()))
+        cache = _active_discovery_cache()
+        trees = tuple((str(root), str(root.resolve()),
+                       cache.tree_fingerprint(root.resolve()) if cache is not None
+                       else _tree_fingerprint(root.resolve()))
                       for root in dict.fromkeys(roots))
     except OSError:
         return None  # Unreadable/racing inputs use ordinary admission and its errors.
@@ -485,6 +479,28 @@ def discover_pack_metadata(
         provisional_managed_sources = active_sources(verify=False)
     except ImportError:
         provisional_managed_sources = ()
+    cache = _active_discovery_cache()
+    fingerprint = None
+    managed_inventory = None
+    inventory_error = None
+    try:
+        from astrid.core.pack.source_setup import active_source_inventory
+        managed_inventory = active_source_inventory()
+    except ImportError:
+        pass
+    except Exception as exc:
+        # Preserve name-collision precedence when verification fails.
+        inventory_error = exc
+    if cache is not None and managed_inventory is not None:
+        fingerprint = _discovery_fingerprint(
+            project_root, extra_pack_roots, managed_inventory, scan,
+            include_hidden=include_hidden, personal_packs_root=selected_personal_root,
+        )
+        if fingerprint is not None:
+            cached = cache.read(fingerprint)
+            if cached is not _CACHE_MISS:
+                return cached
+
     # Explicit extras are caller ordered and can precede bundled roots. The
     # admission result is identical regardless of which selected root is seen
     # first, because no manifest is consulted during this pass.
@@ -533,26 +549,8 @@ def discover_pack_metadata(
                 f"duplicate pack id/directory name {child.name!r} across {previous} and {child}"
             )
 
-    try:
-        from astrid.core.pack.source_setup import active_source_inventory
-
-        managed_inventory = active_source_inventory()
-    except ImportError:
-        managed_inventory = None
-
-    cache = _active_discovery_cache()
-    fingerprint = None
-    if cache is not None and managed_inventory is not None:
-        # active_source_inventory verifies revision, cleanliness, manifest and
-        # tree digests even when an admitted inventory can be reused below.
-        fingerprint = _discovery_fingerprint(
-            project_root, extra_pack_roots, managed_inventory, scan,
-            include_hidden=include_hidden, personal_packs_root=selected_personal_root,
-        )
-        if fingerprint is not None:
-            cached = cache.read(fingerprint)
-            if cached is not _CACHE_MISS:
-                return cached
+    if inventory_error is not None:
+        raise inventory_error
 
     managed_by_root = {
         source.pack_root.resolve(): source

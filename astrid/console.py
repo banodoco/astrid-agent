@@ -111,6 +111,18 @@ def _run_console(
     *,
     start_provenance: str,
 ) -> int:
+    # A command owns the inventory; embedded invocations get fresh scopes.
+    from astrid._pack_discovery_scope import pack_discovery_scope
+
+    with pack_discovery_scope():
+        return _run_console_impl(argv, start_provenance=start_provenance)
+
+
+def _run_console_impl(
+    argv: list[str] | None = None,
+    *,
+    start_provenance: str,
+) -> int:
     started_at = time.monotonic()
     rest = list(sys.argv[1:] if argv is None else argv)
     if argv is None and rest and rest[0] == "timelines":
