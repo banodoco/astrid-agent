@@ -4,6 +4,7 @@ import copy
 import pytest
 
 from astrid.sdk.timeline import media_swap, publish, store
+from astrid.sdk.timeline.commit import _digest
 from astrid.sdk.timeline.emitter import DocumentPatchError
 from tests.editing_conformance.test_interim_ripple_public import _open_film
 from tests.sdk.test_timeline_commit_provider_document import document_fixture
@@ -52,26 +53,39 @@ def test_timing_plus_unsupported_payload_keeps_old_guard(tmp_path, monkeypatch, 
     assert realm.documents[realm.head["revision_id"]] == original
 
 
-def test_timing_with_existing_clip_trim_and_removal_skips_media_helpers(tmp_path, monkeypatch):
-    timeline, realm, calls = _open_film(tmp_path, monkeypatch, document_fixture(shared=False), None)
+@pytest.mark.parametrize("edit", ["clip-hold", "source-from", "source-to", "inline-words", "clip-removal"])
+def test_timing_with_existing_media_payload_keeps_old_guard(tmp_path, monkeypatch, edit):
+    document = document_fixture(shared=False)
+    internal, = document["internal_timeline_revisions"]
+    clip = internal["payload"]["clips"][0]
+    clip.update({"from": 0, "to": 2})
+    clip["app"]["astrid"] = {"words": [[0, 0.5, "one"], [0.6, 1.0, "two"]]}
+    internal["content_digest"] = _digest(internal["payload"])
+    document["dependency_manifest"]["internal_timelines"][0]["content_digest"] = internal["content_digest"]
+    timeline, realm, calls = _open_film(tmp_path, monkeypatch, document, None)
+    original = copy.deepcopy(realm.documents[realm.head["revision_id"]])
     _forbid_media_helpers(monkeypatch)
 
-    def edit(working):
+    def mixed_edit(working):
         placement = working.bundle["placements"][0]
-        placement["duration_ms"] -= 1000
+        placement["placement"]["start_ms"] += 250
         clips = working.bundle["shots"][placement["shot_id"]]["internal_timeline"]["clips"]
-        clips[0]["hold"] -= 1
-        clips.pop()
+        if edit == "clip-hold":
+            clips[0]["hold"] -= 1
+        elif edit == "source-from":
+            clips[0]["from"] = 0.25
+        elif edit == "source-to":
+            clips[0]["to"] = 1.75
+        elif edit == "inline-words":
+            clips[0]["app"]["astrid"]["words"] = [[0.1, 0.6, "one"]]
+        else:
+            clips.pop()
 
-    preview = timeline.commit(edit, label="Trim and remove existing clips", dry_run=True)
+    with pytest.raises(DocumentPatchError) as caught:
+        timeline.commit(mixed_edit, label="Mixed payload and occurrence timing", dry_run=True)
 
-    assert preview["data"]["would_status"] == "accepted"
-    assert preview["receipt"] is None
-    assert len(calls) == 1 and calls[0]["dry_run"]
-    canonical = preview["data"]["canonical_document"]
-    occurrence, = canonical["parent_revision"]["payload"]["occurrences"]
-    assert occurrence["duration_ms"] == 9000
-    internal, = canonical["internal_timeline_revisions"]
-    clip, = internal["payload"]["clips"]
-    assert (clip["id"], clip["asset"], clip["hold"]) == ("clip-a", "picture", 1)
-    assert not realm.accepted
+    assert type(caught.value) is DocumentPatchError
+    assert str(caught.value) == "closure membership or provenance changed; use a semantic command"
+    assert calls == []
+    assert realm.accepted == []
+    assert realm.documents[realm.head["revision_id"]] == original

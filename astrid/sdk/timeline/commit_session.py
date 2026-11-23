@@ -123,32 +123,21 @@ def _occurrence_timing_candidate(before, after):
 
 
 def _ripple_payload_change(change):
-    """Recognize only retained clip timing and removal in a mixed placement patch."""
+    """Allow only an existing numeric clip start in a mixed placement patch."""
     ref, path = change["ref"], change["path"]
     if ref == "parent" and path[:1] == ["config"]:
         path = path[1:]
-    if (ref != "parent" and not ref.startswith("internal-revision:")) or path[:1] != ["clips"]:
-        return False
-    if change["op"] == "list.remove":
-        return path == ["clips"]
-    if change["op"] != "set" or len(path) < 3 or not path[1].startswith("id:"):
-        return False
-
-    leaf, value = path[2:], change["value"]
-    if len(leaf) == 1 and leaf[0] in {"at", "hold", "from", "to"}:
-        return type(value) in (int, float)
-    if leaf != ["app", "astrid", "words"] or not isinstance(value, list):
-        return False
-    previous = change["before"].get("value")
-    if not isinstance(previous, list):
-        return False
-    # A trim may discard inline words or translate their timestamps.
-    from .emitter import _same
-
-    old_words = iter(row[2:] for row in previous if isinstance(row, list) and len(row) >= 3)
-    return all(isinstance(row, list) and len(row) >= 3
-               and all(type(edge) in (int, float) for edge in row[:2])
-               and any(_same(row[2:], word) for word in old_words) for row in value)
+    return (
+        (ref == "parent" or ref.startswith("internal-revision:"))
+        and len(path) == 3
+        and path[0] == "clips"
+        and path[1].startswith("id:")
+        and path[2] == "at"
+        and change["op"] == "set"
+        and change["before"]["state"] == "present"
+        and type(change["before"]["value"]) in (int, float)
+        and type(change["value"]) in (int, float)
+    )
 
 
 def _function_rerun_conflict(session, original_base, current_base, before_bundle, after_bundle,
