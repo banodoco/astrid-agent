@@ -498,3 +498,91 @@ def test_sdk_swap_capture_hydrates_only_exact_retained_parent_anchor(damage):
         assert timeline.bundle['parent'] == before
         assert State(timeline.bundle).entity(OWNER + '/clip:visual')['asset'] == 'new-footage'
         assert 'pinned_documents' not in timeline.bundle['source_mapping']
+
+
+@pytest.mark.parametrize("route", ["free_edit", "command", "track_rename"])
+@pytest.mark.parametrize("damage", [None, "mismatch", "revoked"])
+def test_public_edit_authenticates_retained_parent_anchor(monkeypatch, route, damage):
+    from contextlib import nullcontext
+
+    from astrid.sdk.timeline import Timeline
+    from astrid.sdk.timeline._common import TimelineEditError
+    from astrid.sdk.timeline.commit_session import TimelineSession
+
+    bundle, verified = _retained_anchor_swap()
+    exact_pin = verified["pin"]
+    project = bundle["project_id"]
+    reads = []
+    sent = []
+
+    class Missing(Exception):
+        code = "not_found"
+
+    class Transport:
+        def get_project_verified_document(self, project_id, pin):
+            reads.append((project_id, copy.deepcopy(pin)))
+            if damage == "revoked":
+                raise Missing()
+            result = copy.deepcopy(verified)
+            if damage == "mismatch":
+                result["document"]["version"] += 1
+            return result
+
+        def __getattr__(self, name):
+            raise AssertionError(f"unexpected transport call {name}")
+
+    def submit(commands, **kwargs):
+        sent.append((copy.deepcopy(commands), kwargs["dry_run"]))
+        return {"data": {"status": "preview"}, "receipt": None}
+
+    client = SimpleNamespace(_remote=SimpleNamespace(_transport=Transport()))
+    base = {"revision_id": "retained-head", "publication_id": "accepted-publication"}
+    durable = {"base": base, "pending": [], "flight": None}
+    session = SimpleNamespace(
+        project_id=project, timeline_id=bundle["timeline_id"], client=client,
+        identity={"realm_id": "realm-1"}, outbox=SimpleNamespace(locked=nullcontext),
+        _state=lambda: durable, submit=submit,
+    )
+    monkeypatch.setattr(TimelineSession, "open", lambda *a, **k: session)
+    monkeypatch.setattr("astrid.sdk.timeline.store.fetch_bundle", lambda *a, **k: copy.deepcopy(bundle))
+
+    timeline = Timeline.open(project, bundle["timeline_id"], client=client)
+    title = "Renamed with retained word timing"
+    if route == "free_edit":
+        timeline.bundle["parent"]["name"] = title
+
+    def run():
+        if route == "command":
+            timeline.command({
+                "schema_version": 1, "op": "doc.patch", "version": "1", "select": None,
+                "args": {"changes": [{
+                    "op": "set", "ref": "parent", "path": ["name"], "value": title,
+                    "before": {"state": "present", "value": bundle["parent"]["name"]},
+                }]},
+            })
+        elif route == "track_rename":
+            timeline.track("picture").rename(title)
+        return timeline.commit("Rename film", dry_run=True)
+
+    before = copy.deepcopy(timeline.bundle)
+    anchor = copy.deepcopy(bundle["parent"]["clips"][0])
+    if damage:
+        message = {"mismatch": "scope or version", "revoked": "missing or unavailable"}[damage]
+        with pytest.raises(TimelineEditError, match=message):
+            run()
+        assert timeline.bundle == before
+        assert timeline._commands == timeline._steps == timeline._verified_media == sent == []
+        assert durable == {"base": base, "pending": [], "flight": None}
+    else:
+        assert run()["data"]["status"] == "preview"
+        expected_op = "track.set" if route == "track_rename" else "doc.patch"
+        assert [command["op"] for command in sent[0][0]] == [expected_op]
+        assert sent[0][1] is True
+        if route == "track_rename":
+            assert State(timeline.bundle).entity("parent/track:picture")["label"] == title
+        else:
+            assert timeline.bundle["parent"]["name"] == title
+        assert timeline.bundle["parent"]["clips"][0] == anchor
+    assert reads == [(project, exact_pin)]
+    assert "pinned_documents" not in timeline.bundle["source_mapping"]
+    assert "_runtime_document" not in timeline.bundle["source_mapping"]

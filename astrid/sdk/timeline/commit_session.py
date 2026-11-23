@@ -481,20 +481,11 @@ class Timeline(Checkout):
         self._capture_free_edits()
         commands = _placement_commands(self.bundle, pin, verified, on=on, duration=length,
                                        track=track, clip_id=clip_id, asset_alias=asset_alias)
-        from .commands import execute
-
         verified = {**copy.deepcopy(verified), "object_id": pin["object_id"],
                     "pin": {"media_id": pin["object_id"], "content_digest": pin["object_id"]}}
-        capture_bundle = (self._execution_bundle(self._command_bundle)
-                          if self._runtime_document is not None else self._command_bundle)
-        commands = execute(capture_bundle, commands,
-                           verified_media=[*self._verified_media, copy.deepcopy(verified)]).commands
-        self._verified_media.append(copy.deepcopy(verified))
-        try:
-            self._append(commands, label="Add media")
-        except Exception:
-            self._verified_media.pop()
-            raise
+        verified_media = [*self._verified_media, copy.deepcopy(verified)]
+        self._append(commands, label="Add media", verified_media=verified_media, capture=True)
+        self._verified_media = verified_media
         if cache_key is not None:
             entry = self._media_cache.setdefault(cache_key, {
                 "pin": copy.deepcopy(pin), "sources": [],
@@ -525,6 +516,48 @@ class Timeline(Checkout):
         result["source_mapping"]["_runtime_document"] = copy.deepcopy(self._runtime_document)
         return result
 
+    def _retained_capture_hydrator(self):
+        """Share verified inputs across the scratch previews of one edit."""
+        from .native_source_inputs import read_retained_transcripts
+
+        retained_captures = None
+
+        def hydrate(bundle):
+            nonlocal retained_captures
+            if retained_captures is None:
+                document, transport = self._retained_reflow_source()
+                retained_captures = read_retained_transcripts(transport, self.session.project_id, document)
+            if retained_captures:
+                bundle['source_mapping']['pinned_documents'] = copy.deepcopy(retained_captures)
+            return bool(retained_captures)
+
+        return hydrate
+
+    def _guard_anchored_nudge(self, clip, moment):
+        """Refuse an isolated change to a retained shot word declaration before editing."""
+        from astrid.core.timeline.moments import find_words
+
+        from ._shot_word_retime import retained_retime_pins, retime_transcripts
+        from ._timing_evaluators import SHOT_WORD_ALTERNATIVE
+        from .native_source_inputs import read_retained_transcripts
+        from .words import as_words, project_words
+
+        if clip.shot_id == PARENT_SHOT or moment.kind != "word":
+            return
+        document, transport = self._retained_reflow_source()
+        if not retained_retime_pins(document):
+            raise TimelineEditError(
+                f"{clip.address}: nudging a shot word anchor requires a retained transcript. {SHOT_WORD_ALTERNATIVE}"
+            )
+        rows = read_retained_transcripts(transport, self.session.project_id, document)
+        transcripts, captures = retime_transcripts(self.bundle, rows)
+        words = as_words(project_words(self.bundle, transcripts))
+        matches = [phrase for phrase in find_words(moment, words)
+                   if all(word.word_id and word.media_id in captures for word in phrase)]
+        reason = (f"{moment.text!r} matches {len(matches)} retained word passages"
+                  if len(matches) > 1 else "nudging the clip changes its retained word declaration")
+        raise TimelineEditError(f"{clip.address}: {reason}. {SHOT_WORD_ALTERNATIVE}")
+
     @property
     def head(self):
         return copy.deepcopy(self._basis)
@@ -550,28 +583,7 @@ class Timeline(Checkout):
                 before, after = self._execution_bundle(before), self._execution_bundle(after)
             from .media_swap import capture_document_swaps
 
-            retained_captures = None
-            def hydrate_retained(bundle):
-                nonlocal retained_captures
-                from .native_source_inputs import read_verified_transcript
-
-                mapping = bundle['source_mapping']
-                document = self._runtime_document
-                if document is None or document.get('project_id') != self.session.project_id:
-                    raise TimelineEditError('retained document project scope does not match session')
-                manifest = document['dependency_manifest']
-                media = {row['media_id'] for row in manifest['media']}
-                if retained_captures is None:
-                    retained_captures = []
-                    for pin in manifest['documents']:
-                        if not pin['document_id'].startswith('transcript:'):
-                            continue
-                        capture = read_verified_transcript(
-                            self.session.client._remote._transport, self.session.project_id, pin)
-                        if capture['document']['content']['media_id'] not in media:
-                            raise TimelineEditError('retained transcript media is outside the accepted manifest')
-                        retained_captures.append(capture)
-                mapping['pinned_documents'] = copy.deepcopy(retained_captures)
+            hydrate_retained = self._retained_capture_hydrator()
 
             swaps, remaining, selected = capture_document_swaps(
                 before, after, self.session.client._remote._transport,
@@ -606,7 +618,6 @@ class Timeline(Checkout):
                         row = next((row for row in self._verified_media if row.get("pin") == item["pin"]), None)
                     if row is not None and row not in preview_media:
                         preview_media.append(row)
-            self._verified_media = preview_media
             # Media admission and document patches have their own semantic
             # steps. Mixing doc.patch claims with media.admit previously
             # compared input-revision paths against successor-revision effects.
@@ -615,12 +626,13 @@ class Timeline(Checkout):
                              hydrate_retained=hydrate_retained)
             if commands:
                 self._append(commands, label="Edit document", verified_media=preview_media,
-                             hydrate_retained=hydrate_retained if swaps else None)
+                             hydrate_retained=hydrate_retained)
             if inputs:
                 self._append([{"schema_version": 1, "op": "media.admit", "version": "1",
                                "select": None, "args": {"inputs": inputs}}],
                              label="Capture document media", verified_media=preview_media,
-                             hydrate_retained=hydrate_retained if swaps else None)
+                             hydrate_retained=hydrate_retained)
+            self._verified_media = preview_media
             self._free_edits = True
 
     def _append(self, commands, *, label, intent="", tags=(), reads=None, verified_media=None,
@@ -631,8 +643,9 @@ class Timeline(Checkout):
             bundle = (self._execution_bundle(self._command_bundle)
                       if self._runtime_document is not None or any(command.get("op") == "doc.patch" for command in commands)
                       else self._command_bundle)
-            if hydrate_retained is not None:
-                hydrate_retained(bundle)
+            if hydrate_retained is None:
+                hydrate_retained = self._retained_capture_hydrator()
+            hydrated = hydrate_retained(bundle)
             plan = execute(bundle, commands, verified_media=self._verified_media if verified_media is None else verified_media,
                            schema_inputs=schema_inputs, realm_id=self.session.identity["realm_id"])
         except CommandError as exc:
@@ -656,7 +669,7 @@ class Timeline(Checkout):
         self._commands.extend(copy.deepcopy(commands))
         self._steps.append(step)
         staged = copy.deepcopy(plan.bundle)
-        if hydrate_retained is not None:
+        if hydrated:
             original_mapping = self._command_bundle.get('source_mapping', {})
             if 'pinned_documents' in original_mapping:
                 staged['source_mapping']['pinned_documents'] = copy.deepcopy(original_mapping['pinned_documents'])
@@ -706,6 +719,9 @@ class Timeline(Checkout):
         ``reads`` here declares dependencies at this step's sequential input;
         ``commit(reads=...)`` declares dependencies at batch entry.
         """
+        return self._stage_command(command, label=label, intent=intent, tags=tags, reads=reads)
+
+    def _stage_command(self, command, *, label, intent="", tags=(), reads=None, capture=False):
         if not self._evaluating:
             with self.session.outbox.locked():
                 state = self.session._state()
@@ -714,7 +730,8 @@ class Timeline(Checkout):
                 if state["base"] != self._basis:
                     raise TimelineEditError("session base changed; reopen before editing")
         self._capture_free_edits()
-        self._append([copy.deepcopy(command)], label=label, intent=intent, tags=tags, reads=reads)
+        self._append([copy.deepcopy(command)], label=label, intent=intent, tags=tags, reads=reads,
+                     capture=capture)
         return self
 
     def move(self, select, on):
