@@ -100,7 +100,10 @@ def _dispatch_generate(args: list[str]) -> int:
         from astrid.core.generation.listing import main
 
     if main is cli_main and dispatch_marks is not None and args and args[0] in {"image", "workflow"}:
-        return main(args, dispatch_marks=dispatch_marks)
+        from astrid.core.generation.cli import dispatch_timing
+
+        with dispatch_timing(dispatch_marks):
+            return main(args)
     return main(args)
 
 
