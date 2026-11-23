@@ -194,3 +194,60 @@ def test_registry_root_state_decrease_still_triggers_refresh(monkeypatch, tmp_pa
     assert registry._registry_data(key)[0] == ("refreshed",)
     assert registry._default_registry_cache[key][2] == (99,)
     _clear_cache()
+
+
+def test_blocked_miss_observes_registry_published_by_peer(monkeypatch, tmp_path: Path):
+    miss_computed = threading.Event()
+    release_miss = threading.Event()
+    state = {"mtime": 0}
+    discoveries = 0
+
+    class FakeRegistry:
+        def __init__(self, elements=(), **_kwargs):
+            self.elements = set(elements)
+
+        def register(self, element):
+            self.elements.add(element)
+
+        def get(self, _kind, element_id):
+            return element_id if element_id in self.elements else None
+
+    def load_data(*_key):
+        nonlocal discoveries
+        discoveries += 1
+        return (("installed",) if discoveries > 1 else (), registry.ELEMENT_KIND_REGISTRY, ())
+
+    monkeypatch.setattr(registry, "ElementRegistry", FakeRegistry)
+    monkeypatch.setattr(registry, "create_shared_alias_resolver", lambda: None)
+    monkeypatch.setattr(registry, "_register_pack_aliases", lambda *_args: None)
+    monkeypatch.setattr(registry, "_pack_roots", lambda *_args: (tmp_path / "packs",))
+    monkeypatch.setattr(registry, "_root_state", lambda _roots: (state["mtime"],))
+    monkeypatch.setattr(registry, "_load_default_registry_data", load_data)
+    _clear_cache()
+    registry.load_default_registry(project_root=tmp_path)  # publish the old, empty registry
+
+    def blocked_lookup(loaded):
+        miss = loaded.get("effects", "installed")
+        if threading.current_thread().name.startswith("reader_"):
+            miss_computed.set()
+            assert release_miss.wait(10)
+        return miss
+
+    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="reader") as pool:
+        blocked_reader = pool.submit(registry.lookup_default_registry, blocked_lookup, project_root=tmp_path)
+        assert miss_computed.wait(10)
+        state["mtime"] = 1  # the pack install changes the discovery root
+        found_by_peer, _ = registry.lookup_default_registry(
+            lambda loaded: loaded.get("effects", "installed"), project_root=tmp_path
+        )
+        assert found_by_peer == "installed"
+        release_miss.set()
+        found_by_blocked, _ = blocked_reader.result(timeout=10)
+
+    assert found_by_blocked == "installed"
+    still_absent, _ = registry.lookup_default_registry(
+        lambda loaded: loaded.get("effects", "still-absent"), project_root=tmp_path
+    )
+    assert still_absent is None
+    assert discoveries == 2
+    _clear_cache()

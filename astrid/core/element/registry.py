@@ -344,17 +344,29 @@ def clear_default_registry_cache() -> None:
 
 def lookup_default_registry(lookup, *, project_root=None):
     """Resolve a miss again only when a pack root has changed."""
-    registry = (load_default_registry() if project_root is None
-                else load_default_registry(project_root=project_root))
-    result = lookup(registry)
     root = Path(REPO_ROOT if project_root is None else project_root).resolve()
     key = (str(root), False, ())
     # Root mtimes do not detect edits inside an existing pack, or changes to
     # managed source selection; those remain outside this refresh contract.
-    if result is None and _refresh_if_roots_changed(key):
+    for _ in range(3):
         registry = (load_default_registry() if project_root is None
                     else load_default_registry(project_root=project_root))
         result = lookup(registry)
+        if result is not None:
+            return result, registry
+        entry = getattr(registry, "_default_cache_entry", None)
+        # A publication during assembly leaves the data without a current entry.
+        if entry is None and hasattr(registry, "_default_cache_entry"):
+            continue
+        with _default_registry_lock:
+            current = _default_registry_cache.get(key)
+        if entry is not None and entry is not current:
+            continue
+        if _refresh_if_roots_changed(key):
+            continue
+        with _default_registry_lock:
+            if entry is None or _default_registry_cache.get(key) is entry:
+                return result, registry
     return result, registry
 
 
@@ -371,9 +383,14 @@ def load_default_registry(
     """
     project_root = Path(project_root).resolve()
     extra_pack_roots = tuple(str(Path(root).resolve()) for root in extra_pack_roots)
-    elements, element_kind_registry, diagnostics = _registry_data(
-        (str(project_root), include_missing_roots, extra_pack_roots)
-    )
+    key = (str(project_root), include_missing_roots, extra_pack_roots)
+    data = _registry_data(key)
+    elements, element_kind_registry, diagnostics = data
+    # Keep the stamp belonging to the data used to assemble this registry.
+    with _default_registry_lock:
+        entry = _default_registry_cache.get(key)
+        if entry is not None and entry[3] is not data:
+            entry = None
     resolver = create_shared_alias_resolver()
     _register_pack_aliases(resolver, {})  # no aliases yet
     registry = ElementRegistry(
@@ -381,6 +398,7 @@ def load_default_registry(
         element_kind_registry=element_kind_registry,
         diagnostics=diagnostics,
     )
+    registry._default_cache_entry = entry
     for element in elements:
         registry.register(element)
     return registry
