@@ -36,9 +36,9 @@ def main(manifest_path: str) -> None:
                   "revision": exc.revision, "recovery": str(exc)}
         print(json.dumps(report), flush=True)
         raise
-    except PackInstallError:
+    except PackInstallError as exc:
         print(json.dumps({"status": "rejected", "transaction_id": None,
-                          "revision": None, "recovery": None}), flush=True)
+                          "revision": None, "recovery": str(exc)}), flush=True)
         raise
     report = {"status": "published" if result and result.changed_ids else "no-change",
               "transaction_id": result.transaction_id if result else None,

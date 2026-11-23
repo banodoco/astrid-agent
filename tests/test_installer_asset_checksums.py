@@ -220,7 +220,7 @@ def test_manifest_rejects_default_packs_from_different_repository_or_commit(seco
 @pytest.mark.parametrize("mode", ["install", "update"])
 def test_installer_installs_candidate_defaults_after_stage_before_activation(
         tmp_path, monkeypatch, mode):
-    """The candidate's pinned defaults are installed before its version is selected."""
+    """Fresh installs publish pinned defaults before activation; updates do not."""
     from astrid.installer import core, r0_stop
 
     monkeypatch.setattr(r0_stop, "is_r0_installation", lambda *_args: False)
@@ -308,10 +308,13 @@ def test_installer_installs_candidate_defaults_after_stage_before_activation(
 
     installer.run(mode, pins)
 
-    assert events.index("stage") < events.index("defaults")
-    assert events.index("defaults") < events.index("switch")
-    assert events.index("defaults") < events.index("register")
-    assert events.index("defaults") < events.index("start")
+    if mode == "install":
+        assert events.index("stage") < events.index("defaults")
+        assert events.index("defaults") < events.index("switch")
+        assert events.index("defaults") < events.index("register")
+        assert events.index("defaults") < events.index("start")
+    else:
+        assert "defaults" not in events
 
 
 def test_default_packs_main_uses_explicit_personal_root_and_transaction_inputs(
@@ -454,8 +457,9 @@ def _run_installer_default(backend, version, manifest):
                           backend, say=lambda _line: None)
     try:
         installer._install_defaults(version, manifest)
-    except Exception:
-        pass
+    except Exception as exc:
+        exc.installer = installer
+        raise
     return installer
 
 
@@ -467,7 +471,9 @@ def test_wrong_default_digest_rejects_first_install_before_group_publication(tmp
     pins["packs"]["astrid_motion"]["digest"] = "0" * 64
     packs_root = tmp_path / "Astrid" / "packs"
     backend, candidate = _default_child_backend(tmp_path, monkeypatch, pins, packs_root=packs_root)
-    installer = _run_installer_default(backend, candidate, pins)
+    with pytest.raises(RuntimeError) as failure:
+        _run_installer_default(backend, candidate, pins)
+    installer = failure.value.installer
     assert installer.outcomes["default_packs"]["status"] == "rejected"
     assert installer.outcomes["default_packs"]["transaction_id"] is None
     snapshot = read_group(packs_root)
@@ -491,7 +497,9 @@ def test_wrong_default_digest_rejects_update_and_preserves_published_group(tmp_p
     pins["packs"]["astrid_motion"]["digest"] = "0" * 64
 
     backend, candidate = _default_child_backend(tmp_path, monkeypatch, pins, packs_root=packs_root)
-    rejected = _run_installer_default(backend, candidate, pins)
+    with pytest.raises(RuntimeError) as failure:
+        _run_installer_default(backend, candidate, pins)
+    rejected = failure.value.installer
     assert rejected.outcomes["default_packs"]["status"] == "rejected"
     assert rejected.outcomes["default_packs"]["transaction_id"] is None
     current = read_group(packs_root)
@@ -525,7 +533,9 @@ def test_default_group_commit_error_reports_published_identity_and_recovers(tmp_
 
     backend, candidate = _default_child_backend(tmp_path, monkeypatch, pins,
                                                 packs_root=packs_root, boundary=boundary)
-    updater = _run_installer_default(backend, candidate, pins)
+    with pytest.raises(RuntimeError) as failure:
+        _run_installer_default(backend, candidate, pins)
+    updater = failure.value.installer
 
     snapshot = read_group(packs_root)
     assert updater.outcomes["default_packs"]["status"] == "recovery-needed"
@@ -539,8 +549,8 @@ def test_default_group_commit_error_reports_published_identity_and_recovers(tmp_
     assert not read_group(packs_root).refresh_pending
 
 
-def test_published_defaults_survive_busy_stop_and_reach_final_receipt(tmp_path, monkeypatch, capsys):
-    """The staged child result is retained in the run receipt when stop refuses."""
+def test_failed_update_preserves_default_group_and_receipt(tmp_path, monkeypatch, capsys):
+    """A refused update leaves the prior default group and receipt unchanged."""
     import sys
     from astrid.core.pack.transaction import read_group
     from astrid.installer import cli, core, r0_stop
@@ -583,16 +593,15 @@ def test_published_defaults_survive_busy_stop_and_reach_final_receipt(tmp_path, 
     monkeypatch.setattr(core, "schema_unchanged", lambda *_args: True)
 
     installer = core.Installer(root, data, backend, say=lambda _line: None)
+    installer.outcomes["default_packs"] = None
     with pytest.raises(RuntimeOperationError, match="busy") as refusal:
         installer.run("update", {"release": 20, **fixture_manifest()})
 
     snapshot = read_group(packs_root)
-    assert set(snapshot.paths) == {"astrid_motion"}
-    assert (snapshot.paths["astrid_motion"] / "payload.txt").read_bytes() == b"first generation\n"
+    assert snapshot.revision == 0
+    assert snapshot.transaction_id is None
+    assert snapshot.paths == {}
     assert active["version"] is old
-    assert installer.outcomes["default_packs"]["status"] == "published"
-    assert installer.outcomes["default_packs"]["transaction_id"] == snapshot.transaction_id
-    assert installer.outcomes["default_packs"]["revision"] == snapshot.revision
     report = installer.outcomes["default_packs"]
     assert cli._receipt_outcomes(installer)["default_packs"] == report
     state = State("direct", root, data, None, old, live_identity={"release": old.release})
@@ -607,9 +616,93 @@ def test_published_defaults_survive_busy_stop_and_reach_final_receipt(tmp_path, 
     run.started_journal = None
     run.finish(failure=refusal.value)
     receipt = read_record(log.with_name(RECORD))
-    assert receipt["default_packs"] == report
-    assert "Default packs were published" in receipt["headline"]
-    assert "nothing was changed" not in capsys.readouterr().out.lower()
+    assert receipt["default_packs"] is None
+    assert "Default packs were published" not in receipt["headline"]
+    assert "nothing was changed" in capsys.readouterr().out.lower()
+
+
+def test_swap_back_retained_write_is_reported_in_fresh_install_receipt(tmp_path, monkeypatch):
+    """A fresh install reports a retained write that forces its default transaction to swap back."""
+    import sys
+    from astrid.core.pack import transaction
+    from astrid.installer import cli, core, r0_stop
+    from astrid.installer.core import Installer
+    from astrid.installer.installation import State
+    from astrid.installer.outcome import RECORD, read_record
+
+    fixture_manifest, _ = _real_default_fixture(tmp_path / "repository")
+    manifest = {"release": 20, **fixture_manifest()}
+    root, data = tmp_path / "program", tmp_path / "workspace"
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    monkeypatch.setenv("HOME", str(home))
+    packs_root = home / "Astrid" / "packs"
+    backend, candidate = _default_child_backend(
+        tmp_path, monkeypatch, manifest, packs_root=packs_root)
+    monkeypatch.setattr(r0_stop, "is_r0_installation", lambda *_args: False)
+    backend.existing = lambda _data: None
+    backend.stage = lambda *_args: candidate
+    backend.has_workspace = lambda _data: False
+    backend.create = lambda *_args: pytest.fail("workspace creation must not begin after defaults reject")
+    backend.stop = lambda *_args: None
+    monkeypatch.setattr(Installer, "_recover_update", lambda _self: None)
+    monkeypatch.setattr(Installer, "_observe_autostart", lambda _self: None)
+    monkeypatch.setattr(core, "install_launcher", lambda _root: None)
+    monkeypatch.setattr(core, "switch", lambda *_args: pytest.fail("failed defaults must not switch versions"))
+    from astrid.core.pack.personal import ensure_personal_pack
+    personal = ensure_personal_pack(packs_root)
+    (personal / "kept.txt").write_text("user content\n", encoding="utf-8")
+    original_verify = transaction._verify_retained_collection
+    original_publish = transaction._publish
+    hits = []
+    publish_calls = []
+    late_write = b"raced the exchange\n"
+    window_write = b"written in the new generation before swap-back\n"
+
+    def write_into_retiring_generation(stage, destination):
+        publish_calls.append(Path(destination))
+        if len(publish_calls) == 1:
+            (packs_root / "personal" / "late.txt").write_bytes(late_write)
+        original_publish(stage, destination)
+
+    def write_during_post_swap_check(live, changed, copied):
+        if ".astrid-retired" in Path(live).parts and not hits:
+            hits.append(Path(live))
+            (packs_root / "personal" / "window.txt").write_bytes(window_write)
+        original_verify(live, changed, copied)
+
+    monkeypatch.setattr(transaction, "_publish", write_into_retiring_generation)
+    monkeypatch.setattr(transaction, "_verify_retained_collection", write_during_post_swap_check)
+    installer = Installer(root, data, backend, say=lambda _line: None)
+    with pytest.raises(RuntimeError) as failure:
+        installer.run("install", manifest)
+    assert len(hits) == 1
+    assert len(publish_calls) == 2
+    assert installer.outcomes["default_packs"]["status"] == "rejected"
+    assert (packs_root / "personal" / "late.txt").read_bytes() == late_write
+    assert not (packs_root / "personal" / "window.txt").exists()
+    refused = list((packs_root.parent / ".astrid-retired").glob("refused-*"))
+    assert len(refused) == 1
+    assert (refused[0] / "personal" / "window.txt").read_bytes() == window_write
+    recovery = installer.outcomes["default_packs"]["recovery"]
+    assert str(refused[0]) in recovery
+    assert "personal" in recovery
+
+    state = State("direct", root, data, None, None, live_identity={})
+    monkeypatch.setattr(cli.Installation, "resolve", lambda *_args, **_kwargs: state)
+    log = tmp_path / "logs" / "install.log"
+    log.parent.mkdir(parents=True)
+    run = cli._Run("install")
+    run.target, run.target_source = candidate.release, "manifest"
+    run.before, run.home, run.system, run.root = state, home, sys.platform, root
+    run.log, run.installer = log, installer
+    run.protected = []
+    run.started_journal = None
+    run.finish(failure=failure.value)
+    receipt = read_record(log.with_name(RECORD))
+    assert receipt["default_packs"] == installer.outcomes["default_packs"]
+    assert receipt["default_packs"]["status"] == "rejected"
+    assert str(refused[0]) in receipt["headline"]
 
 
 @pytest.mark.parametrize("status", ["rejected", "recovery-needed"])

@@ -794,9 +794,6 @@ class Installer:
                     candidate = self.backend.stage(manifest, self.root, self.data)
                 with self._phase("Checking it"):
                     self.backend.validate_candidate(candidate, self.data, realm)
-                    if manifest.get("packs"):
-                        self._install_defaults(candidate, manifest)
-                        self.say("Default packs may remain installed if the update does not finish.")
                     same_schema = schema_unchanged(self.backend, old, candidate, realm)
                 prepared_candidate = candidate
                 return candidate
