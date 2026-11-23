@@ -258,3 +258,38 @@ def test_native_node_probe_checks_the_running_registry(schema_server):
                             check=True, capture_output=True, text=True, timeout=10)
     assert json.loads(result.stdout) == ['VibeComfySaveTranscript']
     assert schema_server.requests == ['/object_info']
+
+
+def test_owned_doctor_removed_input_reports_graph_labels(native_python, schema_server, latent_workflow, tmp_path):
+    from vibecomfy.security.provenance import Provenance
+    from vibecomfy.workflow_bundle import load_bundle
+    from astrid.core.generation.managed_preparation import native_failure_inputs
+
+    bundle = load_bundle(latent_workflow, trust=Provenance.USER_CONFIRMED)
+    api = bundle.workflow.compile("api")
+    labels = tuple((str(node_id), node["class_type"], name)
+                   for node_id, node in api.items() for name in node.get("inputs", {}))
+    expected = next({"node_id": node_id, "class_type": cls, "input": name}
+                    for node_id, cls, name in labels if cls == "EmptyLatentImage" and name == "height")
+    schema_server.info = copy.deepcopy(schema_server.info)
+    del schema_server.info["EmptyLatentImage"]["input"]["required"]["height"]
+    result = _native(native_python, schema_server, latent_workflow, tmp_path)
+    assert result.returncode == 1
+    step, reason = native_failure_diagnostic("doctor", result.stdout, result.stderr)
+    assert (step, reason) == ("doctor", "workflow_validation_failed")
+    assert native_failure_inputs(result.stdout, reason, labels) == (expected,)
+
+
+def test_native_failure_inputs_only_projects_existing_graph_labels():
+    from astrid.core.generation.managed_preparation import native_failure_inputs
+
+    output = ("Layer: VibeWorkflow validation\n"
+              "- WorkflowBundleError: Node 42 (EmptyLatentImage) has unknown input height.\n"
+              "- WorkflowBundleError: Node 42 (EmptyLatentImage) has unknown input PRIVATE_TOKEN.\n"
+              "- WorkflowBundleError: Node 99 (PRIVATE_CLASS) has unknown input height.\n")
+    labels = (("42", "EmptyLatentImage", "height"),)
+    assert native_failure_inputs(output, "workflow_validation_failed", labels) == (
+        {"node_id": "42", "class_type": "EmptyLatentImage", "input": "height"},
+    )
+    assert native_failure_inputs(output, "schema_reconciliation_failed", labels) == ()
+    assert native_failure_inputs(output, "workflow_validation_failed", ()) == ()
