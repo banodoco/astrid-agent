@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import io
+import os
 import subprocess
 import ssl
 import zipfile
@@ -317,6 +318,143 @@ def test_installer_installs_candidate_defaults_after_stage_before_activation(
         assert "defaults" not in events
 
 
+def test_installer_does_not_publish_defaults_when_reattaching_retained_workspace(
+        tmp_path, monkeypatch):
+    """Reinstalling around a kept workspace must not change its pack collection."""
+    from astrid.installer import core, r0_stop
+
+    monkeypatch.setattr(r0_stop, "is_r0_installation", lambda *_args: False)
+    root, data = tmp_path / "program", tmp_path / "workspace"
+    events = []
+    pins = _manifest_with_pack_pins({"astrid_motion": MOTION_PACK_PIN.copy()})
+    candidate = core.Version(root / "versions" / "v20", root / "versions" / "v20" / "bin/python",
+                             root / "versions" / "v20" / "profile", {}, release=20)
+
+    class Backend:
+        def existing(self, _data):
+            return None
+
+        def has_workspace(self, selected_data):
+            assert selected_data == data
+            return True
+
+        def reinstallable(self, selected_data):
+            assert selected_data == data
+            return True
+
+        def stage(self, *_args):
+            events.append("stage")
+            return candidate
+
+        def install_defaults(self, *_args):
+            events.append("defaults")
+
+        def attach_existing(self, *_args):
+            events.append("attach")
+            return {"realm_id": "realm-retained"}
+
+        def create(self, *_args):
+            pytest.fail("a retained workspace must be attached, not recreated")
+
+        def register(self, *_args):
+            events.append("register")
+
+        def start(self, *_args):
+            events.append("start")
+
+        def verify(self, *_args, **_kwargs):
+            events.append("verify")
+
+        def sync_skills(self, *_args):
+            return {"ok": True}
+
+        def stop(self, *_args):
+            events.append("stop")
+
+        def finish(self, *_args):
+            events.append("finish")
+
+        def open(self):
+            events.append("open")
+
+    backend = Backend()
+    monkeypatch.setattr(core.Installer, "_recover_update", lambda _self: None)
+    monkeypatch.setattr(core.Installer, "_observe_autostart", lambda _self: None)
+    monkeypatch.setattr(core, "install_launcher", lambda _root: None)
+    monkeypatch.setattr(core, "switch", lambda *_args: events.append("switch"))
+
+    core.Installer(root, data, backend, say=lambda _line: None).run("install", pins)
+
+    assert "defaults" not in events
+    assert events.index("stage") < events.index("attach") < events.index("switch")
+
+
+def test_retry_after_aborted_default_publication_fails_loudly_if_collection_is_workspace(
+        tmp_path, monkeypatch):
+    """An exchanged pack collection cannot make a retry silently skip defaults."""
+    import sys
+    from astrid.core.pack import transaction
+    from astrid.core.pack.transaction import read_group
+    from astrid.installer import core, r0_stop
+    from astrid.installer.backend import Backend
+
+    fixture_manifest, _ = _real_default_fixture(tmp_path / "repository")
+    manifest = {"release": 20, **fixture_manifest()}
+    root = tmp_path / "program"
+    packs_root = tmp_path / "home" / "Astrid" / "packs"
+    swapped = False
+    sync = transaction._sync_directory
+
+    def fail_after_exchange(path):
+        if swapped:
+            raise OSError("injected directory durability failure")
+        return sync(path)
+
+    def boundary(phase):
+        nonlocal swapped
+        if phase == "swapped":
+            swapped = True
+
+    backend, candidate = _default_child_backend(
+        tmp_path, monkeypatch, manifest, packs_root=packs_root)
+    # Use the product's workspace predicates and service reader. The selected
+    # data root overlaps this test's pack collection so the actual exchange is
+    # visible to the next install attempt as nonempty persisted state.
+    backend.root = root
+    backend.service = Backend(root, tmp_path / "service.log", Path(sys.executable)).service
+    backend.stage = lambda *_args: candidate
+    backend.stop = lambda *_args: None
+    backend.create = lambda *_args: pytest.fail("the failed first attempt must not create a realm")
+    backend.attach_existing = lambda *_args: pytest.fail(
+        "a collection without a retained service record must not be attached as a workspace")
+    monkeypatch.setattr(r0_stop, "is_r0_installation", lambda *_args: False)
+    monkeypatch.setattr(core.Installer, "_recover_update", lambda _self: None)
+    monkeypatch.setattr(core.Installer, "_observe_autostart", lambda _self: None)
+    monkeypatch.setattr(core, "install_launcher", lambda _root: None)
+    monkeypatch.setattr(core, "switch", lambda *_args: None)
+
+    from astrid.installer import default_packs
+    original_install_defaults = default_packs.install_defaults
+    monkeypatch.setattr(transaction, "_sync_directory", fail_after_exchange)
+    monkeypatch.setattr(default_packs, "install_defaults",
+                        lambda *args, **kwargs: original_install_defaults(
+                            *args, boundary=boundary, **kwargs))
+
+    installer = core.Installer(root, packs_root, backend, say=lambda _line: None)
+    with pytest.raises(RuntimeError):
+        installer.run("install", manifest)
+
+    snapshot = read_group(packs_root)
+    assert snapshot.transaction_id is not None
+    assert snapshot.refresh_pending
+    assert Backend.has_workspace(backend, packs_root)
+    assert not Backend.reinstallable(backend, packs_root)
+
+    retry = core.Installer(root, packs_root, backend, say=lambda _line: None)
+    with pytest.raises(ValueError, match="existing workspace has no usable source profile"):
+        retry.run("install", manifest)
+
+
 def test_default_packs_main_uses_explicit_personal_root_and_transaction_inputs(
         tmp_path, monkeypatch):
     from astrid.installer import default_packs
@@ -407,7 +545,7 @@ def _real_default_fixture(root: Path):
 
 
 def _default_child_backend(tmp_path, monkeypatch, manifest, *, packs_root, boundary=None):
-    """Route the real default_packs child through Backend's stdout protocol."""
+    """Exercise the real default_packs child through Backend's subprocess boundary."""
     import contextlib
     import json
     import subprocess
@@ -439,28 +577,19 @@ def _default_child_backend(tmp_path, monkeypatch, manifest, *, packs_root, bound
     def run(_argv, **_kwargs):
         output = io.StringIO()
         try:
-            with contextlib.redirect_stdout(output):
+            with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
                 default_packs.main(str(manifest_path))
         except Exception as exc:
             raise subprocess.CalledProcessError(
                 1, [sys.executable, "-m", "astrid.installer.default_packs"],
-                output=output.getvalue(), stderr="") from exc
+                output=output.getvalue() + f"{type(exc).__name__}: {exc}", stderr="") from exc
         return output.getvalue()
     backend.run = run
     return backend, version
 
 
 def _run_installer_default(backend, version, manifest):
-    from astrid.installer.core import Installer
-
-    installer = Installer(version.root.parent.parent, version.root.parent.parent / "workspace",
-                          backend, say=lambda _line: None)
-    try:
-        installer._install_defaults(version, manifest)
-    except Exception as exc:
-        exc.installer = installer
-        raise
-    return installer
+    return backend.install_defaults(version, manifest)
 
 
 def test_wrong_default_digest_rejects_first_install_before_group_publication(tmp_path, monkeypatch):
@@ -473,9 +602,7 @@ def test_wrong_default_digest_rejects_first_install_before_group_publication(tmp
     backend, candidate = _default_child_backend(tmp_path, monkeypatch, pins, packs_root=packs_root)
     with pytest.raises(RuntimeError) as failure:
         _run_installer_default(backend, candidate, pins)
-    installer = failure.value.installer
-    assert installer.outcomes["default_packs"]["status"] == "rejected"
-    assert installer.outcomes["default_packs"]["transaction_id"] is None
+    assert "digest" in str(failure.value).lower()
     snapshot = read_group(packs_root)
     assert snapshot.revision == 0
     assert snapshot.transaction_id is None
@@ -489,8 +616,7 @@ def test_wrong_default_digest_rejects_direct_reconciliation_and_preserves_existi
     manifest, update_manifest = _real_default_fixture(tmp_path / "repository")
     packs_root = tmp_path / "Astrid" / "packs"
     backend, candidate = _default_child_backend(tmp_path, monkeypatch, manifest(), packs_root=packs_root)
-    initial_installer = _run_installer_default(backend, candidate, manifest())
-    assert initial_installer.outcomes["default_packs"]["status"] == "published"
+    _run_installer_default(backend, candidate, manifest())
     initial = read_group(packs_root)
     state_before = (packs_root / ".group.json").read_bytes()
     payload_before = (read_group(packs_root).paths["astrid_motion"] / "payload.txt").read_bytes()
@@ -500,9 +626,7 @@ def test_wrong_default_digest_rejects_direct_reconciliation_and_preserves_existi
     backend, candidate = _default_child_backend(tmp_path, monkeypatch, pins, packs_root=packs_root)
     with pytest.raises(RuntimeError) as failure:
         _run_installer_default(backend, candidate, pins)
-    rejected = failure.value.installer
-    assert rejected.outcomes["default_packs"]["status"] == "rejected"
-    assert rejected.outcomes["default_packs"]["transaction_id"] is None
+    assert "digest" in str(failure.value).lower()
     current = read_group(packs_root)
     assert current.transaction_id == initial.transaction_id
     assert current.revision == initial.revision
@@ -510,15 +634,14 @@ def test_wrong_default_digest_rejects_direct_reconciliation_and_preserves_existi
     assert (current.paths["astrid_motion"] / "payload.txt").read_bytes() == payload_before
 
 
-def test_default_group_commit_error_reports_published_identity_and_recovers(tmp_path, monkeypatch):
+def test_default_group_commit_error_preserves_published_identity_and_recovers(tmp_path, monkeypatch):
     from astrid.core.pack import transaction
     from astrid.core.pack.transaction import read_group, retry_refresh
 
     manifest, update_manifest = _real_default_fixture(tmp_path / "repository")
     packs_root = tmp_path / "Astrid" / "packs"
     backend, candidate = _default_child_backend(tmp_path, monkeypatch, manifest(), packs_root=packs_root)
-    initial = _run_installer_default(backend, candidate, manifest())
-    assert initial.outcomes["default_packs"]["status"] == "published"
+    _run_installer_default(backend, candidate, manifest())
     pins = update_manifest()
     swapped = False
     sync = transaction._sync_directory
@@ -536,12 +659,9 @@ def test_default_group_commit_error_reports_published_identity_and_recovers(tmp_
                                                 packs_root=packs_root, boundary=boundary)
     with pytest.raises(RuntimeError) as failure:
         _run_installer_default(backend, candidate, pins)
-    updater = failure.value.installer
 
     snapshot = read_group(packs_root)
-    assert updater.outcomes["default_packs"]["status"] == "recovery-needed"
-    assert updater.outcomes["default_packs"]["transaction_id"] == snapshot.transaction_id
-    assert updater.outcomes["default_packs"]["revision"] == snapshot.revision == 2
+    assert snapshot.revision == 2
     assert snapshot.refresh_pending
     assert (snapshot.paths["astrid_motion"] / "payload.txt").read_bytes() == b"second generation\n"
     monkeypatch.setattr(transaction, "_sync_directory", sync)
@@ -550,8 +670,9 @@ def test_default_group_commit_error_reports_published_identity_and_recovers(tmp_
     assert not read_group(packs_root).refresh_pending
 
 
-def test_failed_update_preserves_default_group_and_receipt(tmp_path, monkeypatch, capsys):
-    """A refused update leaves the prior default group and receipt unchanged."""
+def test_failed_update_does_not_publish_defaults_and_receipt_claims_no_publication(
+        tmp_path, monkeypatch, capsys):
+    """Updates do not publish release defaults, including before a busy-stop refusal."""
     import sys
     from astrid.core.pack.transaction import read_group
     from astrid.installer import cli, core, r0_stop
@@ -583,8 +704,7 @@ def test_failed_update_preserves_default_group_and_receipt(tmp_path, monkeypatch
     def stop(_version, _data):
         raise RuntimeOperationError("busy", details={"safe": False, "code": "busy"})
     backend.stop = stop
-    # The default-packs helper uses the real published collection transaction;
-    # these host snapshots keep the fixture independent of installed packages.
+    # Host snapshots keep the fixture independent of installed packages.
     monkeypatch.setattr(core.Installer, "_recover_update", lambda _self: None)
     monkeypatch.setattr(core.Installer, "_observe_autostart", lambda _self: None)
     monkeypatch.setattr(core, "install_runtime", lambda _root: None)
@@ -594,7 +714,6 @@ def test_failed_update_preserves_default_group_and_receipt(tmp_path, monkeypatch
     monkeypatch.setattr(core, "schema_unchanged", lambda *_args: True)
 
     installer = core.Installer(root, data, backend, say=lambda _line: None)
-    installer.outcomes["default_packs"] = None
     with pytest.raises(RuntimeOperationError, match="busy") as refusal:
         installer.run("update", {"release": 20, **fixture_manifest()})
 
@@ -603,8 +722,6 @@ def test_failed_update_preserves_default_group_and_receipt(tmp_path, monkeypatch
     assert snapshot.transaction_id is None
     assert snapshot.paths == {}
     assert active["version"] is old
-    report = installer.outcomes["default_packs"]
-    assert cli._receipt_outcomes(installer)["default_packs"] == report
     state = State("direct", root, data, None, old, live_identity={"release": old.release})
     monkeypatch.setattr(cli.Installation, "resolve", lambda *_args, **_kwargs: state)
     log = tmp_path / "logs" / "install.log"
@@ -617,19 +734,17 @@ def test_failed_update_preserves_default_group_and_receipt(tmp_path, monkeypatch
     run.started_journal = None
     run.finish(failure=refusal.value)
     receipt = read_record(log.with_name(RECORD))
-    assert receipt["default_packs"] is None
+    assert "default_packs" not in receipt
     assert "Default packs were published" not in receipt["headline"]
     assert "nothing was changed" in capsys.readouterr().out.lower()
 
 
-def test_swap_back_retained_write_is_reported_in_fresh_install_receipt(tmp_path, monkeypatch):
-    """A fresh install reports a retained write that forces its default transaction to swap back."""
-    import sys
+@pytest.mark.skipif(os.name == "nt", reason="_publish injection covers the POSIX publication path")
+def test_fresh_install_swap_back_preserves_retained_write_on_abort(tmp_path, monkeypatch):
+    """A fresh-install abort preserves the retained write when its transaction swaps back."""
     from astrid.core.pack import transaction
-    from astrid.installer import cli, core, r0_stop
+    from astrid.installer import core, r0_stop
     from astrid.installer.core import Installer
-    from astrid.installer.installation import State
-    from astrid.installer.outcome import RECORD, read_record
 
     fixture_manifest, _ = _real_default_fixture(tmp_path / "repository")
     manifest = {"release": 20, **fixture_manifest()}
@@ -679,50 +794,28 @@ def test_swap_back_retained_write_is_reported_in_fresh_install_receipt(tmp_path,
         installer.run("install", manifest)
     assert len(hits) == 1
     assert len(publish_calls) == 2
-    assert installer.outcomes["default_packs"]["status"] == "rejected"
     assert (packs_root / "personal" / "late.txt").read_bytes() == late_write
     assert not (packs_root / "personal" / "window.txt").exists()
     refused = list((packs_root.parent / ".astrid-retired").glob("refused-*"))
     assert len(refused) == 1
     assert (refused[0] / "personal" / "window.txt").read_bytes() == window_write
-    recovery = installer.outcomes["default_packs"]["recovery"]
-    assert str(refused[0]) in recovery
-    assert "personal" in recovery
-
-    state = State("direct", root, data, None, None, live_identity={})
-    monkeypatch.setattr(cli.Installation, "resolve", lambda *_args, **_kwargs: state)
-    log = tmp_path / "logs" / "install.log"
-    log.parent.mkdir(parents=True)
-    run = cli._Run("install")
-    run.target, run.target_source = candidate.release, "manifest"
-    run.before, run.home, run.system, run.root = state, home, sys.platform, root
-    run.log, run.installer = log, installer
-    run.protected = []
-    run.started_journal = None
-    run.finish(failure=failure.value)
-    receipt = read_record(log.with_name(RECORD))
-    assert receipt["default_packs"] == installer.outcomes["default_packs"]
-    assert receipt["default_packs"]["status"] == "rejected"
-    assert str(refused[0]) in receipt["headline"]
+    assert str(refused[0]) in str(failure.value)
+    assert "personal" in str(failure.value)
 
 
-@pytest.mark.parametrize("status", ["rejected", "recovery-needed"])
-def test_backend_preserves_child_default_pack_failure_report(tmp_path, status):
-    """Backend failures retain the structured child result for the final receipt."""
-    import json
+def test_backend_preserves_child_default_pack_error_text(tmp_path):
+    """Backend failures retain the child transaction error in the ordinary failure path."""
     import subprocess
     import sys
     from astrid.installer.backend import Backend
     from astrid.installer.core import Version
 
-    report = {"status": status, "transaction_id": None if status == "rejected" else "a" * 32,
-              "revision": 0 if status == "rejected" else 7,
-              "recovery": None if status == "rejected" else "retry collection durability and refresh"}
+    error_text = "GroupCommitError: retained at /packs/.astrid-retired/refused-a1"
     backend = object.__new__(Backend)
     backend.log = tmp_path / "install.log"
     def failed_child(*_args, **_kwargs):
         raise subprocess.CalledProcessError(1, ["python", "default_packs"],
-                                            output=json.dumps(report), stderr="")
+                                            output=error_text, stderr="")
     backend.run = failed_child
     version = Version(tmp_path / "candidate", Path(sys.executable),
                       tmp_path / "candidate" / "profile.json", {}, release=20)
@@ -730,4 +823,4 @@ def test_backend_preserves_child_default_pack_failure_report(tmp_path, status):
     with pytest.raises(RuntimeError) as failure:
         backend.install_defaults(version, {})
 
-    assert failure.value.default_packs == report
+    assert error_text in str(failure.value)
