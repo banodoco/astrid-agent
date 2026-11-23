@@ -58,6 +58,44 @@ def managed_asset_digest(entry: Mapping[str, Any]) -> str | None:
     return explicit
 
 
+_RUNTIME_OBJECT_ROUTE = re.compile(r"/(?:api/runtime/)?v1/objects/([^/?#]+)")
+_ROUTE_LOCATOR_FIELDS = ("file", "url", "uri", "sourceUrl", "remoteUrl", "path", "source_path", "locator")
+
+
+def without_redundant_object_route(entry: Mapping[str, Any]) -> dict[str, Any]:
+    """Drop a locator that only repeats the entry's own Runtime object route.
+
+    The editor stores ``file: /v1/objects/<media_id>`` on media it imports.
+    That locator names exactly the content-addressed object the entry's
+    ``media_id`` already pins, so it carries no authority of its own; the
+    Runtime's render admission drops it for the same reason. Any other locator,
+    including a route to a different object, is left in place for the caller
+    to refuse. Only a registry the Runtime will freeze again (a render) may be
+    cleaned this way: the generic host refuses every locator in the registry it
+    is handed (``generic_host._managed_asset_identity``).
+    """
+    cleaned = dict(entry)
+    media_id = entry.get("media_id") or entry.get("object_id")
+    match = _CONTENT_ADDRESSED_MEDIA_ID.fullmatch(media_id) if isinstance(media_id, str) else None
+    if match is None:
+        return cleaned
+    try:
+        digest = managed_asset_digest(entry)
+    except ValueError:
+        return cleaned
+    if not isinstance(digest, str) or digest.removeprefix("sha256:") != match.group(1):
+        return cleaned
+    for field in _ROUTE_LOCATOR_FIELDS:
+        value = entry.get(field)
+        route = _RUNTIME_OBJECT_ROUTE.fullmatch(value) if isinstance(value, str) else None
+        target = _CONTENT_ADDRESSED_MEDIA_ID.fullmatch(
+            urllib.parse.unquote(route.group(1))
+        ) if route else None
+        if target is not None and target.group(1) == match.group(1):
+            del cleaned[field]
+    return cleaned
+
+
 @dataclass
 class MaterializedAsset:
     """One registry asset resolved for the lifetime of a render invocation."""
