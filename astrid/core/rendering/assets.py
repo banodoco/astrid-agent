@@ -66,17 +66,21 @@ def without_redundant_object_route(entry: Mapping[str, Any]) -> dict[str, Any]:
     """Drop a locator that only repeats the entry's own Runtime object route.
 
     The editor stores ``file: /v1/objects/<media_id>`` on media it imports.
-    That locator names exactly the content-addressed object the entry's
-    ``media_id`` already pins, so it carries no authority of its own; the
-    Runtime's render admission drops it for the same reason. Any other locator,
-    including a route to a different object, is left in place for the caller
-    to refuse. Only a registry the Runtime will freeze again (a render) may be
-    cleaned this way: the generic host refuses every locator in the registry it
-    is handed (``generic_host._managed_asset_identity``).
+    The Runtime render projection prefers ``object_id`` when present, so only
+    that selected identity can establish that the route is redundant. Any
+    other locator, including a route that matches a conflicting ``media_id``
+    alias, is left in place for the caller to refuse. Only a registry the
+    Runtime will freeze again (a render) may be cleaned this way: the generic
+    host refuses every locator in the registry it is handed
+    (``generic_host._managed_asset_identity``).
     """
     cleaned = dict(entry)
-    media_id = entry.get("media_id") or entry.get("object_id")
-    match = _CONTENT_ADDRESSED_MEDIA_ID.fullmatch(media_id) if isinstance(media_id, str) else None
+    object_id = entry.get("object_id") or entry.get("media_id")
+    match = (
+        _CONTENT_ADDRESSED_MEDIA_ID.fullmatch(object_id)
+        if isinstance(object_id, str)
+        else None
+    )
     if match is None:
         return cleaned
     try:
