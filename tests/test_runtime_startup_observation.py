@@ -222,3 +222,86 @@ def test_up_preserves_both_workspace_identity_checks(native):
     with pytest.raises(runtime_cli.RuntimeCLIError, match="Runtime selected workspace 'realm-b'"):
         runtime.up(**preflight)
     assert sum(command[0] == "up" for command in native.commands) == 1
+
+
+def _has_expected_configured_selection(command, native):
+    return all(
+        flag in command and command[command.index(flag) + 1] == value
+        for flag, value in (("--realm-root", str(native.realm)), ("--expected-realm-id", "realm-a"))
+    ) and "--require-configured-selection" in command
+
+
+def test_direct_up_fences_a_changed_configured_root_before_guarded_inspection(native, monkeypatch):
+    foreign_root = native.realm.with_name("different-realm-root")
+    scanned = []
+    foreign_attempt = {"state": "failed", "attempt_id": "c" * 32}
+
+    def reselected_runtime(argv, **options):
+        command = argv[1:]
+        if command[:2] == ["workspace", "inspect"]:
+            if _has_expected_configured_selection(command, native):
+                native.inspect_replies[1] = (
+                    1, {"ok": False, "error": "candidate conflicts with the configured workspace"}, "",
+                )
+            else:
+                scanned.append(foreign_root)
+                native.inspect_replies[1] = (
+                    1, {"ok": False, "state": "startup_attempt_failed", "startup_attempt": foreign_attempt}, "",
+                )
+        return native.popen(argv, **options)
+
+    monkeypatch.setattr(subprocess, "Popen", reselected_runtime)
+    with pytest.raises(
+        runtime_cli.RuntimeCLIError, match="candidate conflicts with the configured workspace",
+    ) as caught:
+        runtime_cli.RuntimeCLI().up(
+            support_root=native.support, expected_realm_id="realm-a", realm_root=native.realm,
+        )
+
+    assert scanned == []
+    assert "startup_attempt" not in caught.value.result
+    assert [command[0] for command in native.commands] == ["startup-status", "workspace"]
+    assert all(_has_expected_configured_selection(command, native) for command in native.commands)
+
+
+def test_inspecting_launcher_race_is_reobserved_in_the_exact_configured_scope(native, capsys):
+    inspecting = {**LAUNCHER, "state": "inspecting_workspace"}
+    native.inspect_replies[2] = (
+        1, {"ok": False, "state": "inspecting_workspace", "startup_attempt": inspecting}, "",
+    )
+    native.status_replies = [UNAVAILABLE, UNAVAILABLE, (0, inspecting, "")]
+
+    code, data = public_up(native, capsys)
+
+    assert code == 1
+    assert data["problem_code"] == "startup_pending"
+    assert data["startup_attempt"] == inspecting
+    assert [command[0] for command in native.commands] == [
+        "startup-status", "workspace", "startup-status", "workspace", "startup-status",
+    ]
+    assert all("--require-configured-selection" in command for command in native.commands)
+    assert all(_has_expected_configured_selection(command, native) for command in native.commands[2:])
+
+
+@pytest.mark.parametrize("observed", [UNAVAILABLE, (0, {**LAUNCHER, "state": "failed"}, "")])
+def test_unconfirmed_launcher_race_does_not_publish_an_attempt_id_or_start(native, capsys, observed):
+    inspecting = {**LAUNCHER, "state": "inspecting_workspace"}
+    native.inspect_replies[1] = (
+        1, {"ok": False, "state": "inspecting_workspace", "startup_attempt": inspecting}, "",
+    )
+    native.status_replies = [UNAVAILABLE, observed]
+
+    assert public_up(native, capsys) == (1, {"ok": False, "state": "startup_busy"})
+    assert [command[0] for command in native.commands] == ["startup-status", "workspace", "startup-status"]
+
+
+def test_runtime_that_rejects_the_selection_fence_is_not_downgraded(native, capsys):
+    unsupported = "astrid-runtime: error: unrecognized arguments: --require-configured-selection"
+    native.status_replies = [(2, None, unsupported)]
+
+    code, data = public_up(native, capsys)
+
+    assert code == 1
+    assert data["error"] == unsupported
+    assert [command[0] for command in native.commands] == ["startup-status"]
+    assert "--require-configured-selection" in native.commands[0]
