@@ -163,6 +163,59 @@ def test_new_changed_or_rebound_occurrence_intervals_are_strict(damage):
     assert encoded(value) == before
 
 
+def _single_legacy_child_overrun():
+    baseline = bundle_from_document(legacy_document("occurrence"))
+    baseline["shots"]["chapter-shot"]["internal_timeline"]["clips"] = [
+        clip for clip in baseline["shots"]["chapter-shot"]["internal_timeline"]["clips"]
+        if clip["id"] == "clip-a"
+    ]
+    return baseline
+
+
+def test_pure_at_shift_retains_same_legacy_overrun_when_occurrence_shrinks_equally():
+    baseline = _single_legacy_child_overrun()
+    value = copy.deepcopy(baseline)
+    value["placements"][0]["duration_ms"] = 50
+    value["shots"]["chapter-shot"]["internal_timeline"]["clips"][0]["at"] = 0.95
+
+    validate_final_candidate(value, baseline=baseline)
+
+
+def test_pure_at_shift_may_not_increase_a_legacy_overrun():
+    baseline = _single_legacy_child_overrun()
+    value = copy.deepcopy(baseline)
+    value["placements"][0]["duration_ms"] = 49
+    value["shots"]["chapter-shot"]["internal_timeline"]["clips"][0]["at"] = 0.95
+
+    with pytest.raises(AuthoringBundleError, match="half-open bounds"):
+        validate_final_candidate(value, baseline=baseline)
+
+
+@pytest.mark.parametrize("damage", ["source-window", "hold", "speed", "label", "selector", "asset-entry"])
+def test_retained_overrun_exception_requires_unchanged_clip_and_asset_provenance(damage):
+    baseline = _single_legacy_child_overrun()
+    value = copy.deepcopy(baseline)
+    value["placements"][0]["duration_ms"] = 50
+    clip = value["shots"]["chapter-shot"]["internal_timeline"]["clips"][0]
+    clip["at"] = 0.95
+    internal = value["shots"]["chapter-shot"]["internal_timeline"]
+    if damage == "source-window":
+        clip["from"] = 0.1
+    elif damage == "hold":
+        clip["hold"] = 1.9
+    elif damage == "speed":
+        clip["speed"] = 2
+    elif damage == "label":
+        clip["label"] = "changed"
+    elif damage == "selector":
+        clip["asset"] = "different-asset"
+    else:
+        internal["registry"]["assets"]["picture"]["opaque"] = {"changed": True}
+
+    with pytest.raises(AuthoringBundleError, match="half-open bounds"):
+        validate_final_candidate(value, baseline=baseline)
+
+
 @pytest.mark.parametrize("damage", ["new", "interval", "asset"])
 def test_new_changed_or_invalidated_asset_windows_are_strict(damage):
     baseline = bundle_from_document(legacy_document("asset"))
