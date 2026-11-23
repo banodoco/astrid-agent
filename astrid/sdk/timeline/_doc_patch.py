@@ -376,12 +376,12 @@ def validate_submitted_change(change):
                 raise CommandError('replacement changes provider-managed edges', kind='managed_closure_write', ref=ref, path=path)
 
 
-def apply_change(root, change, *, physical=None):
+def apply_change(root, change, *, physical=None, _old_root=None):
     """Apply one guarded payload change; closure authority stays with the caller."""
     ref, path, op = change['ref'], change['path'], change['op']
     physical = physical or ref
     validate_submitted_change(change)
-    old_root = copy.deepcopy(root)
+    old_root = copy.deepcopy(root) if _old_root is None else _old_root
     if op.startswith('list.'):
         state = value_at(root, physical, path)
         rows = state.get('value')
@@ -491,7 +491,7 @@ def patch(ctx, command):
             raise CommandError('root alias changed its physical binding', kind='binding_changed', ref=ref, path=path)
         root = closure.payload(physical)
         old_root = copy.deepcopy(root)
-        root, before = apply_change(root, change, physical=physical)
+        root, before = apply_change(root, change, physical=physical, _old_root=old_root)
         verify_media(ctx, physical, old_root, root)
         created = allocations(closure, physical, old_root, root)
         ctx.record['created'].extend(created)

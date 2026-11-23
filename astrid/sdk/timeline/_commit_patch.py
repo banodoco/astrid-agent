@@ -178,14 +178,19 @@ def effect_diff(before, after):
                 result.append({'op': 'set', 'ref': ref, 'path': [], 'before': ABSENT.copy(),
                                'value': copy.deepcopy(new[ref]['payload'])})
 
+    # These wrappers borrow the immutable comparison inputs. Only emitted effects
+    # cross the ownership boundary and are copied below.
+    def view(value):
+        return {'state': 'present', 'value': value}
+
     def walk(ref, path, left, right):
         if equal(left, right):
             return
         if left != ABSENT and right != ABSENT and isinstance(left['value'], dict) and isinstance(right['value'], dict):
             a, b = left['value'], right['value']
             for key in sorted(a.keys() | b.keys()):
-                walk(ref, [*path, key], present(a[key]) if key in a else ABSENT,
-                     present(b[key]) if key in b else ABSENT)
+                walk(ref, [*path, key], view(a[key]) if key in a else ABSENT,
+                     view(b[key]) if key in b else ABSENT)
             return
         key = identity_key(ref, path)
         if key and left != ABSENT and right != ABSENT and isinstance(left['value'], list) and isinstance(right['value'], list):
@@ -193,7 +198,7 @@ def effect_diff(before, after):
             a_ids, b_ids = identities(a, key, ref=ref, path=path), identities(b, key, ref=ref, path=path)
             if a_ids == b_ids:
                 for identity, first, second in zip(a_ids, a, b):
-                    walk(ref, [*path, key + ':' + identity], present(first), present(second))
+                    walk(ref, [*path, key + ':' + identity], view(first), view(second))
                 return
         item = {'op': 'remove' if right == ABSENT else 'set', 'ref': ref, 'path': path,
                 'before': copy.deepcopy(left)}
@@ -202,13 +207,16 @@ def effect_diff(before, after):
         result.append(item)
 
     def logical_parent(image):
-        payload = copy.deepcopy(image['payload'])
+        payload = image['payload'].copy()
+        # Normalization writes only the top level and config, never their values.
+        if isinstance(payload.get('config'), dict):
+            payload['config'] = payload['config'].copy()
         for mirror in ('clips', 'registry'):
             if mirror not in payload:
                 continue
             value = payload.pop(mirror)
             config = payload.setdefault('config', {})
-            if mirror in config and not equal(present(config[mirror]), present(value)):
+            if mirror in config and not equal(config[mirror], value):
                 other = config[mirror]
                 if mirror != 'clips' or not (
                         other is None and isinstance(value, list)
@@ -230,12 +238,12 @@ def effect_diff(before, after):
         # Alias paths cannot express a change in raw mirror presence. Bind the
         # complete parent image so projection preserves each storage location.
         result.append({'op': 'set', 'ref': 'parent', 'path': [],
-                       'before': present(copy.deepcopy(old['parent']['payload'])),
+                       'before': present(old['parent']['payload']),
                        'value': copy.deepcopy(new['parent']['payload'])})
     else:
-        walk('parent', [], present(old_parent), present(new_parent))
+        walk('parent', [], view(old_parent), view(new_parent))
     for ref in sorted(old.keys() & new.keys() - {'parent'}):
-        walk(ref, [], present(old[ref]['payload']), present(new[ref]['payload']))
+        walk(ref, [], view(old[ref]['payload']), view(new[ref]['payload']))
     for prefix in ('shot-revision:', 'internal-revision:'):
         for ref in sorted(old.keys() - new.keys()):
             if ref.startswith(prefix):
