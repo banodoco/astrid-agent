@@ -145,6 +145,47 @@ def test_exact_word_ripple_passes_and_reflow_moves_no_clip():
     assert checkout.reflow() == []
 
 
+def test_occurrence_duration_change_preserves_stationary_word_anchored_clip():
+    baseline = _with_provable_anchor()
+    candidate = copy.deepcopy(baseline)
+    candidate["placements"][0]["duration_ms"] += 500
+    before = copy.deepcopy(candidate)
+
+    validate_final_candidate(candidate, baseline=baseline)
+
+    assert candidate == before
+
+
+def test_occurrence_duration_and_narration_shift_refuse_stationary_word_clip():
+    baseline = _with_provable_anchor()
+    candidate = copy.deepcopy(baseline)
+    candidate["placements"][0]["duration_ms"] += 500
+    voice, _ = _shot_clips(candidate)
+    voice["at"] += 0.5
+    before = copy.deepcopy(candidate)
+
+    with pytest.raises(AuthoringBundleError, match=re.escape(GUIDANCE)):
+        validate_final_candidate(candidate, baseline=baseline)
+    assert candidate == before
+
+
+def test_stationary_word_clip_refuses_when_source_mapping_changes_at_same_word_edge():
+    baseline = _with_provable_anchor()
+    candidate = copy.deepcopy(baseline)
+    candidate["placements"][0]["duration_ms"] += 500
+    voice, _ = _shot_clips(candidate)
+    # stop starts at 2.75s local in both mappings:
+    # 1 + (5.5 - 2) / 2 == 1.875 + (5.5 - 2) / 4.
+    # Its source-to-timeline mapping changes while the anchored card stays put.
+    voice["speed"] = 4
+    voice["at"] = 1.875
+    before = copy.deepcopy(candidate)
+
+    with pytest.raises(AuthoringBundleError, match=re.escape(GUIDANCE)):
+        validate_final_candidate(candidate, baseline=baseline)
+    assert candidate == before
+
+
 @pytest.mark.parametrize("case", ["clip-only", "ambiguous", "drifted-before", "source-map", "duration", "ordinal"])
 def test_available_transcript_does_not_exempt_unproven_retime(case):
     baseline = _with_provable_anchor("again" if case == "ambiguous" else "stop")
@@ -464,3 +505,45 @@ def test_line_qualified_ripple_accepts_timeline_line_id_distinct_from_segment_id
     card["at"] += 0.5
 
     validate_final_candidate(candidate, baseline=baseline)
+
+
+def test_retimed_ambiguous_word_refuses_when_another_occurrence_grows():
+    baseline = _with_provable_anchor("again")
+    empty = copy.deepcopy(baseline["shots"]["chapter-shot"])
+    empty["shot_id"] = "empty-shot"
+    empty["payload"]["name"] = empty["base_payload"]["name"] = "Empty"
+    empty["payload"]["internal_timeline_revision_id"] = "empty-internal-revision"
+    empty["base_payload"]["internal_timeline_revision_id"] = "empty-internal-revision"
+    empty["internal_timeline"]["clips"] = []
+    empty["base_internal_timeline"]["clips"] = []
+    baseline["shots"]["empty-shot"] = empty
+
+    empty_source = copy.deepcopy(baseline["source_mapping"]["shots"]["chapter-shot"])
+    empty_source.update(
+        shot_id="empty-shot", revision_id="empty-shot-revision",
+        internal_timeline_id="empty-chapter", internal_timeline_revision_id="empty-internal-revision",
+    )
+    baseline["source_mapping"]["shots"]["empty-shot"] = empty_source
+    second = copy.deepcopy(baseline["placements"][0])
+    second.update(
+        occurrence_id="occ-b", shot_id="empty-shot", shot_revision_id="empty-shot-revision",
+        placement={"start_ms": 12000, "track": "picture"},
+    )
+    baseline["placements"].append(second)
+
+    control = copy.deepcopy(baseline)
+    control["placements"][1]["duration_ms"] += 500
+    control_before = copy.deepcopy(control)
+    validate_final_candidate(control, baseline=baseline)
+    assert control == control_before
+
+    candidate = copy.deepcopy(baseline)
+    candidate["placements"][1]["duration_ms"] += 500
+    voice, card = _shot_clips(candidate)
+    voice["at"] += 0.5
+    card["at"] += 0.5
+    before = copy.deepcopy(candidate)
+
+    with pytest.raises(AuthoringBundleError, match=re.escape(GUIDANCE)):
+        validate_final_candidate(candidate, baseline=baseline)
+    assert candidate == before

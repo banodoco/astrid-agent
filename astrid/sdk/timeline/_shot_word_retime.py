@@ -41,6 +41,22 @@ def _start(placement, clip):
     return _time_fraction(start_ms, "occurrence start") / 1000 + _time_fraction(clip["at"], "clip start")
 
 
+def _word_source(bundle, source):
+    _, shot, clip_id = source
+    placement = _placement(bundle, shot)
+    internal = bundle["shots"][shot]["internal_timeline"]
+    clip, = (clip for clip in internal["clips"] if clip["id"] == clip_id)
+    return placement, clip
+
+
+def _word_source_mapping(bundle, source):
+    placement, clip = _word_source(bundle, source)
+    rate = _time_fraction(clip.get("speed") or 1, "speed")
+    origin = source_to_timeline_time(0, source_start=clip.get("from") or 0,
+                                     timeline_start=_start(placement, clip), speed=rate)
+    return rate, origin
+
+
 def retained_retime_pins(bundle):
     """Use the authenticated Runtime manifest, excluding request-only captures."""
     source = bundle.get("source_mapping", {})
@@ -133,9 +149,7 @@ def _exact_word(bundle, pool, owner, field, declaration):
     choice = {"source": f"occurrence:{source[0]}/clip:{source[2]}", "document": pin,
               "word_ids": [item.word_id for item in phrase]}
     exact = binding(bundle, "parent/clip:" + owner[2], field, choice, list(captures.values()))
-    source_row = _placement(bundle, source[1])
-    internal = bundle["shots"][source[1]]["internal_timeline"]
-    source_clip, = (clip for clip in internal["clips"] if clip["id"] == source[2])
+    source_row, source_clip = _word_source(bundle, source)
     content = captures[word.media_id]["document"]["content"]
     stored = {item["id"]: item for segment in content["segments"] for item in segment["words"]}
     start = _start(source_row, source_clip)
@@ -194,8 +208,15 @@ def prove_shot_word_retime(candidate, baseline, key, clip, prior, field, text):
             return None
         before, old_edge, old_interval = baseline.resolve(key, prior, field, text)
         after, new_edge, new_interval = candidate.resolve(key, clip, field, text)
-        if before != after or old_interval == new_interval:
+        if before != after:
             return None
+        # An occurrence resize can leave an earlier clip stationary. Require
+        # the same word edge and source playback mapping in that case.
+        if old_interval == new_interval:
+            old_mapping = _word_source_mapping(baseline.bundle, before.source)
+            new_mapping = _word_source_mapping(candidate.bundle, after.source)
+            if old_edge != new_edge or old_mapping != new_mapping:
+                return None
         frame = 1 / _fps(candidate.bundle)
         if any(abs((new - new_edge) - (old - old_edge)) > frame
                for old, new in zip(old_interval, new_interval)):
