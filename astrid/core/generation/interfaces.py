@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Protocol, TypedDict
+from typing import TYPE_CHECKING, Any, Literal, NotRequired, Protocol, TypedDict
 
 from astrid.core.generation.targets import TargetRecord, TargetSelection
 
@@ -30,11 +30,22 @@ class ReadinessIssue(TypedDict):
     severity: Literal["error", "warning"]
     message: str
     details: dict[str, Any]
+    fix_ids: NotRequired[list[str]]
+
+
+class ReadinessInstruction(TypedDict):
+    step: str
+    then_argv: list[str]
 
 
 class ReadinessFix(TypedDict):
-    argv: list[str]
-    scope: Literal["read_only", "managed_write", "user_env", "paid"]
+    # New setup fixes carry id/who and exactly one action; legacy fields remain.
+    id: NotRequired[str]
+    who: NotRequired[Literal["agent", "human"]]
+    argv: NotRequired[list[str]]
+    instruction: NotRequired[ReadinessInstruction]
+    placeholders: NotRequired[dict[str, str]]
+    scope: Literal["read_only", "managed_write", "user_env", "paid", "attached_target"]
     details: dict[str, Any]
 
 
@@ -44,6 +55,7 @@ class ReadinessEnvelope(TypedDict):
     status: Literal["ready", "ready_with_warnings", "blocked"]
     issues: list[ReadinessIssue]
     fixes: list[ReadinessFix]
+    attempt_count: NotRequired[int]
 
 
 class GenerationErrorEnvelope(ReadinessEnvelope):
@@ -149,7 +161,7 @@ class GenerationReleaseOwner(Protocol):
 
 __all__ = [
     "TargetRecord", "TargetSelection", "InputInventoryRow", "ReadinessIssue",
-    "ReadinessFix", "ReadinessEnvelope", "GenerationErrorEnvelope", "ResultEvidence",
+    "ReadinessInstruction", "ReadinessFix", "ReadinessEnvelope", "GenerationErrorEnvelope", "ResultEvidence",
     "OwnedSessionAdapter", "GenerationAdmission", "RunPodPreparationRequest",
     "PreparedGeneration", "RunPodGenerationPreparation", "GenerationInvocationClient",
     "GenerationReleaseOwner",
