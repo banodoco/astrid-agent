@@ -58,12 +58,14 @@ def _registry(theme: str | Path | None = None, *, project_slug: str | None = Non
     del theme, project_slug
     project_root = Path(TOOLS_DIR).resolve()
     with _default_registry_lock:
-        while True:
+        for attempt in range(2):
             state = _default_registry_state(project_root)
             try:
                 return _cached_registry(project_root, state)
             except _CollectionChanged:
-                continue
+                if attempt == 1:
+                    raise RuntimeError("element collection changed during discovery; retry") from None
+        raise RuntimeError("element collection changed during discovery; retry")
 
 
 class _CollectionChanged(Exception):

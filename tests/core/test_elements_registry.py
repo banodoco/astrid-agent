@@ -333,6 +333,61 @@ class ElementRegistryTest(unittest.TestCase):
             self.assertEqual(text_card.metadata["label"], "Text Card")
             self.assertEqual(text_card.metadata["pack_id"], "rendering")
 
+    def test_registry_repeated_collection_change_refuses_after_one_retry(self) -> None:
+        from unittest import mock
+
+        from astrid.core.element import registry as registry_module
+
+        states = iter(("before-1", "after-1", "before-2", "after-2"))
+        with (
+            mock.patch.object(registry_module, "_default_registry_state", side_effect=lambda *args: next(states)) as state,
+            mock.patch.object(
+                registry_module,
+                "_load_default_registry_data",
+                return_value=((), element_module.ELEMENT_KIND_REGISTRY, ()),
+            ) as load_data,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "collection.*chang"):
+                registry_module.load_default_registry()
+
+        self.assertEqual(load_data.call_count, 2)
+        self.assertEqual(state.call_count, 4)
+
+    def test_catalog_repeated_collection_change_refuses_after_one_retry(self) -> None:
+        from unittest import mock
+
+        from astrid.core.element import catalog
+
+        states = iter(("collection-1", "collection-2"))
+        with (
+            mock.patch.object(catalog, "_default_registry_state", side_effect=lambda *args: next(states)) as state,
+            mock.patch.object(
+                catalog,
+                "_cached_registry",
+                side_effect=catalog._CollectionChanged,
+            ) as load_registry,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "collection.*chang"):
+                catalog._registry()
+
+        self.assertEqual(load_registry.call_count, 2)
+        self.assertEqual(state.call_count, 2)
+
+    def test_schema_repeated_collection_change_refuses_after_one_retry(self) -> None:
+        from unittest import mock
+
+        from astrid.sdk import timeline_address
+
+        with mock.patch.object(
+            timeline_address,
+            "_element_schema_once",
+            side_effect=[None, None, RuntimeError("unexpected third attempt")],
+        ) as lookup:
+            with self.assertRaisesRegex(timeline_address.ElementRegistryUnavailable, "collection.*chang"):
+                timeline_address.element_schema("changing-element")
+
+        self.assertEqual(lookup.call_count, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

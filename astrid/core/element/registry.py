@@ -343,7 +343,7 @@ def load_default_registry(
     project_root = Path(project_root).resolve()
     extra_pack_roots = tuple(str(Path(root).resolve()) for root in extra_pack_roots)
     with _default_registry_lock:
-        while True:
+        for attempt in range(2):
             state = _default_registry_state(project_root, extra_pack_roots)
             try:
                 elements, element_kind_registry, diagnostics = _load_default_registry_data(
@@ -353,11 +353,15 @@ def load_default_registry(
                 if state == _default_registry_state(project_root, extra_pack_roots):
                     raise
                 _load_default_registry_data.cache_clear()
+                if attempt == 1:
+                    raise RuntimeError("element collection changed during discovery; retry") from None
                 continue
             if state == _default_registry_state(project_root, extra_pack_roots):
                 break
             # Discovery crossed a publication; never reuse its mixed corpus.
             _load_default_registry_data.cache_clear()
+            if attempt == 1:
+                raise RuntimeError("element collection changed during discovery; retry")
     resolver = create_shared_alias_resolver()
     _register_pack_aliases(resolver, {})  # no aliases yet
     registry = ElementRegistry(

@@ -481,10 +481,14 @@ def element_schema(element: str) -> dict[str, Any]:
     ``ASTRID_PACKS_PATH``), so a moved element resolves from its installed pack. A ``media`` clip is not an
     element and has an empty schema (its params are ``MEDIA_PARAMS``). Any other clip type with no resolvable
     declaration raises an :class:`ElementSchemaUnavailable` subclass; it is never schema-less."""
-    while True:
+    for _attempt in range(2):
         result = _element_schema_once(element)
         if result is not None:
             return result
+    raise ElementRegistryUnavailable(
+        element, "the element collection changed during discovery",
+        fix="Retry once the collection is stable.",
+    )
 
 
 def _element_schema_once(element: str) -> dict[str, Any] | None:
