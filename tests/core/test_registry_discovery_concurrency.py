@@ -192,7 +192,44 @@ def test_miss_rediscovers_when_managed_pack_root_is_activated(monkeypatch, tmp_p
     _clear_cache()
 
 
-def test_warm_hit_and_unchanged_miss_resolve_and_copy_once(monkeypatch, tmp_path: Path):
+def test_warm_hit_follows_retargeted_project_symlink(monkeypatch, tmp_path: Path):
+    class FakeRegistry:
+        def __init__(self, elements=(), **_kwargs):
+            self.elements = dict(elements)
+
+        def get(self, _kind, element_id):
+            return self.elements.get(element_id)
+
+    root_a, root_b = tmp_path / "project-a", tmp_path / "project-b"
+    root_a.mkdir()
+    root_b.mkdir()
+    link = tmp_path / "project"
+    link.symlink_to(root_a, target_is_directory=True)
+    monkeypatch.setattr(registry, "ElementRegistry", FakeRegistry)
+    monkeypatch.setattr(registry, "create_shared_alias_resolver", lambda: None)
+    monkeypatch.setattr(registry, "_register_pack_aliases", lambda *_args: None)
+    monkeypatch.setattr(registry, "_pack_roots", lambda root, _extra: (Path(root),))
+    monkeypatch.setattr(registry, "_root_state", lambda _roots: (0,))
+    monkeypatch.setattr(
+        registry, "_load_default_registry_data",
+        lambda root, *_args: ((("known", Path(root).name),), registry.ELEMENT_KIND_REGISTRY, ()),
+    )
+    _clear_cache()
+    try:
+        lookup = lambda loaded: loaded.get("effects", "known")
+        found, _ = registry.lookup_default_registry(lookup, project_root=link)
+        assert found == "project-a"
+        found, _ = registry.lookup_default_registry(lookup, project_root=link)
+        assert found == "project-a"  # known-key warm hit
+        link.unlink()
+        link.symlink_to(root_b, target_is_directory=True)
+        found, _ = registry.lookup_default_registry(lookup, project_root=link)
+        assert found == "project-b"
+    finally:
+        _clear_cache()
+
+
+def test_warm_hit_and_unchanged_miss_resolve_once_per_lookup(monkeypatch, tmp_path: Path):
     class FakeRegistry:
         def __init__(self, elements=(), **_kwargs):
             self.elements = set(elements)
@@ -241,7 +278,7 @@ def test_warm_hit_and_unchanged_miss_resolve_and_copy_once(monkeypatch, tmp_path
 
     found, _ = registry.lookup_default_registry(find_known, project_root=tmp_path)
     assert found == "known"
-    assert resolve_calls == 0
+    assert resolve_calls == 1
 
     deepcopy_calls = 0
     lookup_calls = 0
@@ -253,9 +290,9 @@ def test_warm_hit_and_unchanged_miss_resolve_and_copy_once(monkeypatch, tmp_path
 
     absent, _ = registry.lookup_default_registry(find_absent, project_root=tmp_path)
     assert absent is None
-    assert resolve_calls == 0
-    assert deepcopy_calls == 1
-    assert lookup_calls == 1
+    assert resolve_calls == 2
+    assert deepcopy_calls == 2
+    assert lookup_calls == 2
     _clear_cache()
 
 
