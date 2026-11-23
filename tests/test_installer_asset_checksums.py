@@ -482,7 +482,8 @@ def test_wrong_default_digest_rejects_first_install_before_group_publication(tmp
     assert snapshot.paths == {}
 
 
-def test_wrong_default_digest_rejects_update_and_preserves_published_group(tmp_path, monkeypatch):
+def test_wrong_default_digest_rejects_direct_reconciliation_and_preserves_existing_group(
+        tmp_path, monkeypatch):
     from astrid.core.pack.transaction import read_group
 
     manifest, update_manifest = _real_default_fixture(tmp_path / "repository")
