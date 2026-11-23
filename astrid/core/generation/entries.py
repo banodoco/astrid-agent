@@ -92,7 +92,9 @@ def contributed_entries(*, exclude: Any = ()) -> list[dict[str, Any]]:
     return rows
 
 
-def _ready_entry_rows(entry_id: str | None = None, *, registry: Any = None) -> list[dict[str, Any]]:
+def _ready_entry_rows(entry_id: str | None = None, *, registry: Any = None,
+                      before_projection: Callable[[], None] | None = None,
+                      load_registry: Callable[[], Any] | None = None) -> list[dict[str, Any]]:
     """Project cheap repository metadata without loading workflow graphs."""
     try:
         # vibecomfy is an optional install (not in the wheel's runtime lock):
@@ -106,6 +108,8 @@ def _ready_entry_rows(entry_id: str | None = None, *, registry: Any = None) -> l
         return []
     root = resources.ready_templates_root().parent
     index = resources.template_index()['templates']
+    if before_projection is not None:
+        before_projection()
     coverage = resources.coverage_manifest()['workflows']
     task_modes = {'text_to_image': 't2i', 'text_to_image_single_frame': 't2i', 'image_to_image': 'i2i', 'image_edit': 'edit',
                   'text_to_video': 't2v', 'image_to_video': 'i2v', 'first_last_frame': 'flf',
@@ -115,7 +119,9 @@ def _ready_entry_rows(entry_id: str | None = None, *, registry: Any = None) -> l
                   'text_to_speech_voice_design': 'tts'}
     from astrid.core.model_catalog.registry import ModelRegistry
     catalog_by_template = {}
-    for model in (registry if registry is not None else ModelRegistry.load_default()).list_all(include_closed=True):
+    if registry is None:
+        registry = load_registry() if load_registry is not None else ModelRegistry.load_default()
+    for model in registry.list_all(include_closed=True):
         for mode, spec in model.modes.items():
             local = spec.backends.get('local')
             if local and local.template:
@@ -194,9 +200,9 @@ def _complete_ready_entry(row: dict[str, Any], *, discovery: Any) -> dict[str, A
 
 def _ready_entries_for(entry_id: str | None = None) -> list[dict[str, Any]]:
     """Project repository metadata and complete each row with workflow metadata."""
-    discovery = _discover_ready_workflows()
-    rows = _ready_entry_rows(entry_id)
-    return [_complete_ready_entry(row, discovery=discovery) for row in rows]
+    discovery: list[Any] = []
+    rows = _ready_entry_rows(entry_id, before_projection=lambda: discovery.append(_discover_ready_workflows()))
+    return [_complete_ready_entry(row, discovery=discovery[0]) for row in rows]
 
 
 def ready_entries() -> list[dict[str, Any]]:
@@ -913,14 +919,20 @@ class _EntryDiscovery:
             if _ready_entries_for is not _DEFAULT_READY_ENTRIES_FOR:
                 self._ready[entry_id] = _ready_entries_for(entry_id)
             else:
-                if self._workflow_discovery is None:
-                    self._workflow_discovery = _discover_ready_workflows()
                 if self._ready_candidates is not None:
+                    if self._workflow_discovery is None:
+                        self._workflow_discovery = _discover_ready_workflows()
                     rows = [row for row in self._ready_candidates if row['id'] == entry_id]
                 elif _ready_entry_rows is not _DEFAULT_READY_ENTRY_ROWS:
+                    if self._workflow_discovery is None:
+                        self._workflow_discovery = _discover_ready_workflows()
                     rows = [row for row in self._ready_rows() if row['id'] == entry_id]
                 else:
-                    rows = _ready_entry_rows(entry_id, registry=self.registry)
+                    def discover() -> None:
+                        if self._workflow_discovery is None:
+                            self._workflow_discovery = _discover_ready_workflows()
+                    rows = _ready_entry_rows(entry_id, before_projection=discover,
+                                             load_registry=lambda: self.registry)
                     self._pending_ready.update(id(row) for row in rows)
                 self._ready[entry_id] = [self.complete_ready(row) for row in rows]
         return self._ready[entry_id]
