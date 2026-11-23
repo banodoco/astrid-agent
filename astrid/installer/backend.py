@@ -1804,8 +1804,34 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
     def restart_required(self) -> bool:
         return self.service.restart_required()
 
+    def _wait_for_pending_startup(self, version: Version, data: Path, realm_id: str, realm_root: str) -> bool:
+        """Wait for the exact scoped operation and report whether it was observed pending."""
+        args = ["startup-status", "--realm-root", realm_root, "--expected-realm-id", realm_id,
+                "--require-configured-selection"]
+        phases = ("verifying_identity", "checking_realm", "checking_objects", "checking_history",
+                  "establishing_service")
+        operation_id = None
+        while True:
+            try:
+                status = self.runtime(version, data, *args, profile=True, timeout=3)
+            except RuntimeOperationError:
+                return operation_id is not None
+            observed_id = status.get("operation_id")
+            count = status.get("objects_checked")
+            if (status.keys() != {"state", "operation_id", "phase", "objects_checked"}
+                    or status["state"] != "pending" or status["phase"] not in phases
+                    or not isinstance(observed_id, str) or not re.fullmatch(r"[a-f0-9]{32}", observed_id)
+                    or type(count) is not int or not 0 <= count < 2**63
+                    or (operation_id is not None and observed_id != operation_id)):
+                return operation_id is not None
+            if operation_id is None:
+                operation_id = observed_id
+                args.extend(("--operation-id", operation_id))
+            time.sleep(0.25)
+
     def verify(self, version: Version, data: Path, realm_id: str, *, timeout: float = 90,
-               hosted: bool = True, pre_update_instance_id: str | None = None) -> None:
+               hosted: bool = True, pre_update_instance_id: str | None = None,
+               startup_realm_root: str | None = None) -> None:
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         port = int(version.env.get("ASTRID_RUNTIME_DOOR_PORT", str(DEFAULT_DOOR_PORT))) if hosted else None
         deadline = time.monotonic() + timeout
@@ -1813,7 +1839,13 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         last_endpoint = "<no discovery>"
         last_discovery_instance = None
         last_runtime_error = None
-        while time.monotonic() < deadline:
+        while True:
+            within_deadline = time.monotonic() < deadline
+            if not within_deadline:
+                # Waiting for a pending operation permits one final ordinary readiness sample.
+                if startup_realm_root is None or not self._wait_for_pending_startup(
+                        version, data, realm_id, startup_realm_root):
+                    break
             try:
                 try:
                     status = self.runtime(version, data, "status", timeout=3)
@@ -1883,6 +1915,8 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                 identity_ok = True
                 break
             except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+                if not within_deadline:
+                    break
                 time.sleep(0.25)
         if not identity_ok:
             cause = _last_logged_error(self.service.log)

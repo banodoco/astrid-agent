@@ -66,6 +66,7 @@ def managed_runtime_lifecycle(*, action: str, source_checkout: Path, data_root: 
         realm = next((row for row in catalog.get("realms", []) if row.get("realm_id") == realm_id), None)
         if not isinstance(realm_id, str) or not realm_id or not isinstance(realm, dict) or not realm.get("data_root"):
             raise ValueError("Managed Astrid workspace selection is incomplete; no Runtime was stopped.")
+        realm_root = realm["data_root"]
         discovery = read_json(data / "runtime" / "discovery.json")
         old_id = discovery.get("runtime_instance_id")
         backend = Backend(root, platform.log_dir() / "installer.log", Path(sys.executable), say=lambda *_: None)
@@ -114,7 +115,8 @@ def managed_runtime_lifecycle(*, action: str, source_checkout: Path, data_root: 
         if register:
             backend.register(version, data)
         backend.start(version, data)
-        backend.verify(version, data, realm_id, pre_update_instance_id=old_id if action == "restart" else None)
+        backend.verify(version, data, realm_id, pre_update_instance_id=old_id if action == "restart" else None,
+                       startup_realm_root=realm_root if isinstance(realm_root, str) else None)
         new = read_json(data / "runtime" / "discovery.json")
         if action == "restart" and (not new.get("runtime_instance_id") or new.get("runtime_instance_id") == old_id):
             raise ValueError("Managed Runtime restart did not establish a new owner.")
