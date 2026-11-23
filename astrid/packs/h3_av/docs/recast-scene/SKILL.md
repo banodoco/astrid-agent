@@ -145,6 +145,19 @@ The compiled plan binds `source-with-fixed-audio.wav`. Two routes do not work: a
 - Plan: read the shot's inputs from its plan (`timelines shots plan show <shot> --project P --timeline T`: references, masks, voice slice), never from memory or another file. Set `status=in_progress` when the pass starts. After checking the take in visualize, record the methods it satisfies: `timelines shots plan set <shot> --project P --timeline T --add-take '{"generation": "<run id>", "media": "<media id>", "note": "...", "covers": ["LC"]}'`. Keep the shot in progress until one take covers every planned method, then set `status=take_ready`.
 - When the owner approves a take, run `timelines shots plan set <shot> --project P --timeline T --set status=approved` (and say in a take's `note` which take was approved, if there are several).
 
+## Stage 5b - Clean the audio: the original's background, the generated voice
+
+A generated clip carries its own invented background (room tone, hiss, a hint of music), and every clip's differs. The original film has one consistent bed. Keep the original's background, keep only the generated voice, and mix them.
+
+Use SAM Audio through [ethanfel's ComfyUI-SAM-Audio](https://github.com/ethanfel/ComfyUI-SAM-Audio) (MIT). It separates a described sound from a mix and returns two outputs: `target` (the described sound) and `residual` (everything else). Output is mono at 48 kHz, a GPU is strongly recommended, and the checkpoints download into `models/sam_audio` on first use (Meta's repository is gated; the loader falls back to a pinned public mirror of the same checkpoint if access is denied). The default workflow is [sam-audio-separation.api.json](../workflows/sam-audio-separation.api.json): Load Audio, SAM-Audio Model Loader and SAM-Audio Text Separate, then one Save Audio on each output. Set the audio file and the `description` (a short lowercase phrase such as `man speaking`).
+
+1. **The original's background.** Cut the film's audio for the shot's range (`ffmpeg -ss S -t D -i film.mp4 -vn -ac 2 -ar 48000 bg-src.wav`), run the workflow with `description: man speaking`, and keep the **residual**. That is the background bed. The target is the original voice and is not used. Listen to the residual for leftover speech before you rely on it.
+2. **The generated clips.** Extract each clip's audio, run the same workflow with `description: man speaking`, and keep the **target**. That is the clean generated voice. Drop the residual, which is the generated background.
+3. **Mix.** Make one continuous bed from the original residual (loop it, with a crossfade of about 0.5 s, to the length of the cut, and match its level to the shot), and place it on its own audio track under every shot. Put each clean voice on the voice track and mute the generated clip's own audio. Convert the mono stems to the cut's channel layout.
+4. **Check.** Run `timelines transcripts` on each voice stem (the words must survive the separation), listen across every seam of the bed, and compare levels against the original.
+
+Status: the workflow is built from the node pack's own definitions and its text-separation example, but it has not yet been run on a GPU in this recast, so judge the stems by ear and expect to adjust the description or the number of inference steps (`inference_steps`, default 32).
+
 ## Stage 6 - Assemble and review
 
 Place the takes on the timeline, look across every cut boundary (`--preset motion` around each cut), check that words and mouths agree, and render only when asked.
