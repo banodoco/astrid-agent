@@ -24,6 +24,7 @@ from astrid.sdk.timeline_checkout import Checkout
 
 # Declarations the timing kernel refuses outright; older timelines carry them as authored data.
 UNSUPPORTED_DECLARATIONS = ("sequence", "sequence_fit", "formulas", "orphan", "gap_after_s")
+SHOT_WORD_ALTERNATIVE = "Use a cut-relative timing declaration such as +0.8s."
 
 
 def unsupported_declaration(declarations: Mapping[str, Any], name: str) -> bool:
@@ -419,7 +420,10 @@ def evaluate(bundle, sources, bindings, policy, legacy_declarations=(), collect=
                 raise TimingCompileError("word occurrence must be positive")
             pin = pins.get((owner, field))
             if pin is None or pin.declaration != text:
-                raise TimingCompileError(f"missing exact word binding for {owner}.{field}")
+                message = f"missing exact word binding for {owner}.{field}"
+                if owner[1]:
+                    message += f". {SHOT_WORD_ALTERNATIVE}"
+                raise TimingCompileError(message)
             used.add((owner, field))
             bound = _bound_words(bundle, documents, pin, clips, internals)
             dependencies = [node(pin.source, "start")]

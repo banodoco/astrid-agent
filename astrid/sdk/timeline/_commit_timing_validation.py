@@ -13,6 +13,7 @@ from astrid.core.timeline.shot_composition_projection import _placement_speed
 from astrid.sdk import timeline_intent as intent
 from astrid.sdk.timeline._preexisting import split_findings
 from astrid.sdk.timeline._timing_evaluators import (
+    SHOT_WORD_ALTERNATIVE,
     UNSUPPORTED_DECLARATIONS,
     _fps,
     _maps,
@@ -84,6 +85,7 @@ def _reference_shape(clip: Mapping[str, Any], assets: Mapping[str, Any] | None =
 
 _WORD_TIMING_FIELDS = ("id", "track", "at", "at_ms", "from", "to", "hold", "duration", "speed",
                        "asset", "asset_id")
+_WORD_TIMING_DECLARATIONS = ("on", "until", "for", "cut", "fixed_start", "word_anchors")
 
 
 def _fixed_visual_duration(clip: Mapping[str, Any], assets: Mapping[str, Any] | None) -> bool:
@@ -142,8 +144,9 @@ class _BasisReader:
             if _fixed_visual_duration(clip, self._assets(key[0], key[1])):
                 timing.pop("asset", None)
                 timing.pop("asset_id", None)
-            anchors = intent._app(clip).get("word_anchors")
-            return json.dumps({"clip": timing, "word_anchors": anchors}, sort_keys=True, default=str)
+            app = intent._app(clip)
+            declarations = {name: app.get(name) for name in _WORD_TIMING_DECLARATIONS}
+            return json.dumps({"clip": timing, "declarations": declarations}, sort_keys=True, default=str)
         basis = self.basis(key, clip, declaration)
         own = {"clip": basis["clip"]}
         parts = [json.dumps(own, sort_keys=True, default=str), self._json("documents", basis["documents"])]
@@ -872,7 +875,7 @@ def _validate_candidate_timing(
             if not isinstance(refs, dict) or set(refs) - {"on", "until"}:
                 raise TimingCompileError("invalid authored word anchor fields")
             if refs:
-                raise TimingCompileError("word anchors require parent ownership")
+                raise TimingCompileError(f"word anchors require parent ownership. {SHOT_WORD_ALTERNATIVE}")
     for clip in projection["parent"].get("clips", []):
         declarations = intent._app(clip)
         refs = declarations.get("word_anchors", {})
