@@ -145,6 +145,30 @@ def test_exact_word_ripple_passes_and_reflow_moves_no_clip():
     assert checkout.reflow() == []
 
 
+def test_occurrence_duration_change_preserves_stationary_word_anchored_clip():
+    baseline = _with_provable_anchor()
+    candidate = copy.deepcopy(baseline)
+    candidate["placements"][0]["duration_ms"] += 500
+    before = copy.deepcopy(candidate)
+
+    validate_final_candidate(candidate, baseline=baseline)
+
+    assert candidate == before
+
+
+def test_occurrence_duration_and_narration_shift_refuse_stationary_word_clip():
+    baseline = _with_provable_anchor()
+    candidate = copy.deepcopy(baseline)
+    candidate["placements"][0]["duration_ms"] += 500
+    voice, _ = _shot_clips(candidate)
+    voice["at"] += 0.5
+    before = copy.deepcopy(candidate)
+
+    with pytest.raises(AuthoringBundleError, match=re.escape(GUIDANCE)):
+        validate_final_candidate(candidate, baseline=baseline)
+    assert candidate == before
+
+
 @pytest.mark.parametrize("case", ["clip-only", "ambiguous", "drifted-before", "source-map", "duration", "ordinal"])
 def test_available_transcript_does_not_exempt_unproven_retime(case):
     baseline = _with_provable_anchor("again" if case == "ambiguous" else "stop")

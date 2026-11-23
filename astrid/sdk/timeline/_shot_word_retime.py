@@ -194,7 +194,11 @@ def prove_shot_word_retime(candidate, baseline, key, clip, prior, field, text):
             return None
         before, old_edge, old_interval = baseline.resolve(key, prior, field, text)
         after, new_edge, new_interval = candidate.resolve(key, clip, field, text)
-        if before != after or old_interval == new_interval:
+        if before != after:
+            return None
+        # A ripple can resize the occurrence without moving an earlier clip.
+        # Keep its binding only if the resolved word edge also stayed put.
+        if old_interval == new_interval and old_edge != new_edge:
             return None
         frame = 1 / _fps(candidate.bundle)
         if any(abs((new - new_edge) - (old - old_edge)) > frame
