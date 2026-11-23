@@ -1,12 +1,8 @@
 """Managed startup observation keeps the selected install waiting safely."""
 from __future__ import annotations
 
-import io
 import json
 from pathlib import Path
-from types import SimpleNamespace
-
-import pytest
 
 from astrid.installer import backend, core, service
 from astrid.installer.runtime_lifecycle import managed_runtime_lifecycle
@@ -37,6 +33,7 @@ def test_managed_up_waits_for_exact_pending_operation_past_legacy_deadline(tmp_p
     _write(selection, {"owner": service.LABEL, "program_root": str(program), "data_root": str(data)})
     _write(data / "runtime" / "catalog.json", {"selected_realm_id": "realm-a", "realms": [
         {"realm_id": "realm-a", "data_root": str(data / "realm-a")} ]})
+    (data / "realm-a").mkdir(parents=True)
     identity = {"release": 13, "managed_by": None}
     endpoint = "http://127.0.0.1:17340"
     discovery = {"active_realm": "realm-a", "runtime_instance_id": "instance-new",
@@ -44,8 +41,6 @@ def test_managed_up_waits_for_exact_pending_operation_past_legacy_deadline(tmp_p
                  "endpoint": "http://127.0.0.1:17341", "identity": identity}
     stale_discovery = {**discovery, "door_endpoint": "http://127.0.0.1:17399"}
     version = core.Version(version_root, python, profile, {"ASTRID_RUNTIME_DOOR_PORT": "17340"}, release=13)
-    (data / "runtime" / "generic-host.ready.json").parent.mkdir(parents=True, exist_ok=True)
-    (data / "runtime" / "generic-host.ready.json").write_text("{}")
     monkeypatch.setattr(core, "current", lambda _root: version)
     monkeypatch.setattr(service, "install_selection", lambda *_: selection)
     monkeypatch.setattr(service, "installer_lock_path", lambda *_: tmp_path / "installer.lock")
@@ -78,6 +73,11 @@ def test_managed_up_waits_for_exact_pending_operation_past_legacy_deadline(tmp_p
 
         def sleep(self, seconds):
             self.now += seconds
+            if self.now >= 100:
+                # Independent simulated service producer publishes readiness;
+                # the observer itself never creates these proofs.
+                _write(data / "runtime" / "discovery.json", discovery)
+                (data / "runtime" / "generic-host.ready.json").write_text("{}")
 
     clock = Clock()
     monkeypatch.setattr(backend.time, "monotonic", lambda: clock.now)
@@ -101,9 +101,11 @@ def test_managed_up_waits_for_exact_pending_operation_past_legacy_deadline(tmp_p
 
     class Opener:
         opened = []
+        opened_at = []
 
         def open(self, request, timeout):
             self.opened.append(request)
+            self.opened_at.append(clock.now)
             assert request.full_url in {endpoint + "/api/runtime/v1/health",
                                         endpoint + "/api/runtime/v1/realm"}
             return Response(health if request.full_url.endswith("/health") else {"realm_id": "realm-a"})
@@ -111,40 +113,49 @@ def test_managed_up_waits_for_exact_pending_operation_past_legacy_deadline(tmp_p
     opener = Opener()
     monkeypatch.setattr(backend.urllib.request, "build_opener", lambda *_args: opener)
     runtime_calls = []
-    pending = {"operation_id": "operation-canonical-42", "phase": "starting_service",
+    operation_id = "0123456789abcdef0123456789abcdef"
+    pending = {"operation_id": operation_id, "phase": "checking_history",
                "state": "pending", "objects_checked": 3}
+    startup_observations = []
 
     def runtime(self, selected_version, selected_data, *argv, profile=False, timeout=1800):
         runtime_calls.append((selected_version, selected_data, argv, profile, timeout))
         if argv and argv[0] == "startup-status":
-            if clock.now < 91:
-                return pending
-            _write(data / "runtime" / "discovery.json", discovery)
-            return {**pending, "phase": "ready", "state": "completed"}
+            result = pending if clock.now < 100 else {
+                **pending, "phase": "establishing_service", "state": "ended"}
+            startup_observations.append((clock.now, result))
+            return result
         assert argv == ("status",)
-        observed = discovery if clock.now >= 91 else stale_discovery
+        observed = discovery if clock.now >= 100 else stale_discovery
         return {"discovery": observed, "support": {"pid_alive": True}}
 
     monkeypatch.setattr(backend.Backend, "runtime", runtime)
 
     result = managed_runtime_lifecycle(action="up", source_checkout=source, data_root=data)
 
-    assert clock.now > 90
-    assert result["ok"] is False
-    assert result["status"] == "starting"
-    assert result["operation_id"] == "operation-canonical-42"
+    assert clock.now >= 100
+    assert result["ok"] is True
+    assert result["status"] == "started"
+    assert result["runtime_instance_id"] == "instance-new"
     assert events == ["register", "start"]
     observations = [call for call in runtime_calls if call[2] and call[2][0] == "startup-status"]
     assert observations
+    assert any(at >= 90 and value == pending for at, value in startup_observations)
+    assert any(at >= 100 and value["operation_id"] == operation_id
+               and value["phase"] == "establishing_service" and value["state"] == "ended"
+               for at, value in startup_observations)
     expected_observer_args = ("startup-status", "--realm-root", str(data / "realm-a"),
                               "--expected-realm-id", "realm-a", "--require-configured-selection")
     for observed_version, observed_data, argv, profile_flag, command_timeout in observations:
         assert observed_version is version
         assert observed_data == data
-        assert argv == expected_observer_args
+        assert argv == expected_observer_args or argv == (
+            *expected_observer_args, "--operation-id", operation_id)
         assert profile_flag is True
         assert command_timeout == 3
     assert any(call[2] == ("status",) for call in runtime_calls)
     assert {request.full_url for request in opener.opened} == {
         endpoint + "/api/runtime/v1/health", endpoint + "/api/runtime/v1/realm"}
+    assert all(at >= 100 for at in opener.opened_at)
     assert all(request.get_header("Origin") == "https://astrid.haus" for request in opener.opened)
+    assert (data / "runtime" / "generic-host.ready.json").is_file()
