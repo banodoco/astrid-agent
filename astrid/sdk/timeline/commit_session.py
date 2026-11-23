@@ -122,6 +122,35 @@ def _occurrence_timing_candidate(before, after):
     return desired, expected
 
 
+def _ripple_payload_change(change):
+    """Recognize only retained clip timing and removal in a mixed placement patch."""
+    ref, path = change["ref"], change["path"]
+    if ref == "parent" and path[:1] == ["config"]:
+        path = path[1:]
+    if (ref != "parent" and not ref.startswith("internal-revision:")) or path[:1] != ["clips"]:
+        return False
+    if change["op"] == "list.remove":
+        return path == ["clips"]
+    if change["op"] != "set" or len(path) < 3 or not path[1].startswith("id:"):
+        return False
+
+    leaf, value = path[2:], change["value"]
+    if len(leaf) == 1 and leaf[0] in {"at", "hold", "from", "to"}:
+        return type(value) in (int, float)
+    if leaf != ["app", "astrid", "words"] or not isinstance(value, list):
+        return False
+    previous = change["before"].get("value")
+    if not isinstance(previous, list):
+        return False
+    # A trim may discard inline words or translate their timestamps.
+    from .emitter import _same
+
+    old_words = iter(row[2:] for row in previous if isinstance(row, list) and len(row) >= 3)
+    return all(isinstance(row, list) and len(row) >= 3
+               and all(type(edge) in (int, float) for edge in row[:2])
+               and any(_same(row[2:], word) for word in old_words) for row in value)
+
+
 def _function_rerun_conflict(session, original_base, current_base, before_bundle, after_bundle,
                              occurrence_writes=()):
     """Return the existing conflict shape when a rerun rewrites intervening work."""
@@ -640,7 +669,6 @@ class Timeline(Checkout):
             from .emitter import DocumentPatchError, _same
             from .media_swap import capture_document_swaps
 
-            placement_commands = []
             if desired is not None:
                 from .authoring_commit import physical_occurrence_commands
 
@@ -649,22 +677,29 @@ class Timeline(Checkout):
                 if not _same(sorted(changes, key=lambda change: change["path"]),
                              sorted(occurrence_writes, key=lambda change: change["path"])):
                     raise DocumentPatchError(_OCCURRENCE_CLOSURE_ERROR)
-                after["placements"] = before["placements"]
+                try:
+                    payload = emit_document_commands(before, {**after, "placements": before["placements"]})
+                except DocumentPatchError:
+                    # Keep the original emitter refusal for mixed unsupported edits.
+                    emit_document_commands(before, after)
+                    raise
+                if any(not _ripple_payload_change(change)
+                       for call in payload for change in call["args"]["changes"]):
+                    raise DocumentPatchError(_OCCURRENCE_CLOSURE_ERROR)
+                # This interim path cannot swap or admit media. Do not invoke
+                # media discovery for placement edits, even if a payload is invalid.
+                self._append(placement_commands + payload, label="Edit document")
+                self._free_edits = True
+                self._occurrence_timing_writes.extend(occurrence_writes)
+                return
 
             hydrate_retained = self._retained_capture_hydrator()
-
-            try:
-                swaps, remaining, selected = capture_document_swaps(
-                    before, after, self.session.client._remote._transport,
-                    verified_media=self._verified_media,
-                    hydrate_retained=hydrate_retained,
-                )
-                commands = placement_commands + emit_document_commands(remaining, after)
-            except DocumentPatchError:
-                if placement_commands:
-                    # Keep the original emitter refusal for mixed unsupported edits.
-                    emit_document_commands(before, {**after, "placements": desired})
-                raise
+            swaps, remaining, selected = capture_document_swaps(
+                before, after, self.session.client._remote._transport,
+                verified_media=self._verified_media,
+                hydrate_retained=hydrate_retained,
+            )
+            commands = emit_document_commands(remaining, after)
             if not commands and not swaps:
                 raise TimelineEditError("document emitter omitted local edits")
             from .publish import _media_admission_inputs
@@ -672,8 +707,6 @@ class Timeline(Checkout):
             inputs = _media_admission_inputs(
                 before, after, self.session.client._remote._transport,
             )
-            if placement_commands and (swaps or inputs):
-                raise DocumentPatchError(_OCCURRENCE_CLOSURE_ERROR)
             # The shared replacement recipe already admits its new objects.
             swap_inputs = [item for call in swaps if call['op'] == 'media.admit'
                            for item in call['args']['inputs']]
@@ -710,7 +743,6 @@ class Timeline(Checkout):
                              hydrate_retained=hydrate_retained)
             self._verified_media = preview_media
             self._free_edits = True
-            self._occurrence_timing_writes.extend(occurrence_writes)
 
     def _append(self, commands, *, label, intent="", tags=(), reads=None, verified_media=None,
                 schema_inputs=(), capture=False, hydrate_retained=None):
