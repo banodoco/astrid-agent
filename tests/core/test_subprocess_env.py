@@ -116,3 +116,27 @@ def test_remotion_browser_executable_is_parent_owned_and_unlisted_env_is_dropped
     assert child[selector] == "/parent/browser"
     assert "ASTRID_UNLISTED_BASE" not in child
     assert "ASTRID_UNLISTED_PARENT" not in child
+
+
+@pytest.mark.parametrize("selected", ["/selected/packs", ""])
+def test_explicit_selected_pack_path_overrides_parent_without_overriding_invariants(selected: str) -> None:
+    parent = {
+        "ASTRID_PACKS_PATH": "/parent/packs",
+        "ASTRID_REMOTION_BROWSER_EXECUTABLE": "/parent/browser",
+        "ASTRID_HOST_EXECUTION_PROFILE": "source",
+    }
+    child = build_child_subprocess_env(
+        base={},
+        parent=parent,
+        explicit_env={"ASTRID_PACKS_PATH": selected, "ASTRID_REMOTION_BROWSER_EXECUTABLE": "/other/browser"},
+    )
+
+    assert child["ASTRID_PACKS_PATH"] == selected
+    assert child["ASTRID_REMOTION_BROWSER_EXECUTABLE"] == "/parent/browser"
+    assert child["ASTRID_HOST_EXECUTION_PROFILE"] == "source"
+
+    inherited = build_child_subprocess_env(base={}, parent=parent)
+    assert inherited["ASTRID_PACKS_PATH"] == "/parent/packs"
+
+    with pytest.raises(subprocess_env.SubprocessEnvPolicyError, match="parent-owned"):
+        build_child_subprocess_env(base={}, parent=parent, explicit_env={"ASTRID_HOST_EXECUTION_PROFILE": "installed"})

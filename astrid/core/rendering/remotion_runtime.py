@@ -554,6 +554,10 @@ def _registry_context(environment: Mapping[str, str], *, generator: bool) -> dic
     if not generator:
         keys.update((*_REGISTRY_SELECTORS, 'PYTHONPATH', 'XDG_CONFIG_HOME'))
     context = {k: environment[k] for k in sorted(keys) if k in environment}
+    # An empty pack search path selects no extra roots, exactly like an unset
+    # one; a child that inherits the empty spelling is the same context.
+    if context.get(ASTRID_PACKS_PATH) == '':
+        del context[ASTRID_PACKS_PATH]
     # This mapping is the registry child's complete environment. Ambient
     # Git/startup controls omitted here cannot influence that child.
     probe_context(environment=context, python_executable=sys.executable)
@@ -1243,6 +1247,22 @@ def _context_differences(expected: Any, actual: Any, prefix: str = "") -> list[s
     return [prefix] if expected != actual else []
 
 
+def _context_path_differences(expected: Any, actual: Any) -> list[str]:
+    """Describe only the registry import roots, never other environment values."""
+    if not isinstance(expected, dict) or not isinstance(actual, dict):
+        return []
+    expected_registry = expected.get('registry_context')
+    actual_registry = actual.get('registry_context')
+    if not isinstance(expected_registry, dict) or not isinstance(actual_registry, dict):
+        return []
+    result = []
+    for name in ('ASTRID_PACKS_PATH', 'PYTHONPATH'):
+        before, after = expected_registry.get(name), actual_registry.get(name)
+        if before != after and all(value is None or isinstance(value, str) for value in (before, after)):
+            result.append(f'{name}: expected {before!r}, actual {after!r}')
+    return result
+
+
 def _validated_runtime(project_dir: Path, *, environment: Mapping[str, str] | None = None,
                        python_executable: str | None = None) -> dict[str, Any]:
     ensure_remotion_validation()
@@ -1275,10 +1295,15 @@ def _validated_runtime(project_dir: Path, *, environment: Mapping[str, str] | No
             raise RemotionValidationError("runtime validation launch/source differs")
         matches = [item for item in artifact['contexts'][role]['variants'] if item['context'] == context]
         if len(matches) != 1:
-            differences = [_context_differences(item['context'], context)
-                           for item in artifact['contexts'][role]['variants']]
-            fields = min(differences, key=len) if differences else []
-            detail = ", ".join(fields) if fields else "validated context or role"
+            candidates = [(item.get('context'), _context_differences(item.get('context'), context))
+                          for item in artifact['contexts'][role]['variants']]
+            expected, fields = min(candidates, key=lambda item: len(item[1])) if candidates else (None, [])
+            detail = ", ".join(fields[:8]) if fields else "validated context or role"
+            if len(fields) > 8:
+                detail += ", …"
+            paths = _context_path_differences(expected, context)
+            if paths:
+                detail += '; ' + '; '.join(paths)
             raise RemotionValidationError(
                 f"runtime validation consumer context differs in {detail}; "
                 "restart the Astrid host after aligning its launch and worker environment, then retry")
