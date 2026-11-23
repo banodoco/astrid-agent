@@ -110,7 +110,7 @@ def _replace_payload_media(ctx, owner, old_object_id, new_object_id):
                     ctx.write(owner + '/shot', ['payload', 'audio_bindings', str(index), key], new_object_id)
 
 
-def _registry(ctx, owner, pin, kind, *, create=False, alias=None):
+def _registry(ctx, owner, pin, kind, *, create=False, alias=None, retained=False):
     identity = pin['asset'] if alias is None else alias
     if not isinstance(identity, str) or not re.fullmatch(r'(?!.*::)[^/]+', identity):
         raise CommandError('media requires a reserved raw asset alias')
@@ -142,20 +142,34 @@ def _registry(ctx, owner, pin, kind, *, create=False, alias=None):
             ctx.write(ref, ['duration'], expected['duration'])
         elif not equal(entry, expected):
             raise CommandError('existing registry binding differs from exact selection', kind='dependency_changed')
+    elif retained:
+        # A different-alias swap leaves this entire entry untouched. Authenticate
+        # its object, including legacy digest mirrors, without inventing catalog
+        # pins or rewriting an entry that other clips can still consume.
+        if (not isinstance(entry, dict) or not _same_object(entry.get('media_id'), pin['object_id'])
+                or not isinstance(entry.get('type'), str) or entry['type'].split('/')[0] != kind
+                or any(key in entry and not _same_object(entry[key], pin['object_id'])
+                       for key in ('object_id', 'digest', 'content_digest', 'content_sha256'))
+                or any(key in entry and entry[key] != pin[value]
+                       for key, value in (('generationId', 'generation_id'), ('variantId', 'variant_id'),
+                                          ('generation_id', 'generation_id'), ('variant_id', 'variant_id')))):
+            raise CommandError('old registry binding differs from selection', kind='dependency_changed')
     elif (not isinstance(entry, dict) or entry.get('media_id') != pin['object_id']
           or entry.get('type') != kind
           or any(key in entry and entry[key] != value for key, value in expected.items())):
         raise CommandError('old registry binding differs from selection', kind='dependency_changed')
-    if not create and any(key in entry for key in ('object_id', 'digest', 'content_digest', 'content_sha256',
+    if not create and not retained and any(key in entry for key in ('object_id', 'digest', 'content_digest', 'content_sha256',
                                                   'file', 'path', 'local_path', 'src', 'source', 'format')):
         raise CommandError('unsupported old registry identity codec', kind='unsupported_media')
     ctx.dependency('media.new' if create else 'media.old', 'media', pin)
     return ref
 
 
-def _clip(ctx, owner, row, limit, kind, verified, *, raw_window=False, bound_tracks=None):
+def _clip(ctx, owner, row, limit, kind, verified, *, raw_window=False, bound_tracks=None, replacement=False):
     clip_type = row.get('clipType')
-    if ((clip_type not in ('media', kind) and not (kind == 'image' and clip_type == 'hold'))
+    footage = (replacement and kind in ('image', 'video') and
+               (clip_type == 'am-footage' or isinstance(row.get('elementRef'), dict)))
+    if ((not footage and clip_type not in ('media', kind) and not (kind == 'image' and clip_type == 'hold'))
             or not isinstance(row.get('asset'), str)):
         raise CommandError('media edit requires one matching media clip')
     if any(key in row for key in ('asset_id', 'media_id', 'object_id', 'clip_type')):
@@ -172,7 +186,7 @@ def _clip(ctx, owner, row, limit, kind, verified, *, raw_window=False, bound_tra
     for container in (row, app, nested):
         if container is not None and not isinstance(container, dict):
             raise CommandError('intent container must be object or null')
-        if isinstance(container, dict) and any(container.get(key) is not None for key in (
+        if not replacement and isinstance(container, dict) and any(container.get(key) is not None for key in (
                 *RELATIONS, 'beats', 'word', 'words', 'transcript', 'source_id', 'standin', 'standin_intent')):
             raise CommandError('media edit requires literal child timing', kind='unsupported_timing')
     at = number(row.get('at'), 'clip.at')
@@ -276,8 +290,13 @@ def _swap(ctx, command, owner, limit):
             ctx.write(owner + '/asset:' + alias, [key], replacement)
         _replace_payload_media(ctx, owner, old['object_id'], pin['object_id'])
     else:
-        _clip(ctx, owner, row, limit, kind, [previous, value], raw_window=owner == 'parent')
-        _registry(ctx, owner, old, kind, alias=alias)
+        # Only the asset field changes. Existing declarations, element params,
+        # sequence/layer identity and exact numeric timing remain authenticated
+        # by the whole-row observation above, rather than being re-authored.
+        _clip(ctx, owner, row, limit, kind, [previous, value],
+              raw_window=owner == 'parent' or row.get('clipType') == 'am-footage'
+              or isinstance(row.get('elementRef'), dict), replacement=True)
+        _registry(ctx, owner, old, kind, alias=alias, retained=True)
         _registry(ctx, owner, pin, kind, create=True)
     ctx.bind('media.target', ref, dependencies=['media.old', 'media.new'])
     ctx.write(ref, ['asset'], pin['asset'])
