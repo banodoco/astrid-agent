@@ -411,6 +411,7 @@ def test_miss_during_discovery_waits_for_and_returns_new_publication(monkeypatch
     release_discovery = threading.Event()
     arriving_started = threading.Event()
     arriving_lookup_missed = threading.Event()
+    waiting_on_lock = threading.Event()
     state = {"mtime": 0}
     discoveries = 0
 
@@ -456,6 +457,18 @@ def test_miss_during_discovery_waits_for_and_returns_new_publication(monkeypatch
         arriving_started.set()
         return registry.lookup_default_registry(arriving_lookup, project_root=tmp_path)
 
+    original_lock = registry._default_registry_lock
+
+    class ObservedLock:
+        def __enter__(self):
+            if threading.current_thread().name == "registry-miss_1":
+                waiting_on_lock.set()
+            return original_lock.__enter__()
+
+        def __exit__(self, *args):
+            return original_lock.__exit__(*args)
+
+    monkeypatch.setattr(registry, "_default_registry_lock", ObservedLock())
     with ThreadPoolExecutor(max_workers=2, thread_name_prefix="registry-miss") as pool:
         refreshing_miss = pool.submit(registry.lookup_default_registry, lookup, project_root=tmp_path)
         assert discovery_started.wait(10)
@@ -463,6 +476,7 @@ def test_miss_during_discovery_waits_for_and_returns_new_publication(monkeypatch
         assert arriving_started.wait(10)
         # The arriving reader must actually observe a miss before discovery completes.
         assert arriving_lookup_missed.wait(10)
+        assert waiting_on_lock.wait(10)
         # A second miss must queue behind discovery rather than start another scan.
         assert not arriving_miss.done()
         release_discovery.set()
