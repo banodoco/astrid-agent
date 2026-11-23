@@ -104,7 +104,8 @@ class VibeComfyCommands:
 
     def argv(self, step: str) -> list[str]:
         if step == "doctor":
-            return ["doctor", self.workflow, "--non-interactive"]
+            return ["doctor", self.workflow, "--non-interactive",
+                    *(["--lockfile", self.lockfile] if self.lockfile else [])]
         if step == "prepare":
             return ["prepare", self.workflow, "--deps", "sync", "--no-models", "--no-packs", "--non-interactive"]
         if step == "nodes_restore":
