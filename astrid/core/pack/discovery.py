@@ -154,8 +154,6 @@ def _discovery_fingerprint(
     raw_declarations = os.environ.get(SOURCE_DECLARATIONS_ENV, "").strip()
     roots = [loader.packs_root(), PACKAGE_ROOT / "core" / "hivemind", Path.home() / "Astrid" / "packs", project_root / "astrid" / "packs",
              Path(__file__).with_name("schemas")]
-    if raw_declarations:
-        roots.append(Path(raw_declarations).expanduser())
     if personal_packs_root is not None:
         roots.append(Path(personal_packs_root).expanduser())
     roots.extend(source.pack_root for source in managed_inventory.sources)
@@ -163,13 +161,15 @@ def _discovery_fingerprint(
         root = Path(raw_root).expanduser()
         roots.append(root if root.is_absolute() else project_root / root)
     try:
+        if raw_declarations:
+            roots.append(Path(raw_declarations).expanduser())
         cache = _active_discovery_cache()
         trees = tuple((str(root), str(root.resolve()),
                        cache.tree_fingerprint(root.resolve()) if cache is not None
                        else _tree_fingerprint(root.resolve()))
                       for root in dict.fromkeys(roots))
-    except OSError:
-        return None  # Unreadable/racing inputs use ordinary admission and its errors.
+    except (OSError, RuntimeError, ValueError):
+        return None  # Inputs we cannot fingerprint use ordinary admission and its errors.
     return (str(project_root), tuple(extra_pack_roots), raw_env, raw_declarations, managed_inventory.identity,
             bool(include_hidden), str(personal_packs_root) if personal_packs_root is not None else None, trees)
 
@@ -484,28 +484,6 @@ def discover_pack_metadata(
         provisional_managed_sources = active_sources(verify=False)
     except ImportError:
         provisional_managed_sources = ()
-    cache = _active_discovery_cache()
-    fingerprint = None
-    managed_inventory = None
-    inventory_error = None
-    try:
-        from astrid.core.pack.source_setup import active_source_inventory
-        managed_inventory = active_source_inventory()
-    except ImportError:
-        pass
-    except Exception as exc:
-        # Preserve name-collision precedence when verification fails.
-        inventory_error = exc
-    if cache is not None and managed_inventory is not None:
-        fingerprint = _discovery_fingerprint(
-            project_root, extra_pack_roots, managed_inventory, scan,
-            include_hidden=include_hidden, personal_packs_root=selected_personal_root,
-        )
-        if fingerprint is not None:
-            cached = cache.read(fingerprint)
-            if cached is not _CACHE_MISS:
-                return cached
-
     # Explicit extras are caller ordered and can precede bundled roots. The
     # admission result is identical regardless of which selected root is seen
     # first, because no manifest is consulted during this pass.
@@ -554,8 +532,26 @@ def discover_pack_metadata(
                 f"duplicate pack id/directory name {child.name!r} across {previous} and {child}"
             )
 
-    if inventory_error is not None:
-        raise inventory_error
+    try:
+        from astrid.core.pack.source_setup import active_source_inventory
+
+        managed_inventory = active_source_inventory()
+    except ImportError:
+        managed_inventory = None
+
+    cache = _active_discovery_cache()
+    fingerprint = None
+    if cache is not None and managed_inventory is not None:
+        # active_source_inventory verifies revision, cleanliness, manifest and
+        # tree digests even when an admitted inventory can be reused below.
+        fingerprint = _discovery_fingerprint(
+            project_root, extra_pack_roots, managed_inventory, scan,
+            include_hidden=include_hidden, personal_packs_root=selected_personal_root,
+        )
+        if fingerprint is not None:
+            cached = cache.read(fingerprint)
+            if cached is not _CACHE_MISS:
+                return cached
 
     managed_by_root = {
         source.pack_root.resolve(): source
