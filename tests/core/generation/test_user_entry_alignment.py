@@ -128,3 +128,16 @@ def test_unapproved_verified_bundle_pack_still_refuses_apply(user_bundle, monkey
     })
     with pytest.raises(alignment.AlignmentError, match="no matching shipped pin or local code approval"):
         alignment._align_selected(manifests, target, entry_id="bundle-align", apply=True, deadline=0)
+
+
+def test_inspection_never_calls_unapproved_verified_pack_ready(user_bundle, tmp_path, monkeypatch):
+    manifests = alignment.catalog_manifests("bundle-align")
+    manifests[0]["modes"][0]["unlocked"] = []
+    target = SimpleNamespace(root=tmp_path, models_root=tmp_path, url="http://127.0.0.1:8188",
+                             models_lock_sha256="a" * 64)
+    monkeypatch.setattr(alignment, "_pack_state", lambda *args: "verified")
+    monkeypatch.setattr(alignment, "workflow_asset_gaps", lambda *args: ([], []))
+    report = alignment.inspect_assets(manifests, target, observed={})
+    assert report["status"] == "not_ready"
+    assert "no matching shipped pin or local code approval" in report["next_action"]
+    assert "astrid generate align" in report["next_action"]

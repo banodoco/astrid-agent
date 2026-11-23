@@ -588,6 +588,7 @@ def inspect_assets(manifests, target: ManagedAssetTarget, *, observed=None, dead
     deadline = deadline or time.monotonic() + 3600
     unique_missing = {}
     entries = []
+    code_next_action = None
     for manifest in manifests:
         modes = []
         for mode in manifest['modes']:
@@ -602,11 +603,18 @@ def inspect_assets(manifests, target: ManagedAssetTarget, *, observed=None, dead
                     unique_missing[model.destination] = model.bytes
                 model_rows.append({**asdict(model), 'source_url': url, 'target_path': str(path),
                                    'target_folder': str(path.parent), 'status': state})
+            code_blocked = False
             for pack in mode['node_packs']:
-                pack_rows.append({**pack, 'status': _pack_state(target, pack)})
+                state = _pack_state(target, pack)
+                pack_rows.append({**pack, 'status': state})
+                problem = _bundle_alignment_code_problem(pack, state)
+                if problem:
+                    code_blocked = True
+                    if code_next_action is None:
+                        code_next_action = problem + shlex.join(align_argv(manifest['id']))
             nodes, models = (workflow_asset_gaps(mode['workflow'], observed)
                              if observed is not None else ([], []))
-            ready = (observed is not None and not mode['unlocked'] and not nodes and not models
+            ready = (observed is not None and not code_blocked and not mode['unlocked'] and not nodes and not models
                      and all(row['status'] == 'verified' for row in [*model_rows, *pack_rows]))
             modes.append({'mode': mode['mode'], 'models': model_rows, 'node_packs': pack_rows,
                           'unlocked': mode['unlocked'], 'missing_nodes': nodes,
@@ -625,7 +633,8 @@ def inspect_assets(manifests, target: ManagedAssetTarget, *, observed=None, dead
                            'status': 'ok' if free >= required else 'blocked',
                            'basis': 'missing_locked_models; additional node/dependency space is unquantified'},
             'object_info': 'unknown' if observed is None else 'observed',
-            'status': 'ready' if all(entry['status'] in {'ready', 'provider_only'} for entry in entries) else 'not_ready'}
+            'status': 'ready' if all(entry['status'] in {'ready', 'provider_only'} for entry in entries) else 'not_ready',
+            **({'next_action': code_next_action} if code_next_action else {})}
 
 
 def align(*, entry_id=None, all_entries=False, apply=False, consent=(), target=None, manifests=None,
@@ -645,17 +654,22 @@ def align(*, entry_id=None, all_entries=False, apply=False, consent=(), target=N
     return _align_selected(manifests, target, entry_id=entry_id, apply=False, deadline=deadline)
 
 
-def _check_bundle_alignment_code(pack, state, retry):
+def _bundle_alignment_code_problem(pack, state):
     if pack.get('requires_code_consent'):
-        raise AlignmentError(
+        return (
             f"Node pack {pack['name']} at {pack['revision']} has no matching shipped pin or local code approval; "
             "user_env consent does not authorize installing new node code. "
-            "Have the user approve that exact repository, commit and recipe for the managed target, then retry "
-            + retry)
+            "Have the user approve that exact repository, commit and recipe for the managed target, then retry ")
     if pack.get('bundle_install_pending') and state != 'verified':
-        raise AlignmentError(
+        return (
             f"Approved node pack {pack['name']} at {pack['revision']} is not installed at its pinned revision; "
-            "install the exact approved recipe through the controlled node-code setup path, then retry " + retry)
+            "install the exact approved recipe through the controlled node-code setup path, then retry ")
+    return None
+
+
+def _check_bundle_alignment_code(pack, state, retry):
+    if problem := _bundle_alignment_code_problem(pack, state):
+        raise AlignmentError(problem + retry)
 
 
 def _align_selected(manifests, target, *, entry_id, apply, deadline, client=None, installer=None):
@@ -707,7 +721,7 @@ def _align_selected(manifests, target, *, entry_id, apply, deadline, client=None
         target.cache_object_info(observed)
         report = inspect_assets(manifests, target, observed=observed, deadline=deadline)
     report.update(applied=True, actions=actions, align_command=shlex.join(align_argv(entry_id)))
-    if any(mode['missing_nodes'] for entry in report['entries'] for mode in entry['modes']):
+    if not report.get('next_action') and any(mode['missing_nodes'] for entry in report['entries'] for mode in entry['modes']):
         report['next_action'] = 'Restart the selected managed ComfyUI to load installed node packs, then retry ' + report['align_command']
     if report['status'] == 'ready':
         try:
