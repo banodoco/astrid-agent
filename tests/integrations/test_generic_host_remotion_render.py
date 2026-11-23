@@ -449,6 +449,55 @@ def test_short_contract_builtin_element_through_command_worker(
     assert all(abs(actual - expected) <= 12 for actual, expected in zip(sample, (46, 204, 113)))
 
 
+def test_short_managed_contract_own_object_route_and_fade_easing(
+    tmp_path: Path, real_runtime, remotion_launch: Path
+) -> None:
+    """Publish a synthetic Runtime timeline and render it via the command host.
+
+    The active source and unused registry entries have the Runtime's own object
+    routes, as in an App-published timeline. Both must survive managed snapshot
+    resolution; the built-in fade also carries explicit easing.
+    """
+    from tests.integrations.test_media_only_render_without_remotion import Film
+
+    daemon = real_runtime()
+    host = None
+    try:
+        film = Film(daemon, tmp_path)
+        host = GenericPackHost(
+            pack_roots=[ROOT / "astrid" / "packs" / "rendering"],
+            client=RuntimeProtocolClient(daemon.endpoint, daemon.worker_token),
+            executor_id="astrid-pack-host",
+            attempt_root=tmp_path / "attempts",
+        )
+        host.discover()
+        host.preflight("rendering.render")
+        assert host.capabilities["rendering.render"].ready is True
+        host.register(deliberate=True)
+        film.publish([
+            {"id": "source", "at": 0, "track": "V1", "clipType": "media",
+             "asset": "marker", "from": 0, "to": 2, "speed": 1},
+            {"id": "builtin", "at": 0, "hold": 2, "track": "V1",
+             "clipType": "audio-reactive-colour",
+             "params": {"schemaVersion": 1, "initialColor": "#2ecc71", "events": []},
+             "entrance": {"type": "fade", "duration": 0.4, "params": {"easing": "out"}}},
+        ], film.assets)
+        task_id = film.admit("rendering.remotion")
+        settled = host.run(once=True)
+        assert len(settled) == 1
+        task = film.task(task_id)
+        assert task["state"] in ("completed", "succeeded"), task
+        videos = [item for item in task["result"]["outputs"]
+                  if str(item.get("media_type", "")).startswith("video")]
+        assert len(videos) == 1
+        status, data = film.request("GET", f"/v1/objects/{videos[0]['digest']}")
+        assert status == 200 and isinstance(data, bytes) and len(data) > 0
+    finally:
+        if host is not None:
+            host.shutdown()
+        daemon.stop()
+
+
 def test_generic_host_normal_imported_theme_reaches_props_and_rejects_local_source(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, real_runtime
 ) -> None:
