@@ -146,6 +146,29 @@ def native_failure_classes(stdout: str, reason: str) -> tuple[str, ...]:
     return ()
 
 
+def native_failure_inputs(stdout: str, reason: str, labels: tuple[tuple[str, str, str], ...]) -> tuple[dict[str, str], ...]:
+    """Project only unknown input labels already present in the trusted workflow.
+
+    Match the pinned doctor's exact validation message against the graph, not
+    arbitrary worker output. No values, error tails or remote-only labels cross
+    the boundary.
+    """
+    if reason != "workflow_validation_failed":
+        return ()
+    lines = set(stdout[-4096:].splitlines()[-32:])
+    matches = []
+    for node_id, class_type, name in labels:
+        if not all(value and len(value) <= 128 and value.isprintable()
+                   for value in (node_id, class_type, name)):
+            continue
+        expected = f"- WorkflowBundleError: Node {node_id} ({class_type}) has unknown input {name}."
+        if expected in lines:
+            matches.append({"node_id": node_id, "class_type": class_type, "input": name})
+            if len(matches) == 16:
+                break
+    return tuple(matches)
+
+
 @contextmanager
 def preparation_scope(report):
     """Project one trusted in-process machine attempt without global environment changes."""
@@ -502,6 +525,11 @@ class ManagedEnginePreparation:
         self._alignment_verification = (canonical_workflow, runner, staged_digests, manifest, receipt)
         api = canonical_workflow.compile("api", run_inputs=json.loads(inputs.get("workflow_inputs") or "{}"))
         self._workflow_classes = sorted({node["class_type"] for node in api.values()})
+        self._workflow_input_labels = tuple(
+            (str(node_id), node["class_type"], name)
+            for node_id, node in api.items()
+            for name in node.get("inputs", {})
+        )
         if self.mode == "align":
             self._preflight_model_storage(manifest)
         callback = getattr(self, "on_phase", None)
@@ -814,6 +842,9 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
                 hashlib.sha256(result.stdout.encode()).hexdigest(),
                 hashlib.sha256(result.stderr.encode()).hexdigest())
             detail = f", missing_classes={json.dumps(classes)}" if classes else ""
+            unknown_inputs = native_failure_inputs(result.stdout, reason, getattr(self, "_workflow_input_labels", ()))
+            if unknown_inputs:
+                detail += f", unknown_inputs={json.dumps(unknown_inputs)}"
             where = ("its whole output is the run logs preparation.{0}.stdout and preparation.{0}.stderr"
                      .format(step) if self._keep_step_output(step, result) else "inspect the host log for this attempt")
             error = IntegrityError(f"managed alignment command failed (step={step}, reason={reason}{detail}); {where}")
