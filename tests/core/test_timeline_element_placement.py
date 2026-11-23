@@ -341,6 +341,68 @@ def test_commit_function_batches_occurrence_placements_and_document_edits(
     assert len(history_state['items']) == 1
 
 
+def test_public_commit_targets_shot_named_parent_when_parent_has_same_clip_id(
+        monkeypatch, tmp_path, configured):
+    """The SDK parent sentinel must not shadow a valid shot ID named parent."""
+    from astrid.sdk.contracts import DomainResult
+    from astrid.sdk.timeline import commit_session, store
+    from astrid.sdk.timeline.commit import _digest, _manifest, bundle_from_document, document_from_bundle
+
+    # Admission needs a compiled module in its snapshot, but selection here
+    # never executes renderer code. Supply a deterministic placeholder so the
+    # focused test does not depend on the separate Remotion installation.
+    def compile_placeholder(staging, components):
+        for component in set(components):
+            target = staging / packs._compiled_path(component)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text('// selector regression fixture')
+    monkeypatch.setattr(packs, '_compile_components', compile_placeholder)
+    owner, ref, _pin, initial = _setup(monkeypatch, tmp_path, configured)
+    document = copy.deepcopy(initial['source_mapping']['_runtime_document'])
+    shot = document['shot_revisions'][0]
+    shot['shot_id'] = 'parent'
+    parent_payload = document['parent_revision']['payload']
+    parent_payload['occurrences'][0]['shot_id'] = 'parent'
+    for row in (*parent_payload['clips'], *parent_payload['config']['clips']):
+        if row['id'] == 'clip-a':
+            row['clipType'] = 'am-discord'
+    document['parent_revision']['content_digest'] = _digest(parent_payload)
+    document['dependency_manifest'] = _manifest(
+        document['shot_revisions'], document['internal_timeline_revisions'],
+        document['dependency_manifest']['media'], document['dependency_manifest']['documents'])
+    bundle = bundle_from_document(document)
+    monkeypatch.setattr(store, 'fetch_bundle', lambda *a, **kw: copy.deepcopy(bundle))
+    client = SimpleNamespace(_remote=SimpleNamespace(_transport=owner._client), timelines=owner,
+                             documents=configured, media=configured.media)
+
+    def commit(_project, _timeline_id, body, **kwargs):
+        plan = execute(bundle, body['commands'], schema_inputs=owner.schema_inputs, realm_id='realm')
+        data = {'status': 'accepted', 'base_revision_id': 'head', 'base_publication_id': 'publication',
+                'accepted_revision_id': 'committed', 'commands': copy.deepcopy(body['commands']),
+                'canonical_document': document_from_bundle(plan.bundle)}
+        receipt = CommandReceipt('accepted-receipt', 'timeline.commit', kwargs['idempotency_key'],
+                                 'hash', 'project', (1, 1), (), data, '2026-10-26T00:00:00Z')
+        return DomainResult.success(data, receipt=receipt, idempotency_key=kwargs['idempotency_key'])
+
+    owner.commit.side_effect = commit
+    client._client = owner._client
+    timeline = commit_session.open('project', 'film', client=client,
+                                   outbox_path=tmp_path / 'parent-shot-outbox.json')
+
+    result = timeline.commit(
+        lambda working: next(clip for clip in working.clips
+                             if clip.shot_id == 'parent' and clip.id == 'clip-a').set_element(ref),
+        key='parent-shot-key')
+
+    assert result['data']['commands'][0]['select'] == 'occurrence:occ-a/clip:clip-a'
+    accepted = bundle_from_document(result['data']['canonical_document'])
+    assert 'elementRef' not in accepted['parent']['clips'][0]
+    shot_id = accepted['placements'][0]['shot_id']
+    shot_clip = next(row for row in accepted['shots'][shot_id]['internal_timeline']['clips']
+                     if row['id'] == 'clip-a')
+    assert shot_clip['elementRef'] == ref
+
+
 @pytest.mark.parametrize('case', ['disjoint-placement', 'disjoint-doc-patch', 'overlap'])
 def test_public_function_stale_edit_uses_conservative_scope_guard(
         monkeypatch, tmp_path, configured, case):
