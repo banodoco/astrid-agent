@@ -5,6 +5,8 @@ import argparse
 import copy
 from typing import Any
 
+from astrid.core.cli.domain_output import cli_print as print
+
 CHECK_SWEEP_HELP = (
     "Compare the working copy with the published film at bounded samples across every cut; "
     "unexpected picture changes fail the check."

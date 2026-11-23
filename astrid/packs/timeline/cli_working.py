@@ -16,6 +16,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from astrid.core.cli.domain_output import cli_print as print
 from astrid.pack_api import print_result
 from astrid.packs.timeline.cli_common import (
     VerbError,

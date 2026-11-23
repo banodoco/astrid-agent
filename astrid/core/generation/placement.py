@@ -163,7 +163,7 @@ def request_from_selector(selector: Any) -> Mapping[str, Any] | Placement | None
     return {"kind": selector}
 
 
-def attached_comfy_url(selector: Any) -> str:
+def attached_comfy_url(selector: Any, *, client: Any = None) -> str:
     """The loopback ComfyUI a selector places work on, for reading a saved workflow against its schema.
 
     ``''`` when the selector resolves to no attached endpoint (managed, a machine kind, a
@@ -171,7 +171,7 @@ def attached_comfy_url(selector: Any) -> str:
     """
     from astrid.core.generation import targets
     try:
-        placement = resolve_placement(request_from_selector(selector))
+        placement = resolve_placement(request_from_selector(selector), client=client)
         if placement.kind != "attached" or not placement.endpoint:
             return ""
         return targets.normalize_target({"endpoint": placement.endpoint}).endpoint

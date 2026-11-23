@@ -73,6 +73,7 @@ from pathlib import Path
 from typing import Any
 
 from astrid.core.cli.domain_output import DomainResult, envelope_dict, render_human
+from astrid.core.cli.domain_output import cli_print as print
 from astrid.core.cli.task_progress import task_handoff
 from astrid.core.timeline.clip_names import clip_media_name
 from astrid.pack_api import CommandSpec, pack_root, print_result, register_product_commands
@@ -2923,6 +2924,11 @@ def _cmd_edit(parsed: argparse.Namespace) -> int:
     from astrid.packs.timeline.cli_film import film_end_requested
     from astrid.packs.timeline.cli_look import has_look
     from astrid.sdk.timeline_checkout import Checkout
+
+    if getattr(parsed, "operations", None) is not None:
+        from astrid.packs.timeline.cli_native import dispatch_ordinary_edit
+
+        return dispatch_ordinary_edit(parsed)
 
     voice_ops = any((parsed.replace_line, parsed.insert_line, parsed.remove_line, parsed.gap_after, parsed.from_script))
     crossfade = getattr(parsed, "crossfade", None)

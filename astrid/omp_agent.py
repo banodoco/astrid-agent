@@ -21,6 +21,13 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+
+if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "timelines":
+    # The installer enters this module directly, before the gateway is imported.
+    from .console import capture_module_start
+
+    capture_module_start()
+
 from .core.auth import AUTH_COMMANDS, contributor_auth_system_notice, run_auth
 from .core.util.http import os_trust_ssl_context, request_error_host
 from .core.util.process import replace_process
@@ -182,6 +189,16 @@ def _dispatch_toolkit(rest: list[str]) -> int:
     # Delayed import keeps the interactive launcher usable in a minimal OMP
     # installation and makes ``astrid --help`` independent of runtime deps.
     from astrid.core.gateway import main as gateway_main
+
+    if rest and rest[0] == "timelines":
+        # The installed console captures process start before this module;
+        # installer module launches capture it before gateway imports. Keep
+        # direct in-process OMP calls on the legacy gateway timing path.
+        from .console import cli_started_at
+
+        started_at = cli_started_at()
+        if started_at is not None:
+            return int(gateway_main(rest, started_at=started_at))
 
     return int(gateway_main(rest))
 
@@ -686,6 +703,13 @@ def _exec_omp_with_packaged_profile(
 
 def main(argv: list[str] | None = None) -> int:
     rest = list(sys.argv[1:] if argv is None else argv)
+
+    if __name__ == "__main__" and argv is None and rest and rest[0] == "generate":
+        # The installer launches this module directly. Use the console's fresh
+        # process path so generation retains its startup timing attribution.
+        from .console import entrypoint
+
+        return entrypoint()
 
     if rest and rest[0] == "machines":
         from .core.machines_cli import main as machines_main
