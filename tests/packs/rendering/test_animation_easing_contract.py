@@ -43,6 +43,16 @@ def _package_animation_meta() -> dict[str, dict[str, object]]:
 
 
 def test_bundled_animation_easing_declarations_match_composition_package() -> None:
+    remotion_package = json.loads(
+        (REPOSITORY_ROOT / "remotion/package.json").read_text(encoding="utf-8")
+    )
+    active_dependency = remotion_package["dependencies"][
+        "@banodoco/timeline-composition"
+    ]
+    assert isinstance(active_dependency, str) and active_dependency.startswith("file:")
+    active_archive = (REPOSITORY_ROOT / "remotion" / active_dependency[5:]).resolve()
+    assert active_archive == COMPOSITION_PACKAGE.resolve()
+
     package_meta = _package_animation_meta()
     descriptor_paths = sorted(ANIMATION_DESCRIPTORS.glob("*/element.yaml"))
     descriptors = {}
@@ -54,8 +64,11 @@ def test_bundled_animation_easing_declarations_match_composition_package() -> No
     for animation_id, metadata in descriptors.items():
         package_support = package_meta[animation_id].get("supportsEasing")
         descriptor_support = metadata.get("supportsEasing")
+        assert type(package_support) is bool, animation_id
+        assert type(descriptor_support) is bool, animation_id
         assert descriptor_support == package_support, (
             f"{animation_id}: descriptor declares supportsEasing="
             f"{descriptor_support!r}; composition package declares "
             f"supportsEasing={package_support!r}"
         )
+        assert descriptor_support is package_support, animation_id
