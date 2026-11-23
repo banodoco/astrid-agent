@@ -56,7 +56,12 @@ def _raw_inputs(transport, project, inputs, verified):
         if not isinstance(raw['media_type'], str) or type(raw['size']) is not int or raw['size'] <= 0:
             raise ValueError('replacement media lacks Runtime object metadata')
         raw['pin'] = copy.deepcopy(pin)
-        if raw not in rows:
+        # A local-file registration may already have cached the verified
+        # selection together with its pin. Reuse it only if its raw metadata
+        # agrees; conflicting rows must still be rejected by admission.
+        matching = [row for row in rows if row.get('pin') == pin]
+        if not any(all(row.get(key) == raw[key] for key in ('object_id', 'media_type', 'size'))
+                   for row in matching):
             rows.append(raw)
     return rows
 
@@ -88,11 +93,13 @@ def capture_document_swaps(base, candidate, transport, verified_media=()):
             continue
         before = {row['id']: row for row in original.collection(owner, 'clip')}
         after = {row['id']: row for row in target.collection(owner, 'clip')}
-        for clip_id in before.keys() & after.keys():
+        for clip_id in sorted(before.keys() & after.keys()):
             old, new = before[clip_id], after[clip_id]
             if old.get('asset') == new.get('asset') or not isinstance(new.get('asset'), str):
                 continue
-            old_entry = original.registry(owner)['assets'].get(old.get('asset'))
+            if not isinstance(old.get('asset'), str):
+                continue
+            old_entry = original.registry(owner)['assets'].get(old['asset'])
             entry = target.registry(owner)['assets'].get(new['asset'])
             if not isinstance(old_entry, Mapping) or not isinstance(entry, Mapping):
                 raise ValueError('media swap requires authored registry entries')
