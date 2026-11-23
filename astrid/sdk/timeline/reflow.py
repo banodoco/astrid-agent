@@ -90,7 +90,8 @@ def _retained_word_reflow(method):
         )
         from astrid.sdk.timeline.native_source_inputs import read_verified_transcript
 
-        pins = retained_retime_pins(self.bundle)
+        runtime_document, transport = self._retained_reflow_source()
+        pins = retained_retime_pins(runtime_document)
         if not pins:
             return method(self, *args, **kwargs)
         shot_lines = set(_word_lines(
@@ -100,10 +101,8 @@ def _retained_word_reflow(method):
         if not shot_lines:
             return method(self, *args, **kwargs)
         selected = select_retime_pins(self.bundle, pins)
-        client = getattr(self, "_scene_client", None)
-        if selected and client is None:
+        if selected and transport is None:
             raise TimelineEditError("reflow requires the retained transcript versions for shot word anchors")
-        transport = getattr(getattr(client, "_remote", None), "_transport", client)
         rows = [read_verified_transcript(transport, self.bundle["project_id"], pin) for pin in selected]
         transcripts, captures = retime_transcripts(self.bundle, rows)
         lines = shot_lines | set(_word_lines(self.bundle.get("parent", {}).get("clips", [])))
@@ -139,6 +138,12 @@ class _ReflowMixin:
     _scope: list | None = None  # the changes of the open re-time scope (keep_end only): (film second, seconds, skip ids)
     _orphan_reason: str  # set by Checkout.__init__; declared so this mixin's readers are typed
     _parent_clips: Callable[[], list[dict[str, Any]]]  # defined on _LookupMixin; declared so this mixin's readers are typed
+
+    def _retained_reflow_source(self):
+        runtime_document = self.bundle.get("source_mapping", {}).get("_runtime_document")
+        client = getattr(self, "_scene_client", None)
+        transport = getattr(getattr(client, "_remote", None), "_transport", client)
+        return runtime_document, transport
 
     @property
     def music(self) -> str:
