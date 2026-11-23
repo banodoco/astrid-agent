@@ -68,7 +68,7 @@ const parseSimpleYamlManifest = (text, file) => {
     const plain = /^\s*([^#\[\]{}|>'"`\\]+?)(?:\s+#.*)?\s*$/.exec(raw);
     if (!plain || /:\s/.test(plain[1]) || /^[&*!%@`]/.test(plain[1]) || /^[?-]\s/.test(plain[1])) fail(form);
     const value = plain[1].trim();
-    if (/^(?:null|~|true|false|[-+]?[0-9]+(?:\.[0-9]+)?)$/i.test(value)) fail(form);
+    if (/^(?:null|~|true|false|[-+]?(?:[0-9]|\.[0-9]|\.inf|\.nan))/i.test(value)) fail(form);
     return value;
   };
   const finish = () => {
@@ -158,7 +158,7 @@ const parseSimpleYamlManifest = (text, file) => {
   };
   const validateIgnoredValue = (raw, indent) => {
     if (!raw || /^\s*#/.test(raw)) return;
-    if (/^[&*!]/.test(raw)) fail('document alias or tag');
+    if (/^[&*!%@`]/.test(raw)) fail('document scalar, alias or tag form');
     if (raw[0] === "'" || raw[0] === '"') {
       if (!quoteEnd(raw, raw[0], 1)) quotedContinuation = {quote: raw[0], indent};
       return;
@@ -286,7 +286,7 @@ const parseSimpleYamlManifest = (text, file) => {
         entry[key] = scalar(raw, `${key} scalar or flow form`);
         extraField = false;
       } else {
-        if (/^[\[{|>&*!%@`]/.test(raw)) fail(`${key} flow, alias or multiline form`);
+        if (raw && !/^\s*#/.test(raw)) scalar(raw, `${key} scalar or flow form`);
         extraField = true;
       }
       continue;

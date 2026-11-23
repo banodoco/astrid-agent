@@ -260,6 +260,15 @@ def test_yaml_fallback_accepts_legacy_and_empty_but_rejects_flow_and_malformed(
         ("pack.yaml", "id: probe\nunexpected root scalar\n", False, "document line form"),
         ("pack.yaml", "  id: probe\n", False, "root indentation"),
         ("pack.yaml", "id: null\nrendering: {}\n", False, "id scalar"),
+        ("pack.yaml", "id: 0x10\nrendering: {}\n", False, "id scalar"),
+        ("pack.yaml", "description: @broken\nid: probe\nrendering: {}\n", False, "document scalar"),
+        (
+            "pack.yaml",
+            "id: probe\nrendering:\n  effects/probe:\n    type: element\n"
+            "    path: rendering/effects/probe/element.yaml\n    description: \"unterminated\n",
+            False,
+            "description scalar",
+        ),
         ("pack.yaml", "id: probe\n  continued\nrendering: {}\n", False, "id continuation"),
         (
             "pack.yaml",
