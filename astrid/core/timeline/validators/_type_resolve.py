@@ -97,23 +97,20 @@ def is_visual_clip_element(
     not provide explicit registries; this keeps registry setup in the one
     type-resolution implementation rather than a compatibility shim.
     """
-    use_loaded_registry_for_membership = element_registry is None
-    if element_registry is None:
-        from astrid.core.element.registry import load_default_registry
-
-        element_registry = load_default_registry()
     if artifact_type_registry is None:
         from astrid.core.contracts.artifact_types import ARTIFACT_TYPE_REGISTRY
 
         artifact_type_registry = ARTIFACT_TYPE_REGISTRY
-    if use_loaded_registry_for_membership:
-        resolved = _resolve_clip_to_artifact_type(
-            clip_type,
-            theme,
-            element_registry,
-            artifact_type_registry,
-            membership_registry=element_registry,
-        )
+    if element_registry is None:
+        from astrid.core.element.registry import lookup_default_registry
+
+        def resolve(registry):
+            return _resolve_clip_to_artifact_type(
+                clip_type, theme, registry, artifact_type_registry,
+                membership_registry=registry,
+            )
+
+        resolved, _ = lookup_default_registry(resolve)
     else:
         resolved = resolve_clip_to_artifact_type(
             clip_type, theme, element_registry, artifact_type_registry
