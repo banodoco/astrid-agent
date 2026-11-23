@@ -110,6 +110,16 @@ def emit_document_publish_commands(base, candidate, media_selections, verified_m
             raise DocumentPatchError(
                 f"{owner}/asset:{alias} native same-alias media rebind is held: {exc}"
             ) from exc
+        # A native swap may derive resolution from verified media.  Preserve
+        # that value when the document never authored a resolution; otherwise
+        # the remaining document diff would remove it again.
+        shot_id = placement["shot_id"]
+        original_entry = base["shots"][shot_id]["internal_timeline"]["registry"]["assets"][alias]
+        candidate_entry = candidate["shots"][shot_id]["internal_timeline"]["registry"]["assets"][alias]
+        native_entry = working["shots"][shot_id]["internal_timeline"]["registry"]["assets"][alias]
+        if ("resolution" not in original_entry and "resolution" not in candidate_entry
+                and "resolution" in native_entry):
+            candidate_entry["resolution"] = copy.deepcopy(native_entry["resolution"])
         commands.append(command)
     if transport is not None:
         from astrid.sdk.timeline.media_swap import capture_document_swaps
