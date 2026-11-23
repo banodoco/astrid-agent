@@ -145,6 +145,62 @@ def test_exact_word_ripple_passes_and_reflow_moves_no_clip():
     assert checkout.reflow() == []
 
 
+def test_provable_word_anchor_refuses_voice_only_shift():
+    baseline = _with_provable_anchor()
+    candidate = copy.deepcopy(baseline)
+    voice, _ = _shot_clips(candidate)
+    voice["at"] += 0.5
+    before = copy.deepcopy(candidate)
+
+    with pytest.raises(AuthoringBundleError, match=re.escape(GUIDANCE)):
+        validate_final_candidate(candidate, baseline=baseline)
+    assert candidate == before
+
+
+def test_provable_word_anchor_refuses_speed_and_intercept_change_without_placement_change():
+    baseline = _with_provable_anchor()
+    candidate = copy.deepcopy(baseline)
+    voice, _ = _shot_clips(candidate)
+    voice["speed"] = 4
+    voice["at"] = 1.875
+    before = copy.deepcopy(candidate)
+
+    with pytest.raises(AuthoringBundleError, match=re.escape(GUIDANCE)):
+        validate_final_candidate(candidate, baseline=baseline)
+    assert candidate == before
+
+
+@pytest.mark.parametrize("voice_trim", [
+    pytest.param({"from": 0.5}, id="extend-in-point"),
+    pytest.param({"from": 2.5, "at": 1.25}, id="same-word-interval"),
+    pytest.param({"to": 5.75}, id="truncated-word"),
+])
+def test_provable_word_anchor_refuses_voice_trim_change(voice_trim):
+    baseline = _with_provable_anchor()
+    candidate = copy.deepcopy(baseline)
+    voice, _ = _shot_clips(candidate)
+    voice.update(voice_trim)
+    before = copy.deepcopy(candidate)
+
+    with pytest.raises(AuthoringBundleError, match=re.escape(GUIDANCE)):
+        validate_final_candidate(candidate, baseline=baseline)
+    assert candidate == before
+
+
+def test_stationary_ambiguous_word_requires_unchanged_narration_search():
+    baseline = _with_provable_anchor("again")
+    candidate = copy.deepcopy(baseline)
+    candidate["parent"]["config"]["tracks"].append({"id": "extra-picture", "kind": "visual"})
+    validate_final_candidate(candidate, baseline=baseline)
+
+    voice, _ = _shot_clips(candidate)
+    voice["at"] += 0.5
+    before = copy.deepcopy(candidate)
+    with pytest.raises(AuthoringBundleError, match=re.escape(GUIDANCE)):
+        validate_final_candidate(candidate, baseline=baseline)
+    assert candidate == before
+
+
 def test_occurrence_duration_change_preserves_stationary_word_anchored_clip():
     baseline = _with_provable_anchor()
     candidate = copy.deepcopy(baseline)

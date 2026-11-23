@@ -831,12 +831,23 @@ def validate_candidate_timing(
             if key[0] != "shot":
                 continue
             for field, text in _legacy_declarations(clip).items():
-                if (key, field) in exemptions:
-                    continue
                 try:
-                    if moments.parse(text).kind != "word":
+                    moment = moments.parse(text)
+                    if moment.kind != "word":
                         continue
                 except moments.MomentError:
+                    continue
+                if (key, field) in exemptions:
+                    # The exemption signature tracks the target and its
+                    # placement. Its source can drift independently of both.
+                    old_word, new_word = old_words.resolve(key, field, text), new_words.resolve(key, field, text)
+                    if old_word != new_word or (
+                        old_word is None
+                        and old_words.search_inputs(moment.line) != new_words.search_inputs(moment.line)
+                    ):
+                        raise TimingCompileError(
+                            f"cannot verify shot word anchor after its source changed. {SHOT_WORD_ALTERNATIVE}"
+                        )
                     continue
                 proof = prove_shot_word_retime(new_words, old_words, key, clip, before.get(key), field, text)
                 if proof is None:
