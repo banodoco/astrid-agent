@@ -198,6 +198,7 @@ const parseSimpleYamlManifest = (text, file) => {
   };
   for (const line of text.split(/\r?\n/)) {
     lineNumber++;
+    if (line.includes('\r')) fail('line break form');
     if (/^\s*(?:#.*)?$/.test(line)) continue;
     if (/^\s*\t/.test(line) || /^\uFEFF/.test(line)) fail('tab indentation or byte-order mark');
     if (afterId) {
