@@ -3,9 +3,10 @@
 import logging
 import os
 import sys
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from pathlib import Path
-from threading import Event, RLock
+from threading import Lock
 from typing import Iterable
 
 from astrid.core.foundation.paths import REPO_ROOT
@@ -195,11 +196,8 @@ class ElementRegistry(CapabilityRegistry[tuple[str, str], ElementDefinition]):
         """
         return {key: definitions[0] for key, definitions in self._entries.items()}
 
-_default_registry_lock = RLock()
+_default_registry_lock = Lock()
 _default_registry_cache = {}
-_registry_inflight = {}
-_discovery_counter = 0
-_invalidation_generation = 0
 
 
 def _pack_roots(project_root, extra_pack_roots):
@@ -232,59 +230,41 @@ def _root_state(roots):
     return tuple(state)
 
 
-def _discover_registry_data(key, *, roots=None, state=None):
-    global _discovery_counter
+def _assemble_registry(data):
+    elements, kinds, diagnostics = data
+    resolver = create_shared_alias_resolver()
+    _register_pack_aliases(resolver, {})
+    return ElementRegistry(elements, alias_resolver=resolver,
+                           element_kind_registry=kinds, diagnostics=diagnostics)
+
+
+def _publish(key=None, lookup=None, *, clear=False):
+    """Serialize every publication, including invalidation and first load."""
+    global _default_registry_cache
     with _default_registry_lock:
-        _discovery_counter += 1
-        generation = _discovery_counter
-    if roots is None:
-        roots = _pack_roots(key[0], key[2])
-    if state is None:
-        state = _root_state(roots)
-    data = _load_default_registry_data(*key)
-    with _default_registry_lock:
-        current = _default_registry_cache.get(key)
-        if generation > _invalidation_generation and (current is None or generation > current[0]):
-            _default_registry_cache[key] = (generation, roots, state, data)
-            return data
-        return current[3] if current is not None else data
-
-
-def _registry_data(key):
-    while True:
-        with _default_registry_lock:
-            entry = _default_registry_cache.get(key)
-            if entry is not None:
-                return entry[3]
-            pending = _registry_inflight.get(key)
-            if pending is None:
-                pending = _registry_inflight[key] = Event()
-                owner = True
-            else:
-                owner = False
-        if not owner:
-            pending.wait()
-            continue
-        try:
-            return _discover_registry_data(key)
-        finally:
-            with _default_registry_lock:
-                if _registry_inflight.get(key) is pending:
-                    del _registry_inflight[key]
-                pending.set()
-
-
-def _refresh_if_roots_changed(key):
-    with _default_registry_lock:
+        if clear:
+            _default_registry_cache = {}
+            return
         entry = _default_registry_cache.get(key)
-    if entry is None:
-        return False
-    state = _root_state(entry[1])
-    if state == entry[2]:
-        return False
-    _discover_registry_data(key, roots=entry[1], state=state)
-    return True
-
+        if entry is not None and lookup is not None:
+            registry = deepcopy(entry[2])
+            result = lookup(registry)
+            if result is not None:
+                return result, registry
+        if entry is None:
+            roots = _pack_roots(key[0], key[2])
+            state = _root_state(roots)
+        elif lookup is not None:
+            roots = entry[0]
+            state = _root_state(roots)
+        else:
+            return deepcopy(entry[2])
+        if entry is not None and state == entry[1]:
+            return result, registry
+        entry = (roots, state, _assemble_registry(_load_default_registry_data(*key)))
+        _default_registry_cache = {**_default_registry_cache, key: entry}
+        registry = deepcopy(entry[2])
+        return (lookup(registry), registry) if lookup is not None else registry
 
 
 def _load_default_registry_data(
@@ -332,42 +312,24 @@ def _load_default_registry_data(
 
 def clear_default_registry_cache() -> None:
     """Invalidate the shared corpus and SDK schema bindings."""
-    global _discovery_counter, _invalidation_generation
-    with _default_registry_lock:
-        _discovery_counter += 1
-        _invalidation_generation = _discovery_counter
-        _default_registry_cache.clear()
-        _registry_inflight.clear()
+    _publish(clear=True)
     from astrid.sdk.timeline_address import clear_schema_cache
     clear_schema_cache()
 
 
 def lookup_default_registry(lookup, *, project_root=None):
-    """Resolve a miss again only when a pack root has changed."""
+    """Resolve misses against a serialized, pre-discovery root stamp.
+
+    Root mtimes cannot see in-place edits or a pack landing after the stamp
+    read until a later miss (issue #1584).
+    """
+    registry = (load_default_registry() if project_root is None
+                else load_default_registry(project_root=project_root))
+    result = lookup(registry)
+    if result is not None:
+        return result, registry
     root = Path(REPO_ROOT if project_root is None else project_root).resolve()
-    key = (str(root), False, ())
-    # Root mtimes do not detect edits inside an existing pack, or changes to
-    # managed source selection; those remain outside this refresh contract.
-    for _ in range(3):
-        registry = (load_default_registry() if project_root is None
-                    else load_default_registry(project_root=project_root))
-        result = lookup(registry)
-        if result is not None:
-            return result, registry
-        entry = getattr(registry, "_default_cache_entry", None)
-        # A publication during assembly leaves the data without a current entry.
-        if entry is None and hasattr(registry, "_default_cache_entry"):
-            continue
-        with _default_registry_lock:
-            current = _default_registry_cache.get(key)
-        if entry is not None and entry is not current:
-            continue
-        if _refresh_if_roots_changed(key):
-            continue
-        with _default_registry_lock:
-            if entry is None or _default_registry_cache.get(key) is entry:
-                return result, registry
-    return result, registry
+    return _publish((str(root), False, ()), lookup)
 
 
 def load_default_registry(
@@ -376,32 +338,12 @@ def load_default_registry(
     include_missing_roots: bool = False,
     extra_pack_roots: tuple[str, ...] = (),
 ) -> ElementRegistry:
-    """Load the default element registry (corpus parse is cached).
-
-    Registry assembly stays per-call so callers may register additional
-    elements without polluting the shared corpus cache.
-    """
+    """Return an independently mutable registry from the published corpus."""
     project_root = Path(project_root).resolve()
     extra_pack_roots = tuple(str(Path(root).resolve()) for root in extra_pack_roots)
     key = (str(project_root), include_missing_roots, extra_pack_roots)
-    data = _registry_data(key)
-    elements, element_kind_registry, diagnostics = data
-    # Keep the stamp belonging to the data used to assemble this registry.
-    with _default_registry_lock:
-        entry = _default_registry_cache.get(key)
-        if entry is not None and entry[3] is not data:
-            entry = None
-    resolver = create_shared_alias_resolver()
-    _register_pack_aliases(resolver, {})  # no aliases yet
-    registry = ElementRegistry(
-        alias_resolver=resolver,
-        element_kind_registry=element_kind_registry,
-        diagnostics=diagnostics,
-    )
-    registry._default_cache_entry = entry
-    for element in elements:
-        registry.register(element)
-    return registry
+    entry = _default_registry_cache.get(key)
+    return deepcopy(entry[2]) if entry is not None else _publish(key)
 
 
 def default_sources(*, project_root: str | Path = REPO_ROOT) -> tuple[ElementSource, ...]:
