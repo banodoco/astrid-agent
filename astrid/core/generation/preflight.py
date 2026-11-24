@@ -164,9 +164,11 @@ def generation_error(error: Any, *, entry=None, target=None, code=None,
         'validation': 'input_rejected', 'missing_input': 'input_rejected',
         'precondition': 'missing_dependency', 'runtime': 'generation_failed',
     }.get(category, 'generation_failed')
-    from .setup_contract import native_issue_code
+    from .setup_contract import SETUP_ISSUE_CODES, canonical_issue_code, native_issue_code
     normalized = native_issue_code(native)
     detail = {**(get('details') or {}), **(details or {})}
+    if canonical_issue_code(native) not in SETUP_ISSUE_CODES:
+        detail['native_code'] = native
     # The managed/attached model paths retain the exact typed cause when
     # adding transfer or alignment context. Recover only known typed causes,
     # never infer a license or hash failure from free-form stderr.

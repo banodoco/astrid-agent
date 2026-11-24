@@ -274,3 +274,14 @@ def test_redacted_fix_retains_contract_and_cannot_be_auto_executed():
     assert result["fixes"][0]["argv"][-1] == "api_key=<REDACTED_VALUE>"
     assert "REDACTED_VALUE" in result["fixes"][0]["placeholders"]
     assert error.recovery_command == ""
+
+
+def test_unregistered_native_error_retains_original_code_as_evidence():
+    from astrid.core.generation.setup_contract import validate_setup_envelope
+
+    result = generation_error({"code": "future_native_refusal", "message": "native failure"}).to_envelope()
+    validate_setup_envelope(result)
+    issue = result["issues"][0]
+    assert issue["code"] == "generation_failed"
+    assert issue["details"]["native_code"] == "future_native_refusal"
+    assert issue["fix_ids"] == [fix["id"] for fix in result["fixes"]]

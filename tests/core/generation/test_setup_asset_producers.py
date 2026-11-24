@@ -110,9 +110,10 @@ def test_recorded_model_http_refusal_is_typed_without_parsing_message(tmp_path, 
             assert method == "GET"
             yield SimpleNamespace(status_code=status, headers={}, url=url)
 
-    path = tmp_path / "model.safetensors"
+    path = tmp_path / "checkpoints" / "model.safetensors"
+    path.parent.mkdir()
     part = path.with_suffix(".part")
-    entry = {"name": path.name, "subdir": "", "url": "https://huggingface.co/example/model/resolve/main/model.safetensors",
+    entry = {"name": path.name, "subdir": "checkpoints", "url": "https://huggingface.co/example/model/resolve/main/model.safetensors",
              "size_bytes": 4, "sha256": "a" * 64}
     with pytest.raises(ModelFetchHTTPError) as caught:
         fetch_verified(entry, path, root=tmp_path, part=part, label=path.name, client=RecordedClient())
@@ -184,3 +185,21 @@ def test_attached_download_cli_failure_uses_same_validated_readiness(monkeypatch
         "astrid", "generate", "fetch-models", "example", "t2i",
         "--comfy-url", "http://127.0.0.1:8188", "--json",
     ]
+
+
+def test_unselected_invalid_or_incomplete_models_record_their_excluded_authority(caplog):
+    import logging
+
+    caplog.set_level(logging.DEBUG, logger="astrid.core.generation.asset_gaps")
+    excluded = []
+    rows = [
+        {"name": "incomplete.safetensors", "subdir": "checkpoints"},
+        {"name": "invalid.safetensors", "subdir": "checkpoints",
+         "url": "http://example.invalid/model", "sha256": "a" * 64, "size_bytes": 4},
+    ]
+    assert declared_model_specs(rows, require_complete=False, incomplete=excluded,
+                                entry_id="inventory-only") == ()
+    assert len(excluded) == 2
+    assert excluded[0]["missing"] == ["url", "sha256", "size_bytes"]
+    assert excluded[1]["code"]
+    assert "Excluded non-provisionable model declaration for entry inventory-only" in caplog.text

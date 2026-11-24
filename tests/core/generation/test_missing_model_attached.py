@@ -70,7 +70,7 @@ def test_managed_missing_model_keeps_align_message_and_fixes(monkeypatch):
     error, seen = _capture("managed", monkeypatch)
     argv = align_argv("z-image")
     assert error.readiness["fixes"] == [{
-        "id": "align-locked-assets", "who": "human", "argv": argv, "scope": "user_env",
+        "id": "align-locked-assets", "who": "agent", "argv": argv, "scope": "user_env",
         "details": {"action": "Install missing locked assets on the managed target; unlocked assets require a manifest."},
     }]
     assert str(error).endswith("run: " + " ".join(argv))

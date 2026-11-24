@@ -33,6 +33,19 @@ def declared_model_specs(assets: Any, *, require_complete: bool = True,
     if not isinstance(assets, (list, tuple)):
         raise ModelLockValidationError('entry model_assets must be a list')
     models = {}
+    def record_gap(record):
+        if incomplete is not None:
+            incomplete.append(record)
+        if not require_complete:
+            # An inventory-only read may exclude a declaration that grants
+            # no custody authority, but must record the excluded fact.
+            import logging
+
+            logging.getLogger(__name__).debug(
+                "Excluded non-provisionable model declaration for entry %s: %s",
+                entry_id or "(unselected)", record.get("missing") or record.get("code"),
+            )
+
     for asset in assets:
         if not isinstance(asset, dict):
             raise ModelLockValidationError('entry model_assets must contain objects')
@@ -40,11 +53,9 @@ def declared_model_specs(assets: Any, *, require_complete: bool = True,
                    if asset.get(key) is None or asset.get(key) == '']
         if missing:
             record = {'name': asset.get('name'), 'subdir': asset.get('subdir'), 'missing': missing}
-            if incomplete is not None:
-                incomplete.append(record)
-                continue
-            if require_complete:
+            if require_complete and incomplete is None:
                 raise IncompleteModelDeclaration(record, entry_id=entry_id)
+            record_gap(record)
             continue
         try:
             name = _safe_relative(asset['name'])
@@ -55,11 +66,13 @@ def declared_model_specs(assets: Any, *, require_complete: bool = True,
             model = ModelSpec(asset['name'], None, None, None, asset['url'], destination,
                               asset['size_bytes'], asset['sha256'])
             _validate_model(model)
-        except EngineError:
+        except EngineError as exc:
             if require_complete:
                 raise
             # A non-provisionable, unselected declaration grants no authority.
             # The exact-root verifier will still reject any unlisted file.
+            record_gap({'name': asset.get('name'), 'subdir': asset.get('subdir'),
+                        'missing': [], 'code': exc.code})
             continue
         previous = models.get(destination)
         if previous is not None and previous != model:
@@ -239,7 +252,10 @@ def asset_readiness(entry: str | None, *, nodes=(), models=(), target=None, plac
     if issues:
         for issue in issues:
             issue['fix_ids'] = ['align-locked-assets']
-        fixes = [{'id': 'align-locked-assets', 'who': 'human', 'argv': argv, 'scope': 'user_env',
+        # Preserve the concrete recovery command for managed gaps. The
+        # caller still needs explicit user_env consent; the command is not
+        # a grant of approval for unreviewed node code.
+        fixes = [{'id': 'align-locked-assets', 'who': 'agent', 'argv': argv, 'scope': 'user_env',
                   'details': {'action': 'Install missing locked assets on the managed target; unlocked assets require a manifest.'}}]
     return readiness_envelope(entry={'id': entry, 'engine': 'comfyui'}, target=target,
                               issues=issues, fixes=fixes)
