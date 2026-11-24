@@ -155,12 +155,18 @@ def _vibecomfy_invocation_preflight(
             None,
         )
         if source_descriptor is not None:
-            source_video_path = root / source_descriptor[1]
+            # Match GenericPackHost._materialize_inputs exactly; the original
+            # filename is descriptor evidence, not the worker's input basename.
+            from astrid.core.execution.host_naming import _managed_input_staging_name
+
+            source_video_path = root / _managed_input_staging_name(
+                "source_video", source_descriptor[2], source_descriptor[1],
+            )
             source_video_path.write_bytes(read_object(source_descriptor[0], "source_video"))
             if managed_source_digest is not None and source_descriptor[0] != managed_source_digest:
                 raise ValueError("managed assets conflict with workflow inputs: source_video")
             if "source_video" not in run_inputs:
-                run_inputs["source_video"] = source_descriptor[1]
+                run_inputs["source_video"] = source_video_path.name
         elif "source_video" in run_inputs:
             source_member = str(run_inputs["source_video"])
             managed_member = next(
