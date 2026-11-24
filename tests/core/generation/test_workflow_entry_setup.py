@@ -119,3 +119,19 @@ def test_explicit_preview_authority_cannot_add_to_real_saved_approval_sidecar(tm
     assert read_entry_approvals(directory) == [old_record]
     with pytest.raises(GenerationReadinessError):
         authorize_nodes([new], placement_class="local", entry=entry, retry_argv=retry)
+
+
+def test_target_admission_refuses_preview_authority_on_live_path(tmp_path):
+    """Reject preview arguments before candidate discovery or target admission."""
+    import pytest
+    from astrid.core.generation.node_approvals import preview_entry_authority
+    from astrid.sdk.generation import GenerationFacade, GenerationInputError
+
+    candidate = {"id": "mine", "bundle": str(tmp_path / "candidate")}
+    authority = preview_entry_authority(candidate, [], "local")
+    with pytest.raises(GenerationInputError, match="only valid on an explicit dry run"):
+        GenerationFacade()._generate_on_target_impl(
+            _job_dirs=[], registry=None, model=None, mode="t2i", modality="image",
+            placement="managed", execution=None, inputs={}, dry_run=False,
+            workflow_entry=candidate, preview_authority=authority,
+        )

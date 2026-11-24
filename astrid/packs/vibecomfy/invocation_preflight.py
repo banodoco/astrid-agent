@@ -377,13 +377,20 @@ def _assert_reachable_prompt(
                 "VIBECOMFY_PROMPT_BINDING: expected prompt is not present in a reachable prompt node"
             )
     else:
-        required = _required_prompt_values(
-            workflow, api, declared=_declares_prompt_input(workflow), omitted=omitted
-        )
+        declared = _declares_prompt_input(workflow)
+        required = _required_prompt_values(workflow, api, declared=declared)
         if required and not any(isinstance(value, str) and value.strip() for value in required):
-            raise InvocationPreflightError(
-                "VIBECOMFY_PROMPT_EMPTY: every reachable prompt input is empty"
-            )
+            # Preserve actual authored defaults when assessing a preview.
+            # Removing a nonblank omitted positive prompt from this check
+            # can otherwise make its blank negative companion appear to be
+            # the only required prompt. If all values really are blank, a
+            # save-preview may defer the run-only value only when one of the
+            # actual prompt-bearing fields is explicitly omitted.
+            remaining = _required_prompt_values(workflow, api, declared=declared, omitted=omitted)
+            if len(remaining) == len(required):
+                raise InvocationPreflightError(
+                    "VIBECOMFY_PROMPT_EMPTY: every reachable prompt input is empty"
+                )
 
 
 def _is_h3_workflow(api: Mapping[str, Any]) -> bool:

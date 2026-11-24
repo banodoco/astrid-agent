@@ -28,6 +28,7 @@ from .exceptions import (
 from .results import _reconstruct_generation_result
 
 if TYPE_CHECKING:
+    from astrid.core.generation.node_approvals import PreviewApprovalAuthority
     from astrid.core.generation.placement import Placement
 
     from .execution_request import ExecutionRequest
@@ -1740,7 +1741,7 @@ class GenerationFacade:
         retained_source: dict[str, Any] | None = None,
         _admission_state: _WorkflowAdmissionState | None = None,
         _discovery: Any = None,
-        preview_authority: Any = None,
+        preview_authority: PreviewApprovalAuthority | None = None,
         save_preview_omitted_fields: frozenset[tuple[str, str]] = frozenset(),
         **controls: Any,
     ) -> Any:
@@ -1767,6 +1768,8 @@ class GenerationFacade:
         if preview_authority is not None or save_preview_omitted_fields:
             if not dry_run or workflow_entry is None or model is not None:
                 raise GenerationInputError("save-entry preview authority is only valid on an explicit dry run")
+            if save_preview_omitted_fields and preview_authority is None:
+                raise GenerationInputError("save-entry input scope requires explicit preview authority")
 
         requested_align = controls.pop('align', None)  # None: not asked for; RunPod then aligns, local checks
         align = _align_mode(requested_align or 'check')
