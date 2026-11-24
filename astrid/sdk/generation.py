@@ -1975,7 +1975,7 @@ class GenerationFacade:
                 try:
                     assets = {}
                     approved_files = None
-                    version_notices = []
+                    version_notices = ()
                     transport = BuildTransport()
                     if is_remote_target:
                         template = (None if source == "workflow" else _local_template(candidate, mode))
@@ -2069,10 +2069,11 @@ class GenerationFacade:
                             if not dry_run and source_ref is None:
                                 retained = Path(built['bundle']) / 'source.json'
                                 retain_source(retained.name, retained.read_bytes())
-                            schema = timed_call('target node list', workflow_entries.target_schema,candidate, workflow, target_client, engine=runpod_engine,
+                            target_schema_result = timed_call('target node list', workflow_entries.target_schema,candidate, workflow, target_client, engine=runpod_engine,
                                 pending_target=pending_target,
-                                align=(requested_align or 'align') if is_remote_target else align,
-                                version_notices=version_notices)
+                                align=(requested_align or 'align') if is_remote_target else align)
+                            schema = target_schema_result.provider
+                            version_notices = target_schema_result.version_notices
                         else:
                             with _snapshot_generation_workflow(workflow_entries.bundle_path(candidate)) as frozen:
                                 if initial_readiness is None and not dry_run and source_ref is None:
@@ -2096,11 +2097,12 @@ class GenerationFacade:
                                 needs.extend(need for need in candidate.get('needs', [])
                                              if need.get('ambiguity') and need not in needs)
                                 candidate = {**candidate, 'needs': _explicit_workflow_needs(needs)}
-                            schema = timed_call('target node list', workflow_entries.target_schema,candidate, workflow, target_client, engine=runpod_engine,
+                            target_schema_result = timed_call('target node list', workflow_entries.target_schema,candidate, workflow, target_client, engine=runpod_engine,
                                 pending_target=pending_target,
                                 align=(requested_align or 'align') if is_remote_target else align,
-                                version_notices=version_notices,
                                 **({'initial_readiness': initial_readiness} if initial_readiness is not None else {}))
+                            schema = target_schema_result.provider
+                            version_notices = target_schema_result.version_notices
                     from vibecomfy.workflow_bundle import load_bundle
                     if source == "workflow":
                         # Re-emit the edited canonical workflow before approval so

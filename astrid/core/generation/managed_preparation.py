@@ -12,7 +12,7 @@ from concurrent.futures import CancelledError
 from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 from .engine_contracts import (
@@ -26,6 +26,9 @@ from .engine_contracts import (
 from .engine_local_endpoint import DEFAULT_ENGINE
 
 from .node_approvals import NodeApproval as NodeApproval
+
+if TYPE_CHECKING:
+    from .interfaces import ReadinessEnvelope
 
 SCHEMA = "astrid.managed-engine-preparation.v1"
 _ENGINE_STOP_TIMEOUT_SECONDS = 30.0
@@ -197,7 +200,7 @@ def native_failure_inputs(stdout: str, reason: str, labels: tuple[tuple[str, str
     return tuple(matches)
 
 
-def native_unknown_input_readiness(inputs: tuple[dict[str, str], ...]) -> dict[str, Any]:
+def native_unknown_input_readiness(inputs: tuple[dict[str, str], ...]) -> ReadinessEnvelope:
     """Project graph-verified doctor findings into a single repair step.
 
     ``inputs`` comes from native_failure_inputs, not remote prose or an
@@ -931,11 +934,10 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
                     detail += f", unknown_inputs={json.dumps(unknown_inputs)}"
             where = ("its whole output is the run logs preparation.{0}.stdout and preparation.{0}.stderr"
                      .format(step) if self._keep_step_output(step, result) else "inspect the host log for this attempt")
-            error = IntegrityError(f"managed alignment command failed (step={step}, reason={reason}{detail}); {where}")
-            if unknown_inputs:
-                # The host already retains readiness from exceptions in its
-                # failure diagnostic. Keep the existing integrity error and logs.
-                error.readiness = native_unknown_input_readiness(unknown_inputs)
+            error = IntegrityError(
+                f"managed alignment command failed (step={step}, reason={reason}{detail}); {where}",
+                readiness=native_unknown_input_readiness(unknown_inputs) if unknown_inputs else None,
+            )
             if step == "fetch" and any(re.search(
                     r"\[Errno (?:28|122)\]|\b(?:EDQUOT|ENOSPC)\b|Disk quota exceeded|No space left on device",
                     text, re.IGNORECASE) for text in (result.stdout, result.stderr)):

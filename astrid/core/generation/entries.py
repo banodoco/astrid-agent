@@ -5,12 +5,14 @@ import json
 import logging
 import math
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from astrid.core.generation.backends.comfy_schema import TargetSchemaProvider
     from astrid.core.generation.workflows import InputRequirements
 
 logger = logging.getLogger(__name__)
@@ -1350,25 +1352,56 @@ def selected_pack_version_notices(workflow: Any, *, installing: bool) -> list[di
 
     The bundle owns its source provenance and selected immutable refs. An
     ambient catalog candidate or observed node class is not an installed pin.
+    An authored graph with no recorded provenance has nothing to compare;
+    an unreadable or malformed requirements declaration is a refused input,
+    never evidence that no packs were selected.
     """
-    requirements = getattr(workflow, 'requirements', None)
-    refs = getattr(requirements, 'custom_node_refs', ())
+    from astrid.core.generation.preflight import generation_error
+
+    try:
+        refs = workflow.requirements.custom_node_refs
+    except (AttributeError, OSError, TypeError, ValueError) as exc:
+        raise generation_error(
+            ValueError("workflow custom-node requirements could not be read"),
+            code="input_rejected", details={"field": "requirements.custom_node_refs"},
+        ) from exc
+    if (not isinstance(refs, (list, tuple))
+            or any(not isinstance(ref, Mapping) or not isinstance(ref.get("slug"), str)
+                   or not ref["slug"] for ref in refs)):
+        raise generation_error(
+            ValueError("workflow custom-node requirements are malformed"),
+            code="input_rejected", details={"field": "requirements.custom_node_refs"},
+        )
     if not refs:
-        return []
+        return []  # Valid empty declaration: there are no selected packs.
     metadata = getattr(workflow, 'metadata', {})
     source_report = metadata.get('source_provenance') if isinstance(metadata, Mapping) else None
     if source_report is None:
         provenance = getattr(getattr(workflow, 'source', None), 'provenance', {})
         source_report = provenance.get('source_provenance') if isinstance(provenance, Mapping) else None
-    if not isinstance(source_report, Mapping):
+    if source_report is None:
+        # Native/authored graphs without imported source evidence have no
+        # recorded version to compare; do not invent a mismatch or a notice.
         return []
+    if not isinstance(source_report, Mapping):
+        raise generation_error(
+            ValueError("workflow source provenance is malformed"),
+            code="input_rejected", details={"field": "source_provenance"},
+        )
     return pack_version_notices(source_report, refs, installing=installing)
+
+
+@dataclass(frozen=True)
+class TargetSchemaResult:
+    """The selected provider and associated version facts from one preflight."""
+
+    provider: TargetSchemaProvider | None
+    version_notices: tuple[dict[str, Any], ...]
 
 
 def target_schema(entry: dict[str, Any], workflow: Any, client: Any, *, engine: str | None = None,
                   pending_target: Mapping[str, Any] | None = None, align: str = 'check',
-                  initial_readiness: Mapping[str, Any] | None = None,
-                  version_notices: list[dict[str, Any]] | None = None):
+                  initial_readiness: Mapping[str, Any] | None = None) -> TargetSchemaResult:
     """Check the selected target's node and exact loader inventory.
 
     ``align='trust'`` feeds the workflow's own declared model rows as target custody,
@@ -1383,6 +1416,11 @@ def target_schema(entry: dict[str, Any], workflow: Any, client: Any, *, engine: 
     from astrid.core.generation.backends.comfy_target import _resolve_roles
     from astrid.core.generation.preflight import GenerationReadinessError, readiness_envelope
 
+    # Validate declarations before the deferred provider reads their typed refs.
+    # The notices are returned only if target admission succeeds.
+    version_notices = tuple(selected_pack_version_notices(
+        workflow, installing=client is None and align == 'align',
+    ))
     if client is None:
         missing_classes = _deferred_missing_node_classes(
             workflow, pending_target=pending_target, align=align,
@@ -1450,14 +1488,8 @@ def target_schema(entry: dict[str, Any], workflow: Any, client: Any, *, engine: 
                        'inputs': input_inventory(_workflow_inputs(entry, entry.get('mode', 'workflow'), workflow=workflow))}
         raise GenerationReadinessError(readiness_envelope(entry=description,
             target=target, issues=issues, fixes=fixes))
-    if version_notices is not None:
-        # Only the graph that passed target admission contributes notices.
-        # A live attached target is never described as installing a pack.
-        version_notices.extend(selected_pack_version_notices(
-            workflow, installing=client is None and align == 'align',
-        ))
     if client is None:
-        return None
+        return TargetSchemaResult(None, version_notices)
     custody = {}
     if align != 'trust' and client.target.kind == "managed" and client.target.facts.get("model_root") is not None:
         from .model_root import validate_model_root_binding
@@ -1491,7 +1523,7 @@ def target_schema(entry: dict[str, Any], workflow: Any, client: Any, *, engine: 
                             if align == 'trust' else client.object_info, **custody)
     if align == 'trust':
         provider.trust_model_assets(declared_rows(workflow))
-    return provider
+    return TargetSchemaResult(provider, version_notices)
 
 
 def entry_hooks(entry: Mapping[str, Any], registry: Any = None) -> dict[str, Any]:
