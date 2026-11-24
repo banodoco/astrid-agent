@@ -1078,7 +1078,7 @@ class WorkspaceClient:
             "schema_version": schema_version,
             "settlement_effect": settlement_effect,
             "project_id": project_id,
-            "spec": wire_spec if execution_request is not None else spec,
+            "spec": wire_spec if execution_request is not None or (capability_id == "vibecomfy.run" and "invocation_preflight" in wire_spec) else spec,
             "generation_intent": generation_intent,
             "storage_estimate": storage_estimate,
             "required_facts": required_facts,
