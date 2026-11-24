@@ -564,9 +564,20 @@ def verify_admitted_invocation_receipt(
     """
     from vibecomfy.workflow import WorkflowCompileError
 
-    from astrid.packs.vibecomfy.asset_manifest import AssetManifestError, read_archive, resolve_inputs
-    from astrid.packs.vibecomfy.production_engine import ProductionEngineError, load_workflow_path, _workflow_content_digest
-    from astrid.packs.vibecomfy.shared.bundle_inputs import CanonicalBundleInputError, staged_workflow_path
+    from astrid.packs.vibecomfy.asset_manifest import (
+        AssetManifestError,
+        read_archive,
+        resolve_inputs,
+    )
+    from astrid.packs.vibecomfy.production_engine import (
+        ProductionEngineError,
+        _workflow_content_digest,
+        load_workflow_path,
+    )
+    from astrid.packs.vibecomfy.shared.bundle_inputs import (
+        CanonicalBundleInputError,
+        staged_workflow_path,
+    )
 
     if not isinstance(receipt, Mapping):
         raise InvocationReceiptMismatch(
