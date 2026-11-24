@@ -255,21 +255,22 @@ def _prepared_remotion_root_selected(
             composition_duration_frames=composition_duration_frames,
         )
     runtime_tools = backend._validate_project_dir(project_dir)
+    roots_registry = element_registry
     if element_registry is None:
         backend._regenerate_element_registries(project_dir, theme_path)
         registry_state = backend._effective_registry_state(theme_path)
         if backend.gen_effect_registry is not None:
-            element_registry = backend.gen_effect_registry._element_registry()
+            roots_registry = backend.gen_effect_registry._element_registry()
             # Only a fully formed generated state is comparable; a caller that
             # substitutes an opaque state carries nothing to compare.
             if (
                 backend.gen_effect_registry.is_generated_registry_state(registry_state)
-                and backend.gen_effect_registry.compute_generated_registry_state(registry=element_registry) != registry_state
+                and backend.gen_effect_registry.compute_generated_registry_state(registry=roots_registry) != registry_state
             ):
                 raise ValueError("render element registry changed during preparation")
     else:
         registry_state = backend._write_selected_element_registries(registry_root, element_registry)
-    render_pack_roots = (backend.gen_effect_registry.render_pack_roots(registry=element_registry, include_aliases=True,
+    render_pack_roots = (backend.gen_effect_registry.render_pack_roots(registry=roots_registry, include_aliases=True,
                                                                      verify_public=False)
                          if backend.gen_effect_registry is not None else None)
     from astrid.core.env_vars import ASTRID_REMOTION_VALIDATION_LAUNCH
