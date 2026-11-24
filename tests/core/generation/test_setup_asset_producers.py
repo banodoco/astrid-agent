@@ -140,3 +140,47 @@ def test_removed_saved_entry_is_named_without_automatic_deletion(monkeypatch):
     fix = result["fixes"][0]
     assert fix["who"] == "human"
     assert fix["instruction"]["then_argv"] == ["astrid", "generate", "list", "--json"]
+
+
+def test_installed_recipe_and_runtime_version_warnings_have_one_code():
+    from astrid.core.generation.engine_readiness import ComfyProvenance
+    from astrid.core.generation.setup_contract import validate_setup_envelope
+
+    evidence = ComfyProvenance()
+    evidence.recorded["engine"] = "1.0"
+    evidence.observed["engine"] = "2.0"
+    evidence.recorded_sources["comfyui"] = "a" * 40
+    evidence.observed_sources["comfyui"] = "b" * 40
+    result = evidence.evidence()["comfy_provenance"]["readiness"]
+    validate_setup_envelope(result)
+    assert result["status"] == "ready_with_warnings"
+    assert len(result["issues"]) == 2
+    assert {issue["code"] for issue in result["issues"]} == {"pack_version_differs"}
+    assert all(issue["severity"] == "warning" and not issue.get("fix_ids")
+               for issue in result["issues"])
+    assert result["fixes"] == []
+    assert {issue["details"]["recorded"] for issue in result["issues"]} == {"1.0", "a" * 40}
+
+
+def test_attached_download_cli_failure_uses_same_validated_readiness(monkeypatch, capsys):
+    import json
+
+    from astrid.core.generation import asset_gaps, cli
+    from astrid.core.generation.setup_contract import validate_setup_envelope
+
+    def refuse(*args, **kwargs):
+        raise asset_gaps.AttachedDownloadRefused("insufficient_space", "Not enough free space; nothing was written.")
+
+    monkeypatch.setattr(asset_gaps, "plan_attached_model_download", refuse)
+    assert cli.main(["fetch-models", "example", "t2i", "--comfy-url",
+                     "http://127.0.0.1:8188", "--json"]) == 2
+    result = json.loads(capsys.readouterr().out)
+    validate_setup_envelope(result)
+    assert result["issues"][0]["code"] == "insufficient_storage"
+    assert result["issues"][0]["details"]["engine_code"] == "insufficient_space"
+    fix = result["fixes"][0]
+    assert fix["who"] == "human" and fix["scope"] == "attached_target"
+    assert fix["instruction"]["then_argv"] == [
+        "astrid", "generate", "fetch-models", "example", "t2i",
+        "--comfy-url", "http://127.0.0.1:8188", "--json",
+    ]

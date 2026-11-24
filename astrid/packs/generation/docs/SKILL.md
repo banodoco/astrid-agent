@@ -325,7 +325,25 @@ issues without these fields retain their existing guidance; do not invent a fix.
 
 ### LE-1b — Missing assets and failed checks
 
-<!-- LE-1b: fill this subsection in the same change as the card. -->
+Every blocked or warning readiness envelope uses the same validated issue and
+fix contract. Read the linked fixes, not the old engine's diagnostic spelling.
+Known core nodes retain their update-ComfyUI guidance. A missing unrecognized
+class does not establish that it is core; identify its actual provider. For an
+attached server, the person performs the manual installation or model placement;
+the follow-up command only re-inspects that target. Never run managed alignment
+against it. A managed missing locked asset may offer an explicit user-env action.
+
+An incomplete model lock is a refusal, not permission to download without a
+hash or size. Supply verified HTTPS source, SHA-256 and exact byte size in the
+saved declaration and inspect again. Source HTTP 401/403, missing source (404),
+integrity failure and insufficient target disk have distinct issue codes and
+human repairs. Re-inspect a changed attached download plan before confirming it;
+never overwrite a model or repeat a completed task just to recover delivery.
+
+A known recorded/observed version difference uses `pack_version_differs`
+(including core/runtime or installed-recipe provenance); advisory warnings
+carry no repair links. No recorded or observed version means unknown, not a
+fabricated difference.
 
 ### LE-2a — Approval identity and consent tokens
 

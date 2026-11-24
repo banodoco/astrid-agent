@@ -151,3 +151,32 @@ def project_setup_facts(issues, fixes, *, entry=None, target=None):
     # The native exception adapter selects its own named repair before
     # calling readiness_envelope; the validator rejects missing links.
     return issues, fixes
+
+
+def declare_redacted_action_values(envelope):
+    """A redacted command argument is a human placeholder, never runnable.
+
+    The ordinary error redactor has already removed the credential. Keep that
+    removal visible and retain validation of every placeholder afterwards.
+    """
+    for fix in envelope["fixes"]:
+        actions = fix.get("instruction")
+        changed = False
+        if actions is not None:
+            if "<redacted>" in actions["step"]:
+                actions["step"] = actions["step"].replace("<redacted>", "<REDACTED_VALUE>")
+                changed = True
+            argv = actions["then_argv"]
+        else:
+            argv = fix.get("argv", [])
+        for index, item in enumerate(argv):
+            if "<redacted>" in item:
+                argv[index] = item.replace("<redacted>", "<REDACTED_VALUE>")
+                changed = True
+        if changed:
+            fix["who"] = "human"
+            fix.setdefault("placeholders", {})["REDACTED_VALUE"] = (
+                "Supply the required secret privately through its supported credential mechanism; "
+                "do not reveal it in the conversation"
+            )
+    return envelope

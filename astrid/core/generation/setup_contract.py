@@ -188,6 +188,8 @@ def validate_setup_envelope(envelope: Mapping[str, Any]) -> None:
             raise ValueError("undeclared setup issue code")
         if issue.get("severity") not in ("error", "warning") or not _words(issue.get("message")):
             raise ValueError("setup issue needs severity and message")
+        if issue["code"] == "model_download_notice" and issue["severity"] != "warning":
+            raise ValueError("model_download_notice is advisory only")
         if not isinstance(issue.get("details", {}), dict):
             raise ValueError("setup issue details must be an object")
         ids = issue.get("fix_ids", [])

@@ -248,3 +248,22 @@ def test_only_the_canonical_version_code_is_registered():
     assert result["issues"] == [{"code": "pack_version_differs", "severity": "warning",
                                  "message": "Version differs", "details": {"recorded": "1", "observed": "2"}}]
     assert result["fixes"] == []
+
+
+def test_model_download_notice_cannot_be_blocking():
+    with pytest.raises(ValueError, match="advisory"):
+        readiness_envelope(issues=[_issue("model_download_notice")], fixes=[_fix()])
+
+
+def test_redacted_fix_retains_contract_and_cannot_be_auto_executed():
+    from astrid.core.generation.setup_contract import validate_setup_envelope
+
+    fix = {**_fix(), "argv": ["astrid", "generate", "describe", "--entry", "api_key=private-fixture-value"]}
+    error = GenerationReadinessError(readiness_envelope(issues=[_issue()], fixes=[fix]))
+    result = error.to_envelope()
+    validate_setup_envelope(result)
+    assert "private-fixture-value" not in json.dumps(result)
+    assert result["fixes"][0]["who"] == "human"
+    assert result["fixes"][0]["argv"][-1] == "api_key=<REDACTED_VALUE>"
+    assert "REDACTED_VALUE" in result["fixes"][0]["placeholders"]
+    assert error.recovery_command == ""

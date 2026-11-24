@@ -107,7 +107,8 @@ class GenerationReadinessError(AstridError, ValueError):
         from astrid.core.contracts.errors import _redact_credential_data
         self.readiness = readiness_envelope(**{key: envelope[key] for key in
             ('entry', 'target', 'issues', 'fixes', 'attempt_count') if key in envelope})
-        self.readiness = _redact_credential_data(self.readiness)
+        from .setup_repairs import declare_redacted_action_values
+        self.readiness = declare_redacted_action_values(_redact_credential_data(self.readiness))
         from .setup_contract import validate_setup_envelope
         if self.readiness['status'] != 'blocked':
             raise ValueError('a setup readiness error requires a blocking issue')
