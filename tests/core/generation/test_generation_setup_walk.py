@@ -15,6 +15,7 @@ import pytest
 from astrid.core.generation import cli
 from astrid.packs.vibecomfy import local as local_scan
 from tests.packs.test_vibecomfy_local import _server
+from tests.core.generation.test_generate_target_journey import loopback_comfy  # noqa: F401
 
 
 def _run(capsys, argv: list[str]) -> tuple[int, object]:
@@ -23,7 +24,7 @@ def _run(capsys, argv: list[str]) -> tuple[int, object]:
     return code, json.loads(out) if out.strip() else None
 
 
-def test_setup_walk_discover_preview_and_undo(tmp_path: Path, monkeypatch, capsys) -> None:
+def test_setup_walk_discover_preview_and_undo(tmp_path: Path, monkeypatch, capsys, loopback_comfy) -> None:
     server, thread = _server(tmp_path)
     try:
         # 1. Discover: the fake ComfyUI and its two saved workflows, read-only.
@@ -42,16 +43,19 @@ def test_setup_walk_discover_preview_and_undo(tmp_path: Path, monkeypatch, capsy
     entries_dir = tmp_path / "entries"
     monkeypatch.setenv("VIBECOMFY_ENTRIES_DIR", str(entries_dir))
     monkeypatch.setattr(cli, "_open_client", lambda: pytest.fail("preview opened Runtime"))
-    monkeypatch.setattr(cli, "_generate_facade", lambda: pytest.fail("preview ran the workflow"))
     from vibecomfy.registry.ready import workflow_from_ready
     from vibecomfy.workflow_bundle import load_bundle
 
     workflow = tmp_path / "portrait_flux.json"
     workflow.write_text(json.dumps(load_bundle(workflow_from_ready("image/z_image_turbo")).materialize_ui()))
     code, preview = _run(capsys, ["workflow", str(workflow), "--as-entry", "portrait_flux",
-                                  "--dry-run", "--json"])
-    assert code == 0
+                                  "--placement", loopback_comfy.url, "--dry-run", "--json"])
+    assert code == 0, preview
     assert preview["written"] is False and preview["would_save_entry"] == "portrait_flux"
+    assert preview["status"] in {"ready", "ready_with_warnings"}
+    assert any(call[:2] == ("GET", "/object_info") for call in loopback_comfy.calls)
+    assert not any(call[0] == "POST" for call in loopback_comfy.calls)
+    assert not loopback_comfy.prompts
     assert not entries_dir.exists()
 
     # 3. Describe the saved workflow, as the skill tells the user to.

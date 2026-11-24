@@ -375,7 +375,20 @@ ComfyUI.
 
 ### LE-3 — Add a pinned node pack
 
-<!-- LE-3: fill this subsection in the same change as the card. -->
+For a known custom-node repository, use `astrid generate workflow FILE
+--as-entry NAME --add URL[@REF] --placement TARGET --no-run --json`.
+`--add` may be repeated. The declaration must use a credential-free HTTPS
+repository; HEAD or an exact branch/tag resolves to a full commit once. An
+already-full SHA requires no ref lookup. A missing/ambiguous ref stops with
+a named human repair; conflicting pins are refused.
+
+A declaration is not permission to execute code. Show the exact source,
+commit, recipe and target consent warning, and use the returned pinned
+command only after approval. The saved entry carries the immutable refs and
+its separately stored approval records. A subsequent `astrid generate
+audio --entry NAME --mode workflow --audio-ref FILE --placement TARGET
+--dry-run --json` (or matching kind/mode) uses those records without
+`--add` or a new consent flag. The target still checks its actual classes.
 
 ### LE-4 — Lookup availability
 
@@ -419,7 +432,19 @@ Packs that download their own models on first run can consume space that is not 
 
 ### LE-12 — Preview, replace and run again
 
-<!-- LE-12: fill this subsection in the same change as the card. -->
+Preview a reusable entry with `astrid generate workflow FILE --as-entry NAME
+--placement TARGET --dry-run --json`. It checks the selected target through the
+same controller preflight as execution, without saving an entry or queuing a
+task. Execution-only input values are optional in the save preview; supplied
+values are still validated. `--no-run` saves only, after any required approval.
+
+An existing entry refuses implicit overwrite (`entry_exists`); only an explicit
+`--replace` changes it. Replacement keeps unrelated earlier `--add` declarations
+and all old approval records; an explicitly changed commit supersedes the old
+declaration and needs fresh consent. A retry shown by the envelope is not a dry
+run. Replay the saved workflow with `astrid generate image --entry NAME --mode
+t2i --placement TARGET --json` for an image entry, or the matching kind and
+mode from `astrid generate describe --entry NAME --json`.
 
 ### LE-13 — Declare an unlisted recipe
 
