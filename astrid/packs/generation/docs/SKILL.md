@@ -276,13 +276,26 @@ and byte size through workflow authoring; LE-9 adds `--add-model DEST=URL#sha256
 
 For a managed target, `--apply --consent user_env` cannot approve new code.
 A non-shipped repository/commit/recipe requires a matching saved local code
-approval; show the named next step if approval is absent. Until the controlled
-LE-2b installer is available, do not send even an approved novel recipe through
-the old alignment installer. Do not infer approval from an existing checkout.
+approval; show the consent instruction if approval is absent. The controlled
+restore path checks that approval again against the target's actual lock and
+installs only its declared recipe. Do not infer approval from an existing checkout.
 
 ### WS-0g — Missing classes on every placement
 
-<!-- WS-0g: fill this subsection in the same change as the card. -->
+A dry run checks missing node classes on every placement. A live target's
+`object_info` determines what is actually loaded there; a managed or rented
+target with deferred host readiness refuses unresolved providers before any
+machine is claimed. A `missing_node_pack` issue names the missing class;
+identify its providing pack before declaring a pinned source. When a local
+engine is not installed, the same readiness result also retains
+`engine_not_found`; missing packs are not hidden by that engine failure.
+A cached schema does not establish installation. Only ComfyUI core evidence,
+an exact catalog/bundle pin, or the shipped VibeComfy node registry on a placement
+that links those nodes resolves the provider requirement. RunPod defaults to
+alignment, which links the shipped nodes; explicit check/trust cannot assume
+that link exists without evidence. Attached targets must report loaded nodes
+in their own inventory. Actual host restoration, consent and loaded classes
+still need verification.
 
 ### WS-7a — Node recipe declarations
 
@@ -337,7 +350,28 @@ or assume that their presence makes a pack safe to run.
 
 ### LE-2b — Consent to unreviewed code
 
-<!-- LE-2b: fill this subsection in the same change as the card. -->
+An unfamiliar node source stops with `status: blocked` and `needs_consent`.
+Read its `instruction.step` to the person: it names each repository, full
+40-character commit, dependency recipe, recipe hash and resolved placement.
+The warning explains that the code can use the target's files, credentials and
+network. Dependencies are resolved at install time; Astrid never runs a pack's
+`install.py`.
+
+Only after the person agrees, run the instruction's exact `then_argv`, including
+each `--consent code=TOKEN`. `user_env` is separate permission and never approves
+new node code. Bare `--consent code`, a stale token, a changed commit or recipe,
+or a different placement returns the warning again. An offered `--add` is
+frozen to the displayed full commit in that retry command; do not replace it
+with a branch or tag.
+
+`workflow --as-entry NAME --no-run` can save the approved declaration without
+executing it. The approval is stored beside the saved entry and reused only
+when source, recipe and placement still match. A dry run writes no approval.
+On managed and rented targets, the host carries records separately from the
+workflow declarations. The target checks the whole restore lock before git or
+pip: an additional, changed or unapproved ref refuses the batch. No code
+approval grants permission to rent a machine or install into an attached
+ComfyUI.
 
 ### LE-3 — Add a pinned node pack
 

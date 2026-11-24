@@ -14,7 +14,7 @@ import inspect
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from astrid.core.contracts.errors import AstridError
 
@@ -53,6 +53,8 @@ class MachineJob:
     files: frozenset[str] = field(default=FILE_INPUTS)
     #: Optional ``PhaseTiming`` collector; the machine stamps its phases into it.
     timing: Any = None
+    #: Consent records travel separately from workflow declarations and inputs.
+    code_approvals: Sequence[Mapping[str, Any]] = ()
 
 
 def resolve_machine(kind: str, registry: Any | None = None) -> Any:
