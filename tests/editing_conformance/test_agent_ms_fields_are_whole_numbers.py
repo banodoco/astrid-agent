@@ -26,7 +26,6 @@ from astrid.sdk.timeline._split_commands import capture_clip_split
 from astrid.sdk.timeline._trim_commands import capture_clip_trim
 from astrid.sdk.timeline.capture import capture_move
 from astrid.sdk.timeline.commit import bundle_from_document, document_from_bundle
-from astrid.sdk.timeline.emitter import emit_document_commands
 from astrid.sdk.timeline.native_occurrence_duplicate import capture_occurrence_duplicate
 from astrid.sdk.timeline.native_occurrence_fork import capture_occurrence_fork
 from astrid.sdk.timeline.native_occurrence_media_commands import capture_occurrence_add_media
@@ -80,8 +79,55 @@ CASES = [
     "clip.set",
     "shot.set",
     "shot.pool",
-    "doc.patch",
 ]
+
+# These recipes author literal seconds, not the millisecond codec. Assert
+# their actual output geometry rather than counting retained fixture fields.
+# The media/shot fixture has a zero occurrence origin and clip-a at 1 s
+# with a 2 s hold. 0.125 s at 30000/1001 selects frame 4.
+SECONDS_WITNESSES = {
+    "placement.create": (
+        (OWNER + "/clip:ms-image", "at", Fraction(4, 1) / RATE),
+        (OWNER + "/clip:ms-image", "hold", Fraction(5, 4)),
+    ),
+    "clip.trim": (
+        ("parent/clip:clip-a", "at", Fraction(1)),
+        ("parent/clip:clip-a", "from", Fraction(1, 8)),
+        ("parent/clip:clip-a", "to", Fraction(9, 4)),
+        ("parent/clip:clip-a", "hold", Fraction(17, 8)),
+    ),
+    "clip.split": (
+        ("parent/clip:clip-a", "at", Fraction(1)),
+        ("parent/clip:clip-a", "hold", Fraction(1001, 1000)),
+        ("parent/clip:right", "at", Fraction(2001, 1000)),
+        ("parent/clip:right", "hold", Fraction(999, 1000)),
+    ),
+    "occurrence.add-media": (
+        (OWNER + "/clip:ms-image", "at", Fraction(1, 8)),
+        (OWNER + "/clip:ms-image", "hold", Fraction(5, 4)),
+    ),
+    "clip.add-media": (
+        ("parent/clip:ms-image", "at", Fraction(1, 8)),
+        ("parent/clip:ms-image", "hold", Fraction(5, 4)),
+    ),
+    "clip.duplicate-media": (
+        ("parent/clip:source-video", "at", Fraction(1, 8)),
+        ("parent/clip:source-video", "hold", Fraction(5, 4)),
+        ("parent/clip:duplicate-video", "at", Fraction(11, 8)),
+        ("parent/clip:duplicate-video", "hold", Fraction(5, 4)),
+    ),
+    "clip.add": (
+        ("parent/clip:ms-title", "at", Fraction(17, 4)),
+        ("parent/clip:ms-title", "hold", Fraction(5, 4)),
+    ),
+    "clip.set": (
+        ("parent/clip:clip-a", "at", Fraction(1)),
+        ("parent/clip:clip-a", "hold", Fraction(5, 4)),
+    ),
+}
+# shot.set and shot.pool do not write geometry. They remain execution/App
+# smoke cases only, not independently checked time writes.
+NON_TIMING_CASES = {"shot.set", "shot.pool"}
 
 
 @pytest.fixture(autouse=True)
@@ -292,16 +338,6 @@ def _case(name):
         call = capture_clip_trim(before, "parent/clip:clip-a", in_s=0.125, out_s=2.25)
     elif name == "clip.split":
         call = capture_clip_split(before, "parent/clip:clip-a", on=2.001, right_id="right")
-    elif name == "doc.patch":
-        # Generic patch transports authored geometry, not seconds. Supply an
-        # independently encoded frame position and require it to survive.
-        candidate = copy.deepcopy(before)
-        expected = frame_ms(4.25, RATE)
-        State(candidate).occurrence(OWNER)["placement"]["start_ms"] = expected
-        calls = emit_document_commands(before, candidate)
-        return before, commands.execute(before, calls), RATE, [
-            (OWNER, ("placement", "start_ms"), expected),
-        ]
     else:
         raise AssertionError("unclassified case: " + name)
     return before, _plan(before, call, verified), RATE, []
@@ -336,6 +372,18 @@ def test_agent_ms_fields_are_whole_numbers(case):
         if type(actual) is not int or actual != expected:
             errors.append(
                 f"{case}: {ref}.{'.'.join(path)}: {actual!r}, expected int {expected}"
+            )
+    seconds_witnesses = SECONDS_WITNESSES.get(case, ())
+    assert witnesses or seconds_witnesses or case in NON_TIMING_CASES, (
+        f"{case}: no independent time-value witness"
+    )
+    for ref, field, expected in seconds_witnesses:
+        actual = State(plan.bundle).entity(ref)[field]
+        if type(actual) not in (int, float) or actual != pytest.approx(
+            float(expected), rel=0, abs=1e-9,
+        ):
+            errors.append(
+                f"{case}: {ref}.{field}: {actual!r}, expected {expected} seconds"
             )
     assert not errors, "\n".join(errors)
 
