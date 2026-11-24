@@ -10751,7 +10751,8 @@ class GenericPackHost:
                 raise HostCancelled(f"capability {record.id!r} cancelled")
             returncode = process.returncode
             process_id = process.pid
-            if render_scope and (type(returncode) is not int or process.wait(timeout=0) != returncode):
+            if render_scope and (type(returncode) is not int
+                                 or (hasattr(process, "wait") and process.wait(timeout=0) != returncode)):
                 raise HostError("render command lacks its original process exit result")
             if returncode != 0:
                 detail = self._scrub_secret_text((stderr or stdout).strip(), secrets)
