@@ -279,7 +279,7 @@ def observe_download_storage(models_root: Path, *, deadline: float,
     volume_status = "not_declared" if volume is None else "declared_unverified"
     # A dry-run notice is not a full model-volume accounting pass.
     end = min(deadline, time.monotonic() + 2)
-    if not models_root.is_absolute() or time.monotonic() >= end:
+    if not hasattr(os, "statvfs") or not models_root.is_absolute() or time.monotonic() >= end:
         return DownloadStorageObservation(None, True, volume_status)
     try:
         free, uncertain = available_model_bytes(models_root, deadline=end, check=check)
@@ -290,7 +290,8 @@ def observe_download_storage(models_root: Path, *, deadline: float,
         if measured is not None and measured.covers(models_root):
             volume_status = "declared_measured"
             free = measured.free_bytes if free is None else min(free, measured.free_bytes)
-    return DownloadStorageObservation(free, uncertain or free is None, volume_status)
+    return DownloadStorageObservation(free, uncertain or free is None or volume_status == "declared_unverified",
+                                      volume_status)
 
 
 def model_download_notice(packs: Mapping[str, int | None],
