@@ -345,7 +345,12 @@ or assume that their presence makes a pack safe to run.
 
 ### LE-4 — Lookup availability
 
-<!-- LE-4: fill this subsection in the same change as the card. -->
+VibeComfy's missing-node resolver returns evidence, not install permission. Its
+`source_tier_status` distinguishes `matched`, `no_match`, `degraded` (some
+evidence survives an incomplete lookup), and `unavailable`. Do not describe an
+unavailable source as searched with no match. A registry schema permission
+failure can leave a repository candidate with a warning and no usable schema.
+Candidates are not runnable; lookup does not install code.
 
 ### LE-5 — Candidates and manual lookup
 
@@ -353,7 +358,14 @@ or assume that their presence makes a pack safe to run.
 
 ### LE-6 — Check the target after setup
 
-<!-- LE-6: fill this subsection in the same change as the card. -->
+On Astrid-managed local or RunPod alignment, doctor checks the same target
+node-pack lock supplied to restore, not the shipped catalog. Drift and pin
+checks use that lock; an explicitly missing or unreadable lock is a failure,
+not an empty catalog. Doctor still checks the owned target schema. A removed
+input can produce `workflow_validation_failed` with the node ID, class and
+input name verified against the workflow. Use those labels to correct the
+workflow or review a compatible pin; never bypass diagnosis. An attached
+target is not granted managed installation permission by this check.
 
 ### LE-8 — Model downloads and available space
 
@@ -409,7 +421,11 @@ or assume that their presence makes a pack safe to run.
 
 ### WS-5 — Manager lookup
 
-<!-- WS-5: fill this subsection in the same change as the card. -->
+The ComfyUI-Manager extension map gives repository-keyed class evidence;
+the custom-node list supplies additional metadata. A concrete class can resolve
+to a repository even when registry lookup is unavailable. Treat the repository
+as a candidate to review and pin, not evidence that the pack is installed,
+approved, or runnable.
 
 ### WS-6a — Workflow setup guidance
 

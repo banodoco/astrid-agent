@@ -482,3 +482,13 @@ def test_machine_job_hashing_uses_projection_or_default(tmp_path, monkeypatch, g
         assert model.reads
         assert report == {'trust_unchanged': False, 'hashed': 1, 'skipped': 0}
     assert store_reads == []
+
+
+def test_doctor_and_restore_use_the_same_managed_lock():
+    from vibecomfy import cli
+
+    parser = cli.build_parser()
+    commands = mod.VibeComfyCommands("wf.json", "/target/managed-custom-nodes.lock")
+    assert parser.parse_args(commands.argv("doctor")).lockfile == "/target/managed-custom-nodes.lock"
+    assert parser.parse_args(commands.argv("nodes_restore")).lockfile == "/target/managed-custom-nodes.lock"
+    assert parser.parse_args(mod.VibeComfyCommands("wf.json").argv("doctor")).lockfile is None

@@ -627,9 +627,10 @@ def test_real_vibecomfy_doctor_stdout_failure_and_success_are_distinguished(tmp_
     secret = 'PRIVATE_NATIVE_WORKFLOW_PATH_SENTINEL'
     with pytest.raises(IntegrityError, match='step=doctor, reason=workflow_load_failed') as error:
         prep._native('import sys;from vibecomfy.cli import main;sys.exit(main(sys.argv[1:]))',
-                     'doctor', str(tmp_path / secret / 'absent.py'), '--non-interactive', '--yes', step='doctor')
+                     'doctor', str(tmp_path / secret / 'absent.py'), '--non-interactive', '--yes', '--json', step='doctor')
     assert observed[-1].returncode == 1 and observed[-1].stderr == ''
-    assert 'Layer: Python scratchpad import/build' in observed[-1].stdout
+    report = json.loads(observed[-1].stdout)
+    assert report['status'] == 'error' and report['layer'] == 'Python scratchpad import/build'
     assert secret not in str(error.value) + caplog.text
 
     with new_workflow(ReadyMetadata.build(template_id='native-doctor', capability='image')) as workflow:
@@ -638,8 +639,9 @@ def test_real_vibecomfy_doctor_stdout_failure_and_success_are_distinguished(tmp_
         workflow.finalize({}, outputs=[OutputSpec(node=saved)])
     emitted = emit_bundle_with_candidate(workflow, tmp_path / 'workflow.py', Provenance.USER_CONFIRMED, None)
     prep._native('import sys;from vibecomfy.cli import main;sys.exit(main(sys.argv[1:]))',
-                 'doctor', str(emitted.python_path), '--non-interactive', '--yes', step='doctor')
+                 'doctor', str(emitted.python_path), '--non-interactive', '--yes', '--json', step='doctor')
     assert observed[-1].returncode == 0
+    assert json.loads(observed[-1].stdout)["status"] in {"ok", "warning"}
 
 
 def test_managed_node_lock_declares_real_recipe_patches(tmp_path):
