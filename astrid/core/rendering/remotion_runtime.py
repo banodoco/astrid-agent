@@ -694,7 +694,9 @@ def _registry_observation() -> dict[str, Any]:
     _refuse_git_config_indirection(config_files)
     managed_git_roots, managed_config_files = _managed_registry_configuration()
     clear_default_registry_cache()
-    state = generator.compute_generated_registry_state()  # include_local=True
+    registry = generator._element_registry()
+    state = generator.compute_generated_registry_state(registry=registry)  # include_local=True
+    render_pack_roots = generator.render_pack_roots(registry=registry, include_aliases=True)
     inventory = active_source_inventory(verify=True)
     packs = discover_pack_metadata(project_root=generator.TOOLS_DIR)
     roots = [str(Path(astrid.__file__).resolve().parent / 'packs')]
@@ -722,7 +724,8 @@ def _registry_observation() -> dict[str, Any]:
         {'runtime_dependency_origins': installed_runtime_origins(_registry_origin.selected_root(__file__))}
         if _installed_registry_profile(os.environ) else {}
     )
-    return {'state': state, 'roots': roots, 'optional_files': optional_files,
+    return {'state': state, 'render_pack_roots': render_pack_roots,
+            'roots': roots, 'optional_files': optional_files,
             'module_files': files, 'package_roots': package_roots,
             'search_paths': [str(Path(value or '.').absolute()) for value in sys.path],
             'search_path_spellings': sys.path, 'probe_cwd': os.getcwd(),
@@ -776,7 +779,8 @@ def _registry_inputs(observation: Mapping[str, Any], *, digest_memo: dict | None
             if path.suffix != '.pyc' and max(path.stat().st_mtime_ns, path.stat().st_ctime_ns) > changed_after_ns:
                 raise RemotionValidationError('registry corpus changed during owned discovery')
     bindings = [_file_binding(unique[key], digest_memo=digest_memo) for key in sorted(unique)]
-    return {'inventory': inventory, 'files_sha256': hashlib.sha256(_canonical(bindings)).hexdigest(),
+    return {'inventory': inventory, 'render_pack_roots': observation.get('render_pack_roots', []),
+            'files_sha256': hashlib.sha256(_canonical(bindings)).hexdigest(),
             'file_count': len(bindings)}
 
 
@@ -938,6 +942,7 @@ def _settle_registries(project: Path, contexts: Mapping[str, Any], python: str, 
         return selected
     probes: dict[bytes, Any] = {}
     expected = expected_state
+    expected_roots = None
     generator_env = None
     generator_origin = None
     digest_memo: dict = {}  # One launch only; never persisted or shared.
@@ -963,6 +968,11 @@ def _settle_registries(project: Path, contexts: Mapping[str, Any], python: str, 
                 probes[key] = {'observation': observation, 'inputs': bound,
                                'original_waits': {'discovery': discovery_wait}}
             state = probes[key]['observation']['state']
+            roots = probes[key]['observation'].get('render_pack_roots', [])
+            if expected_roots is None:
+                expected_roots = roots
+            elif roots != expected_roots:
+                raise RemotionValidationError('renderer contexts select different registry pack roots')
             if expected is None:
                 expected = state
             if state != expected:

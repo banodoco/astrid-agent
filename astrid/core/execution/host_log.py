@@ -34,15 +34,22 @@ _WINDOWS_SHARING_ERRORS = {5, 32, 33}
 
 def log_lease_diagnostic(*, task_id: str, attempt_id: str | None,
                          category: str, last_acknowledged_heartbeat: str | None,
-                         elapsed_seconds: float, verdict: str | None = None,
-                         runtime_code: str | None = None) -> None:
+                         elapsed_seconds: float | None, verdict: str | None = None,
+                         runtime_code: str | None = None, reason: str | None = None,
+                         wait_seconds: float | None = None) -> None:
     """Write one structured lifecycle observation to the host's redirected stderr."""
-    print("generic host: lease " + json.dumps({
+    event = {
         "task_id": task_id, "attempt_id": attempt_id, "category": category,
         "last_acknowledged_heartbeat": last_acknowledged_heartbeat,
-        "elapsed_seconds": round(max(0.0, elapsed_seconds), 3), "verdict": verdict,
-        "runtime_code": runtime_code,
-    }, sort_keys=True), file=sys.stderr, flush=True)
+        "verdict": verdict, "runtime_code": runtime_code,
+    }
+    if elapsed_seconds is not None:
+        event["elapsed_seconds"] = round(max(0.0, elapsed_seconds), 3)
+    if reason is not None:
+        event["reason"] = reason
+    if wait_seconds is not None:
+        event["wait_seconds"] = round(max(0.0, wait_seconds), 3)
+    print("generic host: lease " + json.dumps(event, sort_keys=True), file=sys.stderr, flush=True)
 
 
 def _replace(source: Path, destination: Path) -> None:

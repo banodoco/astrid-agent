@@ -76,7 +76,13 @@ class CaptureSceneLabels:
         ids = [clip["id"] for clip in clips]
         if len(set(ids)) != len(ids) or set(ids) != set(self._addresses):
             raise SceneQueryUnavailable("exact projected clip address mapping required")
-        answers = host_frames_at(props, self._basis, frames)
+        from astrid.packs.rendering.rendering.renderers.remotion.root_preparation import scene_selectors
+
+        render_roots, registry_root = scene_selectors()
+        selectors = {} if render_roots is None and registry_root is None else {
+            "_render_roots": render_roots, "_registry_root": registry_root,
+        }
+        answers = host_frames_at(props, self._basis, frames, **selectors)
         if ([answer.get("frame") for answer in answers] != list(frames)
                 or any(answer.get("width") != self._basis["width"]
                        or answer.get("height") != self._basis["height"] for answer in answers)
@@ -316,6 +322,86 @@ def _snapshot_config(snapshot: Mapping[str, Any]) -> Mapping[str, Any]:
     return config if isinstance(config, Mapping) else snapshot
 
 
+def _render_registry_cache_inputs(config: Mapping[str, Any] | None) -> tuple[list[dict[str, Any]], str]:
+    """Bind the generated imports and the shared sources they can resolve.
+
+    Project elements are re-staged from their verified snapshots. Their scope
+    is revision-specific, while the temporary staging directory is not part of
+    their identity. Other roots retain their selected absolute paths so that a
+    change of registry winner cannot reuse an old frame.
+    """
+    from astrid.core.rendering.project_elements import selections, stage_project_elements
+    from astrid.packs.rendering.rendering.renderers.remotion import run
+
+    generator = run.gen_effect_registry
+    project = Path(os.environ.get("ASTRID_REMOTION_PROJECT_DIR") or
+                   (generator.TOOLS_DIR / "remotion" if generator is not None else _checkout_root() / "remotion"))
+    composition_manifest = project / "node_modules/@banodoco/timeline-composition/package.json"
+    if generator is None or not composition_manifest.is_file():
+        # Without the selected registry we cannot prove the complete import
+        # graph. Refuse cache reuse and still hash the selected project's
+        # in-tree rendering sources rather than the executing Python package.
+        roots: list[dict[str, Any]] = [{"unavailable": "generator" if generator is None else "composition",
+                                       "nonce": uuid.uuid4().hex, "project": str(project.resolve())}]
+        rendering_roots = [project.resolve().parent / "astrid/packs/rendering"]
+    else:
+        registry = generator._element_registry()
+
+        def collect(registry: Any, staged: list[dict[str, str]]) -> tuple[list[dict[str, Any]], list[Path]]:
+            mapping = generator.render_pack_roots(registry=registry, include_aliases=True)
+            project_roots = [(Path(row["root"]).resolve(), row["scope"]) for row in staged]
+
+            def stable(value: Any) -> Any:
+                if isinstance(value, dict):
+                    return {key: stable(item) for key, item in value.items()}
+                if isinstance(value, list):
+                    return [stable(item) for item in value]
+                if isinstance(value, str) and Path(value).is_absolute():
+                    path = Path(value)
+                    for root, scope in project_roots:
+                        if path.is_relative_to(root):
+                            relative = path.relative_to(root).as_posix()
+                            return f"project:{scope}/{relative}"
+                return value
+
+            selected_rendering = [Path(row["root"]) for row in mapping
+                                  if row.get("scope") == "pack-rendering-elements"]
+            # Alias conflicts are refused by the producer, so canonical order
+            # avoids letting temporary directory names reorder equal mappings.
+            normalized = [stable(row) for row in mapping]
+            normalized.sort(key=lambda row: json.dumps(row, sort_keys=True, separators=(",", ":")))
+            return normalized, selected_rendering
+
+        if selections(config or {}):
+            with tempfile.TemporaryDirectory(prefix="astrid-cache-registry-") as temporary:
+                selected, staged = stage_project_elements(config or {}, Path(temporary), registry=registry)
+                roots, rendering_roots = collect(selected, staged)
+        else:
+            roots, rendering_roots = collect(registry, [])
+
+    # Read bytes on every identity calculation. File timestamps alone do not
+    # establish that the shared executable closure is unchanged.
+    digest = hashlib.sha256()
+    for index, root in enumerate(rendering_roots):
+        for name in ("shared", "ui/threejs-live-editor"):
+            source = root / name
+            digest.update(f"{index}/{name}\0".encode())
+            if not source.is_dir():
+                digest.update(b"missing\0")
+                continue
+            for path in sorted(p for p in source.rglob("*") if p.is_file()):
+                if not path.resolve().is_relative_to(source.resolve()):
+                    raise ValueError(f"shared renderer source escapes its selected root: {path}")
+                if (path.name == ".env" or path.name.endswith(".env")
+                        or "credential" in path.name.lower() or ".codex" in path.parts):
+                    raise ValueError(f"shared renderer source contains a private file: {path}")
+                digest.update(path.relative_to(source).as_posix().encode())
+                digest.update(b"\0")
+                digest.update(path.read_bytes())
+                digest.update(b"\0")
+    return roots, digest.hexdigest()
+
+
 def _checkout_root() -> Path:
     return checkout_root()
 
@@ -348,6 +434,9 @@ def renderer_environment_identity(config: Mapping[str, Any] | None = None) -> st
         "r13-timeline-elements",
         project.parent / "astrid/core/timeline/schema/r13-legacy-elements.json",
     ))
+    from astrid.core.timeline import legacy_elements
+    paths.append(("selected-r13-timeline-elements",
+                  Path(legacy_elements.__file__).resolve().parent / "schema" / "r13-legacy-elements.json"))
     paths.append(("package-lock", project / "package-lock.json"))
     paths.append((
         "generated-effects",
@@ -362,6 +451,7 @@ def renderer_environment_identity(config: Mapping[str, Any] | None = None) -> st
         "timeline-composition-package-source",
         project / "node_modules/@banodoco/timeline-composition/package.json",
     ))
+    registry_aliases, rendering_shared = _render_registry_cache_inputs(config)
     parts = {
         "renderer": RENDERER_IDENTITY,
         "project_dir": project_dir,
@@ -369,6 +459,8 @@ def renderer_environment_identity(config: Mapping[str, Any] | None = None) -> st
         "theme": os.environ.get("ASTRID_ACTIVE_THEME"),
         "font_bundle": os.environ.get("ASTRID_FONT_BUNDLE_ID"),
         "pack_roots": _pack_root_digests(checkout, config),
+        "registry_aliases": registry_aliases,
+        "rendering_shared": rendering_shared,
         "sources": _digest_paths(paths),
     }
     return json.dumps(parts, sort_keys=True, separators=(",", ":"))
@@ -900,13 +992,24 @@ class RemotionFrameProvider:
         if not isinstance(actual, dict) or not isinstance(props.get("assets"), Mapping):
             raise SceneQueryUnavailable("capture timeline or assets missing")
         expected_timeline = copy.deepcopy(self._timeline)
+        from astrid.core.rendering.project_elements import CARRIER, selections
+        from astrid.packs.rendering.rendering.renderers.remotion.root_preparation import scene_element_registry
+        from astrid.packs.rendering.rendering.renderers.remotion.run import _bind_pinned_element_slots
+
+        element_registry = scene_element_registry()
+        if selections(expected_timeline):
+            if element_registry is None:
+                raise SceneQueryUnavailable("capture selected project registry is unavailable")
+            expected_timeline["app"].pop(CARRIER)
         # Staging adds only this reserved parameter. Check its bytes against the
         # declared pack assets before comparing the entire serialized timeline.
         for clip, expected_clip in zip(actual.get("clips", []), expected_timeline["clips"]):
             params = clip.get("params", {})
-            self._validate_staged_assets(clip, props["assets"])
+            element = self._validate_staged_assets(clip, props["assets"], element_registry=element_registry)
             if "__astridAssets" in params:
                 expected_clip.setdefault("params", {})["__astridAssets"] = params["__astridAssets"]
+            if element is not None and element.kind != "effects" and element.metadata.get("render_revision"):
+                _bind_pinned_element_slots(expected_clip, element, params.get("__astridAssets", {}))
         if actual != expected_timeline:
             raise SceneQueryUnavailable("capture serialized timeline mismatch")
         registry = copy.deepcopy(props.get("assets"))
@@ -944,7 +1047,8 @@ class RemotionFrameProvider:
         self._pending_scene = capture
         capture.observe(props, frames)
 
-    def _validate_staged_assets(self, clip: Mapping[str, Any], registry: Mapping[str, Any]) -> None:
+    def _validate_staged_assets(self, clip: Mapping[str, Any], registry: Mapping[str, Any], *,
+                                element_registry: Any | None = None) -> Any | None:
         from astrid.core.rendering.scene_answers import SceneQueryUnavailable
         from astrid.packs.rendering.rendering.renderers.remotion.run import (
             CHECKOUT_ROOT,
@@ -955,16 +1059,24 @@ class RemotionFrameProvider:
             load_default_registry,
         )
 
-        catalog = load_default_registry(project_root=CHECKOUT_ROOT)
+        catalog = element_registry if element_registry is not None else load_default_registry(project_root=CHECKOUT_ROOT)
         effects, aliases = _effect_registry_for_assets(self.theme_path, registry=catalog)
         ref = clip.get("elementRef")
-        effect_id = ref.get("id") if isinstance(ref, Mapping) and ref.get("kind") == "effect" else _effect_id_for_clip(clip, effects, aliases)
+        pinned_kind = ref.get("kind") if isinstance(ref, Mapping) else None
+        effect_id = ref.get("id") if pinned_kind in {"effect", "animation", "transition"} else _effect_id_for_clip(clip, effects, aliases)
         staged = clip.get("params", {}).get("__astridAssets", {})
         if effect_id is None:
             if staged:
                 raise SceneQueryUnavailable("capture staged assets on a non-effect clip")
-            return
-        element = catalog.get("effects", effect_id, pack_id=ref.get("packId")) if isinstance(ref, Mapping) and "packId" in ref else catalog.get("effects", effect_id)
+            return None
+        if pinned_kind in {"animation", "transition"}:
+            element = catalog.get(pinned_kind, effect_id, pack_id=ref.get("packId"), revision=ref.get("revision"))
+            if not element.metadata.get("render_revision"):
+                if staged:
+                    raise SceneQueryUnavailable("capture staged assets on an unselected element")
+                return None
+        else:
+            element = catalog.get("effects", effect_id, pack_id=ref.get("packId"), revision=ref.get("revision")) if isinstance(ref, Mapping) and "packId" in ref else catalog.get("effects", effect_id)
         cards = _resolve_end_spanning_card_assets(clip, registry) if (_source_pack_id(element), element.id) == ("local", "end-spanning-layer") else {}
         if not isinstance(staged, Mapping) or set(staged) != {asset.name for asset in element.assets} | set(cards):
             raise SceneQueryUnavailable("capture staged element assets mismatch")
@@ -977,6 +1089,7 @@ class RemotionFrameProvider:
                 raise SceneQueryUnavailable("capture staged element bytes mismatch")
         if any(staged[key] != value for key, value in cards.items()):
             raise SceneQueryUnavailable("capture staged card assets mismatch")
+        return element
 
     def scene_for_frame(self, frame: int) -> CaptureSceneLabels | None:
         return self.scene_capture if frame in self.fresh_scene_frames else self._cached_scenes.get(frame)
