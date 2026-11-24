@@ -1259,11 +1259,13 @@ def _execute_remotion_locked(
         stage_summary["editor_revision_status"] = (
             "supplied" if editor_pack_revisions is not None else "editor revision not supplied"
         )
-        for row in stage_summary["pack_revisions"]:
-            if row["comparison"] == "mismatch":
-                print(f"Pack {row['pack_id']} revision mismatch: editor {row['editor_revision']}; "
-                      f"declared render upstream {row['derived_from']} (resolved {row['resolved_revision']})",
-                      file=sys.stderr, flush=True)
+        revision_notices = [
+            f"Pack {row['pack_id']} revision mismatch: editor {row['editor_revision']}; "
+            f"declared render upstream {row['derived_from']} (resolved {row['resolved_revision']})"
+            for row in stage_summary["pack_revisions"] if row["comparison"] == "mismatch"
+        ]
+        for notice in revision_notices:
+            print(notice, file=sys.stderr, flush=True)
         frame_mode = frame_numbers is not None
         remotion_env_additions: dict[str, str] = {
             # Keep Remotion's pre-encode files on the admitted attempt
@@ -1412,7 +1414,9 @@ def _execute_remotion_locked(
             progress_path = os.environ.get("ASTRID_PROGRESS_PATH") if os.environ.get("ASTRID_INTERNAL_INVOCATION") == "1" else None
             if progress_path:
                 log_path = remotion_temp_root / "frame-progress.log"
-                with log_path.open("w") as stdout_log, RemotionProgressRelay(log_path, progress_path=progress_path):
+                with log_path.open("w") as stdout_log, RemotionProgressRelay(
+                    log_path, progress_path=progress_path, notices=revision_notices
+                ):
                     completed = subprocess.run(
                         remotion_args, cwd=str(project_dir),
                         env=build_child_subprocess_env(explicit_env=remotion_env_additions),

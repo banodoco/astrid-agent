@@ -46,6 +46,9 @@ def test_mismatch_is_reported_before_renderer_launch(tmp_path, monkeypatch, caps
            "comparison": "mismatch"}
     stage = {}
     output = tmp_path / "stage.mov"
+    progress_path = tmp_path / ".astrid-progress.json"
+    monkeypatch.setenv("ASTRID_INTERNAL_INVOCATION", "1")
+    monkeypatch.setenv("ASTRID_PROGRESS_PATH", str(progress_path))
 
     @contextmanager
     def prepared(*args, **kwargs):
@@ -58,6 +61,12 @@ def test_mismatch_is_reported_before_renderer_launch(tmp_path, monkeypatch, caps
         warning = capsys.readouterr().err
         assert row["editor_revision"] in warning
         assert row["derived_from"] in warning
+        checkpoint = json.loads(progress_path.read_text())
+        assert row["editor_revision"] in checkpoint["phase"]
+        assert row["derived_from"] in checkpoint["phase"]
+        assert checkpoint["percent"] == 10
+        kwargs["stdout"].write("Rendered 1/2\n")
+        kwargs["stdout"].flush()
         output.write_bytes(b"video")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
@@ -70,6 +79,11 @@ def test_mismatch_is_reported_before_renderer_launch(tmp_path, monkeypatch, caps
         composition_id="TimelineComposition", theme_path=None, min_free_gb=None,
         editor_pack_revisions={"astrid_motion": "a" * 40})
     assert details.stage_summary["pack_revisions"] == [row]
+    checkpoint = json.loads(progress_path.read_text())
+    assert row["editor_revision"] in checkpoint["phase"]
+    assert row["derived_from"] in checkpoint["phase"]
+    assert checkpoint["current"] == 1
+    assert checkpoint["total"] == 2
 
 
 def test_self_declared_upstream_is_unknown_without_independent_pin(tmp_path, monkeypatch):
