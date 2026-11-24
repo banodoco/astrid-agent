@@ -10719,14 +10719,20 @@ class GenericPackHost:
                         # The finally block signals the still-live group.
                         raise HostCancelled(f"capability {record.id!r} cancelled")
                 time.sleep(0.05)
-            if not render_scope:
+            if render_scope:
+                uncertainty = getattr(process, "_astrid_tree_uncertain", None)
+                if uncertainty is not None:
+                    raise CleanupUncertainError(uncertainty)
+            else:
                 cleanup_once()
-            output_capture.finish()
-            output_finished = True
-            output_capture.persist()
+                output_capture.finish()
+                output_finished = True
+                output_capture.persist()
+                if output_capture.error:
+                    raise HostError(f"capability {record.id!r} output capture failed: {output_capture.error}")
+            # A render descendant may still hold these pipes. Tails are enough
+            # for an exit diagnostic; drain only after verified-output cleanup.
             stdout, stderr = output_capture.tails()
-            if output_capture.error:
-                raise HostError(f"capability {record.id!r} output capture failed: {output_capture.error}")
             if cancelled is not None and cancelled():
                 raise HostCancelled(f"capability {record.id!r} cancelled")
             returncode = process.returncode
@@ -10769,6 +10775,7 @@ class GenericPackHost:
             except HarvestError as exc:
                 raise HostError(f"capability {record.id!r}: {exc}") from exc
             cleanup_error = None
+            cleanup_warnings = []
             if render_scope:
                 try:
                     cleanup_once()
@@ -10777,6 +10784,15 @@ class GenericPackHost:
                     # bytes were copied and verified before cleanup began.
                     # Keep the process, marker and attempt as obligations.
                     cleanup_error = exc
+                    cleanup_warnings.append("Render outputs verified; cleanup custody remains uncertain.")
+                output_capture.finish()
+                output_finished = True
+                output_capture.persist()
+                if output_capture.error:
+                    capture_error = f"capability {record.id!r} output capture failed: {output_capture.error}"
+                    if cleanup_error is None:
+                        raise HostError(capture_error)
+                    cleanup_warnings.append(capture_error)
             return SimpleNamespace(
                 outputs=outputs,
                 output_root=output_root,
@@ -10787,7 +10803,7 @@ class GenericPackHost:
                     "capability_digest": record.capability_digest,
                     "process_id": process_id,
                     **({"cleanup_uncertain": True, "cleanup_error": str(cleanup_error),
-                        "warnings": ["Render outputs verified; cleanup custody remains uncertain."]}
+                        "warnings": cleanup_warnings}
                        if cleanup_error is not None else {}),
                     **({"child_import_receipt": import_receipt.finish()}
                        if import_receipt is not None else {}),
@@ -13768,6 +13784,7 @@ class GenericPackHost:
             # Keep the lease pump alive through harvesting, upload, and
             # settlement; only stop it once the claimed attempt is terminal.
             cleanup_errors: list[str] = []
+            tolerated_command_scope_error = None
             if not _terminal.get("forced"):
                 _terminal.update(
                     status="succeeded" if settled else "timeout" if deadline_exceeded or deadline_failed
@@ -13803,11 +13820,14 @@ class GenericPackHost:
                 # The task-scope supervisor has evidence of a child writer
                 # that outlived its leader. Keep the attempt even when the
                 # caller did not request debug retention.
-                cleanup_errors.append(
+                scope_error = (
                     "unresolved command task scope; attempt retained"
                     if command_cleanup_error is not None
                     else "Runtime terminal evidence publication pending; attempt retained"
                 )
+                cleanup_errors.append(scope_error)
+                if verified_render_cleanup and settled and command_cleanup_error is not None:
+                    tolerated_command_scope_error = scope_error
             cleanup_receipt: dict[str, Any] = {
                 "path": str(root),
                 "intended_disposition": (
@@ -13850,7 +13870,14 @@ class GenericPackHost:
                     and managed_settled
                     and settled
                 )
-                if not retain_persistent_session:
+                if verified_render_cleanup and settled:
+                    # This exact command's custody is unresolved: retain its
+                    # slot deliberately, without claiming a verified release.
+                    try:
+                        self.managed_tool_session.fence(reason="command_cleanup_uncertain")
+                    except Exception as exc:
+                        cleanup_errors.append(f"managed fence: {exc}")
+                elif not retain_persistent_session:
                     try:
                         self.managed_tool_session.release(
                             reason=(
@@ -13960,14 +13987,14 @@ class GenericPackHost:
                 self._latch_cleanup_uncertainty("; ".join(cleanup_errors))
             self._last_cleanup_receipt = cleanup_receipt
             self._publish_evidence_status()
-            if cleanup_errors and not (verified_render_cleanup and settled) and not ((_terminal.get("evidence_pending") or _terminal.get("retain_spool"))
-                                       and sys.exc_info()[1] is not None):
+            fatal_cleanup_errors = [error for error in cleanup_errors if error != tolerated_command_scope_error]
+            if fatal_cleanup_errors and not ((_terminal.get("evidence_pending") or _terminal.get("retain_spool"))
+                                             and sys.exc_info()[1] is not None):
                 # Pending evidence retains the spool and latches cleanup above.
                 # Preserve the publication exception already being propagated.
-                raise HostError("owned cleanup incomplete: " + "; ".join(cleanup_errors))
-            # A verified render's successful publication survives cleanup
-            # uncertainty. Every error remains in the receipt/latch above;
-            # retained processes and a failed session release stay fenced.
+                raise HostError("owned cleanup incomplete: " + "; ".join(fatal_cleanup_errors))
+            # Only the verified render's command-scope uncertainty is tolerated.
+            # Other cleanup failures still raise; all remain in the receipt.
 
     def _publish_evidence_status(self) -> None:
         """Expose the live evidence charge and warm holds for ``astrid doctor``; never fails a task."""
