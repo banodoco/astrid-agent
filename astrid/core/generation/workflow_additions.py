@@ -88,9 +88,17 @@ def resolve_workflow_additions(
               or isinstance(cause, subprocess.CalledProcessError) and cause.returncode != 2):
             code = "source_unreachable"
             step = "Check that the HTTPS repository is reachable; "
-        else:
+        elif isinstance(cause, subprocess.CalledProcessError) and cause.returncode == 2:
+            code = "commit_unavailable"
+            step = "Correct the unavailable repository reference; "
+        elif _known_ref_refusal(exc):
             code = "commit_unavailable"
             step = "Correct the missing, ambiguous or invalid repository reference; "
+        else:
+            # The pinned resolver has plain ValueError at specific boundaries.
+            # Do not turn an unrelated programming/contract failure into a Git
+            # error, or suppress its original diagnostic.
+            raise
         argv, placeholders = repair_workflow_argv(retry_argv, correct_add_count=len(declarations))
         raise generation_error(
             exc, code=code, details={"field": "add"},
@@ -105,3 +113,29 @@ def resolve_workflow_additions(
             }],
             attempt_count=0,
         ) from exc
+
+
+def _known_ref_refusal(error: ValueError) -> bool:
+    """Recognize only explicit validation/ref-response refusals of the pinned resolver.
+
+    The resolver currently exposes these specific ValueErrors, plus typed Git
+    causes and CustomNodeRefConflict. Do not classify arbitrary ValueErrors.
+    """
+    message = str(error)
+    if message in {
+        "--add requires HTTPS URL[@REF]",
+        "--add requires an HTTPS repository URL without credentials, query or fragment",
+        "--add repository URL must name a repository",
+        "--add REF must be HEAD, a branch, a tag or a full commit SHA",
+        "--add REF must name a branch or tag",
+        "Invalid IPv6 URL",
+        "Port out of range 0-65535",
+    }:
+        return True
+    return any((
+        message.startswith("Port could not be cast to integer value as "),
+        message.startswith("invalid git ls-remote response for ") and " at " in message,
+        message.startswith("conflicting git ls-remote response for ") and " at " in message,
+        message.startswith("--add REF ") and message.endswith("; use an exact branch or tag")
+        and " is missing or ambiguous at " in message,
+    ))

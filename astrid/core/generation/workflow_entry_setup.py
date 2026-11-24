@@ -120,7 +120,7 @@ def prepare_entry_candidate(source, entry_id, *, replace, additions, placement_c
     retained = entry_added_node_refs(previous) if previous is not None else []
     selected = merge_entry_added_node_refs(retained, refs)
     try:
-        entry = import_as_entry(source, entry_id, directory=scratch, added_node_refs=selected)
+        entry = import_as_entry(source, entry_id, directory=scratch, replace=False, added_node_refs=selected)
         nodes = _source_nodes(entry)
     except CustomNodeRefConflict as exc:
         argv, placeholders = repair_workflow_argv(retry_argv, correct_add_count=len(additions))

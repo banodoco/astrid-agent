@@ -78,3 +78,18 @@ def test_literal_angle_brackets_and_empty_input_survive_as_explicit_placeholders
     then = fix["instruction"]["then_argv"]
     assert then[then.index("--prompt") + 1].startswith("<ORIGINAL_ARG_")
     assert then[then.index("--negative-prompt") + 1].startswith("<ORIGINAL_ARG_")
+
+
+def test_unknown_resolver_value_error_keeps_original_diagnostic(monkeypatch):
+    original = ValueError("unexpected resolver invariant")
+
+    def broken(declarations):
+        raise original
+
+    monkeypatch.setattr("vibecomfy.custom_node_refs.resolve_added_node_refs", broken)
+    with pytest.raises(ValueError, match="unexpected resolver invariant") as raised:
+        resolve_workflow_additions([URL + "@main"], retry_argv=[
+            "astrid", "generate", "workflow", "source.json", "--as-entry", "example",
+            "--add", URL + "@main",
+        ])
+    assert raised.value is original

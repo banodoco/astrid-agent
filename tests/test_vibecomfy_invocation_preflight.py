@@ -383,17 +383,18 @@ def test_saved_entry_preview_omits_only_declared_unsupplied_blank_run_fields(mon
                         lambda *_args, **_kwargs: loaded)
     with pytest.raises(preflight.InvocationPreflightError, match="PROMPT_EMPTY"):
         preflight.preflight_invocation(workflow, phase="dry-run")
-    with preflight.save_preview_input_scope({("2", "prompt"), ("7", "video")}):
-        result = preflight.preflight_invocation(workflow, phase="dry-run")
-        assert result["run_inputs"] == {}  # no fabricated values
-        with pytest.raises(preflight.InvocationPreflightError, match="PROMPT_EMPTY"):
-            preflight.preflight_invocation(workflow, phase="submission")
-        # A supplied value, even on a preview, must actually bind and pass.
-        with pytest.raises(preflight.InvocationPreflightError, match="PROMPT_EMPTY"):
-            preflight.preflight_invocation(workflow, run_inputs={"prompt": ""}, phase="dry-run")
+    omitted = frozenset({("2", "prompt"), ("7", "video")})
+    result = preflight.preflight_invocation(workflow, phase="dry-run", save_preview_omitted_fields=omitted)
+    assert result["run_inputs"] == {}  # no fabricated values
+    with pytest.raises(preflight.InvocationPreflightError, match="PROMPT_EMPTY"):
+        preflight.preflight_invocation(workflow, phase="submission", save_preview_omitted_fields=omitted)
+    # A supplied value, even on a preview, must actually bind and pass.
+    with pytest.raises(preflight.InvocationPreflightError, match="PROMPT_EMPTY"):
+        preflight.preflight_invocation(workflow, run_inputs={"prompt": ""}, phase="dry-run",
+                                       save_preview_omitted_fields=omitted)
     with pytest.raises(preflight.InvocationPreflightError, match="PROMPT_EMPTY"):
         preflight.preflight_invocation(workflow, phase="dry-run")
     # An unrelated omitted field must not waive a blank reachable prompt.
-    with preflight.save_preview_input_scope({("7", "video")}):
-        with pytest.raises(preflight.InvocationPreflightError, match="PROMPT_EMPTY"):
-            preflight.preflight_invocation(workflow, phase="dry-run")
+    with pytest.raises(preflight.InvocationPreflightError, match="PROMPT_EMPTY"):
+        preflight.preflight_invocation(workflow, phase="dry-run",
+                                       save_preview_omitted_fields=frozenset({("7", "video")}))

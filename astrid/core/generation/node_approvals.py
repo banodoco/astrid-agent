@@ -19,8 +19,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from contextlib import contextmanager
-from contextvars import ContextVar
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -44,21 +43,29 @@ from vibecomfy.node_approvals import (
 
 APPROVALS_FILENAME = "code-approvals.json"
 
-# Only the CLI entry transaction may bind already-authorized records to its
-# private candidate for a read-only SDK preflight. Nothing in a workflow or
-# entry manifest can populate this context, and it is cleared on exit.
-_PREVIEW_AUTHORITY: ContextVar[tuple | None] = ContextVar("entry_preview_authority", default=None)
+@dataclass(frozen=True, slots=True)
+class PreviewApprovalAuthority:
+    """Already-authorized hashes bound to one private read-only candidate.
+
+    Constructed by the CLI after authorization, never deserialized from a
+    workflow or supplied by ambient process state. These hashes are not
+    persistent approval records.
+    """
+    entry_id: str
+    bundle: str
+    placement_class: PlacementClass
+    approval_hashes: frozenset[str]
 
 
-@contextmanager
-def preview_entry_authority(entry, records, placement_class):
+def preview_entry_authority(entry, records, placement_class) -> PreviewApprovalAuthority:
     """Carry exact prior authorization, never manufacture a consent token."""
-    bound = (entry["id"], str(Path(entry["bundle"]).resolve()), placement_class, _records(records))
-    token = _PREVIEW_AUTHORITY.set(bound)
-    try:
-        yield
-    finally:
-        _PREVIEW_AUTHORITY.reset(token)
+    checked = _records(records)
+    if any(record["placement_class"] != placement_class for record in checked):
+        raise ValueError("preview approval placement differs from its candidate")
+    return PreviewApprovalAuthority(
+        entry["id"], str(Path(entry["bundle"]).resolve()), placement_class,
+        frozenset(record["approval_sha256"] for record in checked),
+    )
 
 
 def read_entry_approvals(entry_directory: str | Path) -> list[NodeApproval]:
@@ -151,20 +158,31 @@ def _consent_retry(argv, nodes):
 
 
 def authorize_nodes(nodes, *, placement_class, consent=(), entry=None, retry_argv,
-                    persist=False):
+                    persist=False, preview_authority: PreviewApprovalAuthority | None = None):
     """Obtain one informed yes per exact node; declarations alone approve nothing."""
-    from .preflight import GenerationReadinessError, readiness_envelope
+    from .preflight import GenerationReadinessError, generation_error, readiness_envelope
+
+    if preview_authority is not None:
+        if persist:
+            raise generation_error(ValueError("Preview approval authority cannot persist approvals"),
+                                   code="input_rejected", details={"field": "preview_authority"})
+        if (not isinstance(preview_authority, PreviewApprovalAuthority) or entry is None
+                or not entry.get("bundle") or
+                (entry.get("id"), str(Path(entry["bundle"]).resolve()), placement_class)
+                != (preview_authority.entry_id, preview_authority.bundle, preview_authority.placement_class)):
+            raise generation_error(ValueError("Preview approval authority differs from the selected candidate"),
+                                   code="input_rejected", details={"field": "preview_authority"})
 
     current = [approval_record(node, placement_class=placement_class) for node in nodes]
     # Validate the node set's URL and directory constraints without mutating it.
     require_approved_nodes(nodes, current, placement_class=placement_class)
     directory = entry_approval_directory(entry)
     saved = read_entry_approvals(directory) if directory is not None else []
-    preview = _PREVIEW_AUTHORITY.get()
-    if (not persist and preview is not None and entry is not None and entry.get("bundle")
-            and (entry.get("id"), str(Path(entry["bundle"]).resolve()), placement_class) == preview[:3]):
-        saved = [*saved, *preview[3]]
     known = {row["approval_sha256"] for row in [*saved, *reviewed_approvals(nodes, placement_class=placement_class)]}
+    if preview_authority is not None:
+        # Only the read-only admission decision sees these hashes. The
+        # persisted-record collection never includes preview authority.
+        known.update(preview_authority.approval_hashes)
     choices = [scope for scope in consent if consent_scope(scope) != "user_env"]
     expected_tokens = {consent_token(record) for record in current}
     supplied = {scope.removeprefix("code=") for scope in choices if scope.startswith("code=")}

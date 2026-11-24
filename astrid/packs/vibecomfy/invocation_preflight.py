@@ -15,29 +15,10 @@ import shutil
 import subprocess
 import tempfile
 from collections.abc import Mapping
-from contextlib import contextmanager
-from contextvars import ContextVar
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
 from typing import Any
-
-
-# Only an explicit save-entry preview may carry omitted run-input fields.
-# Normal dry runs, live admission and worker submission remain strict.
-_SAVE_PREVIEW_FIELDS: ContextVar[frozenset[tuple[str, str]]] = ContextVar(
-    "save_preview_omitted_fields", default=frozenset(),
-)
-
-
-@contextmanager
-def save_preview_input_scope(omitted):
-    """Defer blank checks only for named, unsupplied fields of a saved-entry preview."""
-    token = _SAVE_PREVIEW_FIELDS.set(frozenset(omitted))
-    try:
-        yield
-    finally:
-        _SAVE_PREVIEW_FIELDS.reset(token)
 
 
 class InvocationPreflightError(ValueError):
@@ -432,8 +413,9 @@ def preflight_invocation(
     expected_source_node: str | None = None,
     expected_source_field: str | None = None,
     phase: str = "submission",
+    save_preview_omitted_fields: frozenset[tuple[str, str]] = frozenset(),
 ) -> dict[str, Any]:
-    """Validate one exact workflow invocation and return a bound receipt."""
+    """Validate one invocation; only explicit dry-run preview omissions are deferred."""
     source = Path(workflow_path).expanduser().resolve(strict=True)
     bindings = dict(run_inputs or {})
     if not all(isinstance(key, str) and key.strip() for key in bindings):
@@ -514,7 +496,7 @@ def preflight_invocation(
                            if not name.startswith("node:")}
         supplied_fields = {(str(public_inputs[name].node_id), public_inputs[name].field)
                            for name in bindings}
-        omitted = (_SAVE_PREVIEW_FIELDS.get() & declared_fields) - supplied_fields
+        omitted = (save_preview_omitted_fields & declared_fields) - supplied_fields
     _assert_reachable_prompt(workflow, api, expected_prompt=expected_prompt, omitted=omitted)
     _assert_no_reachable_blank_media(workflow, api, omitted=omitted)
 

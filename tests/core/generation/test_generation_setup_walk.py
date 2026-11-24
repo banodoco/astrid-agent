@@ -50,7 +50,7 @@ def test_setup_walk_discover_preview_and_undo(tmp_path: Path, monkeypatch, capsy
     workflow.write_text(json.dumps(load_bundle(workflow_from_ready("image/z_image_turbo")).materialize_ui()))
     code, preview = _run(capsys, ["workflow", str(workflow), "--as-entry", "portrait_flux",
                                   "--placement", loopback_comfy.url, "--dry-run", "--json"])
-    assert code == 0
+    assert code == 0, preview
     assert preview["written"] is False and preview["would_save_entry"] == "portrait_flux"
     assert preview["status"] in {"ready", "ready_with_warnings"}
     assert any(call[:2] == ("GET", "/object_info") for call in loopback_comfy.calls)

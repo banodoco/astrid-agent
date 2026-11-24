@@ -533,11 +533,6 @@ def _workflow_command(parsed: argparse.Namespace, *, output=None) -> int:
     with contextlib.ExitStack() as stack:
         entry = None
         if parsed.as_entry:
-            from inspect import signature
-            from vibecomfy.entries import import_as_entry
-            if parsed.replace and 'replace' not in signature(import_as_entry).parameters:
-                raise generation_error(ValueError('The installed VibeComfy entry API does not support atomic replacement'),
-                                       code='missing_dependency', details={'field': 'replace'})
             from astrid.core.generation import placement as placements
             from astrid.core.generation.workflow_entry_setup import (
                 omitted_save_preview_fields, prepare_entry_candidate, publish_entry_candidate,
@@ -545,9 +540,9 @@ def _workflow_command(parsed: argparse.Namespace, *, output=None) -> int:
             )
             from astrid.sdk.generation import _snapshot_generation_workflow
 
-            retry = ['astrid', 'generate', *getattr(parsed, '_invocation_argv', (
-                'workflow', str(path), '--as-entry', parsed.as_entry,
-                '--placement', parsed.placement or 'auto', *(['--no-run'] if parsed.no_run else [])))]
+            # _main_request records the actual invocation after parsing.
+            # A caller that bypasses that boundary must fail, not invent argv.
+            retry = ['astrid', 'generate', *parsed._invocation_argv]
             resolved = placements.validate_placement(placements.resolve_placement(
                 placements.request_from_selector(parsed.placement)))
             frozen = stack.enter_context(_snapshot_generation_workflow(path))
@@ -568,17 +563,16 @@ def _workflow_command(parsed: argparse.Namespace, *, output=None) -> int:
             # This authority is scoped to a read-only preview, not a new yes.
             if parsed.dry_run or (is_runpod_placement(parsed.placement) and not parsed.no_run):
                 from astrid.sdk.generation import _load_model_registry
-                from astrid.packs.vibecomfy.invocation_preflight import save_preview_input_scope
 
-                omitted = omitted_save_preview_fields(candidate, mode, values) if parsed.dry_run else ()
-                with (preview_entry_authority(candidate, prepared.approvals, resolved.kind),
-                      save_preview_input_scope(omitted)):
-                    preview = _generate_facade()._generate_on_target(
-                        registry=_load_model_registry(), model=None, mode=mode,
-                        modality=candidate['kind'], placement=parsed.placement, execution=None,
-                        inputs=values, dry_run=True, workflow_entry=candidate, client=None,
-                        project=parsed.project, out=parsed.out, **_controls(parsed),
-                    )
+                omitted = omitted_save_preview_fields(candidate, mode, values) if parsed.dry_run else frozenset()
+                preview = _generate_facade()._generate_on_target(
+                    registry=_load_model_registry(), model=None, mode=mode,
+                    modality=candidate['kind'], placement=parsed.placement, execution=None,
+                    inputs=values, dry_run=True, workflow_entry=candidate, client=None,
+                    preview_authority=preview_entry_authority(candidate, prepared.approvals, resolved.kind),
+                    save_preview_omitted_fields=omitted,
+                    project=parsed.project, out=parsed.out, **_controls(parsed),
+                )
                 if parsed.dry_run:
                     payload = dict(preview.to_dict() if hasattr(preview, 'to_dict') else preview)
                     payload.update(dry_run=True, written=False, would_save_entry=parsed.as_entry,
