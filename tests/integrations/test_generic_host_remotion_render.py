@@ -769,16 +769,34 @@ def test_short_managed_contract_project_and_collection_elements_through_command_
         }
         project_clip = {
             "id": "project-colour", "at": 1.4, "hold": 0.7, "track": "titles",
-            "clipType": project_ref["id"], "elementRef": project_ref,
-            "params": {"color": "#3498db"},
+            # Start with a registry-discovered effect with the same colour
+            # parameter shape. Clip.set_element performs the authenticated
+            # retarget; do not author a project reference on clip birth.
+            "clipType": collection_element["id"], "params": {"color": "#3498db"},
         }
 
         def place_elements(t):
             for row in (collection_clip, project_clip):
                 t.command(capture_clip_add(t.bundle, "parent", row), label=row["id"])
 
-        published = timeline.commit(place_elements, label="RN-11 pack elements", key="rn11-pack-elements")
+        seeded = timeline.commit(place_elements, label="RN-11 pack elements", key="rn11-pack-elements")
+        assert seeded["receipt"]["receipt_id"]
+        # The public SDK obtains the admitted document and snapshot bytes,
+        # captures clip.set-element with schema_source, and commits the
+        # retained dependency through Runtime. A literal elementRef alone
+        # is not registration of that executable source.
+        published = timeline.commit(
+            lambda t: t.clip("project-colour").set_element(project_ref),
+            label="RN-11 select admitted project element", key="rn11-project-selection",
+        )
         assert published["receipt"]["receipt_id"]
+        selected, = [command for command in published["data"]["commands"]
+                     if command["op"] == "clip.set-element"]
+        assert selected["select"] == "parent/clip:project-colour"
+        assert selected["args"]["elementRef"] == project_ref
+        pin = selected["args"]["schema_source"]
+        assert pin["document_id"] == admission["documentId"]
+        assert pin in published["data"]["canonical_document"]["dependency_manifest"]["documents"]
         revision = published["data"]["accepted_revision_id"]
         parent = published["data"]["canonical_document"]["parent_revision"]["payload"]
         tracks = [track["id"] for track in parent["config"]["tracks"]]
