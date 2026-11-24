@@ -1262,11 +1262,11 @@ def _deferred_missing_node_classes(workflow: Any, *, pending_target: Mapping[str
     """
     import re
 
-    from vibecomfy.node_packs import read_lockfile
+    from vibecomfy.node_packs import CORE_COMFY_CLASSES, read_lockfile
     from .node_class_authority import core_node_classes
 
     active = {node.class_type for node in workflow.runtime_nodes().values()}
-    unresolved = active
+    unresolved = active - CORE_COMFY_CLASSES
     if not unresolved:
         return []
 

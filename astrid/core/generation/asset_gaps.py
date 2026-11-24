@@ -97,8 +97,14 @@ def attached_model_readiness(entry: str | None, placements, *, target=None) -> d
 
 def _is_comfyui_core_repo(repo: str) -> bool:
     """A pack whose repository is ComfyUI itself ships with ComfyUI, not as a custom node."""
-    lowered = repo.lower().rstrip('/')
-    return 'github.com/' in lowered and lowered.endswith(('/comfyui', '/comfyui.git'))
+    from urllib.parse import urlsplit
+
+    parsed = urlsplit(repo)
+    if parsed.hostname != 'github.com':
+        return False
+    return parsed.path.lower().rstrip('/').removesuffix('.git') in {
+        '/comfyanonymous/comfyui', '/comfy-org/comfyui',
+    }
 
 
 def _locked_commit(lock: Any, pack: Any) -> str | None:
