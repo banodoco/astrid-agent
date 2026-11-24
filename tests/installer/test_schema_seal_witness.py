@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import stat
 
 import pytest
@@ -21,9 +20,8 @@ from tests.test_installer_installed_schema import (
 pytestmark = pytest.mark.linux_native
 
 
+@pytest.mark.non_root
 def test_staged_schema_denies_owner_write_and_unlink(staged_installer):  # noqa: F811
-    if os.geteuid() == 0:
-        pytest.skip("Root can bypass POSIX discretionary permission bits; run as an unprivileged owner.")
     state = staged_installer
     state.backend.stage(state.manifest, state.root, state.data)
     path = state.product_root / SCHEMA
