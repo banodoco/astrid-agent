@@ -382,8 +382,8 @@ if (graph.occurrences.length) {
 @pytest.mark.app_checkout
 @pytest.mark.parametrize("case", CASES, ids=CASES)
 def test_agent_ms_composition_opens_in_app(case):
-    app_root = os.environ.get("ASTRID_APP_ROOT")
-    assert app_root, "Set ASTRID_APP_ROOT to the pinned, prepared sibling App checkout"
+    app_root = os.environ.get("ASTRID_APP_ROOT") or os.environ.get("ASTRID_APP_CHECKOUT")
+    assert app_root, "Set ASTRID_APP_ROOT or ASTRID_APP_CHECKOUT to the prepared pinned App checkout"
     root = Path(app_root).resolve()
     assert (root / "node_modules" / "tsx").exists(), "App tsx dependencies are not prepared"
     node = shutil.which("node")
