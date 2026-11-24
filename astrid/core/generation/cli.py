@@ -230,6 +230,16 @@ def _json_inputs(path: str) -> dict[str, Any]:
     return values
 
 
+def _workflow_add_declaration(value: str) -> str:
+    """Preserve the raw declaration for the typed VibeComfy resolver boundary."""
+    return value
+
+
+# MCP derives the repeatable string item contract from the parser's type.
+# URL/ref semantics remain solely with VibeComfy, including typed repair steps.
+_workflow_add_declaration.json_schema = {"type": "string", "minLength": 1}
+
+
 def _parser(contextual: dict[str, Any] | None = None) -> _GenerationParser:
     parser = _GenerationParser(
         prog="astrid generate",
@@ -302,7 +312,8 @@ def _parser(contextual: dict[str, Any] | None = None) -> _GenerationParser:
     command = sub.add_parser("workflow", help="Run an unregistered VibeComfy bundle or UI workflow.")
     command.add_argument("workflow", help="Canonical bundle directory, workflow.py, or UI JSON.")
     command.add_argument("--as-entry", action=_Once, help="Save the workflow as an entry before running it.")
-    command.add_argument("--add", action="append", default=[], metavar="URL[@REF]",
+    command.add_argument("--add", action="append", type=_workflow_add_declaration,
+                         default=[], metavar="URL[@REF]",
                          help="Declare an exact HTTPS custom-node pack for --as-entry; obtain separate code consent.")
     command.add_argument('--replace', action='store_true')
     command.add_argument('--no-run', action='store_true',
@@ -535,8 +546,11 @@ def _workflow_command(parsed: argparse.Namespace, *, output=None) -> int:
         if parsed.as_entry:
             from astrid.core.generation import placement as placements
             from astrid.core.generation.workflow_entry_setup import (
-                omitted_save_preview_fields, prepare_entry_candidate, publish_entry_candidate,
-                preview_entry_authority, select_entry_mode,
+                omitted_save_preview_fields,
+                prepare_entry_candidate,
+                preview_entry_authority,
+                publish_entry_candidate,
+                select_entry_mode,
             )
             from astrid.sdk.generation import _snapshot_generation_workflow
 

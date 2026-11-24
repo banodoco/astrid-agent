@@ -1,11 +1,11 @@
 """LE-12 entry collision recovery and preservation of authorized records."""
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
-from pathlib import Path
-import re
 
+from .node_approvals import preview_entry_authority as preview_entry_authority
 from .preflight import GenerationReadinessError, generation_error
 from .workflow_additions import repair_workflow_argv
 
@@ -181,11 +181,6 @@ def publish_entry_candidate(source, prepared, *, replace, placement_class, retry
             raise ValueError("just-saved entry has no code approval directory")
         write_entry_approvals(directory, merged)
     return entry
-
-
-# Reuse the authorization boundary for the private candidate, not a token
-# constructed by the CLI from the caller's requested refs.
-from .node_approvals import preview_entry_authority as preview_entry_authority
 
 
 def omitted_save_preview_fields(entry, mode, values):
