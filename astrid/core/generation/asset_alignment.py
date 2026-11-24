@@ -430,7 +430,25 @@ def catalog_manifests(entry_id: str | None = None) -> list[dict[str, Any]]:
                     unlocked.append({'kind': 'node_pack', 'name': name,
                                      'missing': ['locked_repository_and_sha']})
                 packs = [pack for _, pack in by_name.values()]
-                models = list(declared_model_specs(workflow.metadata.get('model_assets', [])))
+                incomplete = []
+                models = list(declared_model_specs(workflow.metadata.get('model_assets', []),
+                                                   incomplete=incomplete))
+                retry = shlex.join(['astrid', 'generate', 'align', '--entry', entry_id, '--json'])
+                for record in incomplete:
+                    name = record['name']
+                    subdir = record['subdir']
+                    destination = (f'{subdir}/{name}' if isinstance(subdir, str) and subdir not in ('', '.')
+                                   and name else name)
+                    label = destination or 'the unnamed model declaration'
+                    unlocked.append({
+                        'kind': 'model', 'code': 'model_lock_incomplete', 'severity': 'error',
+                        'name': name, 'destination': destination, 'missing': record['missing'],
+                        'next_action': (
+                            f'Obtain the verified HTTPS source, SHA-256 and exact byte size for {label} '
+                            'and supply the missing facts in the saved bundle model declaration. '
+                            'The planned --add-model DEST=URL#sha256 repair (LE-9) will record these facts; '
+                            f'until it is available, complete the declaration through the workflow authoring path. Then run {retry}.'),
+                    })
                 # Assets belong to the workflow even if its saved generation
                 # mode has not been chosen (e.g. an imported audio workflow).
                 return [{'id': entry_id, 'provider_only': False, 'modes': [
@@ -589,9 +607,13 @@ def inspect_assets(manifests, target: ManagedAssetTarget, *, observed=None, dead
     unique_missing = {}
     entries = []
     code_next_action = None
+    model_next_action = None
     for manifest in manifests:
         modes = []
         for mode in manifest['modes']:
+            if model_next_action is None:
+                model_next_action = next((gap['next_action'] for gap in mode['unlocked']
+                                          if gap.get('code') == 'model_lock_incomplete'), None)
             model_rows, pack_rows = [], []
             for model in mode['models']:
                 relative, url = _validate_model(model)
@@ -634,7 +656,8 @@ def inspect_assets(manifests, target: ManagedAssetTarget, *, observed=None, dead
                            'basis': 'missing_locked_models; additional node/dependency space is unquantified'},
             'object_info': 'unknown' if observed is None else 'observed',
             'status': 'ready' if all(entry['status'] in {'ready', 'provider_only'} for entry in entries) else 'not_ready',
-            **({'next_action': code_next_action} if code_next_action else {})}
+            **({'next_action': code_next_action or model_next_action}
+               if code_next_action or model_next_action else {})}
 
 
 def align(*, entry_id=None, all_entries=False, apply=False, consent=(), target=None, manifests=None,
@@ -688,6 +711,12 @@ def _align_selected(manifests, target, *, entry_id, apply, deadline, client=None
                 if row['status'] == 'mismatch':
                     raise IntegrityError(f"Existing asset {row.get('destination', row.get('name'))} differs from its lock; restore verified bytes before running astrid generate align")
                 _check_bundle_alignment_code(row, row['status'], report['align_command'])
+    if any(gap.get('code') == 'model_lock_incomplete'
+           for entry in report['entries'] for mode in entry['modes']
+           for gap in mode.get('unlocked', [])):
+        # Keep the typed issue and repair instruction, and make no asset writes
+        # while the selected saved entry lacks an authoritative model lock.
+        return report
     if report['disk_check']['status'] == 'blocked':
         raise AlignmentError(f"Insufficient disk for missing locked models: need {report['total_missing_bytes']} bytes, free {report['disk_check']['free_bytes']}; free disk and retry {report['align_command']}")
     target.verify_installation(deadline=deadline)

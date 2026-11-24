@@ -1,5 +1,6 @@
 """WS-0e: user-entry alignment uses the saved bundle's node pins."""
 import json
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -22,6 +23,31 @@ def test_align_discovers_real_saved_entry(tmp_path, monkeypatch):
     assert manifest["provider_only"] is False
     assert manifest["modes"]
     assert all(mode["workflow"].runtime_nodes() for mode in manifest["modes"])
+
+    root = tmp_path / "engine"
+    target = alignment.ManagedAssetTarget(root, root / "models", root / "nodes",
+        sys.executable, "http://127.0.0.1:8188", "a" * 64, root / "cache.json")
+    report = alignment.align(entry_id="my-align", target=target)
+    assert report["status"] == "not_ready"
+    assert report["applied"] is False
+    assert report["unlocked_bytes"] == "unknown"
+    mode = report["entries"][0]["modes"][0]
+    [issue] = [row for row in mode["unlocked"]
+               if row.get("name") == "z_image_turbo_bf16.safetensors"]
+    assert issue["kind"] == "model"
+    assert issue["code"] == "model_lock_incomplete"
+    assert issue["severity"] == "error"
+    assert {"sha256", "size_bytes"} <= set(issue["missing"])
+    assert "--add-model DEST=URL#sha256" in issue["next_action"]
+    assert "astrid generate align --entry my-align --json" in issue["next_action"]
+    assert "z_image_turbo_bf16.safetensors" not in {row["name"] for row in mode["models"]}
+    assert report["next_action"]
+    # Exercise the actual workflow gap projection as well as the real saved
+    # entry loader, inventory, pack state, and offline alignment above.
+    observed = alignment.inspect_assets([manifest], target, observed={})
+    assert observed["entries"][0]["modes"][0]["missing_nodes"]
+    assert observed["status"] == "not_ready"
+    assert not root.exists()
 
 
 @pytest.fixture
@@ -141,3 +167,17 @@ def test_inspection_never_calls_unapproved_verified_pack_ready(user_bundle, tmp_
     assert report["status"] == "not_ready"
     assert "no matching shipped pin or local code approval" in report["next_action"]
     assert "astrid generate align" in report["next_action"]
+
+
+def test_incomplete_declaration_does_not_relax_strict_provisioning():
+    from astrid.core.generation.asset_gaps import declared_model_specs
+    from astrid.core.generation.engine_contracts import ModelLockValidationError
+
+    asset = {"name": "example.safetensors", "subdir": "checkpoints",
+             "url": "https://example.invalid/model"}
+    with pytest.raises(ModelLockValidationError, match="sha256, size_bytes"):
+        declared_model_specs([asset])
+    incomplete = []
+    assert declared_model_specs([asset], incomplete=incomplete) == ()
+    assert incomplete == [{"name": "example.safetensors", "subdir": "checkpoints",
+                           "missing": ["sha256", "size_bytes"]}]

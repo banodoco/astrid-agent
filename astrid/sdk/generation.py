@@ -496,6 +496,15 @@ def offline_request_preflight(entry_id: str, *, mode: str | None, inputs: Mappin
                                   lineage=None, source_video=True)
 
 
+def _explicit_workflow_needs(needs):
+    """An explicit workflow does not need a named audio catalog slot.
+
+    Keep all other review needs; the producer's stable code, not its wording,
+    identifies this one advisory requirement.
+    """
+    return [need for need in needs if need.get('code') != 'audio_mode_unknown']
+
+
 def _require_claimed_machine(kind, machine=None):
     """Read local custody only; the owning host rechecks it before running."""
     import time
@@ -2049,11 +2058,9 @@ class GenerationFacade:
                                 needs = timed_call('entry needs', draft_entry, workflow, identifier)['needs']
                                 # A raw audio workflow may run without being saved
                                 # as one of the catalog's named audio modes.
-                                needs = [need for need in needs if need.get('ambiguity') !=
-                                         'audio mode is unknown; choose tts, music, or sfx']
                                 needs.extend(need for need in candidate.get('needs', [])
                                              if need.get('ambiguity') and need not in needs)
-                                candidate = {**candidate, 'needs': needs}
+                                candidate = {**candidate, 'needs': _explicit_workflow_needs(needs)}
                             schema = timed_call('target node list', workflow_entries.target_schema,candidate, workflow, target_client, engine=runpod_engine,
                                                                     pending_target=pending_target, align=align)
                     from vibecomfy.workflow_bundle import load_bundle

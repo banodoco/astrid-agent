@@ -563,12 +563,11 @@ def _workflow_command(parsed: argparse.Namespace, *, output=None) -> int:
             return facade.workflow(workflow=path, placement=parsed.placement, mode=parsed.mode,
                 inputs=values, dry_run=parsed.dry_run, client=client,
                 project=parsed.project, out=parsed.out, **_controls(parsed))
-        from astrid.sdk.generation import _load_model_registry
+        from astrid.sdk.generation import _explicit_workflow_needs, _load_model_registry
         mode = parsed.mode or (entry['modes'][0] if len(entry['modes']) == 1 else 'workflow')
         selected = entry
         if mode not in entry['modes']:
-            selected = dict(entry, modes=[mode], needs=[need for need in entry['needs']
-                if need.get('ambiguity') != 'audio mode is unknown; choose tts, music, or sfx'])
+            selected = dict(entry, modes=[mode], needs=_explicit_workflow_needs(entry['needs']))
         return facade._generate_on_target(registry=_load_model_registry(), model=None,
             mode=mode, modality=selected['kind'], placement=parsed.placement, execution=None,
             inputs=values, dry_run=False, workflow_entry=selected,
