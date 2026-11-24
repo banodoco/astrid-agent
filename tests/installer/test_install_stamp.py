@@ -18,6 +18,11 @@ from astrid.installer._pack_cleanup import remove_pack_tree
 from astrid.installer.backend import Backend
 
 
+# These tests witness the default stamp; it is intentionally POSIX-only.
+# Native Windows explicit verification has separate coverage in the v2 suite.
+pytestmark = pytest.mark.posix_native
+
+
 @pytest.fixture
 def installed(tmp_path):
     program, data = tmp_path / "program", tmp_path / "data"

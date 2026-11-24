@@ -34,6 +34,10 @@ def test_first_import_after_stage_uses_precompiled_bytecode(staged_installer, mo
         "_seal_first_import_probe." + sys.implementation.cache_tag + ".pyc")
     doc = core.read_json(version.root / "install-stamp.json")
     assert pyc.is_file()
+    header = pyc.read_bytes()[:16]
+    assert int.from_bytes(header[4:8], "little") == 0
+    assert int.from_bytes(header[8:12], "little") == int(path.stat().st_mtime)
+    assert int.from_bytes(header[12:16], "little") == path.stat().st_size
     assert pyc.relative_to(version.root).as_posix() in doc["files"]
     assert not pyc.stat().st_mode & 0o222
     assert not pyc.parent.stat().st_mode & 0o222

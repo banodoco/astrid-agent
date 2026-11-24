@@ -80,6 +80,7 @@ def test_explicit_verify_does_not_reseal_metadata_churn(installed):  # noqa: F81
     assert manifest.read_bytes() == manifest_bytes
 
 
+@pytest.mark.posix_native
 @pytest.mark.parametrize("damage", ["injected", "replaced"])
 def test_stamp_covers_pyc_and_refuses_injection(installed, damage):  # noqa: F811
     _, _, stage = installed
@@ -152,6 +153,7 @@ def test_stamp_names_uid_mismatch_and_foreign_install_owner(installed, monkeypat
         assert core.install_stamp(package) == (None, f"install_owner_mismatch:{version.root}")
 
 
+@pytest.mark.posix_native
 def test_pinokio_adoption_keeps_same_shipped_stamp(installed):  # noqa: F811
     program, _, stage = installed
     version, package = stage("adopt")
@@ -171,6 +173,7 @@ def test_pinokio_adoption_keeps_same_shipped_stamp(installed):  # noqa: F811
     assert core.install_stamp(package) == (None, "stamp_manifest_mismatch")
 
 
+@pytest.mark.posix_native
 @pytest.mark.parametrize("name", ["install-stamp.json", "version.json", "profile.json"])
 def test_stamp_names_bad_json(installed, name):  # noqa: F811
     _, _, stage = installed
@@ -183,6 +186,7 @@ def test_stamp_names_bad_json(installed, name):  # noqa: F811
     assert core.install_stamp(package) == (None, f"invalid_stamp_json:{name}")
 
 
+@pytest.mark.posix_native
 def test_stamp_names_missing_version_key(installed):  # noqa: F811
     _, _, stage = installed
     version, package = stage("missing-key")
@@ -211,3 +215,106 @@ def test_cleanup_repairs_unreadable_private_subdirectory(tmp_path):
     assert not tree.exists()
     assert outside.stat().st_mode == external_mode
     assert (outside / "keep").read_bytes() == b"external"
+
+
+@pytest.mark.posix_native
+def test_timestamp_bytecode_survives_seal_hardlink_detach(installed, tmp_path):  # noqa: F811
+    _, _, stage = installed
+    shared = tmp_path / "uv-shared-source.py"
+    shared.write_text("VALUE = 1\n", encoding="utf-8")
+    timestamp = 1_600_000_000_123_456_789
+    os.utime(shared, ns=(timestamp, timestamp))
+    version, package = stage("timestamp-detach", seal=False, shared=shared)
+    source = package / "packs/sample/action.py"
+    assert os.path.samefile(source, shared)
+    before = source.stat()
+    pyc = source.parent / "__pycache__" / (
+        "action." + sys.implementation.cache_tag + ".pyc")
+    py_compile.compile(str(source), cfile=str(pyc), doraise=True,
+                       invalidation_mode=py_compile.PycInvalidationMode.TIMESTAMP)
+    header = pyc.read_bytes()[:16]
+    assert int.from_bytes(header[4:8], "little") == 0
+    stamp = _install_stamp.write_install_stamp(version, package.parent)
+    assert not os.path.samefile(source, shared)
+    assert source.stat().st_mtime_ns == before.st_mtime_ns
+    assert shared.stat().st_mtime_ns == before.st_mtime_ns
+    assert pyc.read_bytes()[:16] == header
+    assert int.from_bytes(header[8:12], "little") == int(source.stat().st_mtime)
+    assert int.from_bytes(header[12:16], "little") == source.stat().st_size
+    assert core.install_stamp(package) == (stamp, None)
+
+
+@pytest.mark.windows_native
+def test_windows_default_refuses_without_hashing_and_explicit_verify_hashes(
+    installed, monkeypatch,  # noqa: F811
+):
+    _, _, stage = installed
+    version, package = stage("windows")
+    manifest = core.read_json(version.root / _install_stamp.STAMP_NAME)
+    digest = _install_stamp._digest
+    observed = []
+
+    def record_digest(path):
+        observed.append(_relative(version, path))
+        return digest(path)
+
+    monkeypatch.setattr(_install_stamp, "_digest", record_digest)
+    expected = (None, "windows_stat_tokens_unreliable")
+    assert core.install_stamp(package) == expected
+    assert observed == []
+    assert core.install_stamp(package, verify=True) == (manifest["stamp"], None)
+    assert sorted(observed) == sorted(manifest["files"])
+    path = _file(package)
+    _enable_write(path)
+    path.write_bytes(b"changed")
+    _readonly(path)
+    observed.clear()
+    assert core.install_stamp(package) == expected
+    assert observed == []
+    assert core.install_stamp(package, verify=True) == (
+        None, "shipped_file_modified:" + _relative(version, path))
+
+
+@pytest.mark.windows_native
+def test_windows_explicit_verify_survives_adoption_and_version_switch(installed):  # noqa: F811
+    program, _, stage = installed
+    first, first_package = stage("first")
+    second, second_package = stage("second", content="model: second\n")
+    first_stamp = core.install_stamp(first_package, verify=True)
+    second_stamp = core.install_stamp(second_package, verify=True)
+    assert first_stamp[0] and first_stamp[1] is None
+    assert second_stamp[0] and second_stamp[1] is None
+    assert first_stamp != second_stamp
+    marker = core.read_json(program / "install.json")
+    marker["managed_by"] = "pinokio"
+    core.write_json(program / "install.json", marker)
+    core.persist_install_identity(replace(second, managed_by="pinokio"), program)
+    assert core.install_stamp(second_package, verify=True) == second_stamp
+    core.switch(program, first)
+    core.switch(program, second)
+    assert core.current(program).root == second.root
+    core.switch(program, first)
+    assert core.current(program).root == first.root
+    assert core.install_stamp(first_package, verify=True) == first_stamp
+    remove_pack_tree(second.root)
+    assert not second.root.exists()
+
+
+@pytest.mark.windows_native
+def test_windows_explicit_verify_refuses_injected_bytecode(installed):  # noqa: F811
+    _, _, stage = installed
+    version, package = stage("windows-pyc", seal=False)
+    source = package / "packs/sample/action.py"
+    pyc = source.parent / "__pycache__" / (
+        "action." + sys.implementation.cache_tag + ".pyc")
+    py_compile.compile(str(source), cfile=str(pyc), doraise=True,
+                       invalidation_mode=py_compile.PycInvalidationMode.TIMESTAMP)
+    stamp = _install_stamp.write_install_stamp(version, package.parent)
+    assert core.install_stamp(package, verify=True) == (stamp, None)
+    extra = pyc.with_name("unlisted.pyc")
+    _enable_write(pyc.parent)
+    extra.write_bytes(pyc.read_bytes())
+    _readonly(extra)
+    _readonly(pyc.parent)
+    assert core.install_stamp(package, verify=True) == (
+        None, "shipped_file_modified:" + _relative(version, extra))
