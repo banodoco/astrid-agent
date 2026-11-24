@@ -39,6 +39,8 @@ class LoadedWorkflow:
     # A saved UI workflow's seed widgets read against the server schema it was converted with:
     # {node id: {"field", "value", "control"}}. None unless that conversion ran.
     saved_seed_controls: Mapping[str, Mapping[str, Any]] | None = None
+    # JSON conversion evidence; explicitly absent for pre-existing bundles/templates.
+    import_report: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -278,7 +280,7 @@ def _canonicalize_ui_workflow(
     scratch: Path,
     *,
     schema_url: str = "",
-) -> tuple[Any, str | None, dict[str, dict[str, Any]]]:
+) -> tuple[Any, str | None, dict[str, dict[str, Any]], Mapping[str, Any]]:
     """Convert UI JSON through VibeComfy's canonical import service.
 
     With ``schema_url`` (the run's own ComfyUI), widget values map to input names
@@ -347,14 +349,12 @@ def _canonicalize_ui_workflow(
         raise ProductionEngineError(
             f"VibeComfy canonical UI workflow bundle could not be loaded: {exc}"
         ) from exc
-    # The report is observation, not a second graph authority. Retain it on
-    # this in-memory workflow for controller readiness and later lookup; do
-    # not change the sealed bundle's metadata, provenance or revision.
+    # The report is observation, not a second graph authority. Return it to
+    # the loader explicitly; do not change sealed metadata or revision.
     report = artifacts.report
     if not isinstance(report, Mapping) or not isinstance(report.get("diagnostics"), list):
         raise ProductionEngineError("VibeComfy import did not report diagnostics")
-    bundle.workflow._astrid_import_report = report
-    return bundle, schema_digest, seed_controls
+    return bundle, schema_digest, seed_controls, report
 
 
 def load_workflow_path(
@@ -374,6 +374,7 @@ def load_workflow_path(
     scratch_path = Path(scratch).expanduser().resolve()
     scratch_path.mkdir(parents=True, exist_ok=True)
     saved_seed_controls = None
+    import_report = None
     try:
         source_bytes = source.read_bytes()
         raw_workflow = None if source.suffix.lower() == ".py" else json.loads(
@@ -401,7 +402,8 @@ def load_workflow_path(
             resolved = _load_workflow(raw_workflow, {}, scratch_path)
             workflow_conversion_object_info_sha256 = None
         else:
-            resolved, workflow_conversion_object_info_sha256, saved_seed_controls = _canonicalize_ui_workflow(
+            (resolved, workflow_conversion_object_info_sha256,
+             saved_seed_controls, import_report) = _canonicalize_ui_workflow(
                 source,
                 raw_workflow,
                 scratch_path,
@@ -430,6 +432,7 @@ def load_workflow_path(
         workflow_content_digest=_workflow_content_digest(source),
         workflow_conversion_object_info_sha256=workflow_conversion_object_info_sha256,
         saved_seed_controls=saved_seed_controls,
+        import_report=import_report,
     )
 
 
