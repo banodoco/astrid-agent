@@ -458,7 +458,7 @@ def test_real_delegated_child_host_compatibility(attached_case, bad_receipt):
     parent_task = case.raw.admit_task(
         capability_id=parent_cap.id, capability_digest=parent_cap.capability_digest,
         project_id=case.project_id, input_object_ids=ids, idempotency_key="ra6-parent",
-        spec={"inputs": wire}, child_delegation={
+        spec={"inputs": {}}, child_delegation={
             "capabilities": [child_cap], "targets": [{"kind": "default"}],
             "input_object_ids": ids, "limits": {"max_children": 2},
         },
