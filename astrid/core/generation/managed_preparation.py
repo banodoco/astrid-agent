@@ -25,8 +25,6 @@ from .engine_contracts import (
 )
 from .engine_local_endpoint import DEFAULT_ENGINE
 
-# Shared entry-owned approval shape for the LE-2b admission boundary. Defining
-# the record does not change which sources preparation may restore today.
 from .node_approvals import NodeApproval as NodeApproval
 
 SCHEMA = "astrid.managed-engine-preparation.v1"
@@ -75,7 +73,7 @@ def _recipe_node_patches(recipe: EngineRecipe) -> dict[str, list[SourcePatch]]:
     return patches_by_pack
 
 
-def _write_managed_nodes_lock(path: Path, nodes: list[dict[str, str]], recipe: EngineRecipe) -> None:
+def _write_managed_nodes_lock(path: Path, nodes: list[dict[str, Any]], recipe: EngineRecipe) -> None:
     """Write the selected node pins and their recipe-owned source patches."""
     patches_by_pack = _recipe_node_patches(recipe)
     sources = {source.name: source for source in recipe.sources}
@@ -86,6 +84,12 @@ def _write_managed_nodes_lock(path: Path, nodes: list[dict[str, str]], recipe: E
             raise IntegrityError("managed node name is invalid")
         lines += [f"[nodepacks.{json.dumps(name)}]", f"url = {json.dumps(node['repo'])}",
                   f"commit = {json.dumps(node['commit'])}"]
+        from vibecomfy.node_recipes import RECIPE_FIELDS, canonical_recipe
+        declared = canonical_recipe({key: node[key] for key in RECIPE_FIELDS if key in node})
+        if declared["requirements_txt"] is not None:
+            lines.append("requirements_txt = " + json.dumps(declared["requirements_txt"]))
+        if declared["pip_no_deps"]:
+            lines.append("pip_no_deps = " + json.dumps(declared["pip_no_deps"]))
         patches = patches_by_pack.get(name, ())
         pins = {(sources[patch.source].pin.repository, sources[patch.source].pin.revision) for patch in patches}
         if patches and pins != {(node["repo"], node["commit"])}:
@@ -341,9 +345,11 @@ def read_preparation(*, task: str, attempt: str | None, endpoint: str,
                 or row["size"] is not None and (type(row["size"]) is not int or row["size"] < 0)):
             raise ValueError("managed engine preparation has an invalid model row")
     for node in manifest["extra"]["nodes"]:
-        if (not isinstance(node, dict) or set(node) != {"repo", "commit"}
-                or any(not isinstance(value, str) or not value for value in node.values())):
-            raise ValueError("managed engine preparation has an invalid node row")
+        try:
+            from .node_approvals import approval_record
+            approval_record(node, placement_class="local")
+        except ValueError as exc:
+            raise ValueError("managed engine preparation has an invalid node row") from exc
     if inputs is not None and any(name not in inputs or not Path(inputs[name]).is_file()
             or hashlib.sha256(Path(inputs[name]).read_bytes()).hexdigest() != expected
             for name, expected in body["inputs"].items()):
@@ -392,12 +398,16 @@ class ManagedEnginePreparation:
     the HTTP worker runs. No worker receives this object or its control socket.
     """
     def __init__(self, *, task: str, attempt: str, mode: str, deadline: float, cancelled: Any, scratch: Path,
-                 device: int | None = None, logs_root: Path | None = None, on_phase: Any = None):
+                 device: int | None = None, logs_root: Path | None = None, on_phase: Any = None,
+                 code_approvals=(), placement_class="local"):
         from .engine_execution import create_local_backend
         from .engine_local_endpoint import DEFAULT_PLATFORM, default_engine_root
         from .engine_recipe import load_recipe
 
         self.task, self.attempt, self.mode = task, attempt, mode
+        from .node_approvals import _records
+        self.code_approvals = _records(code_approvals)
+        self.placement_class = placement_class
         self.device = device
         self.visibility = str(device) if device is not None else os.environ.get("CUDA_VISIBLE_DEVICES")
         self.scratch = scratch
@@ -509,6 +519,13 @@ class ManagedEnginePreparation:
         )
 
         self.check()
+        from .node_approvals import target_approvals
+        engine = _preparation_engine(DEFAULT_ENGINE)
+        declared_nodes = engine.workflow_requirements([canonical_workflow])["extra"]["nodes"]
+        # Author source metadata is not an approval channel. Read only the
+        # admitted records, plus exact shipped catalog pins, before native I/O.
+        approved_nodes = target_approvals(declared_nodes, self.code_approvals,
+                                        placement_class=self.placement_class)
         self._begin_model_verification()
         staged_members = [workflow]
         if workflow.suffix == ".py":
@@ -560,8 +577,9 @@ class ManagedEnginePreparation:
             raise IntegrityError("managed installation evidence differs from its receipt")
         self._runtime_requirements = None
         self._guard_runtime(canonical_workflow, runner, post=False)
-        engine = _preparation_engine(DEFAULT_ENGINE)
         manifest, source_format = judge_declarations(canonical_workflow, self.scratch, engine)
+        approved_nodes = target_approvals(manifest["extra"]["nodes"], approved_nodes,
+                                        placement_class=self.placement_class)
         self._native_generated_scratchpad = source_format == "scratchpad"
         canonical_path = self.scratch / "canonical" / "workflow.py"
         # CLI preparation owns only this emitted copy.
@@ -575,8 +593,15 @@ class ManagedEnginePreparation:
         self.scratch.mkdir(parents=True, exist_ok=True)
         lockfile = self.scratch / "managed-custom-nodes.lock"
         _write_managed_nodes_lock(lockfile, (manifest.get("extra") or {}).get("nodes", []), self.recipe)
+        approval_file = self.scratch / "managed-code-approvals.json"
+        approval_file.write_text(json.dumps(approved_nodes, sort_keys=True), encoding="utf-8")
+        # Restore enriches its target lock with verification facts. Its mutable
+        # rows are admitted again on the target; the approval set stays sealed.
+        self._canonical_members[approval_file] = hashlib.sha256(approval_file.read_bytes()).hexdigest()
+        staged_digests[approval_file] = self._canonical_members[approval_file]
         if engine.commands is None:
-            engine.commands = commands_type(str(canonical_path), str(lockfile), runner=self._command)
+            engine.commands = commands_type(str(canonical_path), str(lockfile), runner=self._command,
+                approvals=str(approval_file), placement_class=self.placement_class)
         self.check()
         self._alignment_runner = runner
         self._alignment_verification = (canonical_workflow, runner, staged_digests, manifest, receipt)
