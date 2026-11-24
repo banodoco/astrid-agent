@@ -2,8 +2,6 @@
 import time
 from pathlib import Path
 
-import pytest
-
 from astrid.core.generation import model_storage as storage
 
 
@@ -13,8 +11,9 @@ def _observe(root, volume=None):
     )
 
 
-@pytest.mark.skipif(not hasattr(storage.os, "statvfs"), reason="target capacity observer uses statvfs")
 def test_no_volume_warns_even_when_hint_exceeds_capacity(tmp_path, monkeypatch):
+    # The recorded-answer observer represents a target with statvfs support.
+    monkeypatch.setattr(storage.os, "statvfs", object(), raising=False)
     monkeypatch.setattr(storage, "available_model_bytes", lambda *a, **kw: (500, False))
     observation = _observe(tmp_path)
     notice = storage.model_download_notice({"fixture-pack": 1000}, observation)
@@ -28,8 +27,9 @@ def test_no_volume_warns_even_when_hint_exceeds_capacity(tmp_path, monkeypatch):
     assert not list(tmp_path.iterdir())
 
 
-@pytest.mark.skipif(not hasattr(storage.os, "statvfs"), reason="target capacity observer uses statvfs")
 def test_measured_volume_tightens_existing_capacity(tmp_path, monkeypatch):
+    # The recorded-answer observer represents a target with statvfs support.
+    monkeypatch.setattr(storage.os, "statvfs", object(), raising=False)
     monkeypatch.setattr(storage, "available_model_bytes", lambda *a, **kw: (5000, False))
     fact = storage.VolumeSpace(tmp_path, tmp_path.stat().st_dev, 2500)
     monkeypatch.setattr(storage, "measure_declared_volume", lambda *a, **kw: fact)
