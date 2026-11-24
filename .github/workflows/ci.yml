@@ -393,8 +393,8 @@ jobs:
 
       - name: Unit tests (default lane shard) (dispatch selection)
         if: ${{ !(inputs.tests == '' && (inputs.repeat == '' || inputs.repeat == '1')) }}
-        # Read the committed baseline for selection; write only this shard's
-        # measured tests so the eight artifacts can be merged without stale entries.
+        # Read the committed durations for the split and never write them, so every repeat in a shard
+        # runs the same tests (a dispatch run measures a selection, not the suite).
         env:
           INPUT_TESTS: ${{ inputs.tests }}
           INPUT_REPEAT: ${{ inputs.repeat }}
@@ -412,7 +412,7 @@ jobs:
           while [ "$i" -le "$repeat" ]; do
             echo "===== selection ${i} of ${repeat}: tests='${INPUT_TESTS}' ====="
             set -f
-            python -m pytest -v -rA --durations=40 --splits 8 --group ${{ matrix.group }} --durations-path tests/.test_durations --store-durations --clean-durations $INPUT_TESTS
+            python -m pytest -v -rA --durations=40 --splits 8 --group ${{ matrix.group }} --durations-path tests/.test_durations $INPUT_TESTS
             rc=$?
             set +f
             if [ "$rc" -eq 5 ] && [ -n "$INPUT_TESTS" ]; then
