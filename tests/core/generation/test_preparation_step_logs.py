@@ -75,9 +75,16 @@ def test_doctor_unknown_input_labels_reach_integrity_error_without_remote_tail(t
     prep._workflow_input_labels = (("42", "ExampleNode", "removed_field"),)
     result = SimpleNamespace(
         exit_code=1, timed_out=False,
-        stdout=("Layer: VibeWorkflow validation\n"
-                "- WorkflowBundleError: Node 42 (ExampleNode) has unknown input removed_field.\n"
-                "- WorkflowBundleError: Node 42 (ExampleNode) has unknown input PRIVATE_TOKEN.\n"),
+        stdout=json.dumps({
+            "status": "error", "layer": "VibeWorkflow validation",
+            "errors": ["PRIVATE_REMOTE_MESSAGE"],
+            "validation_errors": [{
+                "node_id": "42", "class_type": "ExampleNode", "errors": [
+                    {"code": "unknown_input", "input": "removed_field", "message": "changed human wording"},
+                    {"code": "unknown_input", "input": "PRIVATE_TOKEN"},
+                ],
+            }],
+        }),
         stderr="PRIVATE_REMOTE_TAIL",
     )
     prep.context = SimpleNamespace(run=lambda request: result)
@@ -89,3 +96,4 @@ def test_doctor_unknown_input_labels_reach_integrity_error_without_remote_tail(t
         {"node_id": "42", "class_type": "ExampleNode", "input": "removed_field"},
     ]) in message
     assert "PRIVATE_TOKEN" not in message and "PRIVATE_REMOTE_TAIL" not in message
+    assert "PRIVATE_REMOTE_MESSAGE" not in message
