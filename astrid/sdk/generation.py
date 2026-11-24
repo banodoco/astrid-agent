@@ -2246,26 +2246,28 @@ class GenerationFacade:
             local_root = None
             if placement.kind == 'local':
                 local_root = Path(readiness['entry']['requirements']['models_root'])
-            volume_declared = None
-            if placement.kind == 'runpod' and placement.machine is None:
-                # A saved policy describes a future claim, not retained custody.
-                # An unnamed run can reuse a live lease, whose volume is not
-                # exposed by the journal projection; leave that fact unknown.
+            def pending_volume_declared():
+                if placement.kind != 'runpod' or placement.machine is not None:
+                    return None
+                # Saved policy describes a future claim, not retained custody.
+                # An unnamed run can reuse a lease whose volume is not exposed
+                # by the journal projection. Keep that fact unknown.
                 raw_policy = settings_snapshot.content.get('machines', {}).get('runpod')
-                if raw_policy is not None and not any(
-                        row.get('live') for row in placements._runpod_leases('runpod')):
-                    from astrid.packs.runpod.target_selection import PaidSelectionError, RunPodPreferences
-                    try:
-                        volume_declared = RunPodPreferences.from_mapping(raw_policy).volume_id is not None
-                    except PaidSelectionError:
-                        # Incomplete policy is not evidence of an ephemeral claim.
-                        volume_declared = None
+                if raw_policy is None or any(row.get('live') for row in placements._runpod_leases('runpod')):
+                    return None
+                from astrid.packs.runpod.target_selection import PaidSelectionError, RunPodPreferences
+                try:
+                    return RunPodPreferences.from_mapping(raw_policy).volume_id is not None
+                except PaidSelectionError:
+                    # Incomplete policy is not evidence of an ephemeral claim.
+                    return None
+
+            nodes = node_manifest['extra']['nodes']
             download_notice = selected_target_download_notice(
-                node_manifest['extra']['nodes'],
-                {node.class_type for node in workflow.runtime_nodes().values()},
+                nodes, {node.class_type for node in workflow.runtime_nodes().values()} if nodes else set(),
                 placement=placement.kind, local_models_root=local_root,
                 local_volume=DECLARED_VOLUME.get() if local_root is not None else None,
-                volume_declared=volume_declared,
+                volume_declared=pending_volume_declared,
             )
             if download_notice is not None:
                 # Project the complete envelope, preserving any existing warning

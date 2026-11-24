@@ -375,14 +375,15 @@ def selected_target_download_notice(
     nodes: Sequence[Mapping[str, object]], active_classes: set[str], *,
     placement: str, local_models_root: Path | None = None,
     local_volume: DeclaredVolume | None = None,
-    volume_declared: bool | None = None,
+    volume_declared: bool | None | Callable[[], bool | None] = None,
 ) -> dict | None:
     """Advisory for one admitted target, without starting or renting it.
 
     A local root must come from the selected managed installation binding.
     For a remote or attached target, only explicit target volume evidence may
     set volume_declared; never interpret a missing fact as an absent volume
-    or attempt to measure the controller's filesystem.
+    or attempt to measure the controller's filesystem. A lazy volume fact is
+    evaluated only for a selected self-downloading pack without a local root.
     """
     hints = selected_pack_download_hints(nodes, active_classes)
     if not hints:
@@ -402,6 +403,8 @@ def selected_target_download_notice(
             raise generation_error(exc, code="unsafe_path",
                                    details={"field": "models_root"}) from exc
     else:
+        if callable(volume_declared):
+            volume_declared = volume_declared()
         volume_status = (
             "declared_unverified" if volume_declared is True
             else "not_declared" if volume_declared is False else "unknown"

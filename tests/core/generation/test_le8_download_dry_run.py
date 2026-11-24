@@ -1,6 +1,5 @@
-"""LE-8 staged acceptance: actual saved-entry CLI dry run with the real catalog.
+"""LE-8 acceptance: actual saved-entry CLI dry runs with the real catalog.
 
-These are acceptance witnesses for the caller wiring, not standalone-helper proof.
 No pack code is executed; only CPU object_info and recorded policy/lease facts.
 """
 from __future__ import annotations
@@ -119,5 +118,31 @@ def test_pending_runpod_dry_run_without_declared_volume_warns_not_blocks(
                      "--dry-run", "--json"]) == 0
     issue = _assert_notice(json.loads(capsys.readouterr().out), "not_declared")
     assert "no persistent volume declared" in issue["message"]
+    assert _entry_bytes(root) == before
+    assert sam_api_path.read_bytes() == source_before
+
+
+@pytest.mark.parametrize("retained,expected", [(False, "declared_unverified"), (True, "unknown")])
+def test_runpod_dry_run_reports_only_selected_volume_policy(
+        monkeypatch, tmp_path, capsys, sam_api_path, retained, expected):
+    _forbid_controller_capacity(monkeypatch)
+    monkeypatch.setattr(placements, "_runpod_leases", lambda kind: (
+        [{"machine": "retained-fixture", "live": True, "state": "idle"}] if retained else []))
+    monkeypatch.setattr(generation, "_require_claimed_machine",
+                        lambda *a, **k: pytest.fail("dry run required a paid machine"))
+    save_runpod_preferences({
+        "provider_account_ref": "cpu-fixture", "gpu_types": ["CPU stand-in"],
+        "image": "fixture/image@sha256:" + "a" * 64,
+        "volume": {"id": "future-volume", "name": "Future", "size_gb": 40, "mount_path": "/workspace"},
+        "budget_cap_usd": 1.0,
+    })
+    root, audio = _saved_sam(tmp_path, monkeypatch, sam_api_path, "runpod")
+    before = _entry_bytes(root)
+    source_before = sam_api_path.read_bytes()
+    assert cli.main(["audio", "--entry", "sam-download", "--mode", "workflow",
+                     "--audio-ref", str(audio), "--placement", "runpod",
+                     "--dry-run", "--json"]) == 0
+    issue = _assert_notice(json.loads(capsys.readouterr().out), expected)
+    assert "no persistent volume declared" not in issue["message"]
     assert _entry_bytes(root) == before
     assert sam_api_path.read_bytes() == source_before

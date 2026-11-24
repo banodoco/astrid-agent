@@ -168,3 +168,22 @@ def test_selected_unsafe_model_root_surfaces_as_typed_issue(tmp_path, monkeypatc
     assert not any(row["code"] == "model_download_notice" for row in result["issues"])
     if not relative:
         assert root.read_bytes() == b"do not overwrite"
+
+
+def test_volume_evidence_is_read_only_for_a_selected_downloading_pack():
+    called = []
+
+    def volume():
+        called.append(True)
+        return False
+
+    rows = [{"repo": SAM_REPO, "commit": SAM_PIN}]
+    assert storage.selected_target_download_notice(
+        rows, {"EmptyImage"}, placement="runpod", volume_declared=volume,
+    ) is None
+    assert called == []
+    notice = storage.selected_target_download_notice(
+        rows, SAM_CLASSES, placement="runpod", volume_declared=volume,
+    )
+    assert notice["details"]["volume_status"] == "not_declared"
+    assert called == [True]
