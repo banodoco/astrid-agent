@@ -495,14 +495,14 @@ def _cmd_transcripts_refresh(parsed: argparse.Namespace) -> int:
     from astrid.sdk.timeline import words as W
     from astrid.sdk.timeline_checkout import Checkout
     from astrid.sdk.timeline_transcript_refresh import (
-        REFERENCES_SCHEMA as W_REFERENCES_SCHEMA,
-    )
-    from astrid.sdk.timeline_transcript_refresh import (
+        AssetResolutionError,
         cut_words,
         inventory,
+        record_choice,
+        resolve_asset_ids,
         stale_anchors,
-        with_reference,
     )
+    from astrid.core.timeline.bundle import TimelineBundleValidationError, validate_timeline_bundle
 
     project = need_project(parsed)
     if parsed.run_missing and not parsed.placement:
@@ -588,14 +588,34 @@ def _cmd_transcripts_refresh(parsed: argparse.Namespace) -> int:
     if not planned:
         print("nothing to record: the chosen transcripts are already pinned")
         return 0
+    def record_all(bundle: dict[str, Any]) -> None:
+        for media, docs, target in planned:
+            source = next(name for name, doc in docs.items() if doc is target)
+            media_ids = {doc.get("document_id") for doc in docs.values() if doc.get("document_id")}
+            envelope = record_choice(bundle, media, media_ids, target["document_id"], source, assets[media])
+            validate_timeline_bundle(envelope)
+
+    # Everything is resolved and validated on a copy first: any refusal leaves no working copy and saves nothing.
+    assets = {}
+    try:
+        for media, _docs, _target in planned:
+            assets[media] = resolve_asset_ids(tl.bundle, media)
+            if not assets[media]:
+                raise AssetResolutionError(f"no asset in the project registry has media {media_id_text(media)}; "
+                                           "the editor needs an assetId to open the project")
+        record_all(copy.deepcopy(tl.bundle))
+    except AssetResolutionError as exc:
+        raise VerbError(f"cannot record a transcript choice: {exc}; nothing was saved", 2) from exc
+    except TimelineBundleValidationError as exc:
+        raise VerbError(f"refusing to save: the timeline bundle would not open in the editor "
+                        f"({exc.pointer}: {exc.message}); nothing was saved", 2) from exc
     working, _existed = working_copy(parsed, create=True)
+    try:
+        record_all(working.bundle)
+    except (AssetResolutionError, TimelineBundleValidationError) as exc:
+        raise VerbError(f"refusing to save: {exc}; nothing was saved", 2) from exc
     for media, docs, target in planned:
         source = next(name for name, doc in docs.items() if doc is target)
-        media_ids = {doc.get("document_id") for doc in docs.values() if doc.get("document_id")}
-        bundle_config = working.bundle.setdefault("parent", {}).setdefault("config", {}).setdefault("bundle", {})
-        refs = bundle_config.setdefault("transcriptReferences", {"schema": W_REFERENCES_SCHEMA})
-        refs["schema"] = W_REFERENCES_SCHEMA
-        refs["associations"] = with_reference(working.bundle, media, media_ids, target["document_id"], source)
         print(f"recorded {media} -> {source} in transcriptReferences")
     working.save(quiet=True)
     print("recorded in the working copy (publish to keep it)")
