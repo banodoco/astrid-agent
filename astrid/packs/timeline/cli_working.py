@@ -495,16 +495,12 @@ def _cmd_transcripts_refresh(parsed: argparse.Namespace) -> int:
     from astrid.sdk.timeline import words as W
     from astrid.sdk.timeline_checkout import Checkout
     from astrid.sdk.timeline_transcript_refresh import (
-        REFERENCES_SCHEMA as W_REFERENCES_SCHEMA,
-    )
-    from astrid.sdk.timeline_transcript_refresh import (
-        backfill_asset_ids,
-        complete_envelope,
+        AssetResolutionError,
         cut_words,
         inventory,
+        record_choice,
         resolve_asset_id,
         stale_anchors,
-        with_reference,
     )
     from astrid.core.timeline.bundle import TimelineBundleValidationError, validate_timeline_bundle
 
@@ -592,28 +588,34 @@ def _cmd_transcripts_refresh(parsed: argparse.Namespace) -> int:
     if not planned:
         print("nothing to record: the chosen transcripts are already pinned")
         return 0
-    # Resolve every asset first: one unresolvable media refuses the whole refresh and saves nothing.
+    def record_all(bundle: dict[str, Any]) -> None:
+        for media, docs, target in planned:
+            source = next(name for name, doc in docs.items() if doc is target)
+            media_ids = {doc.get("document_id") for doc in docs.values() if doc.get("document_id")}
+            envelope = record_choice(bundle, media, media_ids, target["document_id"], source, assets[media])
+            validate_timeline_bundle(envelope)
+
+    # Everything is resolved and validated on a copy first: any refusal leaves no working copy and saves nothing.
     assets = {}
-    for media, _docs, _target in planned:
-        assets[media] = resolve_asset_id(tl.bundle, media)
-        if assets[media] is None:
-            raise VerbError(f"cannot record a transcript for media {media_id_text(media)}: no asset in the project "
-                            "registry has this media id, and the editor needs an assetId to open the project", 2)
+    try:
+        for media, _docs, _target in planned:
+            assets[media] = resolve_asset_id(tl.bundle, media)
+            if assets[media] is None:
+                raise AssetResolutionError(f"no asset in the project registry has media {media_id_text(media)}; "
+                                           "the editor needs an assetId to open the project")
+        record_all(copy.deepcopy(tl.bundle))
+    except AssetResolutionError as exc:
+        raise VerbError(f"cannot record a transcript choice: {exc}; nothing was saved", 2) from exc
+    except TimelineBundleValidationError as exc:
+        raise VerbError(f"refusing to save: the timeline bundle would not open in the editor "
+                        f"({exc.pointer}: {exc.message}); nothing was saved", 2) from exc
     working, _existed = working_copy(parsed, create=True)
+    try:
+        record_all(working.bundle)
+    except (AssetResolutionError, TimelineBundleValidationError) as exc:
+        raise VerbError(f"refusing to save: {exc}; nothing was saved", 2) from exc
     for media, docs, target in planned:
         source = next(name for name, doc in docs.items() if doc is target)
-        media_ids = {doc.get("document_id") for doc in docs.values() if doc.get("document_id")}
-        bundle_config = working.bundle.setdefault("parent", {}).setdefault("config", {}).setdefault("bundle", {})
-        refs = bundle_config.setdefault("transcriptReferences", {"schema": W_REFERENCES_SCHEMA})
-        refs["schema"] = W_REFERENCES_SCHEMA
-        rows = with_reference(working.bundle, media, media_ids, target["document_id"], source, assets[media])
-        refs["associations"] = backfill_asset_ids(working.bundle, rows)
-        complete_envelope(bundle_config)
-        try:
-            validate_timeline_bundle(bundle_config)
-        except TimelineBundleValidationError as exc:
-            raise VerbError(f"refusing to save: the timeline bundle would not open in the editor "
-                            f"({exc.pointer}: {exc.message}); nothing was saved", 2) from exc
         print(f"recorded {media} -> {source} in transcriptReferences")
     working.save(quiet=True)
     print("recorded in the working copy (publish to keep it)")

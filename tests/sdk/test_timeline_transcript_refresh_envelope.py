@@ -1,6 +1,7 @@
 """transcripts refresh writes an envelope the editor's strict parseTimelineBundle accepts."""
 from __future__ import annotations
 
+import copy
 from argparse import Namespace
 
 import pytest
@@ -15,11 +16,12 @@ from tests.sdk.test_timeline_transcript_refresh import MEDIA_A, MEDIA_B, _bundle
 REFS = "media.transcript.references/v1"
 
 
-def _run(monkeypatch, working, *, stored, timeline_bundle=None):
+def _run(monkeypatch, working, *, stored, timeline_bundle=None, created=None):
     whisper = W.default_source_order()[0]
     timeline = Checkout(timeline_bundle or _bundle({"s1": (MEDIA_A, [_clip("c1", to=4.0)])}))
     monkeypatch.setattr(Checkout, "open", classmethod(lambda cls, project, ref, client: timeline))
-    monkeypatch.setattr(cli_working, "working_copy", lambda parsed, create: (working, True))
+    monkeypatch.setattr(cli_working, "working_copy",
+                        lambda parsed, create: (created.append(create) if created is not None else None, (working, True))[1])
     monkeypatch.setattr(W, "load_timeline_transcripts", lambda client, project, bundle, **kw: stored)
     args = Namespace(client=object(), project="p", ref="cut", shot=None, run_missing=False, placement=None,
                      dry_run=False, draft=None, use_source=whisper, use_document=None)
@@ -89,3 +91,80 @@ def test_validator_accepts_optional_ids_and_rejects_missing_asset_id():
             {"assetId": "a", "documentId": "d", "extra": 1}]}})
     with pytest.raises(TimelineBundleValidationError):
         validate_timeline_bundle({"transcriptReferences": ok})
+
+
+def _timeline(parent_assets, shot_assets=None):
+    """A parent clip on asset ``a`` (or, with ``shot_assets``, a shot clip on the shot's asset ``a``)."""
+    if shot_assets is None:
+        bundle = _bundle({}, parent_clips=[_clip("c1", to=4.0)])
+    else:
+        bundle = _bundle({"s1": (MEDIA_A, [_clip("c1", to=4.0)])})
+        bundle["shots"]["s1"]["internal_timeline"]["registry"] = {"assets": shot_assets}
+    bundle["parent"]["registry"] = {"assets": parent_assets}
+    return bundle
+
+
+def _refuses(monkeypatch, capsys, timeline_bundle):
+    whisper = W.default_source_order()[0]
+    created = []
+    working = _FakeWorking(copy.deepcopy(timeline_bundle))
+    assert _run(monkeypatch, working, stored=_stored_a(whisper), timeline_bundle=timeline_bundle, created=created) == 2
+    assert True not in created and not working.saved
+    return capsys.readouterr().err
+
+
+def test_identity_is_media_id_or_content_sha_not_either(monkeypatch):
+    from astrid.sdk.timeline_transcript_refresh import resolve_asset_id
+
+    bundle = _timeline({"a": {"media_id": "X", "content_sha256": MEDIA_A}, "b": {"content_sha256": MEDIA_A}})
+    assert resolve_asset_id(bundle, MEDIA_A) == "b"
+    assert resolve_asset_id(bundle, "X") == "a"
+
+
+def test_shot_key_clash_with_parent_registry_refuses(monkeypatch, capsys):
+    bundle = _timeline({"a": {"media_id": MEDIA_B}}, {"a": {"media_id": MEDIA_A}})
+    err = _refuses(monkeypatch, capsys, bundle)
+    assert "'a'" in err and "different media" in err
+
+
+def test_shot_key_without_clash_resolves(monkeypatch):
+    whisper = W.default_source_order()[0]
+    bundle = _timeline({}, {"a": {"media_id": MEDIA_A}})
+    working = _FakeWorking(_timeline({}, {"a": {"media_id": MEDIA_A}}))
+    assert _run(monkeypatch, working, stored=_stored_a(whisper), timeline_bundle=bundle) == 0
+    assert working.bundle["parent"]["config"]["bundle"]["transcriptReferences"]["associations"][0]["assetId"] == "a"
+
+
+def test_two_assets_with_same_media_are_ambiguous(monkeypatch, capsys):
+    bundle = _timeline({"a": {"media_id": MEDIA_A}, "b": {"content_sha256": MEDIA_A}})
+    err = _refuses(monkeypatch, capsys, bundle)
+    assert "'a'" in err and "'b'" in err and "ambiguous" in err
+
+
+def test_legacy_row_is_backfilled_keeping_media_and_source(monkeypatch):
+    whisper = W.default_source_order()[0]
+    working = _FakeWorking(_timeline({"a": {"media_id": MEDIA_A}, "m": {"media_id": MEDIA_B}}))
+    working.bundle["parent"]["config"] = {"bundle": {"transcriptReferences": {"schema": REFS, "associations": [
+        {"documentId": "doc-b", "mediaId": MEDIA_B, "sourceId": "src-b"}]}}}
+    bundle = _timeline({"a": {"media_id": MEDIA_A}, "m": {"media_id": MEDIA_B}})
+    assert _run(monkeypatch, working, stored=_stored_a(whisper), timeline_bundle=bundle) == 0
+    envelope = working.bundle["parent"]["config"]["bundle"]
+    assert envelope["transcriptReferences"]["associations"][0] == {
+        "assetId": "m", "documentId": "doc-b", "mediaId": MEDIA_B, "sourceId": "src-b"}
+    assert envelope["schema_version"] == 1
+    validate_timeline_bundle(envelope)
+
+
+def test_dead_legacy_row_names_the_row_and_leaves_no_working_copy(monkeypatch, capsys):
+    working_bundle = _timeline({"a": {"media_id": MEDIA_A}})
+    working_bundle["parent"]["config"] = {"bundle": {"transcriptReferences": {"schema": REFS, "associations": [
+        {"documentId": "doc-gone", "mediaId": MEDIA_B, "sourceId": "src"}]}}}
+    err = _refuses(monkeypatch, capsys, working_bundle)
+    assert "doc-gone" in err and MEDIA_B in err and "remove the row or restore its media" in err
+
+
+def test_validation_refusal_leaves_no_working_copy(monkeypatch, capsys):
+    bundle = _timeline({"a": {"media_id": MEDIA_A}})
+    bundle["parent"]["config"] = {"bundle": {"itemsBySchemaRef": {"x": "not-a-list"}}}
+    err = _refuses(monkeypatch, capsys, bundle)
+    assert "would not open in the editor" in err and "itemsBySchemaRef" in err
