@@ -4,6 +4,8 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
+import re
 import uuid
 from collections.abc import Mapping
 from datetime import datetime, timezone
@@ -68,7 +70,83 @@ def _retain_clip_rows(before, after):
                shot.get('internal_timeline', {}).get('clips'))
 
 
-def _function_rerun_conflict(session, original_base, current_base, before_bundle, after_bundle):
+_OCCURRENCE_CLOSURE_ERROR = "closure membership or provenance changed; use a semantic command"
+
+
+def _occurrence_timing_candidate(before, after):
+    """Extract only existing timing leaves, leaving all closure identity in the basis."""
+    try:
+        from .emitter import DocumentPatchError, _outside, _same
+    except ModuleNotFoundError as exc:
+        if exc.name != "astrid.sdk.timeline.emitter":
+            raise
+        raise TimelineEditError("free edits require the G3 document emitter; use command() until it is available") from exc
+
+    base_rows, requested = before.get("placements"), after.get("placements")
+    if _same(base_rows, requested):
+        return None, []
+    if any(before.get(key) != after.get(key) for key in ("project_id", "timeline_id")):
+        emit_document_commands(before, after)
+
+    # INTERIM: Plan 18 TL-3r replaces this lowering with the semantic ripple operation.
+    if not isinstance(base_rows, list) or not isinstance(requested, list) or len(base_rows) != len(requested):
+        raise DocumentPatchError(_OCCURRENCE_CLOSURE_ERROR)
+    desired = copy.deepcopy(base_rows)
+    expected = []
+    identities = set()
+    for old, row, target in zip(base_rows, requested, desired):
+        if not isinstance(old, dict) or not isinstance(row, dict):
+            raise DocumentPatchError(_OCCURRENCE_CLOSURE_ERROR)
+        identity = old.get("occurrence_id")
+        if not isinstance(identity, str) or not identity or identity in identities or row.get("occurrence_id") != identity:
+            raise DocumentPatchError(_OCCURRENCE_CLOSURE_ERROR)
+        identities.add(identity)
+        if _same(old, row):
+            continue
+        old_placement, new_placement = old.get("placement"), row.get("placement")
+        if (old.get("at_ms") is not None or row.get("at_ms") is not None
+                or not isinstance(old_placement, dict) or not isinstance(new_placement, dict)):
+            raise DocumentPatchError(_OCCURRENCE_CLOSURE_ERROR)
+        for path, previous, value, positive in (
+            (["placement", "start_ms"], old_placement.get("start_ms"), new_placement.get("start_ms"), False),
+            (["duration_ms"], old.get("duration_ms"), row.get("duration_ms"), True),
+        ):
+            if any(type(item) not in (int, float) or (isinstance(item, float) and not math.isfinite(item))
+                   or item < 0 or (positive and item == 0) for item in (previous, value)):
+                raise DocumentPatchError(_OCCURRENCE_CLOSURE_ERROR)
+            if not _same(previous, value):
+                holder = target["placement"] if path[0] == "placement" else target
+                holder[path[-1]] = value
+                expected.append({"op": "set", "ref": "parent",
+                                 "path": ["occurrences", f"occurrence_id:{identity}", *path],
+                                 "before": {"state": "present", "value": previous}, "value": value})
+
+    if (not _same(desired, requested)
+            or not _same(_outside(before), _outside({**after, "placements": base_rows}))):
+        raise DocumentPatchError(_OCCURRENCE_CLOSURE_ERROR)
+    return desired, expected
+
+
+def _ripple_payload_change(change):
+    """Allow only an existing numeric clip start in a mixed placement patch."""
+    ref, path = change["ref"], change["path"]
+    if ref == "parent" and path[:1] == ["config"]:
+        path = path[1:]
+    return (
+        (ref == "parent" or ref.startswith("internal-revision:"))
+        and len(path) == 3
+        and path[0] == "clips"
+        and path[1].startswith("id:")
+        and path[2] == "at"
+        and change["op"] == "set"
+        and change["before"]["state"] == "present"
+        and type(change["before"]["value"]) in (int, float)
+        and type(change["value"]) in (int, float)
+    )
+
+
+def _function_rerun_conflict(session, original_base, current_base, before_bundle, after_bundle,
+                             occurrence_writes=()):
     """Return the existing conflict shape when a rerun rewrites intervening work."""
     from . import clash
     from ._doc_patch import Closure
@@ -80,7 +158,7 @@ def _function_rerun_conflict(session, original_base, current_base, before_bundle
     original = session._capture_bundle({"base": original_base, "pending": []})
     original_closure = Closure(original)
     before = Closure(before_bundle)
-    writes = []
+    writes = [(change["ref"], change["path"]) for change in occurrence_writes]
     for ref, left, right in _root_pairs(before_bundle, after_bundle):
         changes = []
         _diff(_payload_for_emit(ref, left), _payload_for_emit(ref, right), ref, (), changes)
@@ -338,11 +416,13 @@ class Timeline(Checkout):
         else:
             pin, verified = _selection(self.session, self.bundle, local_path)
         object_id = pin["object_id"]
+        if not isinstance(object_id, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", object_id):
+            raise TimelineEditError("invalid local media object digest")
         if not any(row.get("selection") == verified.get("selection") for row in self._verified_media):
             self._verified_media.append({**copy.deepcopy(verified), "object_id": object_id,
                                          "pin": {"media_id": object_id, "content_digest": object_id}})
         media_entry = {"key": pin["asset"], "media_id": object_id,
-                       "content_sha256": object_id, "type": verified.get("media_type"),
+                       "content_sha256": object_id[7:], "type": verified.get("media_type"),
                        "generationId": pin["generation_id"], "variantId": pin["variant_id"]}
         if verified.get("duration_seconds") is not None:
             media_entry["duration"] = verified["duration_seconds"]
@@ -364,6 +444,10 @@ class Timeline(Checkout):
     def open(cls, project=None, timeline=None, *, client=None, outbox_path=None):
         return open(project, timeline, client=client, outbox_path=outbox_path)
 
+    def _retained_reflow_source(self):
+        remote = getattr(self.session.client, "_remote", None)
+        return self._runtime_document, getattr(remote, "_transport", None)
+
     def _adopt(self, bundle):
         self.bundle = copy.deepcopy(bundle)
         self._base_bundle = copy.deepcopy(bundle)
@@ -372,6 +456,7 @@ class Timeline(Checkout):
         self._commands: list[dict[str, Any]] = []
         self._steps: list[dict[str, Any]] = []
         self._free_edits = False
+        self._occurrence_timing_writes: list[dict[str, Any]] = []
         self._journal.clear()
         self._refresh()
 
@@ -474,20 +559,11 @@ class Timeline(Checkout):
         self._capture_free_edits()
         commands = _placement_commands(self.bundle, pin, verified, on=on, duration=length,
                                        track=track, clip_id=clip_id, asset_alias=asset_alias)
-        from .commands import execute
-
         verified = {**copy.deepcopy(verified), "object_id": pin["object_id"],
                     "pin": {"media_id": pin["object_id"], "content_digest": pin["object_id"]}}
-        capture_bundle = (self._execution_bundle(self._command_bundle)
-                          if self._runtime_document is not None else self._command_bundle)
-        commands = execute(capture_bundle, commands,
-                           verified_media=[*self._verified_media, copy.deepcopy(verified)]).commands
-        self._verified_media.append(copy.deepcopy(verified))
-        try:
-            self._append(commands, label="Add media")
-        except Exception:
-            self._verified_media.pop()
-            raise
+        verified_media = [*self._verified_media, copy.deepcopy(verified)]
+        self._append(commands, label="Add media", verified_media=verified_media, capture=True)
+        self._verified_media = verified_media
         if cache_key is not None:
             entry = self._media_cache.setdefault(cache_key, {
                 "pin": copy.deepcopy(pin), "sources": [],
@@ -518,6 +594,48 @@ class Timeline(Checkout):
         result["source_mapping"]["_runtime_document"] = copy.deepcopy(self._runtime_document)
         return result
 
+    def _retained_capture_hydrator(self):
+        """Share verified inputs across the scratch previews of one edit."""
+        from .native_source_inputs import read_retained_transcripts
+
+        retained_captures = None
+
+        def hydrate(bundle):
+            nonlocal retained_captures
+            if retained_captures is None:
+                document, transport = self._retained_reflow_source()
+                retained_captures = read_retained_transcripts(transport, self.session.project_id, document)
+            if retained_captures:
+                bundle['source_mapping']['pinned_documents'] = copy.deepcopy(retained_captures)
+            return bool(retained_captures)
+
+        return hydrate
+
+    def _guard_anchored_nudge(self, clip, moment):
+        """Refuse an isolated change to a retained shot word declaration before editing."""
+        from astrid.core.timeline.moments import find_words
+
+        from ._shot_word_retime import retained_retime_pins, retime_transcripts
+        from ._timing_evaluators import SHOT_WORD_ALTERNATIVE
+        from .native_source_inputs import read_retained_transcripts
+        from .words import as_words, project_words
+
+        if clip.shot_id == PARENT_SHOT or moment.kind != "word":
+            return
+        document, transport = self._retained_reflow_source()
+        if not retained_retime_pins(document):
+            raise TimelineEditError(
+                f"{clip.address}: nudging a shot word anchor requires a retained transcript. {SHOT_WORD_ALTERNATIVE}"
+            )
+        rows = read_retained_transcripts(transport, self.session.project_id, document)
+        transcripts, captures = retime_transcripts(self.bundle, rows)
+        words = as_words(project_words(self.bundle, transcripts))
+        matches = [phrase for phrase in find_words(moment, words)
+                   if all(word.word_id and word.media_id in captures for word in phrase)]
+        reason = (f"{moment.text!r} matches {len(matches)} retained word passages"
+                  if len(matches) > 1 else "nudging the clip changes its retained word declaration")
+        raise TimelineEditError(f"{clip.address}: {reason}. {SHOT_WORD_ALTERNATIVE}")
+
     @property
     def head(self):
         return copy.deepcopy(self._basis)
@@ -539,21 +657,59 @@ class Timeline(Checkout):
     def _capture_free_edits(self):
         if self.bundle != self._command_bundle:
             before, after = copy.deepcopy(self._command_bundle), copy.deepcopy(self.bundle)
-            if self._runtime_document is not None or before.get("shots") != after.get("shots"):
+            desired, occurrence_writes = _occurrence_timing_candidate(before, after)
+            if desired is not None or self._runtime_document is not None or before.get("shots") != after.get("shots"):
                 before, after = self._execution_bundle(before), self._execution_bundle(after)
-            commands = emit_document_commands(before, after)
-            if not commands:
+            from .emitter import DocumentPatchError, _same
+            from .media_swap import capture_document_swaps
+
+            if desired is not None:
+                from .authoring_commit import physical_occurrence_commands
+
+                placement_commands = physical_occurrence_commands(before, desired)
+                changes = [change for call in placement_commands for change in call["args"]["changes"]]
+                if not _same(sorted(changes, key=lambda change: change["path"]),
+                             sorted(occurrence_writes, key=lambda change: change["path"])):
+                    raise DocumentPatchError(_OCCURRENCE_CLOSURE_ERROR)
+                try:
+                    payload = emit_document_commands(before, {**after, "placements": before["placements"]})
+                except DocumentPatchError:
+                    # Keep the original emitter refusal for mixed unsupported edits.
+                    emit_document_commands(before, after)
+                    raise
+                if any(not _ripple_payload_change(change)
+                       for call in payload for change in call["args"]["changes"]):
+                    raise DocumentPatchError(_OCCURRENCE_CLOSURE_ERROR)
+                # This interim path cannot swap or admit media. Do not invoke
+                # media discovery for placement edits, even if a payload is invalid.
+                self._append(placement_commands + payload, label="Edit document")
+                self._free_edits = True
+                self._occurrence_timing_writes.extend(occurrence_writes)
+                return
+
+            hydrate_retained = self._retained_capture_hydrator()
+            swaps, remaining, selected = capture_document_swaps(
+                before, after, self.session.client._remote._transport,
+                verified_media=self._verified_media,
+                hydrate_retained=hydrate_retained,
+            )
+            commands = emit_document_commands(remaining, after)
+            if not commands and not swaps:
                 raise TimelineEditError("document emitter omitted local edits")
             from .publish import _media_admission_inputs
 
             inputs = _media_admission_inputs(
                 before, after, self.session.client._remote._transport,
             )
-            preview_media = self._verified_media
+            # The shared replacement recipe already admits its new objects.
+            swap_inputs = [item for call in swaps if call['op'] == 'media.admit'
+                           for item in call['args']['inputs']]
+            inputs = [item for item in inputs if item not in swap_inputs]
+            preview_media = selected
             if inputs:
                 from astrid.sdk.timeline_media_replacement import _verified
 
-                preview_media = [row for row in self._verified_media
+                preview_media = [row for row in selected
                                  if not any(row.get("pin") == item["pin"] for item in inputs)]
                 for item in inputs:
                     if "selection" in item:
@@ -565,19 +721,34 @@ class Timeline(Checkout):
                         row = next((row for row in self._verified_media if row.get("pin") == item["pin"]), None)
                     if row is not None and row not in preview_media:
                         preview_media.append(row)
-                commands.append({"schema_version": 1, "op": "media.admit", "version": "1",
-                                 "select": None, "args": {"inputs": inputs}})
-            self._append(commands, label="Edit document", verified_media=preview_media)
+            # Media admission and document patches have their own semantic
+            # steps. Mixing doc.patch claims with media.admit previously
+            # compared input-revision paths against successor-revision effects.
+            for swap in swaps:
+                self._append([swap], label="Replace clip media", verified_media=preview_media,
+                             hydrate_retained=hydrate_retained)
+            if commands:
+                self._append(commands, label="Edit document", verified_media=preview_media,
+                             hydrate_retained=hydrate_retained)
+            if inputs:
+                self._append([{"schema_version": 1, "op": "media.admit", "version": "1",
+                               "select": None, "args": {"inputs": inputs}}],
+                             label="Capture document media", verified_media=preview_media,
+                             hydrate_retained=hydrate_retained)
+            self._verified_media = preview_media
             self._free_edits = True
 
     def _append(self, commands, *, label, intent="", tags=(), reads=None, verified_media=None,
-                schema_inputs=(), capture=False):
+                schema_inputs=(), capture=False, hydrate_retained=None):
         from .commands import CommandError, execute
 
         try:
             bundle = (self._execution_bundle(self._command_bundle)
                       if self._runtime_document is not None or any(command.get("op") == "doc.patch" for command in commands)
                       else self._command_bundle)
+            if hydrate_retained is None:
+                hydrate_retained = self._retained_capture_hydrator()
+            hydrated = hydrate_retained(bundle)
             plan = execute(bundle, commands, verified_media=self._verified_media if verified_media is None else verified_media,
                            schema_inputs=schema_inputs, realm_id=self.session.identity["realm_id"])
         except CommandError as exc:
@@ -601,6 +772,12 @@ class Timeline(Checkout):
         self._commands.extend(copy.deepcopy(commands))
         self._steps.append(step)
         staged = copy.deepcopy(plan.bundle)
+        if hydrated:
+            original_mapping = self._command_bundle.get('source_mapping', {})
+            if 'pinned_documents' in original_mapping:
+                staged['source_mapping']['pinned_documents'] = copy.deepcopy(original_mapping['pinned_documents'])
+            else:
+                staged['source_mapping'].pop('pinned_documents', None)
         _retain_clip_rows(self.bundle, staged)
         self.bundle = staged
         self._runtime_document = self.bundle.get("source_mapping", {}).pop("_runtime_document", self._runtime_document)
@@ -645,6 +822,9 @@ class Timeline(Checkout):
         ``reads`` here declares dependencies at this step's sequential input;
         ``commit(reads=...)`` declares dependencies at batch entry.
         """
+        return self._stage_command(command, label=label, intent=intent, tags=tags, reads=reads)
+
+    def _stage_command(self, command, *, label, intent="", tags=(), reads=None, capture=False):
         if not self._evaluating:
             with self.session.outbox.locked():
                 state = self.session._state()
@@ -653,7 +833,8 @@ class Timeline(Checkout):
                 if state["base"] != self._basis:
                     raise TimelineEditError("session base changed; reopen before editing")
         self._capture_free_edits()
-        self._append([copy.deepcopy(command)], label=label, intent=intent, tags=tags, reads=reads)
+        self._append([copy.deepcopy(command)], label=label, intent=intent, tags=tags, reads=reads,
+                     capture=capture)
         return self
 
     def move(self, select, on):
@@ -763,7 +944,8 @@ class Timeline(Checkout):
                           self._resolve_pending_key(idempotency_key) if idempotency_key is not None else None)
         pending_id, pending_path, pending_part, pending_identity = pending_target if pending_target is not None else (None, None, None, None)
         if function:
-            replay = self.session.resolve_acknowledged(idempotency_key, dry_run=dry_run)
+            replay = self.session.resolve_acknowledged(idempotency_key, dry_run=dry_run,
+                                                       via=getattr(self, '_commit_via', 'python'))
             if replay is not None:
                 return replay
         if commands is not None:
@@ -802,6 +984,7 @@ class Timeline(Checkout):
                     raise TimelineEditError("local edits differ from the original request; reopen to reconcile it")
                 try:
                     result = self.session.flush(idempotency_key=idempotency_key, dry_run=dry_run,
+                                                via=getattr(self, '_commit_via', 'python'),
                                                 release_conflict=not function)
                 except CommitRefused as exc:
                     if function:
@@ -857,8 +1040,9 @@ class Timeline(Checkout):
                 raise TimelineEditError("no pending timeline edits")
             steps = copy.deepcopy(working._steps)
             effective_merge = merge
-            if reads is None and (function or working._free_edits
-                                  or any(command["op"] == "doc.patch" for command in working._commands)):
+            if working._occurrence_timing_writes or (reads is None and (
+                    function or working._free_edits
+                    or any(command["op"] == "doc.patch" for command in working._commands))):
                 effective_merge = "atomic"
                 # Arbitrary Python may consult any part of the loaded closure.
                 # Keep omitted batch reads distinct from an empty declaration,
@@ -870,10 +1054,11 @@ class Timeline(Checkout):
                           "identity_cache": copy.deepcopy(working._identity_cache)}
             if function and not _overwrite:
                 overlap = _function_rerun_conflict(
-                    self.session, original_base, base, before_bundle, working.bundle)
+                    self.session, original_base, base, before_bundle, working.bundle, working._occurrence_timing_writes)
                 if overlap is not None:
                     error = self.session.save_interrupted(
                         working._commands, base=original_base, label=commit_label, steps=steps,
+                        via=getattr(self, '_commit_via', 'python'),
                         merge=effective_merge, reads=reads, key=idempotency_key,
                         evaluation=evaluation, failure=overlap, release_flight=state.get("flight"),
                         release_dry_run=dry_run, pending_id=pending_id,
@@ -885,6 +1070,7 @@ class Timeline(Checkout):
                 if dry_run or pending_id is not None:
                     raise TimelineEditError("session base changed; reopen before committing")
                 error = self.session.save_interrupted(working._commands, base=base, label=commit_label,
+                                                      via=getattr(self, '_commit_via', 'python'),
                                                       steps=steps, merge=effective_merge, reads=reads,
                                                       key=idempotency_key, evaluation=evaluation)
                 self._adopt(self._base_bundle)
@@ -892,6 +1078,7 @@ class Timeline(Checkout):
             try:
                 result = self.session.submit(
                     working._commands, label=commit_label, steps=steps, merge=effective_merge, reads=reads,
+                    via=getattr(self, '_commit_via', 'python'),
                     idempotency_key=idempotency_key, dry_run=dry_run, expected_state=state, base=base,
                     evaluation=evaluation,
                     pending_id=pending_id,
@@ -915,6 +1102,7 @@ class Timeline(Checkout):
                         base = _pin(latest["base"])
                         continue
                 error = self.session.save_interrupted(working._commands, base=original_base if function else base, label=commit_label,
+                                                      via=getattr(self, '_commit_via', 'python'),
                                                       steps=steps, merge=effective_merge, reads=reads,
                                                       key=idempotency_key, evaluation=evaluation,
                                                       pending_id=pending_id, pending_path=pending_path,
@@ -954,7 +1142,7 @@ class Timeline(Checkout):
                     evaluation = state.get("evaluation") or evaluation
                 continue
             if dry_run:
-                self._add_preview_diff(result, working.bundle)
+                working._add_preview_diff(result, working.bundle)
             if function and count > 1:
                 result["attempts"] = count
                 result["data"]["attempts"] = count
@@ -1095,9 +1283,12 @@ class Timeline(Checkout):
             self._add_preview_diff(result, self.bundle)
         return self._accepted(result)
 
-    @staticmethod
-    def _add_preview_diff(result, before_bundle):
+    def _add_preview_diff(self, result, before_bundle=None):
         """Pair Runtime's preview commands with a diff of authored document fields."""
+        if before_bundle is None:
+            result, before_bundle = self, result
+        elif self._runtime_document is not None:
+            before_bundle = self._execution_bundle(before_bundle)
         from .commit import bundle_from_document
         from .emitter import _diff, _payload_for_emit, _root_pairs
 

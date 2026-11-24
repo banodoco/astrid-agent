@@ -167,9 +167,8 @@ def add_media(session, source, *, on, duration, track, clip_id, values,
     paired_capture = (callable(capture) and captured_parameter is not None
                       and captured_parameter.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD,
                                                       inspect.Parameter.KEYWORD_ONLY))
-    captured_bundle = capture(state) if paired_capture else session._bundle(state)
+    captured_bundle = capture(state, for_execution=True) if paired_capture else session._bundle(state)
     bundle = copy.deepcopy(captured_bundle)
-    bundle.get("source_mapping", {}).pop("_runtime_document", None)
     local_source = not isinstance(source, Mapping) and Path(source).expanduser().is_file()
     pin, verified = _selection(session, bundle, source)
     commands = _placement_commands(bundle, pin, verified, on=on, duration=duration,

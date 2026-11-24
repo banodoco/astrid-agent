@@ -15,6 +15,7 @@ from .checkout import Checkout
 from .commands import execute
 from .model import Clip, _is_formula_or_moment
 from .selection import Selection
+from .sync import _flight_kind, _strip_retained_transcript_captures
 from .units import from_canvas
 
 
@@ -131,21 +132,7 @@ class AttachedCheckout(Checkout):
     def _read_pending(self):
         with self.session.outbox.locked():
             state = self.session._state()
-        try:
-            self.bundle = self._bundle(state)
-        except Exception:
-            # A selected PARAM flight already contains its exact retained pin
-            # and is retried verbatim.  Its portable bytes need not be reread
-            # just to reopen the draft preview after a lost acknowledgement.
-            if (state['flight'] is None or not any(
-                    command.get('op') == 'clip.set-params'
-                    and isinstance(command.get('args', {}).get('schema_source'), dict)
-                    for command in state['pending'])):
-                raise
-            from .store import fetch_bundle
-
-            self.bundle = fetch_bundle(self.session.project_id, self.session.timeline_id,
-                                       revision_id=state['base']['revision_id'], client=self.session.client)
+        self.bundle = self._public_preview(self._bundle(state))
         self._basis = copy.deepcopy(state['base'])
         self._pending = copy.deepcopy(state['pending'])
         self._preview = copy.deepcopy(self.bundle)
@@ -153,17 +140,30 @@ class AttachedCheckout(Checkout):
         self._mcache = None
 
     def _bundle(self, state, extra_commands=()):
-        """Materialize pending selected PARAM commands from their exact pins."""
+        """Load the exact publication and materialize inputs for local execution."""
         from astrid.sdk.timeline.native_source_inputs import materialize_transcript_inputs
         from astrid.sdk.timeline_elements import _read_selected_param_inputs
 
         from .store import fetch_bundle
 
         bundle = fetch_bundle(self.session.project_id, self.session.timeline_id,
-                              revision_id=state['base']['revision_id'], client=self.session.client)
-        materialize_transcript_inputs(
-            bundle, [*state['pending'], *extra_commands], client=self.session.client.timelines._client,
-            project=self.session.project_id)
+                              revision_id=state['base']['revision_id'],
+                              publication_id=state['base']['publication_id'], client=self.session.client)
+        commands = [*state['pending'], *extra_commands]
+        recovering_selected = (not extra_commands and _flight_kind(state['flight']) == 'commit'
+                               and any(command.get('op') == 'clip.set-params'
+                                       and isinstance(command.get('args', {}).get('schema_source'), dict)
+                                       for command in state['pending']))
+        try:
+            materialize_transcript_inputs(
+                bundle, commands, client=self.session.client.timelines._client,
+                project=self.session.project_id, include_retained=bool(commands))
+        except TimelineEditError:
+            # The exact request was already sealed. Its receipt can be
+            # recovered from the base preview without executing the draft.
+            if not recovering_selected:
+                raise
+            return bundle
         if not state['pending']:
             return bundle
         inputs = []
@@ -175,16 +175,23 @@ class AttachedCheckout(Checkout):
                 continue
             row = State(bundle).entity(command['select'])
             selected = row.get('elementRef') or row.get('element_ref')
-            _, captured, _ = _read_selected_param_inputs(
-                self.session.client.timelines,
-                self.session.project_id,
-                self.session.timeline_id,
-                realm=self.session.identity['realm_id'],
-                through=state['base'],
-                select=command['select'],
-                source=source,
-                element=selected,
-            )
+            try:
+                _, captured, _ = _read_selected_param_inputs(
+                    self.session.client.timelines,
+                    self.session.project_id,
+                    self.session.timeline_id,
+                    realm=self.session.identity['realm_id'],
+                    through=state['base'],
+                    select=command['select'],
+                    source=source,
+                    element=selected,
+                )
+            except Exception:
+                # A selected PARAM flight already holds its original portable
+                # intent. Reopen its base for a verbatim acknowledgement retry.
+                if not recovering_selected:
+                    raise
+                return bundle
             inputs.extend(captured)
         if not inputs:
             return execute(bundle, state['pending']).bundle
@@ -217,9 +224,15 @@ class AttachedCheckout(Checkout):
         self.session._stage(capture)
         # Only expose the candidate after the existing outbox's atomic write.
         self._pending.extend(copy.deepcopy(plans[0].commands))
-        self.bundle = plans[0].bundle
+        self.bundle = self._public_preview(plans[0].bundle)
         self._preview = copy.deepcopy(self.bundle)
         self._mcache = None
+
+    @staticmethod
+    def _public_preview(bundle):
+        _strip_retained_transcript_captures(bundle)
+        bundle.get('source_mapping', {}).pop('_runtime_document', None)
+        return bundle
 
     def _same_preview(self, bundle):
         """Compare authored preview state; retained source hydration is read-only."""
@@ -228,6 +241,7 @@ class AttachedCheckout(Checkout):
             mapping = value.get('source_mapping')
             if isinstance(mapping, dict):
                 mapping['pinned_documents'] = []
+                mapping.pop('_runtime_document', None)
             return value
         return equal(authored(bundle), authored(self._preview))
 
