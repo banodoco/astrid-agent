@@ -47,6 +47,13 @@ def test_align_discovers_real_saved_entry(tmp_path, monkeypatch):
     observed = alignment.inspect_assets([manifest], target, observed={})
     assert observed["entries"][0]["modes"][0]["missing_nodes"]
     assert observed["status"] == "not_ready"
+    # The apply body must stop before target verification or any asset writes.
+    refused = alignment._align_selected([manifest], target, entry_id="my-align",
+                                        apply=True, deadline=0)
+    assert refused["status"] == "not_ready"
+    assert refused["applied"] is False
+    assert any(row.get("code") == "model_lock_incomplete"
+               for row in refused["entries"][0]["modes"][0]["unlocked"])
     assert not root.exists()
 
 
