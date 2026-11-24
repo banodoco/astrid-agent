@@ -1213,6 +1213,100 @@ def _workflow_description(entry: Mapping[str, Any]) -> dict[str, Any]:
     return {'id': entry.get('id'), 'engine': 'comfyui'}
 
 
+def _shipped_node_provider_available(*, pending_target: Mapping[str, Any] | None,
+                                     align: str, engine_missing: bool) -> bool:
+    """Does this placement prepare or already link the shipped custom nodes?
+
+    Managed alignment calls link_vibecomfy_custom_node on the verified worker
+    checkout before restoring nodes. Check/trust never does that. An attached
+    target is handled separately by its live object_info, never this helper.
+    """
+    if engine_missing:
+        return False
+    if pending_target is not None:
+        # The retained RunPod owner aligns by default; an explicit check/trust
+        # must not assume a rented machine already has the package linked.
+        return (pending_target.get('placement') == 'runpod'
+                and pending_target.get('engine') == 'comfyui' and align == 'align')
+
+    from .engine_local_endpoint import DEFAULT_ENGINE, DEFAULT_PLATFORM, recorded_engine_root
+    from .engine_recipe import load_recipe
+
+    root = recorded_engine_root(DEFAULT_ENGINE)
+    if root is None:
+        return False
+    recipe = load_recipe(DEFAULT_ENGINE, DEFAULT_PLATFORM)
+    checkout = Path(root) / next(source.relative_path for source in recipe.sources if source.name == 'vibecomfy')
+    comfy = Path(root) / next(source.relative_path for source in recipe.sources if source.name == 'comfyui')
+    source = checkout / 'vibecomfy' / 'comfy_nodes'
+    if not (source / '__init__.py').is_file() or not (comfy / 'main.py').is_file():
+        return False
+    if align == 'align':
+        return True  # managed preparation links this verified checkout
+    # Read-only witness of the current or legacy link created by VibeComfy.
+    return any(link.is_dir() and link.resolve() == source.resolve()
+               for link in (comfy / 'custom_nodes' / 'vibecomfy_custom_nodes',
+                            comfy / 'custom_nodes' / 'vibecomfy'))
+
+
+def _deferred_missing_node_classes(workflow: Any, *, pending_target: Mapping[str, Any] | None = None,
+                                   align: str = 'check', engine_missing: bool = False) -> list[str]:
+    """Active classes that lack an installable provider on a deferred target.
+
+    A schema is evidence of an interface, not installation. The only schema
+    exemption is a core class in VibeComfy's shipped ComfyUI schema index.
+    The shipped VibeComfy registry is a separate provider, and only counts
+    when the selected placement links it or has a verified link already.
+    Other classes need an exact shipped catalog pin or a declared pinned ref.
+    The host still checks consent, restoration and the actual object_info.
+    """
+    import re
+
+    import vibecomfy
+    from vibecomfy.node_packs import CORE_COMFY_CLASSES, read_lockfile
+    from vibecomfy.schema.provider import ObjectInfoIndexSchemaProvider
+
+    active = {node.class_type for node in workflow.runtime_nodes().values()}
+    unresolved = active - CORE_COMFY_CLASSES
+    if not unresolved:
+        return []
+
+    def exact_git_pin(ref):
+        return (ref.source == 'git' and ref.url and isinstance(ref.commit, str)
+                and re.fullmatch(r'[0-9a-fA-F]{40}', ref.commit) is not None)
+
+    requirements = getattr(workflow, 'requirements', None)
+    declared = {name for ref in getattr(requirements, 'typed_custom_node_refs', ())
+                if exact_git_pin(ref) for name in ref.classes}
+    locked = {name for ref in read_lockfile()
+              if exact_git_pin(ref) for name in ref.class_set}
+    unresolved -= declared | locked
+    if not unresolved:
+        return []
+
+    # The shipped index identifies core schema provenance even for classes
+    # absent from CORE_COMFY_CLASSES (for example SaveAudio). An ambient
+    # authoring cache or provisional registry schema cannot grant this.
+    root = Path(vibecomfy.__file__).resolve().parent / 'porting' / 'cache' / 'object_info'
+    provider = ObjectInfoIndexSchemaProvider(root)
+    for name in sorted(unresolved):
+        schema = provider.get_schema(name)
+        if schema is None or schema.source_provider != 'object_info_index' or not schema.source_cache_path:
+            continue
+        pack_file = Path(schema.source_cache_path)
+        if pack_file.resolve().is_relative_to(root.resolve()) and pack_file.name.startswith(('comfy_core@', 'comfy_extras@')):
+            unresolved.remove(name)
+    if unresolved:
+        from vibecomfy.comfy_nodes import NODE_CLASS_MAPPINGS
+
+        shipped = unresolved.intersection(NODE_CLASS_MAPPINGS)
+        if shipped and _shipped_node_provider_available(
+            pending_target=pending_target, align=align, engine_missing=engine_missing,
+        ):
+            unresolved -= shipped
+    return sorted(unresolved)
+
+
 def pack_version_notices(source_provenance: Mapping[str, Any],
                          selected_refs: Sequence[Mapping[str, Any]], *,
                          installing: bool) -> list[dict[str, Any]]:
@@ -1252,7 +1346,8 @@ def pack_version_notices(source_provenance: Mapping[str, Any],
 
 
 def target_schema(entry: dict[str, Any], workflow: Any, client: Any, *, engine: str | None = None,
-                  pending_target: Mapping[str, Any] | None = None, align: str = 'check'):
+                  pending_target: Mapping[str, Any] | None = None, align: str = 'check',
+                  initial_readiness: Mapping[str, Any] | None = None):
     """Check the selected target's node and exact loader inventory.
 
     ``align='trust'`` feeds the workflow's own declared model rows as target custody,
@@ -1261,25 +1356,39 @@ def target_schema(entry: dict[str, Any], workflow: Any, client: Any, *, engine: 
     for need in entry.get("needs", []):
         if need.get("ambiguity"):
             raise ValueError(f"entry requires review: {need['ambiguity']}")
-    if client is None:
-        return None
     from types import SimpleNamespace
 
     from astrid.core.generation.backends.comfy_schema import TargetSchemaProvider
     from astrid.core.generation.backends.comfy_target import _resolve_roles
-    observed = client.object_info()
-    if not isinstance(observed, dict):
-        raise ValueError("target model inventory is malformed")
-    if align == 'trust':
-        from .target_inventory import trust_declared_loader_choices
-        observed = trust_declared_loader_choices(observed, workflow)
     from astrid.core.generation.preflight import GenerationReadinessError, readiness_envelope
-    issues = []
-    for class_type in sorted({node.class_type for node in workflow.runtime_nodes().values()} - observed.keys()):
+
+    if client is None:
+        missing_classes = _deferred_missing_node_classes(
+            workflow, pending_target=pending_target, align=align,
+            engine_missing=initial_readiness is not None,
+        )
+        observed = {}
+    else:
+        observed = client.object_info()
+        if not isinstance(observed, dict):
+            raise ValueError("target model inventory is malformed")
+        if align == 'trust':
+            from .target_inventory import trust_declared_loader_choices
+            observed = trust_declared_loader_choices(observed, workflow)
+        missing_classes = sorted({node.class_type for node in workflow.runtime_nodes().values()} - observed.keys())
+
+    if initial_readiness is not None and not missing_classes:
+        # No additional pack issue; keep the original typed engine refusal.
+        raise GenerationReadinessError(initial_readiness)
+    issues = list(initial_readiness['issues']) if initial_readiness is not None else []
+    for class_type in missing_classes:
+        message = (f'target is missing node {class_type!r}; '
+                   'install it on the requested ComfyUI target, '
+                   'or choose a target that provides it.') if client is not None else (
+                   f'no known providing pack for workflow node {class_type!r}; '
+                   'identify the providing pack before preparing the requested target.')
         issues.append({'code': 'missing_node_pack', 'severity': 'error',
-                       'message': (f'target is missing node {class_type!r}; '
-                                   'install it on the requested ComfyUI target, '
-                                   'or choose a target that provides it.'),
+                       'message': message,
                        'details': {'engine_code': 'comfyui.missing_node', 'node': class_type, 'bytes': None}})
     roles = {}
     needs_by_key = {}
@@ -1290,7 +1399,8 @@ def target_schema(entry: dict[str, Any], workflow: Any, client: Any, *, engine: 
         key = str(index)
         roles[key] = SimpleNamespace(node_class=node_class, input=field, names=(value,))
         needs_by_key[key] = need
-    _, failures = _resolve_roles(SimpleNamespace(model_roles=roles), observed)
+    _, failures = (_resolve_roles(SimpleNamespace(model_roles=roles), observed)
+                   if client is not None else ({}, {}))
     for key in failures:
         need = needs_by_key[key]
         if need['class_type'] not in observed:
@@ -1300,13 +1410,27 @@ def target_schema(entry: dict[str, Any], workflow: Any, client: Any, *, engine: 
                        'details': {'engine_code': 'comfyui.models_missing', 'model': need['value'],
                                    'node': need['class_type'], 'field': need['field'], 'bytes': need.get('bytes')}})
     if issues:
-        from .asset_gaps import align_argv
-        raise GenerationReadinessError(readiness_envelope(entry={
-            **_workflow_description(entry),
-            'inputs': input_inventory(_workflow_inputs(entry, entry.get('mode', 'workflow'), workflow=workflow))},
-            target=getattr(client, 'generation_target', None), issues=issues,
-            fixes=[{'argv': align_argv(entry.get('registry_id') or entry.get('id')),
-                    'scope': 'user_env', 'details': {'action': 'Install missing locked assets; unlocked assets require a manifest.'}}]))
+        if client is None:
+            target = pending_target or {'engine': engine or 'comfyui', 'placement': 'local',
+                                        'state': 'pending_host_readiness'}
+            fixes = [{'argv': ['vibecomfy', 'nodes', 'lookup', '--', name], 'scope': 'read_only',
+                      'details': {'action': 'Identify the providing pack before declaring its pinned source.'}}
+                     for name in missing_classes]
+        else:
+            from .asset_gaps import align_argv
+            target = getattr(client, 'generation_target', None)
+            fixes = [{'argv': align_argv(entry.get('registry_id') or entry.get('id')),
+                      'scope': 'user_env', 'details': {'action': 'Install missing locked assets; unlocked assets require a manifest.'}}]
+        if initial_readiness is not None:
+            target = initial_readiness.get('target') or target
+            fixes = [*initial_readiness['fixes'], *fixes]
+        description = {**_workflow_description(entry),
+                       **((initial_readiness.get('entry') or {}) if initial_readiness is not None else {}),
+                       'inputs': input_inventory(_workflow_inputs(entry, entry.get('mode', 'workflow'), workflow=workflow))}
+        raise GenerationReadinessError(readiness_envelope(entry=description,
+            target=target, issues=issues, fixes=fixes))
+    if client is None:
+        return None
     custody = {}
     if align != 'trust' and client.target.kind == "managed" and client.target.facts.get("model_root") is not None:
         from .model_root import validate_model_root_binding
