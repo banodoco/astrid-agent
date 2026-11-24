@@ -12693,6 +12693,19 @@ class GenericPackHost:
                     if port.type == "file"
                 ),
             )
+            if capability_id == "vibecomfy.run":
+                admitted = _admitted_task_spec(task_data)
+                # Only the Runtime-owned outer envelope can identify a
+                # delegated child. Those and legacy UI tasks predate receipts;
+                # ordinary canonical root tasks must not omit the receipt.
+                delegated = "delegated_parent" in task_data["spec"]
+                canonical = any(inputs.get(name) for name in ("python", "companion", "source"))
+                if "invocation_preflight" in admitted or (canonical and not delegated):
+                    from astrid.packs.vibecomfy.invocation_preflight import verify_admitted_invocation_receipt
+
+                    verify_admitted_invocation_receipt(
+                        admitted.get("invocation_preflight"), inputs, root / "workflow-receipt",
+                    )
             local_device = None
             placement_policy = inputs.get("placement_policy")
             if record.definition.metadata.get("host_target_operation") and not placement_policy:
