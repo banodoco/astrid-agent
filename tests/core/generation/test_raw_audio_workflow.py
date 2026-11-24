@@ -8,7 +8,9 @@ import pytest
 from astrid.core.generation import cli, preflight
 from astrid.sdk.generation import _explicit_workflow_needs
 from tests.core.generation.backends.test_comfy_model_resolution import install_target
-from tests.core.generation.backends.test_comfy_target import network  # noqa: F401
+from tests.core.generation.backends.test_comfy_target import (  # noqa: F401
+    engine_configuration, network, observation_configuration,
+)
 
 
 def test_raw_audio_workflow_dry_run_uses_real_draft_entry(network, monkeypatch, tmp_path, capsys):
