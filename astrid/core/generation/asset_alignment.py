@@ -403,6 +403,7 @@ def catalog_manifests(entry_id: str | None = None) -> list[dict[str, Any]]:
                             'classes': sorted(set(row.class_set) & classes)}
                     _validate_pack(pack)
                     recipe = {'requirements_txt': row.requirements_txt, 'pip_no_deps': row.pip_no_deps}
+                    pack.update(requirements_txt=row.requirements_txt, pip_no_deps=list(row.pip_no_deps))
                     recipe_hash = recipe_sha256(recipe)
                     shipped = node_locks.get(row.name)
                     shipped_match = (
@@ -416,10 +417,8 @@ def catalog_manifests(entry_id: str | None = None) -> list[dict[str, Any]]:
                                        for record in approvals)
                         if not approved:
                             pack['requires_code_consent'] = True
-                        # The existing alignment installer does not consume an
-                        # approved recipe; never send a novel recipe through
-                        # it. LE-2b owns the controlled admission/install path.
-                        pack['bundle_install_pending'] = True
+                        pack['code_approvals'] = [record for record in approvals
+                            if approval_matches(record, node, placement_class='local')]
                     prior = by_name.get(row.name)
                     if prior is not None:
                         if prior[0] != recipe_hash or (prior[1]['repository'], prior[1]['revision']) != (repo, revision):
@@ -554,6 +553,10 @@ def _validate_pack(pack: dict[str, Any]) -> None:
 
 def _install_pack(target: ManagedAssetTarget, pack: dict[str, Any], *, deadline: float) -> None:
     _validate_pack(pack)
+    from .node_approvals import target_approvals
+    node = {'repo': pack['repository'], 'commit': pack['revision'],
+            'requirements_txt': pack.get('requirements_txt'), 'pip_no_deps': pack.get('pip_no_deps', [])}
+    approvals = target_approvals([node], pack.get('code_approvals', []), placement_class='local')
     _safe_path(target.custom_nodes_root, target.custom_nodes_root / _safe_relative(pack['name']))
     lockpath = _safe_path(target.root, target.root / '.astrid-engine/aligned-custom-nodes.lock')
     _root_and_destination(str(target.custom_nodes_root), PurePosixPath('.vibecomfy-install-state/check'))
@@ -562,33 +565,22 @@ def _install_pack(target: ManagedAssetTarget, pack: dict[str, Any], *, deadline:
     # Run the existing installer inside the target environment so its pip
     # protection checks observe the target's actual installed distributions.
     code = '''import json, sys
-from dataclasses import asdict, replace
+from dataclasses import asdict
 from pathlib import Path
-from vibecomfy.node_packs import install_pack, read_lockfile, write_lockfile
-from vibecomfy.node_packs._lockfile import DeclaredPatch
-from vibecomfy.security.gate import requesting_provenance
+from vibecomfy.node_packs import restore_pack
+from vibecomfy.node_packs._lockfile import DeclaredPatch, LockEntry
 pack = json.loads(sys.argv[1])
-token = requesting_provenance.set('user_confirmed')
-try:
-    result = install_pack(name=pack['name'], repo=pack['repository'],
-        install_root=Path(sys.argv[2]), lockfile_path=Path(sys.argv[3]),
-        checkout_ref=pack['revision'], expected_commit=pack['revision'],
-        cm_cli_resolver=lambda *_: None)
-finally:
-    requesting_provenance.reset(token)
-if result.status in ('installed', 'refreshed'):
-    patches = tuple(DeclaredPatch(**patch) for patch in json.loads(sys.argv[4]))
-    if patches:
-        lockpath = Path(sys.argv[3])
-        entries = read_lockfile(lockpath)
-        entries = [replace(entry, patches=patches) if entry.name == pack['name'] else entry for entry in entries]
-        write_lockfile(entries, lockpath)
+entry = LockEntry(name=pack['name'], url=pack['repository'], commit=pack['revision'],
+    requirements_txt=pack.get('requirements_txt'), pip_no_deps=tuple(pack.get('pip_no_deps', [])),
+    patches=tuple(DeclaredPatch(**patch) for patch in json.loads(sys.argv[4])))
+result = restore_pack(entry, install_root=Path(sys.argv[2]), lockfile_path=Path(sys.argv[3]),
+    approvals=json.loads(sys.argv[5]), placement_class='local')
 print(json.dumps(asdict(result)))
 '''
     try:
         child = subprocess.run([target.python, '-c', code, json.dumps(pack), str(target.custom_nodes_root), str(lockpath),
                                 json.dumps([{'path': p.path, 'sha256': p.sha256_after}
-                                            for p in _pack_recipe_patches(target, pack)])],
+                                            for p in _pack_recipe_patches(target, pack)]), json.dumps(approvals)],
             cwd=target.root, env={**os.environ, 'PYTHONPATH': str(target.vibecomfy_root),
                                   'PYTHONDONTWRITEBYTECODE': '1', 'PYTHONNOUSERSITE': '1'},
             capture_output=True, text=True, check=True, timeout=max(0.001, min(600, deadline - time.monotonic())))
@@ -668,6 +660,25 @@ def align(*, entry_id=None, all_entries=False, apply=False, consent=(), target=N
     if entry_id is not None and all_entries:
         raise AlignmentError('Choose --entry ID or --all')
     manifests = catalog_manifests(entry_id) if manifests is None else manifests
+    from .entries import find_entry
+    from .node_approvals import authorize_nodes, approval_record
+    manifests = [{**manifest, 'modes': [{**mode, 'node_packs': [dict(pack) for pack in mode['node_packs']]}
+                                     for mode in manifest['modes']]} for manifest in manifests]
+    packs = [pack for manifest in manifests for mode in manifest['modes'] for pack in mode['node_packs']]
+    nodes = list({(pack['repository'], pack['revision'], pack.get('requirements_txt'),
+                   tuple(pack.get('pip_no_deps', []))): {
+                       'repo': pack['repository'], 'commit': pack['revision'],
+                       'requirements_txt': pack.get('requirements_txt'), 'pip_no_deps': pack.get('pip_no_deps', [])}
+                  for pack in packs}.values())
+    approvals = authorize_nodes(nodes, placement_class='local', consent=consent,
+        entry=find_entry(entry_id) if entry_id else None,
+        retry_argv=align_argv(entry_id), persist=apply)
+    for pack in packs:
+        node = {'repo': pack['repository'], 'commit': pack['revision'],
+                'requirements_txt': pack.get('requirements_txt'), 'pip_no_deps': pack.get('pip_no_deps', [])}
+        current = approval_record(node, placement_class='local')
+        pack['code_approvals'] = [row for row in approvals if row == current]
+        pack.pop('requires_code_consent', None)
     target = selected_target() if target is None else target
     deadline = time.monotonic() + deadline_seconds
     if apply:
@@ -683,10 +694,6 @@ def _bundle_alignment_code_problem(pack, state):
             f"Node pack {pack['name']} at {pack['revision']} has no matching shipped pin or local code approval; "
             "user_env consent does not authorize installing new node code. "
             "Have the user approve that exact repository, commit and recipe for the managed target, then retry ")
-    if pack.get('bundle_install_pending') and state != 'verified':
-        return (
-            f"Approved node pack {pack['name']} at {pack['revision']} is not installed at its pinned revision; "
-            "install the exact approved recipe through the controlled node-code setup path, then retry ")
     return None
 
 
@@ -735,7 +742,7 @@ def _align_selected(manifests, target, *, entry_id, apply, deadline, client=None
                 if pack['name'] not in seen_packs:
                     state = _pack_state(target, pack)
                     _check_bundle_alignment_code(pack, state, report['align_command'])
-                    if state != 'verified':
+                    if state != 'verified' or pack.get('requirements_txt') or pack.get('pip_no_deps'):
                         if installer is None:
                             _install_pack(target, pack, deadline=deadline)
                         else:

@@ -270,8 +270,14 @@ def _generation_controls(*, engine, consent):
             raise GenerationInputError(str(exc)) from exc
         if selected != 'comfyui':
             raise GenerationInputError('Phase 1 target generation supports only comfyui')
-    if not isinstance(consent, (tuple, list)) or any(scope != 'user_env' for scope in consent):
-        raise GenerationInputError('consent must contain only user_env; rent with `astrid machines claim`')
+    from astrid.core.generation.consent import consent_scope
+    if not isinstance(consent, (tuple, list)):
+        raise GenerationInputError('consent must be a sequence of user_env or code=<token> choices')
+    try:
+        for scope in consent:
+            consent_scope(scope)
+    except ValueError as exc:
+        raise GenerationInputError(str(exc)) from exc
     return {name: value for name, value in
             (('engine', engine), ('consent', tuple(consent)))
             if value is not None and value != ()}
@@ -1632,7 +1638,7 @@ class GenerationFacade:
                     raise GenerationInputError(str(exc)) from exc
                 workflow_entry = {'id': description['id'], 'kind': description['kind'],
                     'modes': [description['mode']], 'bundle': str(frozen),
-                    'binds': {}, 'defaults': {}, 'needs': []}
+                    'binds': {}, 'defaults': {}, 'needs': [], 'consent_source_path': str(original)}
                 return self._generate_on_target(registry=_load_model_registry(
                     project_root=project_root, extra_pack_roots=extra_pack_roots), model=None,
                     mode=description['mode'], modality=description['kind'], placement=placement,
@@ -1875,8 +1881,9 @@ class GenerationFacade:
                     if reason is not None:
                         raise GenerationInputError(reason) from None
                 raise
+        code_consent = tuple(controls.get('consent', ()))
         placement_policy = (_runpod_placement_policy(engine=None, machine=placement.machine,
-                            consent=controls.get('consent', ()),
+                            consent=tuple(scope for scope in code_consent if scope == 'user_env'),
                             idle_timeout_s=placement.policy.requested_idle_timeout_s)
                             if is_remote_target and not dry_run else
                             {"kind": "local", "device": placement.device, **(
@@ -2113,6 +2120,21 @@ class GenerationFacade:
                 fix="Use an attached ComfyUI with the required nodes and models, or an installed managed runtime",
             )
         entry_id, workflow, bundle, plan, schema, approval, assets, approved_files = selected
+        from astrid.core.generation.node_approvals import authorize_nodes
+        node_manifest = workflow_entries.engine_table()['comfyui'].workflow_requirements([workflow])
+        from astrid.core.generation.consent import current_consent_command
+        retry = ['astrid', 'generate', *(current_consent_command() or controls.get('argv', ()))]
+        if len(retry) == 2:
+            retry += (['workflow', candidate['consent_source_path']] if source == 'workflow'
+                      and candidate.get('consent_source_path') else [modality, '--entry', entry_id])
+            retry += ['--mode', mode, '--placement', 'managed' if placement.kind == 'local'
+                      else placement.endpoint if placement.kind == 'attached' else placement.kind]
+            for name, value in inputs.items():
+                retry.extend(['--input', name + '=' + (value if isinstance(value, str) else json.dumps(value))])
+        code_approvals = authorize_nodes(node_manifest['extra']['nodes'],
+            placement_class=placement.kind, consent=code_consent,
+            entry=candidate if source == 'workflow' else None,
+            retry_argv=retry, persist=not dry_run)
         if is_remote_target and placement_policy is not None:
             placement_policy["engine"] = runpod_engine
         target_record = getattr(target_client, 'generation_target', None)
@@ -2277,7 +2299,8 @@ class GenerationFacade:
                         "selector": "main-0", "ordinal": 0,
                         "variant_key": "original", "required": True,
                     }]}],
-                    "metadata": {"model": entry_id, "mode": mode, **({"align": requested_align} if requested_align is not None else {})},
+                    "metadata": {"model": entry_id, "mode": mode, "code_approvals": code_approvals,
+                                 **({"align": requested_align} if requested_align is not None else {})},
                 },
                 **asset_arguments, **controls,
             )
@@ -2724,4 +2747,3 @@ def set_default(kind, mode, entry, *, pack=None, client=None):
 def unset_default(kind, mode, *, client=None):
     """Remove the user's pin for ``kind``/``mode``."""
     return generate.unset_default(kind, mode, client=client)
-

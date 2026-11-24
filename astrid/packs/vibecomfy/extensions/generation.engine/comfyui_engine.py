@@ -99,8 +99,10 @@ class VibeComfyCommands:
     that installs node packs. fetch skips files already on disk, so it is not passed --force.
     """
 
-    def __init__(self, workflow: str = "", lockfile: str | None = None, *, runner: Any = None) -> None:
+    def __init__(self, workflow: str = "", lockfile: str | None = None, *, runner: Any = None,
+                 approvals: str | None = None, placement_class: str = "local") -> None:
         self.workflow, self.lockfile, self.runner = workflow, lockfile, runner
+        self.approvals, self.placement_class = approvals, placement_class
 
     def argv(self, step: str) -> list[str]:
         if step == "doctor":
@@ -108,7 +110,8 @@ class VibeComfyCommands:
         if step == "prepare":
             return ["prepare", self.workflow, "--deps", "sync", "--no-models", "--no-packs", "--non-interactive"]
         if step == "nodes_restore":
-            return ["nodes", "--non-interactive", "restore", *(["--lockfile", self.lockfile] if self.lockfile else [])]
+            return ["nodes", "--non-interactive", "restore", *(["--lockfile", self.lockfile] if self.lockfile else []),
+                    *(["--approvals", self.approvals, "--placement-class", self.placement_class] if self.approvals else [])]
         if step == "fetch":
             return ["fetch", self.workflow, "--non-interactive"]
         raise ValueError(step)
@@ -205,6 +208,8 @@ class ComfyUIEngine:
             raise error
         for node in nodes:
             canonical_recipe({key: node[key] for key in RECIPE_FIELDS if key in node})
+            from vibecomfy.node_approvals import approval_record
+            approval_record(node, placement_class="local")
 
     def align(self, manifest: Any, mode: str, *, workflow: Any = None) -> Any:
         """Align this disk to the manifest. Models arrive only through VibeComfy fetch.
