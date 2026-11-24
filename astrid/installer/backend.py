@@ -1617,6 +1617,11 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         from .boundary_registration import stage_runtime_launcher
 
         stage_runtime_launcher(version)
+        # Seal only the installed shipped wheel after every producer has finished.
+        # Version/profile/service records and user/runtime data remain writable.
+        from ._install_stamp import write_install_stamp
+
+        write_install_stamp(version, product_root)
         return version
 
     def validate_candidate(self, version: Version, data: Path, realm: dict) -> None:

@@ -1,4 +1,4 @@
-"""Removal of private pack trees, including Git's read-only object files."""
+"""Removal of private pack trees, including sealed installed package trees."""
 
 import os
 import shutil
@@ -14,6 +14,8 @@ def remove_pack_tree(path, *, ignore_errors=False):
     """Remove a tree, retrying permission failures after clearing read-only.
 
     ``onerror`` works on every supported Python version (3.11 and later).
+    POSIX needs write access to parent directories, not files. Restore it
+    top-down using directory descriptors, never through a symlink.
     Other errors and failed retries remain fatal unless explicitly suppressed.
     """
     def retry(function, name, exc_info):
@@ -29,6 +31,19 @@ def remove_pack_tree(path, *, ignore_errors=False):
         function(name)
 
     try:
+        if not _is_windows():
+            # Sealed install directories are readable/searchable, but unlinking
+            # their children requires owner write permission. fwalk never
+            # follows a directory symlink and fchmod acts on its opened inode.
+            def fail(error):
+                raise error
+
+            for _name, _dirs, _files, directory in os.fwalk(
+                path, topdown=True, follow_symlinks=False, onerror=fail,
+            ):
+                mode = os.fstat(directory).st_mode
+                if not mode & stat.S_IWUSR:
+                    os.fchmod(directory, stat.S_IMODE(mode) | stat.S_IWUSR)
         shutil.rmtree(path, onerror=retry)
     except OSError:
         if not ignore_errors:
