@@ -302,7 +302,7 @@ def update_context(backend, transaction: dict, *, recovering: bool = False):
 
 def rollback_transaction(root: Path, data: Path, backend, transaction: dict, *,
                         stop, switch_old, activate_old, save,
-                        restore_workspace: bool = True) -> None:
+                        restore_workspace: bool = True, say=print) -> None:
     """Apply the shared stop, optional restore, selection and ready rollback."""
     old = Version.load(transaction["old"])
     candidate = Version.load(transaction["candidate"]) if transaction.get("candidate") else None
@@ -322,6 +322,24 @@ def rollback_transaction(root: Path, data: Path, backend, transaction: dict, *,
         save("recovering")
         if backup is not None and restore_workspace and kind == "migration":
             backend.restore(old, data, realm, backup)
+        # A same-schema candidate can have installed the history guard layer
+        # even when no workspace backup was taken. Replay after restore as well:
+        # the candidate's offline command is idempotent on a stopped realm.
+        remove_guards = getattr(backend, "remove_history_guards", None)
+        warning = None
+        remedy = ('With the realm stopped, run the following command using a working release-15 '
+                  'Runtime: astrid-runtime-protocol remove-history-guards --root "<realm root>" '
+                  '--confirm "REMOVE HISTORY GUARDS <realm id>", or re-run the update.')
+        if candidate is not None and remove_guards is not None:
+            warning = remove_guards(candidate, realm["realm_root"], realm["realm_id"])
+            if warning is not None:
+                # Persist before selection so an interrupted recovery retains
+                # the uncertainty even if the old Runtime cannot open.
+                save("recovering", history_guard_removal=f"unverified: {warning}")
+                say(f"Warning: history guard removal is unverified ({warning}). "
+                    f"A guarded realm may be refused by the older Runtime. {remedy}")
+            elif "history_guard_removal" in transaction:
+                save("recovering", history_guard_removal="verified or not applicable")
         if candidate is not None and old.release < 13 <= candidate.release:
             # R13 retires the R9--R12 boot rows even without a Runtime schema
             # change (and therefore without an installer workspace backup).
@@ -331,7 +349,12 @@ def rollback_transaction(root: Path, data: Path, backend, transaction: dict, *,
             )
         switch_old(old, candidate)
         save("rollback_selected")
-        activate_old(old, data, realm)
+        try:
+            activate_old(old, data, realm)
+        except Exception as exc:   # noqa: BLE001 - add the recovery remedy without losing the cause
+            if warning is None or is_lifecycle_refusal(exc):
+                raise
+            raise RuntimeError(f"Previous Runtime activation failed ({exc}). {remedy}") from exc
         save("rolled_back")
 
 
@@ -390,7 +413,7 @@ def recover_transaction(root: Path, data: Path, backend, *, stop, switch_old,
     rollback_transaction(
         root, data, backend, transaction, stop=stop, switch_old=switch_old,
         activate_old=activate_old, restore_workspace=restore_workspace,
-        save=write_step,
+        save=write_step, say=say,
     )
     install_launcher(root)
 
@@ -579,7 +602,7 @@ class Installer:
                     rollback_transaction(
                         self.root, self.data, self.backend, transaction,
                         stop=stop, switch_old=switch_old, activate_old=activate_old,
-                        restore_workspace=restore_workspace,
+                        restore_workspace=restore_workspace, say=self.say,
                         save=lambda step, **details: self._save_update(
                             transaction, step, **details),
                     )
