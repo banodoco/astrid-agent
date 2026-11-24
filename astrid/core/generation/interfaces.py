@@ -39,7 +39,7 @@ class ReadinessInstruction(TypedDict):
 
 
 class ReadinessFix(TypedDict):
-    # New setup fixes carry id/who and exactly one action; legacy fields remain.
+    # Every projected non-success fix carries an id, actor and exactly one action.
     id: NotRequired[str]
     who: NotRequired[Literal["agent", "human"]]
     argv: NotRequired[list[str]]

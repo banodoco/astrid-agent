@@ -75,34 +75,25 @@ from astrid.core.contracts.errors import AstridError
 from astrid.core.generation.interfaces import ReadinessEnvelope, ReadinessFix, ReadinessIssue
 
 
-_CORE_CODES = {
-    'COMFY_TARGET_UNAVAILABLE': 'target_unreachable',
-    'COMFY_TARGET_INVALID': 'input_rejected',
-    'COMFY_TARGET_UNSUPPORTED': 'missing_dependency',
-    'COMFY_TARGET_NOT_READY': 'engine_not_found',
-    'COMFY_TARGET_NO_MODEL': 'missing_dependency',
-    'engine_not_installed': 'engine_not_found',
-    'comfyui.missing_node': 'missing_dependency',
-    'comfyui.models_missing': 'missing_dependency',
-}
-
-
 def readiness_envelope(*, entry=None, target=None, issues=(), fixes=(), attempt_count=None) -> ReadinessEnvelope:
     """Project observations once; unknown version facts do not become issues."""
     from copy import deepcopy
 
-    from .setup_contract import uses_setup_contract, validate_setup_envelope
+    from .setup_contract import validate_setup_envelope
+    from .setup_repairs import project_setup_facts
     issues = [deepcopy({**issue, 'details': issue.get('details', {})}) for issue in issues]
     # An attached target's fix names what the person does on their own ComfyUI; it has no argv to run.
     fixes = [deepcopy({**fix, **({'argv': list(fix['argv'])} if isinstance(fix.get('argv'), tuple) else {}),
               'details': fix.get('details', {})})
              for fix in fixes]
+    target = deepcopy(target.as_dict() if hasattr(target, 'as_dict') else target)
+    issues, fixes = project_setup_facts(issues, fixes, entry=entry, target=target)
     status = ('blocked' if any(issue['severity'] == 'error' for issue in issues) else
               'ready_with_warnings' if issues else 'ready')
     envelope = {'entry': deepcopy(entry),
-            'target': deepcopy(target.as_dict() if hasattr(target, 'as_dict') else target),
+            'target': target,
             'status': status, 'issues': issues, 'fixes': fixes}
-    if attempt_count is not None or uses_setup_contract(envelope):
+    if issues or fixes or attempt_count is not None:
         # The caller counts actual attempts; constructing/serializing is not one.
         envelope['attempt_count'] = 0 if attempt_count is None else attempt_count
         validate_setup_envelope(envelope)
@@ -117,9 +108,11 @@ class GenerationReadinessError(AstridError, ValueError):
         self.readiness = readiness_envelope(**{key: envelope[key] for key in
             ('entry', 'target', 'issues', 'fixes', 'attempt_count') if key in envelope})
         self.readiness = _redact_credential_data(self.readiness)
-        self.task_id = task_id
-        if 'attempt_count' in self.readiness and self.readiness['status'] != 'blocked':
+        from .setup_contract import validate_setup_envelope
+        if self.readiness['status'] != 'blocked':
             raise ValueError('a setup readiness error requires a blocking issue')
+        validate_setup_envelope(self.readiness)
+        self.task_id = task_id
         if not self.readiness['issues']:
             raise ValueError('a readiness error needs an issue')
         issue = next((item for item in self.readiness['issues'] if item['severity'] == 'error'), self.readiness['issues'][0])
@@ -164,7 +157,8 @@ def generation_error(error: Any, *, entry=None, target=None, code=None,
         'validation': 'input_rejected', 'missing_input': 'input_rejected',
         'precondition': 'missing_dependency', 'runtime': 'generation_failed',
     }.get(category, 'generation_failed')
-    normalized = _CORE_CODES.get(native, native)
+    from .setup_contract import native_issue_code
+    normalized = native_issue_code(native)
     detail = {**(get('details') or {}), **(details or {})}
     diagnostic = get('engine_diagnostic')
     if isinstance(diagnostic, Mapping):
@@ -194,10 +188,11 @@ def generation_error(error: Any, *, entry=None, target=None, code=None,
                     detail.setdefault('fields', names)
         detail.setdefault('constraint', message)
     issue = {'code': normalized, 'severity': 'error', 'message': message, 'details': detail}
-    from .setup_contract import uses_setup_contract
     fixes = list(fixes)
-    if uses_setup_contract({'issues': [issue], 'fixes': fixes}):
-        issue['fix_ids'] = [fix['id'] for fix in fixes if 'id' in fix]
+    if not fixes and (setup_fix := get('setup_fix')) is not None:
+        fixes = [setup_fix]
+    if fixes and all('id' in fix for fix in fixes):
+        issue['fix_ids'] = [fix['id'] for fix in fixes]
     return GenerationReadinessError(readiness_envelope(entry=entry, target=target,
         issues=[issue], fixes=fixes, attempt_count=attempt_count), task_id=task_id)
 
@@ -223,7 +218,7 @@ def compare_versions(recorded: dict[str, Any], observed: dict[str, Any]) -> list
         except (InvalidVersion, InvalidSpecifier):
             continue
         if different:
-            issues.append({'code': 'version_drift', 'severity': 'warning',
+            issues.append({'code': 'pack_version_differs', 'severity': 'warning',
                            'message': f'{name} recorded version differs from the selected target',
                            'details': {'name': name, 'recorded': version, 'observed': current}})
     return issues

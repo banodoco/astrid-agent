@@ -275,7 +275,7 @@ class ComfyProvenance:
         for name, expected in self.recorded_sources.items():
             actual = self.observed_sources.get(name)
             if expected and actual and expected != actual:
-                issues.append({"code": "version_drift", "severity": "warning",
+                issues.append({"code": "pack_version_differs", "severity": "warning",
                                "message": f"{name} recorded source differs from the installed recipe",
                                "details": {"name": name, "recorded": expected, "observed": actual}})
         models = []
