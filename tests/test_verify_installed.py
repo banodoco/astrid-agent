@@ -527,6 +527,68 @@ def test_r1_candidate_source_sha_mismatching_installed_version_fails(tmp_path, n
     assert 'installed version id does not match manifest Agent/Runtime pins' in details['problems']
 
 
+@pytest.mark.parametrize(('release', 'marker', 'allowed'), [
+    (14, None, True), (15, 'fresh-install-update-stand-in', True),
+    (15, 'unrecognized', False), (13, None, False),
+])
+def test_opaque_version_directory_requires_r14_or_marked_r15_provenance(
+        tmp_path, release, marker, allowed):
+    from scripts import verify_installed as verifier
+    fixture, version_path, runtime, raw = _identity_aware_fixture(
+        tmp_path, agent=CANDIDATE_AGENT, runtime_sha=CANDIDATE_RUNTIME, digest=CANDIDATE_DIGEST)
+    version = dict(fixture['version'])
+    version['root'] = str(version_path.parent / '012345abcdef')
+    manifest = json.loads(raw)
+    manifest['release'] = release
+    if marker is not None:
+        manifest['qualification_marker'] = marker
+    problems = verifier._candidate_self_consistency_problems(
+        version, manifest, verifier.installer_manifest_bytes(manifest),
+        {'protocol': 'workspace.v1', 'schema_digest': CANDIDATE_DIGEST, 'workspace_schema_version': 33})
+    assert ('installed version id does not match manifest Agent/Runtime pins' not in problems) is allowed
+
+
+def _opaque_id_problems(tmp_path, root_name, *, release, marker=None):
+    from scripts import verify_installed as verifier
+    tmp_path = tmp_path / f'{release}-{marker}-{len(list(tmp_path.iterdir()))}'
+    tmp_path.mkdir()
+    fixture, version_path, runtime, raw = _identity_aware_fixture(
+        tmp_path, agent=CANDIDATE_AGENT, runtime_sha=CANDIDATE_RUNTIME, digest=CANDIDATE_DIGEST)
+    version = dict(fixture['version'])
+    manifest = json.loads(raw)
+    manifest['release'] = release
+    if marker is not None:
+        manifest['qualification_marker'] = marker
+    version['root'] = str(version_path.parent / (root_name(manifest) if callable(root_name) else root_name))
+    return verifier._candidate_self_consistency_problems(
+        version, manifest, verifier.installer_manifest_bytes(manifest),
+        {'protocol': 'workspace.v1', 'schema_digest': CANDIDATE_DIGEST, 'workspace_schema_version': 33})
+
+
+def test_installer_minted_version_id_is_accepted_for_r14_and_marked_stand_in(tmp_path):
+    from astrid.installer.core import new_version_id
+    problem = 'installed version id does not match manifest Agent/Runtime pins'
+    for release, marker in ((14, None), (15, 'fresh-install-update-stand-in'), (15, 'M-RT UPDATE TEST STAND-IN')):
+        assert problem not in _opaque_id_problems(
+            tmp_path, new_version_id, release=release, marker=marker), (release, marker)
+
+
+def test_pin_named_version_id_must_still_match_the_manifest_pins(tmp_path):
+    problem = 'installed version id does not match manifest Agent/Runtime pins'
+    assert problem not in _opaque_id_problems(
+        tmp_path, f'{CANDIDATE_AGENT[:8]}-{CANDIDATE_RUNTIME[:8]}-abc', release=15)
+    # Mismatched pins are not rescued by the opaque-id allowance for any release.
+    for release, marker in ((14, None), (15, None), (15, 'fresh-install-update-stand-in')):
+        assert problem in _opaque_id_problems(
+            tmp_path, 'deadbeef-cafebabe-abc', release=release, marker=marker), (release, marker)
+
+
+@pytest.mark.parametrize('name', ['0123456789a', '0123456789abc', '0123456789AB', 'g123456789ab', 'identityaware'])
+def test_only_a_twelve_hex_version_id_is_opaque(tmp_path, name):
+    assert 'installed version id does not match manifest Agent/Runtime pins' in _opaque_id_problems(
+        tmp_path, name, release=14)
+
+
 @pytest.mark.parametrize(('tamper', 'problem'), [
     ('noncanonical-bytes', 'installed manifest bytes do not match installer writer output'),
     ('schema-digest', 'health/installed Runtime schema digest does not match manifest'),
