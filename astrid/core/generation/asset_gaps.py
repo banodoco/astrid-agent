@@ -134,11 +134,9 @@ def attached_asset_readiness(entry: str | None, *, nodes=(), models=(), lockfile
     names that pack, and its repository when the lock declares a URL. For such a pack Astrid only
     shows the commands; the person or their coding agent runs them.
     """
-    from pathlib import Path
+    from vibecomfy.node_packs import resolve_lockfile_path, resolve_node_packs
 
-    from vibecomfy.node_packs import resolve_node_packs
-
-    lock = Path('custom_nodes.lock') if lockfile_path is None else lockfile_path
+    lock = resolve_lockfile_path(lockfile_path)
     issues, fixes = [], []
     fixed_packs: set[str] = set()
     for name in nodes:
