@@ -416,7 +416,9 @@ target is not granted managed installation permission by this check.
 
 ### LE-8 — Model downloads and available space
 
-Packs that download their own models on first run can consume space that is not part of the workflow's locked model manifest. Use catalog byte hints only where recorded; absent hints are unknown. Report the selected target's measured free space at its model root and persistent-volume status before the first run. Do not use the controller's disk for an attached or rented target. No declared volume is an advisory warning that downloads may repeat, not a block. The existing fetch-time capacity check remains authoritative for explicit model downloads; a pack-owned cache can use another path.
+Packs may download their own weights on first use; these are separate from explicit locked model assets. VibeComfy's catalog carries source-backed download facts and optional byte hints (currently SAM-Audio); unknown quantities are not a storage guarantee. The existing explicit model fetch capacity checks remain authoritative.
+
+The LE-8 advisory producer is staged but not yet wired into generation dry-run readiness. Do not claim a download notice or measured target free space from a dry run until that wiring is complete. The producer treats missing capacity evidence as unknown and refuses an unsafe selected model root; it never substitutes controller disk capacity for an attached or rented target.
 
 ### LE-9 — Declare a missing model
 

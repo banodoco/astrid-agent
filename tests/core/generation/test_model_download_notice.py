@@ -2,6 +2,8 @@
 import time
 from pathlib import Path
 
+import pytest
+
 from astrid.core.generation import model_storage as storage
 
 
@@ -56,7 +58,8 @@ def test_relative_root_never_measures_controller_disk(monkeypatch):
     def forbidden(*args, **kwargs):
         raise AssertionError("relative path must not be measured")
     monkeypatch.setattr(storage, "available_model_bytes", forbidden)
-    assert _observe(Path("models")) == storage.DownloadStorageObservation(None, True, "not_declared")
+    with pytest.raises(storage.UnsafePathError, match="unsafe target path"):
+        _observe(Path("models"))
 
 
 # The VibeComfy #204 catalog is the authority, not an Agent-local registry.
@@ -125,3 +128,39 @@ def test_remote_or_attached_download_notice_never_measures_controller(tmp_path, 
             assert notice["details"]["volume_status"] == expected
             assert notice["severity"] == "warning"
             assert notice["fix_ids"] == []
+
+
+def test_missing_statvfs_is_unknown_not_an_unsafe_path(tmp_path, monkeypatch):
+    monkeypatch.delattr(storage.os, "statvfs", raising=False)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("statvfs unavailable; no capacity probe should run")
+
+    monkeypatch.setattr(storage, "available_model_bytes", forbidden)
+    assert _observe(tmp_path) == storage.DownloadStorageObservation(None, True, "not_declared")
+
+
+@pytest.mark.parametrize("relative", [True, False])
+def test_selected_unsafe_model_root_surfaces_as_typed_issue(tmp_path, monkeypatch, relative):
+    from astrid.core.generation.preflight import GenerationReadinessError
+
+    # A file in place of the selected model directory is a real unsafe
+    # target path, even if the platform has no usable statvfs implementation.
+    root = Path("models") if relative else tmp_path / "not-a-directory"
+    if not relative:
+        root.write_bytes(b"do not overwrite")
+    monkeypatch.setattr(storage.os, "statvfs", object(), raising=False)
+    with pytest.raises(GenerationReadinessError) as caught:
+        storage.selected_target_download_notice(
+            [{"repo": SAM_REPO, "commit": SAM_PIN}], SAM_CLASSES,
+            placement="local", local_models_root=root,
+        )
+    result = caught.value.to_envelope()
+    assert result["status"] == "blocked"
+    issue, = result["issues"]
+    assert issue["code"] == "unsafe_path"
+    assert issue["details"]["field"] == "models_root"
+    assert "unsafe target path" in issue["message"]
+    assert not any(row["code"] == "model_download_notice" for row in result["issues"])
+    if not relative:
+        assert root.read_bytes() == b"do not overwrite"

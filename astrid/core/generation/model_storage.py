@@ -279,12 +279,11 @@ def observe_download_storage(models_root: Path, *, deadline: float,
     volume_status = "not_declared" if volume is None else "declared_unverified"
     # A dry-run notice is not a full model-volume accounting pass.
     end = min(deadline, time.monotonic() + 2)
-    if not hasattr(os, "statvfs") or not models_root.is_absolute() or time.monotonic() >= end:
+    if not models_root.is_absolute() or ".." in models_root.parts:
+        raise UnsafePathError("unsafe target path")
+    if not hasattr(os, "statvfs") or time.monotonic() >= end:
         return DownloadStorageObservation(None, True, volume_status)
-    try:
-        free, uncertain = available_model_bytes(models_root, deadline=end, check=check)
-    except UnsafePathError:
-        return DownloadStorageObservation(None, True, volume_status)
+    free, uncertain = available_model_bytes(models_root, deadline=end, check=check)
     if volume is not None and time.monotonic() < end:
         measured = measure_declared_volume(volume, models_root, deadline=end, check=check)
         if measured is not None and measured.covers(models_root):
@@ -376,10 +375,19 @@ def selected_target_download_notice(
     if not hints:
         return None
     if placement == "local" and local_models_root is not None:
-        observation = observe_download_storage(
-            local_models_root, deadline=time.monotonic() + 2,
-            check=lambda: None, volume=local_volume,
-        )
+        try:
+            observation = observe_download_storage(
+                local_models_root, deadline=time.monotonic() + 2,
+                check=lambda: None, volume=local_volume,
+            )
+        except UnsafePathError as exc:
+            from .preflight import generation_error
+
+            # Unsafe storage identity is not an unavailable measurement.
+            # Preserve the existing typed path refusal instead of emitting
+            # a nonblocking, unknown-capacity advisory for that target.
+            raise generation_error(exc, code="unsafe_path",
+                                   details={"field": "models_root"}) from exc
     else:
         volume_status = (
             "declared_unverified" if volume_declared is True
