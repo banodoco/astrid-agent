@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import select
@@ -41,6 +42,7 @@ class _ProcessInfo:
     start_sec: int | None = None
     start_usec: int | None = None
     uid: int | None = None
+    session: int | None = None
 
 
 # ``ps`` reads the whole process table, which can take longer than a short
@@ -49,10 +51,11 @@ class _ProcessInfo:
 _CENSUS_TIMEOUT_SECONDS = 5.0
 _CENSUS_ATTEMPTS = 3
 _CENSUS_RETRY_DELAY_SECONDS = 0.1
+_PROC_ROOT = Path("/proc")
 
 
 class _Census(dict):
-    """A process census.  When it is empty, ``failure`` says why ps gave none.
+    """A process census. When it is empty, ``failure`` says why it failed.
 
     ``exited`` maps pid -> birth token for rows this census saw as unreaped
     zombies (Linux).  Such a row is not in the census proper, which lists live
@@ -88,6 +91,8 @@ def _process_snapshot() -> dict[int, _ProcessInfo]:
                                      row["status"], row["start_sec"], row["start_usec"], row.get("uid"))
             for row in _darwin_process_records()
         }
+    if sys.platform.startswith("linux"):
+        return _linux_process_snapshot()
     ps = next(
         (candidate for candidate in ("/bin/ps", "/usr/bin/ps") if os.path.isfile(candidate)),
         "ps",
@@ -119,6 +124,73 @@ def _process_snapshot() -> dict[int, _ProcessInfo]:
     if len(set(outcomes)) == 1:
         return _failed_census(f"ps {outcomes[0]} x{len(outcomes)}")
     return _failed_census("ps " + "; ".join(outcomes))
+
+
+def _linux_process_record(path: Path, boot_id: str) -> tuple[_ProcessInfo, bytes]:
+    """Read topology and start time together, without splitting the comm field.
+
+    A proc-directory descriptor keeps stat and status tied to one incarnation
+    even if the numeric PID is recycled between those reads.
+    """
+    directory = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        with os.fdopen(os.open("stat", os.O_RDONLY | os.O_CLOEXEC, dir_fd=directory), "rb") as stream:
+            prefix, separator, suffix = stream.read().rpartition(b")")
+        fields = suffix.split()
+        pid = int(path.name)
+        if (not separator or b" (" not in prefix or prefix.partition(b" (")[0] != str(pid).encode("ascii")
+                or len(fields) < 20 or not fields[19].isdigit()):
+            raise ValueError(f"malformed /proc/{pid}/stat")
+        ppid, pgid, session = map(int, fields[1:4])
+        with os.fdopen(os.open("status", os.O_RDONLY | os.O_CLOEXEC, dir_fd=directory), "rb") as stream:
+            uid_fields = next((line.split() for line in stream if line.startswith(b"Uid:")), ())
+        if len(uid_fields) != 5:
+            raise ValueError(f"malformed /proc/{pid}/status uid")
+        uid = int(uid_fields[2])  # ps uid/euid is the effective uid.
+        if min(pid, ppid, pgid, session, uid) < 0 or pid == 0:
+            raise ValueError(f"invalid /proc/{pid} topology")
+        return (_ProcessInfo(pid, ppid, pgid, boot_id + ":" + fields[19].decode("ascii"),
+                             uid=uid, session=session), fields[0])
+    finally:
+        os.close(directory)
+
+
+def _linux_process_snapshot() -> _Census:
+    """Census without observer processes; disappearance alone is not exit proof."""
+    entries = _Census()
+    try:
+        boot_id = (_PROC_ROOT / "sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
+        if not boot_id or ":" in boot_id:
+            raise ValueError("Linux boot identity unavailable")
+        paths = [path for path in _PROC_ROOT.iterdir() if path.name.isascii() and path.name.isdigit()]
+
+        def read(path: Path) -> _ProcessInfo | None:
+            try:
+                info, state = _linux_process_record(path, boot_id)
+            except OSError as exc:
+                if exc.errno in {errno.ENOENT, errno.ESRCH}:
+                    return None  # A racing exit gives no terminal witness.
+                raise
+            if state == b"Z":
+                entries.exited[info.pid] = info.birth
+            return None if state in {b"Z", b"X"} else info
+
+        for path in paths:
+            if (info := read(path)) is not None:
+                entries[info.pid] = info
+        # A parent may exit between enumeration and reading its row. Re-read
+        # such children's complete record, never splice an old birth token
+        # onto a possibly recycled PID's fresh parent id.
+        for pid, info in tuple(entries.items()):
+            if info.ppid and info.ppid not in entries:
+                fresh = read(_PROC_ROOT / str(pid))
+                if fresh is None or fresh.birth != info.birth:
+                    del entries[pid]
+                else:
+                    entries[pid] = fresh
+    except (OSError, ValueError, UnicodeError) as exc:
+        return _failed_census(f"/proc census unavailable: {exc}")
+    return entries
 
 
 def _parse_census(stdout: str) -> _Census:
@@ -689,7 +761,7 @@ def _observe_tree(process: subprocess.Popen, *, deadline: float | None = None,
 def _census_evidence(snapshot):
     return {pid: {"pid": info.pid, "birth_id": info.birth, "parent_pid": info.ppid,
                   "pgid": info.pgid,
-                  **{key: value for key in ("status", "start_sec", "start_usec", "uid")
+                  **{key: value for key in ("status", "start_sec", "start_usec", "uid", "session")
                      if (value := getattr(info, key)) is not None}}
             for pid, info in snapshot.items()}
 

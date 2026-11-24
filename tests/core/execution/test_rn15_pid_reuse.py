@@ -7,8 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from astrid.core.execution import process_group as groups
 from astrid.core.execution import custody_broker as custody
+from astrid.core.execution import process_group as groups
 
 
 def _observed_process(monkeypatch, *, root_birth="boot:100", child_birth="boot:500"):
