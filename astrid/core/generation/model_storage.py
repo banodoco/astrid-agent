@@ -13,7 +13,7 @@ import re
 import stat
 import subprocess
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
@@ -254,6 +254,79 @@ def available_model_bytes(parent: Path, *, deadline: float,
         unknown = True
     return (min(available) if available else None), unknown or not available
 
+
+
+@dataclass(frozen=True)
+class DownloadStorageObservation:
+    """Advisory facts for the selected target's model root, not an admission."""
+
+    free_bytes: int | None
+    capacity_uncertain: bool
+    volume_status: str
+
+
+def observe_download_storage(models_root: Path, *, deadline: float,
+                             check: Callable[[], None],
+                             volume: DeclaredVolume | None) -> DownloadStorageObservation:
+    """Read target-local storage without fetching, writing, or making a claim.
+
+    Only call on the selected target, with its model root and its declared
+    volume. Attached/remote targets without such evidence must use unknown
+    facts, never the controller's filesystem. The advisory uses the existing
+    quota and volume observers; the later fetch still owns admission.
+    """
+    check()
+    volume_status = "not_declared" if volume is None else "declared_unverified"
+    # A dry-run notice is not a full model-volume accounting pass.
+    end = min(deadline, time.monotonic() + 2)
+    if not models_root.is_absolute() or time.monotonic() >= end:
+        return DownloadStorageObservation(None, True, volume_status)
+    try:
+        free, uncertain = available_model_bytes(models_root, deadline=end, check=check)
+    except UnsafePathError:
+        return DownloadStorageObservation(None, True, volume_status)
+    if volume is not None and time.monotonic() < end:
+        measured = measure_declared_volume(volume, models_root, deadline=end, check=check)
+        if measured is not None and measured.covers(models_root):
+            volume_status = "declared_measured"
+            free = measured.free_bytes if free is None else min(free, measured.free_bytes)
+    return DownloadStorageObservation(free, uncertain or free is None, volume_status)
+
+
+def model_download_notice(packs: Mapping[str, int | None],
+                          storage: DownloadStorageObservation) -> dict | None:
+    """Render known self-downloading packs and optional catalog byte hints.
+
+    No inference from a node name: the caller supplies packs identified by
+    catalog evidence. Missing size or storage facts stay unknown. This is
+    always advisory; an install-time fetch retains its own capacity gate.
+    """
+    if not packs:
+        return None
+    rows = []
+    descriptions = []
+    for name, size in sorted(packs.items()):
+        size = size if type(size) is int and size > 0 else None
+        rows.append({"pack": name, "size_hint_bytes": size})
+        descriptions.append(f"{name} ({size} bytes, catalog hint)" if size is not None
+                            else f"{name} (download size unknown)")
+    free = (f"{storage.free_bytes} bytes reported free at the model root"
+            if storage.free_bytes is not None else "target free space unknown")
+    if storage.free_bytes is not None and storage.capacity_uncertain:
+        free += " (capacity may be constrained)"
+    volume_text = {
+        "not_declared": "no persistent volume declared; downloads may need repeating",
+        "declared_unverified": "persistent volume declared but model-root capacity unverified",
+        "declared_measured": "declared volume measured at the model root",
+        "unknown": "volume status unknown",
+    }[storage.volume_status]
+    return {"severity": "warning",
+            "message": ("Packs that download their own models on first run: "
+                        + ", ".join(descriptions) + f"; {free}; {volume_text}. "
+                        "Pack-owned caches may use other paths; this notice is not a storage guarantee."),
+            "details": {"packs": rows, "free_bytes": storage.free_bytes,
+                        "capacity_uncertain": storage.capacity_uncertain,
+                        "volume_status": storage.volume_status}}
 
 
 def _inventory_walk(root: Path, *, deadline: float, cancelled: Callable[[], bool]) -> str:
