@@ -107,6 +107,8 @@ def write_json(path: Path, value: dict) -> None:
 
 
 TERMINAL_STEPS = frozenset({"complete", "rolled_back"})
+# Timeline history guard layer 1 first ships with release-15 Runtimes.
+HISTORY_GUARD_RELEASE = 15
 
 
 def pending_transaction(root: Path) -> dict | None:
@@ -330,7 +332,10 @@ def rollback_transaction(root: Path, data: Path, backend, transaction: dict, *,
         remedy = ('With the realm stopped, run the following command using a working release-15 '
                   'Runtime: astrid-runtime-protocol remove-history-guards --root "<realm root>" '
                   '--confirm "REMOVE HISTORY GUARDS <realm id>", or re-run the update.')
-        if candidate is not None and remove_guards is not None:
+        # An older candidate cannot have installed the layer, and re-selecting
+        # the very version that is already old needs no guard removal.
+        if (candidate is not None and remove_guards is not None
+                and candidate.release >= HISTORY_GUARD_RELEASE and candidate != old):
             warning = remove_guards(candidate, realm["realm_root"], realm["realm_id"])
             if warning is not None:
                 # Persist before selection so an interrupted recovery retains
