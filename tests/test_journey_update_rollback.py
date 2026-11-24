@@ -153,6 +153,13 @@ def test_workflow_exposes_only_the_dispatch_input_and_one_new_job():
     assert ur.R14["app"] in steps and ur.R14["agent"] in steps and "journey_update_rollback.py" in steps
 
 
+def test_job_level_env_uses_no_runner_context():
+    # GitHub rejects the whole workflow file ("workflow file issue", a 0-job run) when job-level env uses `runner`.
+    workflow = yaml.safe_load((ROOT / ".github/workflows/journey.yml").read_text(encoding="utf-8"))
+    env = workflow["jobs"]["update_rollback"]["env"]
+    assert not [k for k, v in env.items() if "runner." in str(v)]
+
+
 def run_config(tmp_path, **overrides):
     """The workflow's own ``config`` step, run as test_keepgoing_workflow.py runs it."""
     import os
