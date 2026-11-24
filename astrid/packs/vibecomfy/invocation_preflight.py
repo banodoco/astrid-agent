@@ -656,13 +656,24 @@ def verify_admitted_invocation_receipt(
                     # so the staged file must be exactly that asset's bytes.
                     import hashlib
 
-                    staged_digest = hashlib.sha256(Path(inputs["source_video"]).read_bytes()).hexdigest()
+                    try:
+                        with open(inputs["source_video"], "rb") as staged:
+                            staged_digest = hashlib.file_digest(staged, "sha256").hexdigest()
+                    except OSError as exc:
+                        raise InvocationReceiptMismatch(
+                            "bytes_unrecomputable", admitted="<unreadable source_video>", receipt="<provided>",
+                        ) from exc
                     if any(digest != staged_digest for digest in archive_source_digests):
                         raise InvocationReceiptMismatch(
                             "bytes_unrecomputable", admitted="<source_video differs from managed asset>",
                             receipt="<provided>",
                         )
                 else:
+                    if "source_video" in bindings:
+                        # The archive's own workflow inputs already name it (run.py refuses this too).
+                        raise InvocationReceiptMismatch(
+                            "bytes_unrecomputable", admitted="<duplicate source_video>", receipt="<provided>",
+                        )
                     # Mirror run.py's _stage_source_video binding, before target custody.
                     bindings["source_video"] = Path(inputs["source_video"]).name
             api = loaded.resolved.workflow.compile("api", run_inputs=bindings)
