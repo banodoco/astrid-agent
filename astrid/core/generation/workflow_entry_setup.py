@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 
 from .node_approvals import preview_entry_authority as preview_entry_authority
 from .preflight import GenerationReadinessError, generation_error
@@ -61,6 +62,7 @@ class PreparedEntry:
     approvals: list
     previous: dict | None
     previous_records: list
+    schema_provider: object | None = None
 
 
 def _previous_entry(entry_id: str, *, replace: bool, retry_argv):
@@ -105,8 +107,47 @@ def _source_nodes(entry):
     return entries.engine_table()["comfyui"].workflow_requirements([workflow])["extra"]["nodes"]
 
 
+def _attached_entry_schema(endpoint, entry_id):
+    """Capture exactly one read-only schema for both imports; never fall back."""
+    from vibecomfy.schema.provider import SchemaProviderError, TargetSchemaProvider
+
+    from .backends.comfy_target import (
+        LOCAL_HTTP_SECONDS,
+        MAX_JSON_BYTES,
+        ComfyTarget,
+        ComfyTargetClient,
+    )
+    from .engine_contracts import TransportError
+
+    # The normal attached target boundary validates loopback and owns the
+    # bounded HTTP transport. A capture used only for conversion has no
+    # refresh callback or authority to queue a prompt.
+    target = ComfyTarget(endpoint, "attached")
+    try:
+        captured = ComfyTargetClient(target).request_json(
+            "/object_info", timeout=LOCAL_HTTP_SECONDS, response_limit=MAX_JSON_BYTES,
+        )
+        if not isinstance(captured, dict) or not captured:
+            raise ValueError("object_info must be a nonempty class mapping")
+        return TargetSchemaProvider.from_object_info(captured, server_url=target.url)
+    except (ValueError, OSError, TransportError, SchemaProviderError) as exc:
+        raise generation_error(
+            ValueError("The attached ComfyUI schema is unavailable or malformed; start or repair that server before saving this JSON workflow."),
+            code="target_schema_unavailable", entry={"id": entry_id},
+            target={"kind": "attached", "endpoint": target.url},
+            details={"field": "target", "endpoint": target.url, "reason": str(exc)},
+            fixes=[{
+                "id": "inspect-attached-schema", "who": "human", "scope": "read_only",
+                "instruction": {
+                    "step": "Start or repair your selected ComfyUI and verify its schema; do not start or adopt another service automatically.",
+                    "then_argv": ["astrid", "generate", "targets", "--placement", target.url, "--json"],
+                },
+            }],
+        ) from exc
+
+
 def prepare_entry_candidate(source, entry_id, *, replace, additions, placement_class,
-                            consent, retry_argv, scratch):
+                            consent, retry_argv, scratch, attached_endpoint=None):
     from vibecomfy.custom_node_refs import CustomNodeRefConflict
     from vibecomfy.entries import entry_added_node_refs, import_as_entry, merge_entry_added_node_refs
 
@@ -119,8 +160,12 @@ def prepare_entry_candidate(source, entry_id, *, replace, additions, placement_c
     refs = resolve_workflow_additions(additions, retry_argv=retry_argv)
     retained = entry_added_node_refs(previous) if previous is not None else []
     selected = merge_entry_added_node_refs(retained, refs)
+    schema_provider = None
+    if attached_endpoint is not None and Path(source).suffix.lower() == ".json":
+        schema_provider = _attached_entry_schema(attached_endpoint, entry_id)
     try:
-        entry = import_as_entry(source, entry_id, directory=scratch, replace=False, added_node_refs=selected)
+        entry = import_as_entry(source, entry_id, directory=scratch, replace=False,
+                                added_node_refs=selected, schema_provider=schema_provider)
         nodes = _source_nodes(entry)
     except CustomNodeRefConflict as exc:
         argv, placeholders = repair_workflow_argv(retry_argv, correct_add_count=len(additions))
@@ -133,7 +178,7 @@ def prepare_entry_candidate(source, entry_id, *, replace, additions, placement_c
                     }, "placeholders": placeholders}]) from exc
     current = authorize_nodes(nodes, placement_class=placement_class, consent=consent,
                               entry=previous, retry_argv=retry_argv)
-    return PreparedEntry(entry, refs, current, previous, previous_records)
+    return PreparedEntry(entry, refs, current, previous, previous_records, schema_provider)
 
 
 def publish_entry_candidate(source, prepared, *, replace, placement_class, retry_argv):
@@ -156,7 +201,8 @@ def publish_entry_candidate(source, prepared, *, replace, placement_class, retry
                                        "instruction": {"step": "Review the current saved entry and its pins before replacing it.",
                                                        "then_argv": ["astrid", "generate", "describe", "--entry", entry_id, "--json"]}}])
     try:
-        entry = import_as_entry(source, entry_id, replace=replace, added_node_refs=prepared.added_refs)
+        entry = import_as_entry(source, entry_id, replace=replace, added_node_refs=prepared.added_refs,
+                                schema_provider=prepared.schema_provider)
     except FileExistsError as exc:
         # Only an actual replaceable user entry gets the explicit replacement
         # fix. A symlink or foreign directory retains its ordinary refusal.

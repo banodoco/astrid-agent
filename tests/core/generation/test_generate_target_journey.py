@@ -6,25 +6,18 @@ The catalog, compiler, Runtime, host, receipt and publication are production cod
 """
 from __future__ import annotations
 
-import copy
 import hashlib
-import io
 import json
 import subprocess
 import sys
-import threading
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from types import SimpleNamespace
 from urllib.error import HTTPError
-from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 
 import pytest
-from PIL import Image
 
 from astrid import console
 from astrid.core.execution.generic_host import GenericPackHost, RuntimeProtocolClient
@@ -37,124 +30,6 @@ PACK = Path(__file__).resolve().parents[3] / "astrid" / "packs" / "vibecomfy"
 H3_PACK = PACK.parent / "h3_av"
 # The reviewed H3 fixture pairing, distinct from the generic image engine pin.
 H3_VIBECOMFY_REVISION = "4acc1525236294e3542890a4a3000a399841ba55"
-
-
-
-
-
-
-def _target_schema(*entry_ids):
-    """Expose the shipped default image graphs with exact installed role names.
-
-    The default image entry owns its failure (no fallback to another model), so
-    the target must serve the preferred default's assets as well as z-image.
-    """
-    from astrid.core.model_catalog.registry import ModelRegistry
-    from vibecomfy.porting.object_info import get_class
-    from vibecomfy.registry.ready import workflow_from_ready
-
-    schema = {}
-    for entry_id in entry_ids or ("z-image", "qwen-image-2.1-turbo"):
-        spec = ModelRegistry.load_default().get(entry_id).modes["t2i"].backends["local"]
-        workflow = workflow_from_ready(spec.template)
-        for node in workflow.runtime_nodes().values():
-            definition = get_class(node.class_type)
-            assert definition is not None
-            schema.setdefault(node.class_type, {
-                "input": copy.deepcopy(definition["inputs"]),
-                "input_order": copy.deepcopy(definition["input_order"]),
-                "output": [output["type"] for output in definition["outputs"]],
-                "output_name": [output["name"] for output in definition["outputs"]],
-                "output_is_list": [output["is_list"] for output in definition["outputs"]],
-                "output_node": node.class_type == "SaveImage",
-            })
-        for role in spec.model_roles.values():
-            choices = schema[role.node_class]["input"]["required"].get(role.input)
-            names = list(choices[0]) if choices and isinstance(choices[0], list) else []
-            schema[role.node_class]["input"]["required"][role.input] = [list(dict.fromkeys([*names, role.names[0]]))]
-    return schema
-
-
-@pytest.fixture
-def loopback_comfy(tmp_path):
-    state = SimpleNamespace(schema=_target_schema(), calls=[], prompts=[], histories={})
-    image = io.BytesIO()
-    Image.new("RGB", (16, 16), (24, 48, 96)).save(image, format="PNG")
-    state.image = image.getvalue()
-
-    class Handler(BaseHTTPRequestHandler):
-        def log_message(self, *_args):
-            pass
-
-        def send(self, data, media_type="application/json"):
-            if media_type == "application/json":
-                data = json.dumps(data).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", media_type)
-            self.send_header("Content-Length", str(len(data)))
-            self.end_headers()
-            self.wfile.write(data)
-
-        def do_GET(self):
-            state.calls.append(("GET", self.path, None))
-            if self.path == "/object_info":
-                self.send(state.schema)
-            elif self.path == "/system_stats":
-                self.send({"system": {"comfyui_version": "0.36.0"}, "devices": []})
-            elif self.path.startswith("/history/"):
-                prompt_id = self.path.rsplit("/", 1)[1]
-                self.send({prompt_id: state.histories[prompt_id]})
-            elif self.path == "/queue":
-                self.send({"queue_running": [], "queue_pending": []})
-            elif self.path.startswith("/view?"):
-                descriptor = parse_qs(urlsplit(self.path).query)
-                assert descriptor["filename"] == [state.filename]
-                assert descriptor["type"] == ["output"]
-                self.send(state.image, "image/png")
-            else:
-                self.send_error(404)
-
-        def do_POST(self):
-            body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
-            state.calls.append(("POST", self.path, body))
-            # Repeated deletion of this fixture's accepted prompt is task
-            # containment, not ownership of the attached server lifecycle.
-            if self.path == "/queue" and any(
-                body == {"delete": [prompt_id]} for prompt_id in state.histories
-            ):
-                self.send({})
-                return
-            if self.path != "/prompt":
-                self.send_error(400, "attached fixture rejects lifecycle or unowned controls")
-                return
-            state.prompts.append(body["prompt"])
-            prompt_id = f"g24-{len(state.prompts)}"
-            save_id, save = next((key, node) for key, node in body["prompt"].items()
-                                 if node["class_type"] == "SaveImage")
-            state.filename = save["inputs"]["filename_prefix"].rsplit("/", 1)[-1] + "_00001_.png"
-            state.histories[prompt_id] = {
-                "outputs": {save_id: {"images": [{"filename": state.filename, "subfolder": "", "type": "output"}]}},
-                "status": {"completed": True, "status_str": "success", "messages": []},
-            }
-            self.send({"prompt_id": prompt_id, "number": len(state.prompts), "node_errors": {}})
-
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    state.url = f"http://127.0.0.1:{server.server_port}"
-    try:
-        yield state
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=5)
-        assert not thread.is_alive()
-        (tmp_path / "fake-comfy-http.json").write_text(json.dumps({
-            "url": state.url, "calls": state.calls, "prompts": state.prompts,
-            "object_info": state.schema,
-            "output_sha256": hashlib.sha256(state.image).hexdigest(),
-            "output_bytes": len(state.image),
-        }, indent=2))
 
 
 @pytest.mark.parametrize('entry_kind', ['catalog', 'saved'])

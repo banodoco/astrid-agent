@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 
 from astrid.core.generation import cli, entries
-from tests.core.generation.test_generate_target_journey import loopback_comfy  # noqa: F401
 from vibecomfy.entries import load_entry
 
 
@@ -15,9 +14,9 @@ def test_workflow_cli_replacement_is_explicit_and_atomic(tmp_path, monkeypatch, 
     root = tmp_path / "entries"
     monkeypatch.setenv("VIBECOMFY_ENTRIES_DIR", str(root))
     monkeypatch.chdir(tmp_path)
-    # Save-only stays offline. LE-12's full preview must also inspect a
-    # selected target, so supply the two real graph classes on the existing
-    # CPU-only loopback stand-in; do not stub target or invocation readiness.
+    # Both attached JSON save and full preview use the selected target schema.
+    # Supply the real graph classes on the CPU-only loopback stand-in; do not
+    # stub target or invocation readiness.
     loopback_comfy.schema["LoadImage"] = {
         "input": {"required": {"image": [["old.png", "new.png"], {"image_upload": True}]}},
         "input_order": {"required": ["image"]},
@@ -51,6 +50,7 @@ def test_workflow_cli_replacement_is_explicit_and_atomic(tmp_path, monkeypatch, 
     manifest = (entry_path / "entry.json").read_bytes()
     original_paths = set(entry_path.iterdir())
     assert (Path(first["bundle"]) / "source.json").read_bytes() == old.read_bytes()
+    assert loopback_comfy.calls == [("GET", "/object_info", None)]
 
     # Omitting the explicit replacement flag must not change the saved entry.
     assert command(new, "--no-run") == 2
@@ -59,7 +59,7 @@ def test_workflow_cli_replacement_is_explicit_and_atomic(tmp_path, monkeypatch, 
     assert set(entry_path.iterdir()) == original_paths
 
     # Preview is non-writing, including when replacement is requested.
-    assert loopback_comfy.calls == []
+    assert loopback_comfy.calls == [("GET", "/object_info", None)]  # collision adds no requests
     code = command(new, "--replace", "--dry-run")
     preview = json.loads(capsys.readouterr().out)
     assert code == 0, preview

@@ -168,7 +168,7 @@ def test_workflow_audio_runs_with_inferred_kind_without_forcing_audio_mode(monke
     assert json.loads(capsys.readouterr().out)["kind"] == "audio"
 
 
-from tests.core.generation.test_generate_target_journey import loopback_comfy, PACK
+from tests.core.generation.test_generate_target_journey import PACK
 
 
 def test_catalog_description_has_same_unqualified_reason_and_fix_as_listing(monkeypatch):

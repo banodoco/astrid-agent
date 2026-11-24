@@ -564,7 +564,7 @@ def _workflow_command(parsed: argparse.Namespace, *, output=None) -> int:
             prepared = prepare_entry_candidate(
                 frozen, parsed.as_entry, replace=parsed.replace, additions=parsed.add,
                 placement_class=resolved.kind, consent=parsed.consent, retry_argv=retry,
-                scratch=scratch,
+                scratch=scratch, attached_endpoint=resolved.endpoint if resolved.kind == 'attached' else None,
             )
             entry = prepared.entry
             mode, candidate = select_entry_mode(entry, parsed.mode)
