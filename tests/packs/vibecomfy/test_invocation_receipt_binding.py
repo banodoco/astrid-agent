@@ -651,3 +651,83 @@ def test_unrecomputable_bytes_have_receipt_code_and_cause(canonical, tmp_path):
         )
     assert caught.value.code == CODE and caught.value.field == "bytes_unrecomputable"
     assert isinstance(caught.value.__cause__, AssetManifestError)
+
+
+def test_archive_bound_source_video_is_the_staged_file_or_refused(tmp_path, monkeypatch):
+    """H3 hands the worker one prepared source as ``source_video`` and as the archive's source asset."""
+    from astrid.packs.vibecomfy.asset_manifest import resolve_inputs, write_archive
+
+    monkeypatch.setenv("VIBECOMFY_HEADLESS", "1")
+    canonical = _video_workflow(tmp_path / "admitted")
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"prepared-source-bytes")
+    archive = tmp_path / "assets.zip"
+    manifest = write_archive(
+        {"source_video": clip}, archive, lineage={"source_video": {"kind": "h3_source_conform"}},
+    )
+    receipt = preflight_invocation(canonical["python"], run_inputs=resolve_inputs(manifest))
+    inputs = {**canonical, "managed_assets": str(archive), "source_video": str(clip)}
+    verify_admitted_invocation_receipt(receipt, inputs, tmp_path / "host")
+    other = tmp_path / "other.mp4"
+    other.write_bytes(b"not the archived asset")
+    with pytest.raises(InvocationReceiptMismatch, match="bytes_unrecomputable"):
+        verify_admitted_invocation_receipt(
+            receipt, {**inputs, "source_video": str(other)}, tmp_path / "other-host",
+        )
+    with pytest.raises(InvocationReceiptMismatch, match="duplicate source_video"):
+        verify_admitted_invocation_receipt(
+            receipt, {**inputs, "workflow_inputs": json.dumps({"source_video": resolve_inputs(manifest)["source_video"]})},
+            tmp_path / "dup-host",
+        )
+    with pytest.raises(InvocationReceiptMismatch, match="bytes_unrecomputable"):
+        verify_admitted_invocation_receipt(
+            receipt, {**inputs, "source_video": str(tmp_path / "missing.mp4")}, tmp_path / "missing-host",
+        )
+    link = tmp_path / "link.mp4"
+    link.symlink_to(clip)
+    with pytest.raises(InvocationReceiptMismatch, match="bytes_unrecomputable"):
+        verify_admitted_invocation_receipt(receipt, {**inputs, "source_video": str(link)}, tmp_path / "link-host")
+    # Only an H3 prepared source may be both the worker's source_video and the archive asset.
+    plain = tmp_path / "plain.zip"
+    plain_manifest = write_archive({"source_video": clip}, plain)
+    plain_receipt = preflight_invocation(canonical["python"], run_inputs=resolve_inputs(plain_manifest))
+    with pytest.raises(InvocationReceiptMismatch, match="duplicate source_video"):
+        verify_admitted_invocation_receipt(
+            plain_receipt, {**inputs, "managed_assets": str(plain)}, tmp_path / "plain-host",
+        )
+
+
+def test_archive_workflow_input_source_video_with_a_staged_file_is_a_duplicate(tmp_path, monkeypatch):
+    from PIL import Image
+    from vibecomfy.nodes.core import GetVideoComponents, LoadImage, LoadVideo, SaveImage
+    from vibecomfy.templates import InputSpec, OutputSpec, ReadyMetadata, new_workflow
+
+    from astrid.packs.vibecomfy.asset_manifest import write_archive
+
+    monkeypatch.setenv("VIBECOMFY_HEADLESS", "1")
+    with new_workflow(ReadyMetadata.build(template_id="ra6-source-video-image", capability="image")) as workflow:
+        video = LoadVideo(_id="99", file="initial.mp4")
+        LoadImage(_id="1", image="initial.png")
+        parts = GetVideoComponents(_id="2", video=video.out(0))
+        save = SaveImage(_id="3", images=parts.out(0), filename_prefix="astrid")
+        workflow.finalize({
+            "source_video": InputSpec(node="99", field="file", default="initial.mp4",
+                                      type="COMBO", media_semantics="video", infer_type=False),
+            "image": InputSpec(node="1", field="image", default="initial.png", type="IMAGE",
+                               media_semantics="image", infer_type=False),
+        }, outputs=[OutputSpec(node=save)])
+    canonical = _publish(workflow, tmp_path / "admitted")
+    picture = tmp_path / "picture.png"
+    Image.new("RGB", (16, 16)).save(picture)
+    archive = tmp_path / "assets.zip"
+    # The archive's own workflow inputs name source_video and no asset binds it.
+    write_archive({"image": picture}, archive, workflow_inputs={"source_video": "evil.mp4"})
+    staged = tmp_path / "clip.mp4"
+    staged.write_bytes(b"staged")
+    # A receipt forged from the staged name; run.py would refuse this input set too.
+    receipt = preflight_invocation(canonical["python"], run_inputs={"image": picture.name, "source_video": staged.name})
+    with pytest.raises(InvocationReceiptMismatch, match="bytes_unrecomputable"):
+        verify_admitted_invocation_receipt(
+            receipt, {**canonical, "managed_assets": str(archive), "source_video": str(staged)},
+            tmp_path / "host",
+        )

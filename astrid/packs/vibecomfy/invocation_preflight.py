@@ -632,18 +632,57 @@ def verify_admitted_invocation_receipt(
                 raise InvocationReceiptMismatch(
                     "bytes_unrecomputable", admitted="<unrecomputable>", receipt="<provided>",
                 ) from exc
+            supplied_source_video = "source_video" in bindings
+            archive_source_digests: list[str] = []
             if inputs.get("managed_assets"):
                 # Same archive validation/merge as run.py's _stage_managed_asset_manifest,
                 # without writing engine files or contacting a target.
                 archive = read_archive(inputs["managed_assets"])
                 bindings = resolve_inputs(archive.manifest, bindings)
+                # Only an H3 prepared source is both the worker's source_video and the
+                # archive's source asset; any other pairing is still a duplicate.
+                archive_source_digests = [
+                    str(record.get("sha256"))
+                    for record in archive.manifest.get("assets", ())
+                    if isinstance(record, Mapping) and record.get("binding") == "source_video"
+                    and isinstance(record.get("lineage"), Mapping)
+                    and record["lineage"].get("kind") == "h3_source_conform"
+                ]
             if inputs.get("source_video"):
-                # Mirror run.py's _stage_source_video binding, before target custody.
-                if "source_video" in bindings:
+                if supplied_source_video:
                     raise InvocationReceiptMismatch(
                         "bytes_unrecomputable", admitted="<duplicate source_video>", receipt="<provided>",
                     )
-                bindings["source_video"] = Path(inputs["source_video"]).name
+                if archive_source_digests:
+                    # A prepared (H3) source is the worker's source_video and also the
+                    # archive's source_video graph asset. The graph is bound to the
+                    # asset's own member name (the host's own preflight does the same),
+                    # so the staged file must be exactly that asset's bytes.
+                    import hashlib
+                    import stat
+
+                    try:
+                        if not stat.S_ISREG(os.lstat(inputs["source_video"]).st_mode):
+                            raise OSError("staged source_video is not a regular file")
+                        with open(inputs["source_video"], "rb") as staged:
+                            staged_digest = hashlib.file_digest(staged, "sha256").hexdigest()
+                    except OSError as exc:
+                        raise InvocationReceiptMismatch(
+                            "bytes_unrecomputable", admitted="<unreadable source_video>", receipt="<provided>",
+                        ) from exc
+                    if any(digest != staged_digest for digest in archive_source_digests):
+                        raise InvocationReceiptMismatch(
+                            "bytes_unrecomputable", admitted="<source_video differs from managed asset>",
+                            receipt="<provided>",
+                        )
+                else:
+                    if "source_video" in bindings:
+                        # The archive's own workflow inputs already name it (run.py refuses this too).
+                        raise InvocationReceiptMismatch(
+                            "bytes_unrecomputable", admitted="<duplicate source_video>", receipt="<provided>",
+                        )
+                    # Mirror run.py's _stage_source_video binding, before target custody.
+                    bindings["source_video"] = Path(inputs["source_video"]).name
             api = loaded.resolved.workflow.compile("api", run_inputs=bindings)
             if not isinstance(api, Mapping):
                 raise InvocationReceiptMismatch(
