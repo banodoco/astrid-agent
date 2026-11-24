@@ -3774,6 +3774,17 @@ class ProcessCustody:
                                 or not fence('fresh.root-handle', self._handles.get(root_pid) == root_handle)):
                             raise
                         decision['stage'] = 'retry-pre-observation'
+                        # R6 STOPGAP (not for merge): a short-lived descendant that
+                        # is exiting can still be reported LIVE for a moment after
+                        # its task port has died (capture fails at pid_for_task).
+                        # Give it a bounded moment to finish exiting before the
+                        # single registration retry, so a healthy long command is
+                        # not failed by one dying helper process.
+                        for _r6_wait in range(60):
+                            _r6_probe = ordinary_candidate_observation(pid)
+                            if not (isinstance(_r6_probe, Mapping) and _r6_probe.get('outcome') == 'LIVE'):
+                                break
+                            time.sleep(0.05)
                         retry_pre = ordinary_candidate_observation(pid)
                         decision['retry_pre'] = {
                             'outcome': retry_pre.get('outcome') if isinstance(retry_pre, Mapping) else 'INVALID',

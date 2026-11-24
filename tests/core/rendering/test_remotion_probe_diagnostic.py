@@ -17,6 +17,20 @@ def _reset_process_local_remotion_custody(monkeypatch):
 SENTINEL = 'private-argv-environment-output-must-not-cross-diagnostic'
 
 
+def test_context_path_diagnostic_shows_only_changed_import_roots():
+    expected = {'registry_context': {'PYTHONPATH': '/old/python',
+                                     'ASTRID_PACKS_PATH': '/old/packs',
+                                     'HOME': SENTINEL},
+                'configuration': {'secret': SENTINEL}}
+    actual = {'registry_context': {'PYTHONPATH': '/new/python',
+                                   'ASTRID_PACKS_PATH': '/new/packs',
+                                   'HOME': 'different'}}
+    detail = '; '.join(runtime._context_path_differences(expected, actual))
+    assert all(value in detail for value in ('/old/python', '/new/python', '/old/packs', '/new/packs'))
+    assert SENTINEL not in detail
+    assert 'HOME' not in detail
+
+
 def _receipt():
     return {'original_wait_exit_code': 0, 'original_child_pid': 71,
             'retained_set_final_census_complete': True, 'custody_admitted': True,
