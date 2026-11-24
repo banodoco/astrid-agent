@@ -375,7 +375,20 @@ ComfyUI.
 
 ### LE-3 — Add a pinned node pack
 
-<!-- LE-3: fill this subsection in the same change as the card. -->
+For a known custom-node repository, use `astrid generate workflow FILE
+--as-entry NAME --add URL[@REF] --placement TARGET --no-run --json`.
+`--add` may be repeated. The declaration must use a credential-free HTTPS
+repository; HEAD or an exact branch/tag resolves to a full commit once. An
+already-full SHA requires no ref lookup. A missing/ambiguous ref stops with
+a named human repair; conflicting pins are refused.
+
+A declaration is not permission to execute code. Show the exact source,
+commit, recipe and target consent warning, and use the returned pinned
+command only after approval. The saved entry carries the immutable refs and
+its separately stored approval records. A subsequent `astrid generate
+audio --entry NAME --mode workflow --audio-ref FILE --placement TARGET
+--dry-run --json` (or matching kind/mode) uses those records without
+`--add` or a new consent flag. The target still checks its actual classes.
 
 ### LE-4 — Lookup availability
 
