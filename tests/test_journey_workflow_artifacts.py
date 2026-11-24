@@ -108,7 +108,7 @@ def test_linux_manager_gets_the_installs_xdg_config_and_the_probe_checks_it():
     import subprocess
     script = _linux_manager_script()
     subprocess.run(["bash", "-n"], input=script, text=True, check=True)
-    assert script.index("set-environment \"XDG_CONFIG_HOME=$config\"") < script.index("\nprobe_isolated_unit\n")
+    assert script.index('set-environment "HOME=$run_root/home" "XDG_CONFIG_HOME=$config" "XDG_DATA_HOME=$data"') < script.index("\nprobe_isolated_unit\n")
     assert 'if [[ "$manager_config/systemd/user" != "$probe_dir" ]]' in script
     assert 'probe_dir="$config/systemd/user"' in script
 
@@ -133,10 +133,12 @@ def _run_manager_assertion(tmp_path, environment):
 
 
 def test_manager_environment_assertion_fails_loudly_when_xdg_is_missing_or_different(tmp_path):
-    good = "XDG_CONFIG_HOME=/run/home/.config\nXDG_DATA_HOME=/run/home/.local/share\nPATH=/usr/bin\n"
+    good = "HOME=/home\nXDG_CONFIG_HOME=/run/home/.config\nXDG_DATA_HOME=/run/home/.local/share\nPATH=/usr/bin\n"
     ok = _run_manager_assertion(tmp_path, good)
     assert ok.returncode == 0 and ok.stdout.strip() == "ok"
-    missing = _run_manager_assertion(tmp_path, "XDG_DATA_HOME=/run/home/.local/share\n")
+    missing = _run_manager_assertion(tmp_path, "HOME=/home\nXDG_DATA_HOME=/run/home/.local/share\n")
     assert missing.returncode == 1 and "has no XDG_CONFIG_HOME" in missing.stdout
+    missing_home = _run_manager_assertion(tmp_path, good.replace("HOME=/home\n", ""))
+    assert missing_home.returncode == 1 and "has no HOME" in missing_home.stdout
     different = _run_manager_assertion(tmp_path, good.replace("/run/home/.config", "/home/runner/.config"))
     assert different.returncode == 1 and "XDG_CONFIG_HOME is /home/runner/.config, not /run/home/.config" in different.stdout
