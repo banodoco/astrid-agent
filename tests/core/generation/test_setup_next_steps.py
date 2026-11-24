@@ -53,6 +53,14 @@ def test_setup_case_has_a_traceable_next_step(case_name, code, run):
     validate_setup_envelope(result)
     assert code in {issue["code"] for issue in result["issues"]}, case_name
     assert json.loads(json.dumps(result)) == result
+    if result["status"] == "ready_with_warnings":
+        # Advisory cases have no fix and are never projected as errors.
+        assert all(issue["severity"] == "warning" and not issue.get("fix_ids")
+                   for issue in result["issues"])
+        assert result["fixes"] == []
+        with pytest.raises(ValueError, match="blocking issue"):
+            GenerationReadinessError(result, task_id="task-test")
+        return
     error = GenerationReadinessError(result, task_id="task-test")
     assert error.to_envelope() == {**result, "task_id": "task-test"}
 
@@ -163,14 +171,80 @@ def test_legacy_envelopes_remain_unchanged_until_their_mapping_card():
     issue = {"code": "missing_node_pack", "severity": "error", "message": "Install it manually", "details": {}}
     fix = {"scope": "attached_target", "details": {"action": "Install it manually"}}
     result = readiness_envelope(issues=[issue], fixes=[fix])
-    assert result == {"entry": None, "target": None, "status": "blocked", "issues": [issue], "fixes": [fix]}
-    assert "argv" not in json.dumps(result)
-    assert "argv" not in json.dumps(GenerationReadinessError(copy.deepcopy(result)).to_envelope())
+    projected = {
+        **fix, "id": "setup-1", "who": "human",
+        "instruction": {"step": "Install it manually", "then_argv": [
+            "astrid", "generate", "targets", "--placement", "<PLACEMENT>", "--json",
+        ]},
+        "placeholders": {"PLACEMENT": "The originally selected target or its explicit ComfyUI URL"},
+    }
+    assert result == {"entry": None, "target": None, "status": "blocked",
+                      "issues": [{**issue, "fix_ids": ["setup-1"]}], "fixes": [projected],
+                      "attempt_count": 0}
+    assert all("argv" not in fix for fix in result["fixes"])
+    error = GenerationReadinessError(copy.deepcopy(result))
+    assert all("argv" not in fix for fix in error.to_envelope()["fixes"])
+    assert error.recovery_command == ""
 
 
 def test_generic_service_conflict_is_not_a_node_install_conflict():
     error = generation_error({"code": "conflict", "message": "A service write conflicted"})
     result = error.to_envelope()
     assert result["issues"][0]["code"] == "conflict"
+    assert len(result["fixes"]) == 1 and result["fixes"][0]["who"] == "human"
+    assert result["issues"][0]["fix_ids"] == [result["fixes"][0]["id"]]
+    assert "resolve" in result["fixes"][0]["instruction"]["step"]
+    assert "argv" not in result["fixes"][0]
+    assert result["attempt_count"] == 0
+
+
+def test_all_non_success_projections_invoke_validator(monkeypatch):
+    from astrid.core.generation import setup_contract
+
+    original = setup_contract.validate_setup_envelope
+    seen = []
+
+    def check(envelope):
+        seen.append(envelope["status"])
+        return original(envelope)
+
+    monkeypatch.setattr(setup_contract, "validate_setup_envelope", check)
+    readiness_envelope(issues=[{"code": "pack_version_differs", "severity": "warning",
+                                "message": "Observed version differs", "details": {}}])
+    readiness_envelope(issues=[_issue()], fixes=[_fix()])
+    readiness_envelope(
+        issues=[{"code": "missing_node_pack", "severity": "error", "message": "Missing", "details": {}}],
+        fixes=[{"scope": "attached_target", "details": {"action": "Identify the providing pack."}}],
+    )
+    assert seen == ["ready_with_warnings", "blocked", "blocked"]
+
+
+def test_bare_or_dangling_error_fails_closed_even_without_attempt_count():
+    for issue in (
+        {"code": "missing_model", "severity": "error", "message": "Missing", "details": {}},
+        {"code": "missing_model", "severity": "error", "message": "Missing", "details": {},
+         "fix_ids": ["absent"]},
+    ):
+        with pytest.raises(ValueError):
+            readiness_envelope(issues=[issue])
+
+
+def test_existing_error_is_revalidated_before_serialization():
+    error = GenerationReadinessError(readiness_envelope(issues=[_issue()], fixes=[_fix()]))
+    error.readiness["issues"][0]["fix_ids"].clear()
+    with pytest.raises(ValueError):
+        error.to_envelope()
+    with pytest.raises(ValueError):
+        generation_error(error)
+
+
+def test_only_the_canonical_version_code_is_registered():
+    from astrid.core.generation.setup_contract import SETUP_ISSUE_CODES
+
+    assert {"pack_version_differs", "model_download_notice", "missing_node_pack"} <= SETUP_ISSUE_CODES
+    assert "version_drift" not in SETUP_ISSUE_CODES
+    result = readiness_envelope(issues=[{"code": "version_drift", "severity": "warning",
+                                        "message": "Version differs", "details": {"recorded": "1", "observed": "2"}}])
+    assert result["issues"] == [{"code": "pack_version_differs", "severity": "warning",
+                                 "message": "Version differs", "details": {"recorded": "1", "observed": "2"}}]
     assert result["fixes"] == []
-    assert "attempt_count" not in result

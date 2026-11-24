@@ -51,3 +51,42 @@ def test_core_class_evidence_keeps_known_text_but_does_not_call_unknown_core(mon
     assert "Identify the providing custom node pack" in other["message"]
     assert "part of ComfyUI itself" not in other["message"]
     assert all(fix["scope"] == "attached_target" for fix in readiness["fixes"])
+
+
+def test_strict_incomplete_model_failure_reaches_the_same_validated_envelope():
+    from astrid.core.generation.preflight import generation_error
+    from astrid.core.generation.setup_contract import validate_setup_envelope
+
+    asset = {"name": "example.safetensors", "subdir": "checkpoints",
+             "url": "https://example.invalid/model"}
+    with pytest.raises(ModelLockValidationError) as caught:
+        declared_model_specs([asset], entry_id="saved")
+    result = generation_error(caught.value, entry={"id": "saved"}).to_envelope()
+    validate_setup_envelope(result)
+    assert result["issues"][0]["code"] == "model_lock_incomplete"
+    assert result["issues"][0]["details"] == caught.value.details
+    assert result["fixes"][0] == caught.value.setup_fix
+
+
+def test_each_attached_node_and_model_links_to_its_specific_manual_repair(monkeypatch):
+    from types import SimpleNamespace
+    from astrid.core.generation.setup_contract import validate_setup_envelope
+
+    pack = SimpleNamespace(name="FixturePack", repo="https://github.com/example/FixturePack",
+                           classes={"FixtureOne", "FixtureTwo"})
+    monkeypatch.setattr("vibecomfy.node_packs.resolve_node_packs", lambda names, **kwargs:
+                        [pack] if names & pack.classes else [])
+    monkeypatch.setattr("astrid.core.generation.asset_gaps._locked_commit",
+                        lambda *args: "a" * 40)
+    result = attached_asset_readiness("saved", nodes=["FixtureOne", "FixtureTwo", "CLIPLoader"],
+                                      models=["model.safetensors"],
+                                      target={"endpoint": "http://127.0.0.1:8188"})
+    validate_setup_envelope(result)
+    assert len(result["issues"]) == 4 and len(result["fixes"]) == 3
+    first, second, core, model = result["issues"]
+    assert first["fix_ids"] == second["fix_ids"] == [result["fixes"][0]["id"]]
+    assert core["fix_ids"] == [result["fixes"][1]["id"]]
+    assert model["fix_ids"] == [result["fixes"][2]["id"]]
+    assert all(fix["who"] == "human" and "argv" not in fix for fix in result["fixes"])
+    assert all(fix["instruction"]["then_argv"][-3:] ==
+               ["--placement", "http://127.0.0.1:8188", "--json"] for fix in result["fixes"])
