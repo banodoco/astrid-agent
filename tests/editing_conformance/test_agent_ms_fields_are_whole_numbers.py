@@ -21,10 +21,14 @@ from astrid.sdk.timeline import commands
 from astrid.sdk.timeline._command_state import State
 from astrid.sdk.timeline.commit import bundle_from_document, document_from_bundle
 from astrid.sdk.timeline.emitter import emit_document_commands
-from astrid.sdk.timeline.native_occurrence_create import capture_occurrence_create
 from astrid.sdk.timeline.native_occurrence_duplicate import capture_occurrence_duplicate
 from astrid.sdk.timeline.native_occurrence_fork import capture_occurrence_fork
-from astrid.sdk.timeline.native_occurrence_shared import capture_occurrence_place_shared
+from astrid.sdk.timeline.native_occurrence_shared import (
+    capture_occurrence_place_shared, foreign_shared_command, resolve_source,
+)
+from astrid.sdk.timeline.native_timeline_duplicate import copy_command
+from astrid.sdk.timeline._clip_commands import capture_clip_add
+from astrid.sdk.timeline._clip_scalar_commands import capture_clip_set
 from astrid.sdk.timeline.native_occurrence_media_commands import capture_occurrence_add_media
 from astrid.sdk.timeline.native_parent_media_commands import capture_clip_add_media
 from astrid.sdk.timeline.native_placement_commands import capture_placement, capture_placement_create
@@ -36,7 +40,8 @@ from astrid.sdk.timeline.capture import capture_move
 from tests.editing_conformance.test_recipe_occurrence_create import birth, empty_bundle
 from tests.editing_conformance.test_recipe_occurrence_duplicate import duplicate_document
 from tests.editing_conformance.test_recipe_occurrence_media import inputs
-from tests.sdk.test_timeline_commit_provider_document import _digest, document_fixture
+from tests.sdk.test_timeline_commit_provider import runtime_abi  # noqa: F401
+from tests.sdk.test_timeline_commit_provider_document import _digest
 
 
 RATE = Fraction(30000, 1001)
@@ -54,6 +59,8 @@ CASES = [
     "occurrence.duplicate",
     "occurrence.fork",
     "occurrence.place-shared",
+    "occurrence.place-shared-foreign",
+    "timeline.duplicate",
     "clip.move-ms-only",
     "clip.move-dual",
     "placement.move-parent",
@@ -63,6 +70,8 @@ CASES = [
     "clip.split",
     "occurrence.add-media",
     "clip.add-media",
+    "clip.add",
+    "clip.set",
     "shot.set",
     "shot.pool",
     "doc.patch",
@@ -163,6 +172,51 @@ def _case(name):
             (ref, ("placement", "start_ms"), expected),
         ]
 
+    if name in ("occurrence.place-shared-foreign", "timeline.duplicate"):
+        # A detached immutable source port supplies exact, real fixture images
+        # to the production resolver; neither recipe nor recorder is mocked.
+        before = empty_bundle(fps=FPS)
+        source = duplicate_document(count=1, shared_shot=False)
+        source["project_id"] = before["project_id"]
+        source["timeline_id"] = "qualification-source"
+        parent = source["parent_revision"]
+        source_start = frame_ms(4.25, RATE)
+        parent["payload"]["occurrences"][0]["placement"]["start_ms"] = source_start
+        parent["content_digest"] = _digest(parent["payload"])
+        pin = {"project_id": source["project_id"], "timeline_id": source["timeline_id"],
+               "revision_id": parent["revision_id"], "content_digest": parent["content_digest"],
+               "publication_id": "qualification-source-publication"}
+
+        class SourcePort:
+            def revision_closure(self, ref):
+                assert ref == pin
+                return copy.deepcopy(source)
+
+            source_revision_closure = revision_closure
+
+            def shot_closure(self, shot_id, revision_id):
+                shot = source["shot_revisions"][0]
+                assert (shot_id, revision_id) == (shot["shot_id"], shot["revision_id"])
+                return {"shot_revision": copy.deepcopy(shot),
+                        "internal_timeline_revision": copy.deepcopy(source["internal_timeline_revisions"][0])}
+
+            def raw_media_info(self, media_pin):
+                assert media_pin in source["dependency_manifest"]["media"]
+                return copy.deepcopy(media_pin)
+
+        resolver = resolve_source(SourcePort(), lambda ctx: [])
+        if name == "timeline.duplicate":
+            call = copy_command(pin, {"chapter-shot": "copied-shot"}, {"occ-0": "foreign-occ"})
+            expected = source_start
+        else:
+            on = 14.25
+            call = foreign_shared_command(pin, "occ-0", "foreign-occ", on=on)
+            expected = frame_ms(on, RATE)
+        plan = commands.execute(before, [call], resolve_inputs=resolver)
+        return before, plan, RATE, [
+            ("occurrence:foreign-occ", ("placement", "start_ms"), expected),
+        ]
+
     if name.startswith(("clip.move-", "placement.move-")):
         before, _, _, _ = _media_bundle()
         child = name == "placement.move-child"
@@ -204,6 +258,11 @@ def _case(name):
     elif name == "clip.add-media":
         before = empty_bundle(fps=FPS)
         call = capture_clip_add_media(before, row, new, verified_media=verified)
+    elif name == "clip.add":
+        call = capture_clip_add(before, "parent", {"id": "ms-title", "clipType": "text",
+                                "track": "picture", "at": 4.25, "hold": 1.25})
+    elif name == "clip.set":
+        call = capture_clip_set(before, "parent/clip:clip-a", values={"hold": 1.25})
     elif name == "shot.pool":
         call = capture_shot_pool(
             before, OWNER, "add", new, ownership="occurrence", verified_media=verified,
@@ -231,8 +290,9 @@ def _case(name):
 
 
 def _assert_exercised(case, before, plan):
-    operation = case.split("-")[0] if case.startswith(("clip.move-", "placement.move-",
-                                                        "occurrence.create-")) else case
+    operation = ("occurrence.place-shared" if case == "occurrence.place-shared-foreign"
+                 else case.split("-")[0] if case.startswith(("clip.move-", "placement.move-",
+                                                            "occurrence.create-")) else case)
     assert plan.records, case
     assert plan.records[0]["command"]["op"] == operation, case
     assert plan.bundle != before, "command did not change its fixture: " + case
@@ -249,7 +309,7 @@ def test_agent_ms_fields_are_whole_numbers(case):
             errors.append(f"{label}: {value!r} ({type(value).__name__}), expected int")
         elif path[-1] != "duration_ms" and value != _grid_ms(value, fps):
             errors.append(f"{label}: {value!r}, not the integer encoding of a frame")
-        elif value < 0:
+        elif path[-1] != "duration_ms" and value < 0:
             errors.append(f"{label}: {value!r}, expected nonnegative")
     for ref, path, expected in witnesses:
         actual = State(plan.bundle).entity(ref)
