@@ -922,7 +922,12 @@ def prepare_filmstrip(
         registry_client = remote if callable(
             getattr(getattr(remote, 'media', None), 'list', None)
         ) else client
-        _runtime_snapshot_registry(registry, project_ref=canonical_project, client=registry_client)
+        # This registry goes to the generic host unchanged, and the host
+        # refuses every locator, so do not drop redundant object routes here.
+        _runtime_snapshot_registry(
+            registry, project_ref=canonical_project, client=registry_client, config=config,
+            drop_redundant_object_routes=False,
+        )
         parent_revision = (
             closure.get('parent_revision_id')
             or capture_row.get('head_revision_id')

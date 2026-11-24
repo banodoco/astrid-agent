@@ -108,6 +108,22 @@ def retain(capture, tmp_path, frames=(0, 30)):
     capture.retain(produced)
 
 
+def test_capture_passes_prepared_scene_selectors(monkeypatch):
+    from astrid.packs.rendering.rendering.renderers.remotion import root_preparation
+
+    selected = [{"root": "/staged/pack", "scope": "pack-pinned-elements"}]
+    observed = []
+    monkeypatch.setattr(scene_answers, "host_frames_at", lambda props, basis, frames, **kw:
+                        observed.append(kw) or [{"frame": 0, "width": 200, "height": 100, "layers": []}])
+    token = root_preparation._scene_selectors.set((selected, "/staged/host"))
+    try:
+        adapter().observe(props(), (0,))
+    finally:
+        root_preparation._scene_selectors.reset(token)
+    assert observed == [{"_render_roots": selected, "_registry_root": "/staged/host"}]
+    assert root_preparation.scene_selectors() == (None, None)
+
+
 def test_real_host_labels_are_retained_once_and_drawn_without_private_math(native, tmp_path, monkeypatch):
     p = props()
     capture = adapter(p)

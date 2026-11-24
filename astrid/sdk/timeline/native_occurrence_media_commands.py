@@ -60,8 +60,13 @@ def _consume(ctx, owner, ids):
 def _binding(pin, kind, *, verified=None):
     entry = {'media_id': pin['object_id'], 'type': kind,
              'generationId': pin['generation_id'], 'variantId': pin['variant_id']}
-    if kind in ('video', 'audio') and verified is not None:
-        entry['duration'] = verified['duration_seconds']
+    if verified is not None:
+        if kind in ('video', 'audio'):
+            entry['duration'] = verified['duration_seconds']
+        width, height = verified.get('width'), verified.get('height')
+        if (kind in ('image', 'video') and type(width) is int and type(height) is int
+                and width > 0 and height > 0):
+            entry['resolution'] = f'{width}x{height}'
     return entry
 
 

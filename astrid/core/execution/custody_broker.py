@@ -80,6 +80,12 @@ def _candidate_observation_evidence(observation: Mapping[str, Any] | None) -> di
                         ("native", ("pid", "uid", "parent_pid", "pgid", "status", "start_sec", "start_usec"))):
         if isinstance(observation.get(key), Mapping):
             evidence[key] = {field: observation[key].get(field) for field in fields}
+    native = observation.get("native")
+    if isinstance(native, Mapping) and isinstance(native.get("executable_name"), str):
+        evidence["executable_observation"] = {
+            "name": native["executable_name"], "source": "darwin-kinfo-proc-p_comm",
+            "authority": "NONE",
+        }
     if observation.get("outcome") == "OBSERVATION_ERROR":
         evidence["error_type"] = type(observation.get("error")).__name__
     return evidence
@@ -250,7 +256,7 @@ def _ps_lstart_birth(start_sec: int) -> str:
             f"{value.tm_mday:2d} {value.tm_hour:02d}:{value.tm_min:02d}:{value.tm_sec:02d} {value.tm_year:04d}")
 
 
-def _darwin_process_records(pid: int | None = None) -> list[dict[str, int]]:
+def _darwin_process_records(pid: int | None = None) -> list[dict[str, Any]]:
     """Read the public BSD census directly, including protected UIDs and zombies.
 
     A selected PID's absence is only an observation. Neither absence nor a
@@ -295,9 +301,15 @@ def _darwin_process_records(pid: int | None = None) -> list[dict[str, int]]:
                 or sec < 0 or (p.pid > 0 and sec == 0) or not 0 <= usec < 1000000):
             raise CustodyError("Darwin public process census contains an invalid identity")
         seen.add(int(p.pid))
-        rows.append({"pid": int(p.pid), "uid": int(e.ucred.uid), "parent_pid": int(e.ppid),
-                     "pgid": int(e.pgid), "status": int(p.status), "start_sec": sec,
-                     "start_usec": usec})
+        row: dict[str, Any] = {
+            "pid": int(p.pid), "uid": int(e.ucred.uid), "parent_pid": int(e.ppid),
+            "pgid": int(e.pgid), "status": int(p.status), "start_sec": sec, "start_usec": usec,
+        }
+        if pid is not None and p.comm:
+            # The kernel's bounded executable name comes from the same native
+            # sample as the precise process identity. It may be truncated.
+            row["executable_name"] = p.comm.decode("utf-8", errors="replace")
+        rows.append(row)
     return rows
 
 
@@ -3652,9 +3664,8 @@ class ProcessCustody:
                 raise
             later_terminal_observation = None
             later_terminal_census = None
-            # A disappearing task-name port can also report KERN_INVALID_ARGUMENT
-            # with the full audit-token buffer. Reacquire once under the same
-            # precise LIVE/ancestry fences; the error itself grants no authority.
+            # Reacquire once under the same precise LIVE and ancestry fences.
+            # KERN_FAILURE at pid_for_task carries no identity or exit evidence.
             if (fresh_census is not None and retry_admissions is not None
                     and getattr(error, 'registration_stage', None) == 'token-capture'
                     and type(cause) is NativeTokenCaptureError
@@ -3670,6 +3681,10 @@ class ProcessCustody:
                                    and capture['count'] == TASK_AUDIT_TOKEN_COUNT))
                           and capture.get('port_acquired') is True
                           and capture.get('port_release_succeeded') is True)
+                         or (capture.get('substage') == 'pid_for_task'
+                             and capture['kern_return'] == 5
+                             and capture.get('port_acquired') is True
+                             and capture.get('port_release_succeeded') is True)
                          or (capture.get('substage') == 'task_name_for_pid'
                              and capture['kern_return'] == 5
                              and capture.get('port_acquired') is False))

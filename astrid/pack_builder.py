@@ -162,8 +162,26 @@ esbuild.build({
   bundle: true, write: false, metafile: true, format: 'esm', platform: 'browser',
   target: 'es2020', jsx: 'automatic', logLevel: 'silent',
   external: ['react', 'react/jsx-runtime', 'remotion'],
+  plugins: [{name: 'selected-rendering-contract', setup(build) {
+    build.onResolve({filter: /^@astrid-rendering\/shared\/element_contracts$/}, args => {
+      if (!input.rendering_contract) return {errors: [{text: 'Selected rendering contract is unavailable'}]};
+      return {path: input.rendering_contract};
+    });
+    build.onResolve({filter: /.*/}, args => {
+      if (input.rendering_contract && args.importer === input.rendering_contract &&
+          !['react', 'react/jsx-runtime', 'remotion'].includes(args.path))
+        return {errors: [{text: 'Selected rendering contract has an unsupported runtime dependency'}]};
+    });
+  }}],
 }).then(result => {
   if (result.warnings.length) fail('warnings: ' + result.warnings.map(w => w.text).join('; '));
+  const stage = fs.realpathSync(input.stage_root);
+  const contract = input.rendering_contract ? fs.realpathSync(input.rendering_contract) : null;
+  for (const name of Object.keys(result.metafile.inputs)) {
+    const selected = fs.realpathSync(path.resolve(input.stage_root, name));
+    if (selected !== contract && selected !== stage && !selected.startsWith(stage + path.sep))
+      fail('element dependency escapes its admitted source and selected rendering contract');
+  }
   if (result.outputFiles.length !== 1) fail('the element must bundle to exactly one module');
   const exports = Object.values(result.metafile.outputs).map(o => o.exports);
   if (exports.length !== 1 || !exports[0].includes('default')) fail('the element component needs a default export');

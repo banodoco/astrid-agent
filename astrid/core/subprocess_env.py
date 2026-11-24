@@ -206,9 +206,12 @@ def build_child_subprocess_env(
             env[cf_key] = inherited
 
     env.pop(ASTRID_ACTOR, None)
+    # Pack selection is scoped by the caller: an explicit empty or selected
+    # path must not be replaced by the host-wide discovery path. Other
+    # propagated values, including launch references, remain parent-owned.
     for key in sorted(_ASTRID_PROPAGATED_ENV):
         parent_value = parent_env.get(key)
-        if parent_value is not None:
+        if parent_value is not None and (key != PACKS_PATH_ENV or key not in (explicit_env or {})):
             env[key] = str(parent_value)
     return env
 
