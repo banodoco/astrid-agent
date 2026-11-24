@@ -441,6 +441,9 @@ def helper_client(retained_pack, monkeypatch, tmp_path):
                 if not revision_id or not isinstance(publication_id, str) or not publication_id:
                     return DomainResult.failure(ErrorObject(
                         'protocol_error', 'source hydration requires the exact original revision/publication pair', {}))
+            document = case.service._timeline_commits()[0].revision_closure(project, timeline, revision)
+            bundle = commit.bundle_from_document(document)
+            if publication_id is not None:
                 cursor, seen = None, set()
                 while True:
                     page = owner.history(project, timeline, cursor=cursor, limit=100)
@@ -463,8 +466,6 @@ def helper_client(retained_pack, monkeypatch, tmp_path):
                     return DomainResult.failure(ErrorObject(
                         'protocol_error', f'could not open the timeline closure: {message}',
                         {'timeline': timeline, 'revision_id': revision}))
-            document = case.service._timeline_commits()[0].revision_closure(project, timeline, revision)
-            bundle = commit.bundle_from_document(document)
             if publication_id is not None:
                 bundle['base_parent']['publication_id'] = publication_id
             return DomainResult.success({'project_id': project, 'timeline_id': timeline,
@@ -482,9 +483,13 @@ def helper_client(retained_pack, monkeypatch, tmp_path):
 
 def test_helper_open_bundle_refuses_mismatched_publication(retained_pack, helper_client):
     case = retained_pack
-    publication = case.head()['publication_id']
+    original = case.head()
+    case.submit(case.request([capture_track_set(case.bundle(), 'parent/track:picture',
+                                               values={'label': 'Newer'})]), 'mismatch-newer')
+    revision = case.head()['revision_id']
+    assert revision != original['revision_id']
     result = helper_client.connect().open_bundle(
-        case.project, 'film', revision_id='different-revision', publication_id=publication)
+        case.project, 'film', revision_id=revision, publication_id=original['publication_id'])
     assert not result.ok
     assert result.error.code == 'protocol_error'
     assert result.error.message == 'could not open the timeline closure: original revision/publication pair changed'
