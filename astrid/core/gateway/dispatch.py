@@ -7,6 +7,7 @@ from typing import Any
 
 from astrid.core.contracts.errors import AstridError
 
+
 def _installed_pack_ids() -> frozenset[str]:
     from .hivemind import installed_pack_ids
 

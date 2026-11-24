@@ -12727,7 +12727,9 @@ class GenericPackHost:
                 )
                 canonical = any(inputs.get(name) for name in ("python", "companion", "source")) or Path(inputs.get("workflow") or "").suffix.lower() == ".py"
                 if "invocation_preflight" in admitted or (canonical and not delegated):
-                    from astrid.packs.vibecomfy.invocation_preflight import verify_admitted_invocation_receipt
+                    from astrid.packs.vibecomfy.invocation_preflight import (
+                        verify_admitted_invocation_receipt,
+                    )
 
                     verify_admitted_invocation_receipt(
                         admitted.get("invocation_preflight"), inputs, root / "workflow-receipt",
