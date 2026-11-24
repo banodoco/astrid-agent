@@ -31,7 +31,13 @@ def revision_notice_phase(row: Mapping[str, Any]) -> str:
     """Fit both revision names into Runtime's existing 128-character phase."""
     pack = _display(row["pack_id"], 24)
     editor = " ".join(str(row["editor_revision"]).split())
-    render = " ".join(str(row.get("upstream_revision", row.get("derived_from"))).split())
+    # Projection revisions are content digests; the upstream commit is
+    # provenance only. Keep the legacy revision namespace for other rows.
+    render_identity = (
+        row["resolved_revision"] if row.get("digest_rule") == "pack-tree-v1"
+        else row.get("upstream_revision", row.get("derived_from"))
+    )
+    render = " ".join(str(render_identity).split())
     start = f"{NOTICE_PREFIX}{pack} editor "
     separator = "; render "
     budget = MAX_PROGRESS_PHASE - len(start) - len(separator)
