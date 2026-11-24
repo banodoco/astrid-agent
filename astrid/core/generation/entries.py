@@ -31,7 +31,15 @@ def user_entries() -> list[dict[str, Any]]:
         from vibecomfy.entries import discover_entries
     except ImportError:
         return []
+    from astrid.sdk.generation import _explicit_workflow_needs
     rows = discover_entries()
+    # A raw audio manifest deliberately has no catalog slot. Project the
+    # explicit workflow mode from the producer's stable advisory code; keep
+    # the persisted manifest and every other readiness need unchanged.
+    rows = [{**row, "modes": ["workflow"], "needs": _explicit_workflow_needs(row["needs"])}
+            if row.get("kind") == "audio" and not row.get("modes")
+            and any(need.get("code") == "audio_mode_unknown" for need in row.get("needs", []))
+            else row for row in rows]
     return rows + contributed_entries(exclude={row.get("id") for row in rows})
 
 
@@ -382,6 +390,15 @@ def _entry_bindings(workflow: Any, binds: dict[str, Any] | None, mode: str,
     for canonical, public in translation.items():
         if canonical not in mapping and public in mapping:
             mapping[canonical] = mapping[public]
+    if mode == 'workflow' and 'audio_ref' not in mapping:
+        # The convenience flag must name one declared audio port, never choose
+        # arbitrarily between two media loaders or replace an explicit bind.
+        audio = {spec.name for spec in workflow.inputs.values()
+                 if spec.media_semantics == 'audio'}
+        if len(audio) == 1:
+            name = next(iter(audio))
+            if name in mapping:
+                mapping['audio_ref'] = mapping[name]
     return mapping
 
 

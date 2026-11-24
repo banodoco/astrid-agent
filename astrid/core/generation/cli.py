@@ -43,9 +43,9 @@ _KIND_SPEC: dict[str, dict[str, Any]] = {
     'video': {'noun': 'a video', 'dimension_key': 'resolution', 'prompt_only_guard': True},
     # audio_modes: the sound-generating modes (music, tts, sfx); the table contract tests pin this tuple.
     # transcribe_modes: modes that take --audio-ref and yield a transcript, not sound. Kept under its own
-    # key so audio_modes stays unchanged; the --mode choices are audio_modes plus transcribe_modes.
+    # key so audio_modes stays unchanged. workflow_modes are explicitly saved raw audio graphs.
     'audio': {'noun': 'audio', 'dimension_key': 'resolution', 'audio_modes': ('music', 'tts', 'sfx'),
-              'transcribe_modes': ('transcribe',)},
+              'transcribe_modes': ('transcribe',), 'workflow_modes': ('workflow',)},
 }
 
 
@@ -249,8 +249,8 @@ def _parser(contextual: dict[str, Any] | None = None) -> _GenerationParser:
         command.add_argument("--entry", action=_Once, help="Generation entry ID; use --help to inspect its declared inputs.")
         command.add_argument("--inputs-json", action=_Once, metavar="FILE", help="Read declared entry inputs from a JSON object.")
         command.add_argument("--mode", action=_Once,
-                             choices=(spec.get('audio_modes', ()) + spec.get('transcribe_modes', ())) or None,
-                             required='audio_modes' in spec, help=("Audio mode: music, tts, or sfx. Use transcribe with --audio-ref FILE for word timings." if 'audio_modes' in spec
+                             choices=(spec.get('audio_modes', ()) + spec.get('transcribe_modes', ()) + spec.get('workflow_modes', ())) or None,
+                             required='audio_modes' in spec, help=("Audio mode: music, tts, or sfx. Use transcribe with --audio-ref FILE for word timings; workflow with --entry NAME for a saved raw audio graph." if 'audio_modes' in spec
                              else "Generation mode; inferred from the supplied inputs by default."))
         command.add_argument("--execution", action=_Once, help="Catalog execution backend, when explicitly selected.")
         command.add_argument(
@@ -265,7 +265,7 @@ def _parser(contextual: dict[str, Any] | None = None) -> _GenerationParser:
             command.add_argument('--video-ref', action=_Once, metavar='FILE', help='Reference video for video generation or Foley sound effects.')
         if modality == 'audio':
             command.add_argument('--audio-ref', action=_Once, metavar='FILE_OR_MEDIA',
-                                 help='Audio or video to transcribe (--mode transcribe): a local file, or a project media id or digest (needs --project).')
+                                 help='Audio or video to transcribe, or the saved workflow\'s one audio input: a local file, or a project media id or digest (needs --project).')
         command.add_argument("--width", action=_Once, type=int)
         command.add_argument("--height", action=_Once, type=int)
         command.add_argument("--steps", action=_Once, type=int)
@@ -759,6 +759,8 @@ def _main_request(argv: list[str], stack, *, output=None) -> int:
         return _workflow_command(parsed, output=output)
     if parsed.model and parsed.entry and parsed.model != parsed.entry:
         parser.error("--model and --entry select different generation entries")
+    if parsed.modality == 'audio' and parsed.mode == 'workflow' and not parsed.entry:
+        parser.error("--mode workflow requires --entry NAME for a saved raw audio workflow")
     if parsed.prompt is not None and not parsed.prompt.strip():
         parser.error("prompt must not be empty")
     if (parsed.width is None) != (parsed.height is None):

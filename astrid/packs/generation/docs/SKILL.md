@@ -397,7 +397,12 @@ target is not granted managed installation permission by this check.
 
 ### LE-15 — Workflow inputs
 
-<!-- LE-15: fill this subsection in the same change as the card. -->
+Re-run a saved raw audio entry with
+`generate audio --entry NAME --mode workflow --placement TARGET --dry-run --json`.
+Use `--audio-ref FILE` when the graph declares exactly one audio input, or
+`--input NAME=VALUE` for its declared ports. Remove `--dry-run` only after
+readiness is satisfied and the user approves a run. This explicit mode does
+not add a default music, TTS or sound-effects slot.
 
 ### LE-16 — Several node packs
 
