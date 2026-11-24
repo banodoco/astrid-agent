@@ -1214,42 +1214,55 @@ def _workflow_description(entry: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _deferred_missing_node_classes(workflow: Any) -> list[str]:
-    """Missing pack evidence for a placement whose live inventory is not available.
+    """Active classes that lack an installable provider on a deferred target.
 
-    The import report is request-scoped; saved canonical entries also retain
-    ingest's missing_nodes. Only active classes without a known or explicitly
-    pinned provider are unresolved. Known/pinned providers remain subject to
-    the owning host's install, consent and live object_info checks.
+    A schema is evidence of an interface, not installation. The only schema
+    exemption is a core class in VibeComfy's shipped ComfyUI schema index.
+    Other classes need an exact shipped catalog pin or a declared pinned ref.
+    The host still checks consent, restoration and the actual object_info.
     """
-    from vibecomfy.node_packs import unresolved_class_types
-
-    report = getattr(workflow, '_astrid_import_report', None) or {}
-    requirements = getattr(workflow, 'requirements', None)
-    missing = {name for name in getattr(requirements, 'missing_nodes', ()) if isinstance(name, str)}
-    for diagnostic in report.get('diagnostics', ()):
-        if (isinstance(diagnostic, Mapping)
-                and diagnostic.get('code') in {'unresolved_runtime_class', 'unknown_class_type'}
-                and isinstance(diagnostic.get('class_type'), str)):
-            missing.add(diagnostic['class_type'])
-    missing.intersection_update(node.class_type for node in workflow.runtime_nodes().values())
-    if not missing:
-        return []
-    # Existing canonical imports can carry stale missing_nodes. A schema now
-    # known to the authoring provider is not evidence of a missing pack.
-    provider = _schema_provider()
-    missing = {name for name in missing if provider.get_schema(name) is None}
-    if not missing:
-        return []
     import re
+
+    import vibecomfy
+    from vibecomfy.node_packs import CORE_COMFY_CLASSES, read_lockfile
+    from vibecomfy.schema.provider import ObjectInfoIndexSchemaProvider
+
+    active = {node.class_type for node in workflow.runtime_nodes().values()}
+    unresolved = active - CORE_COMFY_CLASSES
+    if not unresolved:
+        return []
+
+    def exact_git_pin(ref):
+        return (ref.source == 'git' and ref.url and isinstance(ref.commit, str)
+                and re.fullmatch(r'[0-9a-fA-F]{40}', ref.commit) is not None)
+
+    requirements = getattr(workflow, 'requirements', None)
     declared = {name for ref in getattr(requirements, 'typed_custom_node_refs', ())
-                if ref.source == 'git' and ref.url and isinstance(ref.commit, str)
-                and re.fullmatch(r'[0-9a-fA-F]{40}', ref.commit)
-                for name in ref.classes}
-    return unresolved_class_types(missing - declared)
+                if exact_git_pin(ref) for name in ref.classes}
+    locked = {name for ref in read_lockfile()
+              if exact_git_pin(ref) for name in ref.class_set}
+    unresolved -= declared | locked
+    if not unresolved:
+        return []
+
+    # The shipped index identifies core schema provenance even for classes
+    # absent from CORE_COMFY_CLASSES (for example SaveAudio). An ambient
+    # authoring cache or provisional registry schema cannot grant this.
+    root = Path(vibecomfy.__file__).resolve().parent / 'porting' / 'cache' / 'object_info'
+    provider = ObjectInfoIndexSchemaProvider(root)
+    for name in sorted(unresolved):
+        schema = provider.get_schema(name)
+        if schema is None or schema.source_provider != 'object_info_index' or not schema.source_cache_path:
+            continue
+        pack_file = Path(schema.source_cache_path)
+        if pack_file.resolve().is_relative_to(root.resolve()) and pack_file.name.startswith(('comfy_core@', 'comfy_extras@')):
+            unresolved.remove(name)
+    return sorted(unresolved)
 
 
 def target_schema(entry: dict[str, Any], workflow: Any, client: Any, *, engine: str | None = None,
-                  pending_target: Mapping[str, Any] | None = None, align: str = 'check'):
+                  pending_target: Mapping[str, Any] | None = None, align: str = 'check',
+                  initial_readiness: Mapping[str, Any] | None = None):
     """Check the selected target's node and exact loader inventory.
 
     ``align='trust'`` feeds the workflow's own declared model rows as target custody,
@@ -1276,7 +1289,10 @@ def target_schema(entry: dict[str, Any], workflow: Any, client: Any, *, engine: 
             observed = trust_declared_loader_choices(observed, workflow)
         missing_classes = sorted({node.class_type for node in workflow.runtime_nodes().values()} - observed.keys())
 
-    issues = []
+    if initial_readiness is not None and not missing_classes:
+        # No additional pack issue; keep the original typed engine refusal.
+        raise GenerationReadinessError(initial_readiness)
+    issues = list(initial_readiness['issues']) if initial_readiness is not None else []
     for class_type in missing_classes:
         message = (f'target is missing node {class_type!r}; '
                    'install it on the requested ComfyUI target, '
@@ -1317,9 +1333,13 @@ def target_schema(entry: dict[str, Any], workflow: Any, client: Any, *, engine: 
             target = getattr(client, 'generation_target', None)
             fixes = [{'argv': align_argv(entry.get('registry_id') or entry.get('id')),
                       'scope': 'user_env', 'details': {'action': 'Install missing locked assets; unlocked assets require a manifest.'}}]
-        raise GenerationReadinessError(readiness_envelope(entry={
-            **_workflow_description(entry),
-            'inputs': input_inventory(_workflow_inputs(entry, entry.get('mode', 'workflow'), workflow=workflow))},
+        if initial_readiness is not None:
+            target = initial_readiness.get('target') or target
+            fixes = [*initial_readiness['fixes'], *fixes]
+        description = {**_workflow_description(entry),
+                       **((initial_readiness.get('entry') or {}) if initial_readiness is not None else {}),
+                       'inputs': input_inventory(_workflow_inputs(entry, entry.get('mode', 'workflow'), workflow=workflow))}
+        raise GenerationReadinessError(readiness_envelope(entry=description,
             target=target, issues=issues, fixes=fixes))
     if client is None:
         return None
