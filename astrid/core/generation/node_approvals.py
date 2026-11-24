@@ -19,6 +19,8 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +43,22 @@ from vibecomfy.node_approvals import (
 )
 
 APPROVALS_FILENAME = "code-approvals.json"
+
+# Only the CLI entry transaction may bind already-authorized records to its
+# private candidate for a read-only SDK preflight. Nothing in a workflow or
+# entry manifest can populate this context, and it is cleared on exit.
+_PREVIEW_AUTHORITY: ContextVar[tuple | None] = ContextVar("entry_preview_authority", default=None)
+
+
+@contextmanager
+def preview_entry_authority(entry, records, placement_class):
+    """Carry exact prior authorization, never manufacture a consent token."""
+    bound = (entry["id"], str(Path(entry["bundle"]).resolve()), placement_class, _records(records))
+    token = _PREVIEW_AUTHORITY.set(bound)
+    try:
+        yield
+    finally:
+        _PREVIEW_AUTHORITY.reset(token)
 
 
 def read_entry_approvals(entry_directory: str | Path) -> list[NodeApproval]:
@@ -138,6 +156,10 @@ def authorize_nodes(nodes, *, placement_class, consent=(), entry=None, retry_arg
     require_approved_nodes(nodes, current, placement_class=placement_class)
     directory = entry_approval_directory(entry)
     saved = read_entry_approvals(directory) if directory is not None else []
+    preview = _PREVIEW_AUTHORITY.get()
+    if (not persist and preview is not None and entry is not None and entry.get("bundle")
+            and (entry.get("id"), str(Path(entry["bundle"]).resolve()), placement_class) == preview[:3]):
+        saved = [*saved, *preview[3]]
     known = {row["approval_sha256"] for row in [*saved, *reviewed_approvals(nodes, placement_class=placement_class)]}
     choices = [scope for scope in consent if consent_scope(scope) != "user_env"]
     expected_tokens = {consent_token(record) for record in current}

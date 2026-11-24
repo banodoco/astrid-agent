@@ -419,7 +419,19 @@ target is not granted managed installation permission by this check.
 
 ### LE-12 — Preview, replace and run again
 
-<!-- LE-12: fill this subsection in the same change as the card. -->
+Preview a reusable entry with `astrid generate workflow FILE --as-entry NAME
+--placement TARGET --dry-run --json`. It checks the selected target through the
+same controller preflight as execution, without saving an entry or queuing a
+task. Execution-only input values are optional in the save preview; supplied
+values are still validated. `--no-run` saves only, after any required approval.
+
+An existing entry refuses implicit overwrite (`entry_exists`); only an explicit
+`--replace` changes it. Replacement keeps unrelated earlier `--add` declarations
+and all old approval records; an explicitly changed commit supersedes the old
+declaration and needs fresh consent. A retry shown by the envelope is not a dry
+run. Replay the saved workflow with `astrid generate image --entry NAME --mode
+t2i --placement TARGET --json` for an image entry, or the matching kind and
+mode from `astrid generate describe --entry NAME --json`.
 
 ### LE-13 — Declare an unlisted recipe
 
