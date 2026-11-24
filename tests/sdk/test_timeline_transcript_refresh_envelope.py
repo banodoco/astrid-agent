@@ -203,3 +203,20 @@ def test_validation_refusal_leaves_no_working_copy(monkeypatch, capsys):
     bundle["parent"]["config"] = {"bundle": {"itemsBySchemaRef": {"x": "not-a-list"}}}
     err = _refuses(monkeypatch, capsys, bundle)
     assert "would not open in the editor" in err and "itemsBySchemaRef" in err
+
+
+def test_editor_pin_on_the_medias_key_is_replaced_not_duplicated(monkeypatch):
+    whisper = W.default_source_order()[0]
+    stored = _stored_a(whisper)
+    bundle = _timeline({"a": {"media_id": MEDIA_A}, "z": {"media_id": MEDIA_B}})
+    bundle["parent"]["config"] = {"bundle": {"schema_version": 1, "itemsBySchemaRef": {}, "transcriptReferences": {
+        "schema": REFS, "associations": [{"assetId": "a", "documentId": "other-source"},
+                                         {"assetId": "z", "documentId": "doc-z"}]}}}
+    working = _FakeWorking(copy.deepcopy(bundle))
+    assert _run(monkeypatch, working, stored=stored, timeline_bundle=bundle) == 0
+    rows = working.bundle["parent"]["config"]["bundle"]["transcriptReferences"]["associations"]
+    assert [r for r in rows if r["assetId"] == "z"] == [{"assetId": "z", "documentId": "doc-z"}]
+    mine = [r for r in rows if r["assetId"] == "a"]
+    assert mine == [{"assetId": "a", "documentId": stored[MEDIA_A][whisper]["document_id"],
+                     "mediaId": MEDIA_A, "sourceId": whisper}]
+    assert len(rows) == 2

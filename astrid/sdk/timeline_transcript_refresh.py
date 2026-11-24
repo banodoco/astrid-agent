@@ -152,7 +152,8 @@ def with_reference(bundle: Mapping[str, Any], media: str, media_document_ids: se
     loaded again (see ``words.load_timeline_transcripts``); one row per registry key (``assetId``) of
     the media, all with the same document, since the editor looks each clip up by its own key."""
     kept = [row for row in W.reference_rows(bundle)
-            if row.get("mediaId") != media and row["documentId"] not in media_document_ids]
+            if row.get("mediaId") != media and row["documentId"] not in media_document_ids
+            and row.get("assetId") not in asset_ids]  # the new rows replace any pin on this media's keys
     base = {"documentId": document_id, "mediaId": media, "sourceId": source}
     if asset_ids:
         kept.extend({"assetId": key, **base} for key in asset_ids)
