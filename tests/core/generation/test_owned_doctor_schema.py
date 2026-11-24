@@ -162,7 +162,8 @@ def test_owned_doctor_refuses_missing_changed_or_redirected_schema(native_python
 
 def test_missing_classes_only_expose_public_pinned_identifiers():
     secret = 'PRIVATE_MODEL_NAME_AND_TOKEN'
-    output = 'Layer: Schema reconciliation\n- workflow contains unresolved class types: EmptyLatentImage, QwenImage21Cache, ' + secret
+    output = json.dumps({"status": "error", "layer": "Schema reconciliation",
+                         "missing_classes": ["EmptyLatentImage", "QwenImage21Cache", secret]})
     assert native_failure_classes(output, 'schema_reconciliation_failed') == ('EmptyLatentImage', 'QwenImage21Cache')
     assert native_failure_classes(output, 'workflow_diagnosis_failed') == ()
 
@@ -258,3 +259,71 @@ def test_native_node_probe_checks_the_running_registry(schema_server):
                             check=True, capture_output=True, text=True, timeout=10)
     assert json.loads(result.stdout) == ['VibeComfySaveTranscript']
     assert schema_server.requests == ['/object_info']
+
+
+def test_owned_doctor_removed_input_reports_graph_labels(native_python, schema_server, latent_workflow, tmp_path):
+    from vibecomfy.security.provenance import Provenance
+    from vibecomfy.workflow_bundle import load_bundle
+    from astrid.core.generation.managed_preparation import native_failure_inputs
+
+    bundle = load_bundle(latent_workflow, trust=Provenance.USER_CONFIRMED)
+    api = bundle.workflow.compile("api")
+    labels = tuple((str(node_id), node["class_type"], name)
+                   for node_id, node in api.items() for name in node.get("inputs", {}))
+    expected = next({"node_id": node_id, "class_type": cls, "input": name}
+                    for node_id, cls, name in labels if cls == "EmptyLatentImage" and name == "height")
+    schema_server.info = copy.deepcopy(schema_server.info)
+    del schema_server.info["EmptyLatentImage"]["input"]["required"]["height"]
+    result = _native(native_python, schema_server, latent_workflow, tmp_path)
+    assert result.returncode == 1
+    step, reason = native_failure_diagnostic("doctor", result.stdout, result.stderr)
+    assert (step, reason) == ("doctor", "workflow_validation_failed")
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "error"
+    group = next(row for row in payload["validation_errors"]
+                 if row["node_id"] == expected["node_id"] and row["class_type"] == expected["class_type"])
+    assert any(error["code"] == "unknown_input" and error["input"] == expected["input"]
+               for error in group["errors"])
+    assert native_failure_inputs(result.stdout, reason, labels) == (expected,)
+
+
+def test_native_failure_inputs_only_projects_existing_graph_labels():
+    from astrid.core.generation.managed_preparation import native_failure_inputs
+
+    output = json.dumps({
+        "status": "error", "layer": "VibeWorkflow validation",
+        "errors": ["message wording may change"],
+        "validation_errors": [
+            {"node_id": "42", "class_type": "EmptyLatentImage", "errors": [
+                {"code": "unknown_input", "input": "height", "message": "unrelated wording"},
+                {"code": "unknown_input", "input": "PRIVATE_TOKEN"},
+                {"code": "missing_required_input", "input": "width"},
+            ]},
+            {"node_id": "99", "class_type": "PRIVATE_CLASS", "errors": [
+                {"code": "unknown_input", "input": "height"},
+            ]},
+            {"node_id": [], "class_type": "EmptyLatentImage", "errors": [{}]},
+            {"node_id": "42", "class_type": "EmptyLatentImage", "errors": [None, {"input": {}}]},
+        ],
+    })
+    labels = (("42", "EmptyLatentImage", "height"), ("42", "EmptyLatentImage", "width"))
+    assert native_failure_inputs(output, "workflow_validation_failed", labels) == (
+        {"node_id": "42", "class_type": "EmptyLatentImage", "input": "height"},
+    )
+    assert native_failure_inputs(output, "schema_reconciliation_failed", labels) == ()
+    assert native_failure_inputs(output, "workflow_validation_failed", ()) == ()
+
+
+def test_native_doctor_diagnostics_do_not_scrape_prose_or_malformed_json():
+    from astrid.core.generation.managed_preparation import native_failure_inputs
+
+    labels = (("42", "EmptyLatentImage", "height"),)
+    prose = ("Layer: VibeWorkflow validation\n"
+             "- WorkflowBundleError: Node 42 (EmptyLatentImage) has unknown input height.")
+    for output in (prose, "{", "[]", json.dumps({
+        "status": "ok", "layer": "VibeWorkflow validation",
+        "validation_errors": [{"node_id": "42", "class_type": "EmptyLatentImage",
+                               "errors": [{"code": "unknown_input", "input": "height"}]}],
+    })):
+        assert native_failure_diagnostic("doctor", output, "") == ("doctor", "workflow_diagnosis_failed")
+        assert native_failure_inputs(output, "workflow_validation_failed", labels) == ()

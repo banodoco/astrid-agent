@@ -14,6 +14,15 @@ NODE = {"repo": "https://example.test/consent-pack.git", "commit": "a" * 40,
 RETRY = ["astrid", "generate", "workflow", "workflow.py", "--placement", "managed"]
 
 
+def test_agent_uses_the_target_approval_contract():
+    from vibecomfy import node_approvals as target
+
+    for name in ("approval_record", "validate_approval_record", "require_approved_nodes",
+                 "consent_token", "consent_matches", "approval_matches"):
+        assert getattr(approvals, name) is getattr(target, name)
+    assert approvals.target_approvals is target.require_approved_nodes
+
+
 @pytest.mark.parametrize("consent", [(), ("user_env",), ("code",), ("code=stale",), ("code=" + "0" * 12,)])
 def test_no_bare_or_stale_consent_shows_informed_warning(consent):
     with pytest.raises(GenerationReadinessError) as caught:

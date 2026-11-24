@@ -202,7 +202,7 @@ def native_node_probe_program():
 
 
 def run_native_doctor(argv, endpoint, expected_schema_sha256, request_timeout, *, schema_provider_type, schema_digest):
-    """Run the original doctor against one fresh, owner-bound target schema."""
+    """Run the original doctor in JSON mode against one fresh, owner-bound target schema."""
     import vibecomfy.commands.doctor as doctor
     from vibecomfy.cli import main
 
@@ -219,7 +219,7 @@ def run_native_doctor(argv, endpoint, expected_schema_sha256, request_timeout, *
     # doctor retains all model, pin, drift, reconciliation and compile checks.
     doctor.get_schema_provider = owned_provider
     try:
-        return main(argv)
+        return main([*argv, '--json'])
     finally:
         doctor.get_schema_provider = original
 

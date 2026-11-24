@@ -34,6 +34,7 @@ from vibecomfy.node_approvals import (
     consent_matches as consent_matches,
     consent_token as consent_token,
     require_approved_nodes as require_approved_nodes,
+    require_approved_nodes as target_approvals,
     reviewed_approvals as reviewed_approvals,
     validate_approval_record as validate_approval_record,
     validate_approvals as _records,
@@ -142,8 +143,10 @@ def authorize_nodes(nodes, *, placement_class, consent=(), entry=None, retry_arg
     expected_tokens = {consent_token(record) for record in current}
     supplied = {scope.removeprefix("code=") for scope in choices if scope.startswith("code=")}
     invalid = any(scope == "code" for scope in choices) or not supplied <= expected_tokens
+    confirmed = {record["approval_sha256"] for node, record in zip(nodes, current)
+                 if any(consent_matches(token, node, placement_class=placement_class) for token in supplied)}
     pending = [row for row in current if row["approval_sha256"] not in known
-               and consent_token(row) not in supplied]
+               and row["approval_sha256"] not in confirmed]
     if invalid:
         pending = current
     if pending or invalid:
@@ -174,11 +177,3 @@ def authorize_nodes(nodes, *, placement_class, consent=(), entry=None, retry_arg
         records.update({row["approval_sha256"]: row for row in current})
         write_entry_approvals(directory, list(records.values()))
     return current
-
-
-def target_approvals(nodes, records, *, placement_class):
-    """Repeat admission against actual target declarations, before native work."""
-    approved = {row["approval_sha256"]: row for row in _records(records)}
-    for row in reviewed_approvals(nodes, placement_class=placement_class):
-        approved.setdefault(row["approval_sha256"], row)
-    return require_approved_nodes(nodes, list(approved.values()), placement_class=placement_class)
