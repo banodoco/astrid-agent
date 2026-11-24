@@ -363,3 +363,37 @@ def test_invocation_preflight_rejects_unsafe_and_disconnected_prompt_bindings(
         preflight.preflight_invocation(
             workflow, run_inputs={"source_video": "clip.mp4"}
         )
+
+
+def test_saved_entry_preview_omits_only_declared_unsupplied_blank_run_fields(monkeypatch, tmp_path):
+    workflow = tmp_path / "workflow.py"
+    workflow.write_text("workflow = 'fixture'", encoding="utf-8")
+    loaded = _fake_loaded_workflow(prompt="")
+    graph = loaded.resolved.workflow
+    graph.inputs = {**graph.inputs, "prompt": SimpleNamespace(node_id="2", field="prompt")}
+    original_compile = graph.compile
+
+    def compile_blank(_kind, *, run_inputs):
+        api = original_compile(_kind, run_inputs=run_inputs)
+        api["7"]["inputs"]["video"] = ""
+        return api
+
+    graph.compile = compile_blank
+    monkeypatch.setattr("astrid.packs.vibecomfy.production_engine.load_workflow_path",
+                        lambda *_args, **_kwargs: loaded)
+    with pytest.raises(preflight.InvocationPreflightError, match="PROMPT_EMPTY"):
+        preflight.preflight_invocation(workflow, phase="dry-run")
+    with preflight.save_preview_input_scope({("2", "prompt"), ("7", "video")}):
+        result = preflight.preflight_invocation(workflow, phase="dry-run")
+        assert result["run_inputs"] == {}  # no fabricated values
+        with pytest.raises(preflight.InvocationPreflightError, match="PROMPT_EMPTY"):
+            preflight.preflight_invocation(workflow, phase="submission")
+        # A supplied value, even on a preview, must actually bind and pass.
+        with pytest.raises(preflight.InvocationPreflightError, match="PROMPT_EMPTY"):
+            preflight.preflight_invocation(workflow, run_inputs={"prompt": ""}, phase="dry-run")
+    with pytest.raises(preflight.InvocationPreflightError, match="PROMPT_EMPTY"):
+        preflight.preflight_invocation(workflow, phase="dry-run")
+    # An unrelated omitted field must not waive a blank reachable prompt.
+    with preflight.save_preview_input_scope({("7", "video")}):
+        with pytest.raises(preflight.InvocationPreflightError, match="PROMPT_EMPTY"):
+            preflight.preflight_invocation(workflow, phase="dry-run")

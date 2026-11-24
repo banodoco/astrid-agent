@@ -184,3 +184,20 @@ def publish_entry_candidate(source, prepared, *, replace, placement_class, retry
 # Reuse the authorization boundary for the private candidate, not a token
 # constructed by the CLI from the caller's requested refs.
 from .node_approvals import preview_entry_authority as preview_entry_authority
+
+
+def omitted_save_preview_fields(entry, mode, values):
+    """Identify omitted declared run-only fields, never fabricate input values."""
+    from astrid.core.generation import entries
+
+    graph = entries._load_entry_workflow(entry)
+    omitted = set()
+    for port in entries._workflow_inputs(entry, mode, workflow=graph):
+        names = {port["name"], *port.get("aliases", [])}
+        if names.intersection(values) or all(name.startswith("node:") for name in names):
+            continue
+        if (port.get("required") or "prompt" in names
+                or port.get("media_semantics") in {"audio", "image", "mask", "video"}):
+            node, field = port["_binding"]
+            omitted.add((str(node), field))
+    return frozenset(omitted)

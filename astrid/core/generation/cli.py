@@ -540,8 +540,8 @@ def _workflow_command(parsed: argparse.Namespace, *, output=None) -> int:
                                        code='missing_dependency', details={'field': 'replace'})
             from astrid.core.generation import placement as placements
             from astrid.core.generation.workflow_entry_setup import (
-                prepare_entry_candidate, publish_entry_candidate, preview_entry_authority,
-                select_entry_mode,
+                omitted_save_preview_fields, prepare_entry_candidate, publish_entry_candidate,
+                preview_entry_authority, select_entry_mode,
             )
             from astrid.sdk.generation import _snapshot_generation_workflow
 
@@ -568,8 +568,11 @@ def _workflow_command(parsed: argparse.Namespace, *, output=None) -> int:
             # This authority is scoped to a read-only preview, not a new yes.
             if parsed.dry_run or (is_runpod_placement(parsed.placement) and not parsed.no_run):
                 from astrid.sdk.generation import _load_model_registry
+                from astrid.packs.vibecomfy.invocation_preflight import save_preview_input_scope
 
-                with preview_entry_authority(candidate, prepared.approvals, resolved.kind):
+                omitted = omitted_save_preview_fields(candidate, mode, values) if parsed.dry_run else ()
+                with (preview_entry_authority(candidate, prepared.approvals, resolved.kind),
+                      save_preview_input_scope(omitted)):
                     preview = _generate_facade()._generate_on_target(
                         registry=_load_model_registry(), model=None, mode=mode,
                         modality=candidate['kind'], placement=parsed.placement, execution=None,

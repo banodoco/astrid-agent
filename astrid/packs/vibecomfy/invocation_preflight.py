@@ -15,10 +15,29 @@ import shutil
 import subprocess
 import tempfile
 from collections.abc import Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
 from typing import Any
+
+
+# Only an explicit save-entry preview may carry omitted run-input fields.
+# Normal dry runs, live admission and worker submission remain strict.
+_SAVE_PREVIEW_FIELDS: ContextVar[frozenset[tuple[str, str]]] = ContextVar(
+    "save_preview_omitted_fields", default=frozenset(),
+)
+
+
+@contextmanager
+def save_preview_input_scope(omitted):
+    """Defer blank checks only for named, unsupplied fields of a saved-entry preview."""
+    token = _SAVE_PREVIEW_FIELDS.set(frozenset(omitted))
+    try:
+        yield
+    finally:
+        _SAVE_PREVIEW_FIELDS.reset(token)
 
 
 class InvocationPreflightError(ValueError):
@@ -264,7 +283,8 @@ def _declares_prompt_input(workflow: Any) -> bool:
     )
 
 
-def _required_prompt_values(workflow: Any, api: Mapping[str, Any], *, declared: bool) -> list[Any]:
+def _required_prompt_values(workflow: Any, api: Mapping[str, Any], *, declared: bool,
+                            omitted=frozenset()) -> list[Any]:
     """Prompt values a prompt-driven workflow must fill.
 
     A ``prompt`` field only counts when its node is prompt-bearing (a text
@@ -280,9 +300,9 @@ def _required_prompt_values(workflow: Any, api: Mapping[str, Any], *, declared: 
         inputs = node["inputs"]
         class_type = str(node.get("class_type") or "")
         prompt_node = any(marker.lower() in class_type.lower() for marker in _PROMPT_NODE_MARKERS)
-        if "prompt" in inputs and (prompt_node or declared):
+        if "prompt" in inputs and (prompt_node or declared) and (node_id, "prompt") not in omitted:
             values.append(inputs["prompt"])
-        if "text" in inputs and prompt_node:
+        if "text" in inputs and prompt_node and (node_id, "text") not in omitted:
             values.append(inputs["text"])
     return values
 
@@ -323,7 +343,7 @@ def _assert_no_unresolved_placeholders(api: Mapping[str, Any]) -> None:
     visit(api, "workflow")
 
 
-def _assert_no_reachable_blank_media(workflow: Any, api: Mapping[str, Any]) -> None:
+def _assert_no_reachable_blank_media(workflow: Any, api: Mapping[str, Any], *, omitted=frozenset()) -> None:
     reachable = _reachable_node_ids(workflow)
     for node_id in sorted(reachable):
         node = api.get(node_id)
@@ -336,6 +356,8 @@ def _assert_no_reachable_blank_media(workflow: Any, api: Mapping[str, Any]) -> N
         for field, value in inputs.items():
             if value not in (None, "") or str(field) not in _MEDIA_FIELDS:
                 continue
+            if (node_id, str(field)) in omitted:
+                continue
             raise InvocationPreflightError(
                 "VIBECOMFY_REACHABLE_BLANK_MEDIA: "
                 f"node {node_id} ({class_type}) has blank media input {field!r}"
@@ -347,6 +369,7 @@ def _assert_reachable_prompt(
     api: Mapping[str, Any],
     *,
     expected_prompt: str | None,
+    omitted=frozenset(),
 ) -> None:
     values = _prompt_values(workflow, api, reachable_only=True)
     all_values = _prompt_values(workflow, api, reachable_only=False)
@@ -374,7 +397,7 @@ def _assert_reachable_prompt(
             )
     else:
         required = _required_prompt_values(
-            workflow, api, declared=_declares_prompt_input(workflow)
+            workflow, api, declared=_declares_prompt_input(workflow), omitted=omitted
         )
         if required and not any(isinstance(value, str) and value.strip() for value in required):
             raise InvocationPreflightError(
@@ -481,8 +504,19 @@ def preflight_invocation(
             raise InvocationPreflightError(
                 "VIBECOMFY_SOURCE_BINDING: compiled source_video value does not match staged basename"
             )
-    _assert_reachable_prompt(workflow, api, expected_prompt=expected_prompt)
-    _assert_no_reachable_blank_media(workflow, api)
+    # Rebind the private omission set against the actual compiled canonical
+    # input declarations. An explicit supplied input cannot be exempted,
+    # and neither disconnected prompts nor unresolved template tokens are
+    # exempted. Only an omitted blank run value is optional on save preview.
+    omitted = frozenset()
+    if phase == "dry-run":
+        declared_fields = {(str(spec.node_id), spec.field) for name, spec in public_inputs.items()
+                           if not name.startswith("node:")}
+        supplied_fields = {(str(public_inputs[name].node_id), public_inputs[name].field)
+                           for name in bindings}
+        omitted = (_SAVE_PREVIEW_FIELDS.get() & declared_fields) - supplied_fields
+    _assert_reachable_prompt(workflow, api, expected_prompt=expected_prompt, omitted=omitted)
+    _assert_no_reachable_blank_media(workflow, api, omitted=omitted)
 
     if source_video_path is not None and expected_source_digest is not None:
         source_bytes = Path(source_video_path).read_bytes()
