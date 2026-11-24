@@ -237,11 +237,19 @@ workflow. Other binding ambiguities and missing assets still need resolution.
 
 ### WS-0b — Unresolved model references
 
-<!-- WS-0b: fill this subsection in the same change as the card. -->
+A node with an unrecognised `model_name` loader role may report an unresolved
+model reference. This is not a choice of workflow inputs or a guessed model
+folder. Keep the node class, field and exact model label; use the actual
+target's inventory to establish what is present. Do not treat it as a
+downloadable file in `diffusion_models` without a declared destination.
 
 ### WS-0c — Node pack catalog
 
-<!-- WS-0c: fill this subsection in the same change as the card. -->
+Resolve known node packs from VibeComfy's shipped catalog, not a working-directory
+`custom_nodes.lock`. Use its exact repository and commit when giving manual
+attached-target clone/checkout guidance. An explicitly supplied lock is scoped to
+that caller. Writable target locks describe the installed environment; never
+treat them as the implicit shipped catalog or write into the packaged resource.
 
 ### WS-0d — Save and replace an entry
 

@@ -184,7 +184,7 @@ POLICY_OPENINGS = {
         "astrid/packs/vibecomfy/extensions/generation.engine/comfyui_engine.py",
         "ComfyUIEngine.probe",
         "urllib.request.urlopen",
-    ): (1, "c4dbcad97c4d52282d9d26c9db00169ef40112b8f16a30d262c4832d2cb42c87"),
+    ): (1, "1567479fe3f9fbcd218325ecb8088802c6e907e6c37bf939a83d0ddb9721536b"),
 }
 LOOPBACK_HTTP_OPENINGS = {
     ("astrid/core/dev/journey.py", "runtime_request", "urllib.request.urlopen"): (
