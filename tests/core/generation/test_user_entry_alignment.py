@@ -38,7 +38,8 @@ def test_align_discovers_real_saved_entry(tmp_path, monkeypatch):
     assert issue["code"] == "model_lock_incomplete"
     assert issue["severity"] == "error"
     assert {"sha256", "size_bytes"} <= set(issue["missing"])
-    assert "--add-model DEST=URL#sha256" in issue["next_action"]
+    assert "through the workflow authoring path" in issue["next_action"]
+    assert "--add-model" not in issue["next_action"]
     assert "astrid generate align --entry my-align --json" in issue["next_action"]
     assert "z_image_turbo_bf16.safetensors" not in {row["name"] for row in mode["models"]}
     assert report["next_action"]

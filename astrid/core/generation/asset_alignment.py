@@ -440,8 +440,8 @@ def catalog_manifests(entry_id: str | None = None) -> list[dict[str, Any]]:
                         'next_action': (
                             f'Obtain the verified HTTPS source, SHA-256 and exact byte size for {label} '
                             'and supply the missing facts in the saved bundle model declaration. '
-                            'The --add-model DEST=URL#sha256 repair is not available in this build; '
-                            f'until it is available, complete the declaration through the workflow authoring path. Then run {retry}.'),
+                            'Complete the declaration through the workflow authoring path. '
+                            f'Then run {retry}.'),
                     })
                 # Assets belong to the workflow even if its saved generation
                 # mode has not been chosen (e.g. an imported audio workflow).
