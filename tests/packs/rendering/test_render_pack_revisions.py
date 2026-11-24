@@ -1,4 +1,5 @@
 import json
+import sys
 from contextlib import contextmanager
 from types import SimpleNamespace
 
@@ -6,7 +7,7 @@ from astrid.core.pack.identity import pack_digest, write_pin
 from astrid.packs.rendering.rendering.renderers.remotion.pack_revisions import resolved_pack_revisions
 
 
-def test_selected_pack_reports_upstream_and_detects_changed_bytes(tmp_path):
+def test_selected_pack_reports_upstream_and_detects_changed_bytes(tmp_path, monkeypatch):
     root = tmp_path / "astrid_motion"
     element = root / "rendering/elements/effects/am-type"
     element.mkdir(parents=True)
@@ -16,6 +17,15 @@ def test_selected_pack_reports_upstream_and_detects_changed_bytes(tmp_path):
     write_pin(root / "PIN", {"version": 1, "source": "https://example.com/repo",
                             "commit": "b" * 40, "digest_rule": "pack-tree-v1",
                             "digest": pack_digest(root), "origin": "user"})
+    version = tmp_path / "program" / "versions" / "test"
+    prefix = version / "py"
+    prefix.mkdir(parents=True)
+    monkeypatch.setenv("ASTRID_INSTALL_PROGRAM_ROOT", str(tmp_path / "program"))
+    monkeypatch.setattr(sys, "prefix", str(prefix))
+    (version / "manifest.json").write_text(json.dumps({"packs": {"astrid_motion": {
+        "repo": "https://example.com/repo", "commit": "b" * 40,
+        "digest_rule": "pack-tree-v1", "digest": pack_digest(root),
+    }}}))
     stage = {"effects": [{"source_pack_id": "astrid_motion", "element_root": str(element)}]}
     row = resolved_pack_revisions(stage, {"astrid_motion": "c" * 40})[0]
     assert (row["resolved_revision"], row["derived_from"], row["editor_revision"], row["comparison"]) == (
@@ -60,3 +70,22 @@ def test_mismatch_is_reported_before_renderer_launch(tmp_path, monkeypatch, caps
         composition_id="TimelineComposition", theme_path=None, min_free_gb=None,
         editor_pack_revisions={"astrid_motion": "a" * 40})
     assert details.stage_summary["pack_revisions"] == [row]
+
+
+def test_self_declared_upstream_is_unknown_without_independent_pin(tmp_path, monkeypatch):
+    monkeypatch.delenv("ASTRID_INSTALL_PROGRAM_ROOT", raising=False)
+    root = tmp_path / "astrid_motion"
+    element = root / "rendering/elements/effects/am-type"
+    element.mkdir(parents=True)
+    (root / "pack.yaml").write_text("id: astrid_motion\n")
+    (root / "render-provenance.json").write_text(json.dumps({"derived_from": "a" * 40}))
+    write_pin(root / "PIN", {"version": 1, "source": "https://example.com/repo",
+                            "commit": "b" * 40, "digest_rule": "pack-tree-v1",
+                            "digest": pack_digest(root), "origin": "user"})
+    stage = {"effects": [{"source_pack_id": "astrid_motion", "element_root": str(element)}]}
+    row = resolved_pack_revisions(stage, {"astrid_motion": "a" * 40})[0]
+    assert row["resolved_revision"] == "b" * 40
+    assert row["derived_from"] is None
+    assert row["identity_verification"] == "unknown"
+    assert row["comparison"] == "unknown"
+    assert resolved_pack_revisions(stage, None)[0]["comparison"] == "editor revision not supplied"
