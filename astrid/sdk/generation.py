@@ -28,6 +28,7 @@ from .exceptions import (
 from .results import _reconstruct_generation_result
 
 if TYPE_CHECKING:
+    from astrid.core.generation.node_approvals import PreviewApprovalAuthority
     from astrid.core.generation.placement import Placement
 
     from .execution_request import ExecutionRequest
@@ -324,7 +325,8 @@ LOCAL_REFUSAL_SCOPE = ('refused locally before submission; nothing was sent to a
 def _offline_invocation_preflight(workflow: Any, *, plan: Mapping[str, Any] | None,
                                   assets: Mapping[str, Any], comfy_url: str | None,
                                   lineage: Any, source_video: bool,
-                                  approved_files: tuple[bytes, bytes] | None = None) -> None:
+                                  approved_files: tuple[bytes, bytes] | None = None,
+                                  save_preview_omitted_fields: frozenset[tuple[str, str]] = frozenset()) -> None:
     """Run the same invocation preflight a live submission runs, offline, on the emitted bundle.
 
     Every dry run calls this so a request the live path would refuse is refused before a
@@ -369,7 +371,9 @@ def _offline_invocation_preflight(workflow: Any, *, plan: Mapping[str, Any] | No
             preflight_invocation(
                 capsule, run_inputs=run_inputs, comfy_url=comfy_url or '',
                 expected_prompt=expected_prompt, source_video_path=source_path,
-                expected_source_digest=source_digest, phase='dry-run')
+                expected_source_digest=source_digest, phase='dry-run',
+                **({'save_preview_omitted_fields': save_preview_omitted_fields}
+                   if save_preview_omitted_fields else {}))
         except ValueError as exc:
             from astrid.core.generation.preflight import generation_error
             raise generation_error(ValueError(f'{exc}. {LOCAL_REFUSAL_SCOPE}.'),
@@ -1737,6 +1741,8 @@ class GenerationFacade:
         retained_source: dict[str, Any] | None = None,
         _admission_state: _WorkflowAdmissionState | None = None,
         _discovery: Any = None,
+        preview_authority: PreviewApprovalAuthority | None = None,
+        save_preview_omitted_fields: frozenset[tuple[str, str]] = frozenset(),
         **controls: Any,
     ) -> Any:
         """Bind a catalog template and admit it through the workflow facade.
@@ -1758,6 +1764,12 @@ class GenerationFacade:
             require_generation_target_readiness,
             select_generation_target,
         )
+
+        if preview_authority is not None or save_preview_omitted_fields:
+            if not dry_run or workflow_entry is None or model is not None:
+                raise GenerationInputError("save-entry preview authority is only valid on an explicit dry run")
+            if save_preview_omitted_fields and preview_authority is None:
+                raise GenerationInputError("save-entry input scope requires explicit preview authority")
 
         requested_align = controls.pop('align', None)  # None: not asked for; RunPod then aligns, local checks
         align = _align_mode(requested_align or 'check')
@@ -2153,7 +2165,7 @@ class GenerationFacade:
         code_approvals = authorize_nodes(node_manifest['extra']['nodes'],
             placement_class=placement.kind, consent=code_consent,
             entry=candidate if source == 'workflow' else None,
-            retry_argv=retry, persist=not dry_run)
+            retry_argv=retry, persist=not dry_run, preview_authority=preview_authority)
         if is_remote_target and placement_policy is not None:
             placement_policy["engine"] = runpod_engine
         target_record = getattr(target_client, 'generation_target', None)
@@ -2232,7 +2244,7 @@ class GenerationFacade:
                 workflow, plan=plan, assets=assets or {},
                 comfy_url=(target_client.target.url if placement.kind == 'attached' and target_client is not None else None),
                 lineage=transport.lineage, source_video=transport.preflight_source_video,
-                approved_files=approved_files)
+                approved_files=approved_files, save_preview_omitted_fields=save_preview_omitted_fields)
             readiness['entry'].update(preview)
             if align == 'trust':
                 readiness['alignment'] = {'mode': 'trust', 'verified': False}

@@ -90,6 +90,21 @@ def test_saved_entry_reuses_only_matching_approval(tmp_path, monkeypatch):
     assert approvals.read_entry_approvals(directory) == accepted
 
 
+def test_entry_approval_directory_skips_contributed_rows_and_keeps_saved_entries(tmp_path, monkeypatch):
+    from vibecomfy.entries import load_entry
+    monkeypatch.setenv("VIBECOMFY_ENTRIES_DIR", str(tmp_path))
+    directory = tmp_path / "mine"
+    directory.mkdir()
+    (directory / "entry.json").write_text(json.dumps({"id": "mine", "kind": "image", "modes": ["t2i"],
+        "bundle": "workflow.py", "binds": {}, "defaults": {}, "needs": []}))
+    saved = dict(load_entry(directory), source="user-entry")
+    assert approvals.entry_approval_directory(saved) == directory
+    monkeypatch.setattr("vibecomfy.entries.load_entry", lambda *a, **kw: pytest.fail("contributed row read the disk"))
+    contributed = {"id": "transcription", "source": "user-entry", "bundle": "x.json",
+                   "contribution": "pack.transcription", "contribution_scope": "pack"}
+    assert approvals.entry_approval_directory(contributed) is None
+
+
 def test_valid_dry_run_does_not_write_an_approval(tmp_path, monkeypatch):
     from vibecomfy.entries import load_entry
     monkeypatch.setenv("VIBECOMFY_ENTRIES_DIR", str(tmp_path))
