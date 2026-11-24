@@ -77,7 +77,7 @@ def resolve_media_rebinds(transport, project_id, candidate, base):
     return selections, verified
 
 
-def emit_document_publish_commands(base, candidate, media_selections, verified_media):
+def emit_document_publish_commands(base, candidate, media_selections, verified_media, *, transport=None):
     """Capture verified media swaps before emitting the remaining document patches."""
     candidate = copy.deepcopy(candidate)
     source = base.get("source_mapping", {}).get("_runtime_document")
@@ -121,6 +121,13 @@ def emit_document_publish_commands(base, candidate, media_selections, verified_m
                 and "resolution" in native_entry):
             candidate_entry["resolution"] = copy.deepcopy(native_entry["resolution"])
         commands.append(command)
+    if transport is not None:
+        from astrid.sdk.timeline.media_swap import capture_document_swaps
+
+        swaps, working, selected = capture_document_swaps(
+            working, candidate, transport, verified_media=verified_media)
+        commands.extend(swaps)
+        verified_media[:] = selected
     commands.extend(emit_document_commands(working, candidate))
     return commands
 
@@ -289,7 +296,7 @@ def main():
         )
         try:
             native = {"commands": emit_document_publish_commands(
-                base, imported["candidate"], media_selections, verified_media
+                base, imported["candidate"], media_selections, verified_media, transport=transport
             )}
         except DocumentPatchError as exc:
             raise RuntimeError(f"document publish is held: {exc}") from exc

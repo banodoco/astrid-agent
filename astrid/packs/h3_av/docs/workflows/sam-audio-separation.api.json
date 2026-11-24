@@ -1,0 +1,72 @@
+{
+  "1": {
+    "class_type": "SAMAudioPipelineLoader",
+    "_meta": {
+      "title": "SAM-Audio Model Loader"
+    },
+    "inputs": {
+      "model_name": "facebook/sam-audio-large",
+      "attention_backend": "pytorch",
+      "precision": "auto",
+      "initial_device": "cpu"
+    }
+  },
+  "2": {
+    "class_type": "LoadAudio",
+    "_meta": {
+      "title": "Load Audio (set to the clip's audio file)"
+    },
+    "inputs": {
+      "audio": "input.wav"
+    }
+  },
+  "3": {
+    "class_type": "SAMAudioTextSeparator",
+    "_meta": {
+      "title": "SAM-Audio Text Separate (set description)"
+    },
+    "inputs": {
+      "pipeline": [
+        "1",
+        0
+      ],
+      "audio": [
+        "2",
+        0
+      ],
+      "description": "man speaking",
+      "predict_spans": false,
+      "seed": 0,
+      "inference_steps": 32,
+      "chunk_duration": 10.0,
+      "chunk_overlap": 1.0,
+      "reranking_candidates": 1
+    }
+  },
+  "4": {
+    "class_type": "SaveAudio",
+    "_meta": {
+      "title": "Save target (the described sound)"
+    },
+    "inputs": {
+      "audio": [
+        "3",
+        0
+      ],
+      "filename_prefix": "audio/sam_target"
+    }
+  },
+  "5": {
+    "class_type": "SaveAudio",
+    "_meta": {
+      "title": "Save residual (everything else)"
+    },
+    "inputs": {
+      "audio": [
+        "3",
+        1
+      ],
+      "filename_prefix": "audio/sam_residual"
+    }
+  }
+}
