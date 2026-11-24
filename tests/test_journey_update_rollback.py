@@ -174,7 +174,8 @@ def run_config(tmp_path, **overrides):
 
 
 def test_config_accepts_the_update_rollback_dispatch_without_release1_launcher_inputs(tmp_path, tmp_path_factory):
-    done, outputs = run_config(tmp_path, UPDATE_ROLLBACK_ONLY="true")
+    # `row` defaults to "direct" on a dispatch, so that default must not count as another leg selection.
+    done, outputs = run_config(tmp_path, UPDATE_ROLLBACK_ONLY="true", JOURNEY_ROW="direct")
     assert done.returncode == 0, done.stderr
     assert outputs["update_rollback_only"] == "true" and outputs["m4_5_only"] == "false"
     plain, _ = run_config(tmp_path_factory.mktemp("plain"))

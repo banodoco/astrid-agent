@@ -343,7 +343,7 @@ jobs:
           stopped_path = os.environ["STOPPED_PATH_AGENT_REF"]
           m4_5_only = os.environ["M4_5_ONLY"].lower() == "true"
           update_rollback_only = os.environ.get("UPDATE_ROLLBACK_ONLY", "false").lower() == "true"
-          if update_rollback_only and (journey_row or m4_5_only or os.environ["M4_6_ENABLED"].lower() == "true"
+          if update_rollback_only and (journey_row not in ("", "direct") or m4_5_only or os.environ["M4_6_ENABLED"].lower() == "true"
                                        or os.environ["M4_4B_ENABLED"].lower() == "true"
                                        or os.environ["M4_5_ENABLED"].lower() == "true"
                                        or os.environ["M4_4A_BACKEND_ONLY"].lower() == "true"):
