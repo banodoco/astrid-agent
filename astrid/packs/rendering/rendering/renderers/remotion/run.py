@@ -61,6 +61,7 @@ from astrid.packs.rendering.rendering.renderers.remotion.normal_audio import (
 from astrid.core.subprocess_env import build_child_subprocess_env
 from astrid.packs.rendering.rendering.renderers.remotion import lock as remotion_lock
 from astrid.packs.rendering.rendering.renderers.remotion.progress import RemotionProgressRelay
+from astrid.core.rendering.revision_notice import revision_notice_phase, revision_notice_text
 from astrid.packs.rendering.rendering.renderers.remotion.pack_revisions import resolved_pack_revisions
 from astrid.packs.rendering.shared import rendering_backend as _shared
 from astrid.packs.rendering.shared.rendering_backend import (
@@ -1259,14 +1260,12 @@ def _execute_remotion_locked(
         stage_summary["editor_revision_status"] = (
             "supplied" if editor_pack_revisions is not None else "editor revision not supplied"
         )
-        revision_notices = [
-            f"Pack {row['pack_id']} revision mismatch: editor {row['editor_revision']}; "
-            f"render upstream {row.get('upstream_revision', row.get('derived_from'))} "
-            f"(resolved {row['resolved_revision']})"
-            for row in stage_summary["pack_revisions"] if row["comparison"] == "mismatch"
+        revision_mismatches = [
+            row for row in stage_summary["pack_revisions"] if row["comparison"] == "mismatch"
         ]
-        for notice in revision_notices:
-            print(notice, file=sys.stderr, flush=True)
+        revision_notices = [revision_notice_phase(row) for row in revision_mismatches]
+        for row in revision_mismatches:
+            print(revision_notice_text(row), file=sys.stderr, flush=True)
         frame_mode = frame_numbers is not None
         remotion_env_additions: dict[str, str] = {
             # Keep Remotion's pre-encode files on the admitted attempt
