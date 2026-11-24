@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from astrid.core.timeline.bundle import TIMELINE_BUNDLE_SCHEMA_VERSION
 from astrid.sdk.timeline import words as W
 
 REFERENCES_SCHEMA = "media.transcript.references/v1"
@@ -113,12 +114,86 @@ def stale_anchors(bundle: Mapping[str, Any], transcripts: Mapping[str, Mapping[s
     return found
 
 
+class AssetResolutionError(ValueError):
+    """A transcript reference cannot be given an editor-valid ``assetId``."""
+
+
+def _identity(asset: Any) -> Any:
+    """The media identity of a registry asset (as ``words._clip_media_id`` and the editor)."""
+    return (asset.get("media_id") or asset.get("content_sha256")) if isinstance(asset, Mapping) else None
+
+
+def resolve_asset_ids(bundle: Mapping[str, Any], media: str) -> list[str]:
+    """Every project-registry key whose media identity is ``media``: parent keys first, then each shot's
+    keys, each group sorted (a media imported under two names, or placed in a shot under its own key,
+    has several keys; the editor looks a clip's transcript up by that clip's own key).
+
+    Raises ``AssetResolutionError`` when one of those keys is also used for a different media in the
+    parent or another shot (the editor's parent registry wins on a key clash, so the key would point at
+    the wrong asset). An empty list means the media is not in the registry."""
+    holders = [(label, W._registry_assets(holder)) for label, holder in _holders(bundle, None)]
+    keys: list[str] = []
+    for _label, assets in holders:
+        for key in sorted(str(k) for k, asset in assets.items() if _identity(asset) == media):
+            if key not in keys:
+                keys.append(key)
+    for key in keys:
+        for label, assets in holders:
+            if key in assets and _identity(assets[key]) != media:
+                raise AssetResolutionError(f"asset key {key!r} for media {media} is also used in {label!r} for a "
+                                           "different media: the editor would resolve it to the wrong asset")
+    return keys
+
+
 def with_reference(bundle: Mapping[str, Any], media: str, media_document_ids: set[str],
-                   document_id: str, source: str) -> list[dict[str, Any]]:
+                   document_id: str, source: str, asset_ids: Sequence[str] = ()) -> list[dict[str, Any]]:
     """Associations after recording one media's explicit choice: that media's earlier pins are
-    replaced; every other media's pin is kept. The row names its media and source so it can be
-    loaded again (see ``words.load_timeline_transcripts``)."""
+    replaced; every other media's pin is kept. The rows name their media and source so they can be
+    loaded again (see ``words.load_timeline_transcripts``); one row per registry key (``assetId``) of
+    the media, all with the same document, since the editor looks each clip up by its own key."""
     kept = [row for row in W.reference_rows(bundle)
-            if row.get("mediaId") != media and row["documentId"] not in media_document_ids]
-    kept.append({"documentId": document_id, "mediaId": media, "sourceId": source})
+            if row.get("mediaId") != media and row["documentId"] not in media_document_ids
+            and row.get("assetId") not in asset_ids]  # the new rows replace any pin on this media's keys
+    base = {"documentId": document_id, "mediaId": media, "sourceId": source}
+    if asset_ids:
+        kept.extend({"assetId": key, **base} for key in asset_ids)
+    else:
+        kept.append(base)
     return kept
+
+
+def backfill_asset_ids(bundle: Mapping[str, Any], rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Rows written before ``assetId`` existed get it from the registry: one row per key carrying their
+    media (``mediaId``/``sourceId`` kept). A row whose media is gone from the registry fails closed,
+    naming the row."""
+    out = []
+    for row in rows:
+        if "assetId" in row:
+            out.append(row)
+            continue
+        keys = resolve_asset_ids(bundle, row["mediaId"]) if isinstance(row.get("mediaId"), str) else []
+        if not keys:
+            raise AssetResolutionError(
+                f"existing transcript reference (documentId {row.get('documentId')!r}, mediaId "
+                f"{row.get('mediaId')!r}) has no assetId and its media is not in the project registry: "
+                "remove the row or restore its media, then run refresh again")
+        out.extend({"assetId": key, **row} for key in keys)
+    return out
+
+
+def complete_envelope(envelope: dict[str, Any]) -> dict[str, Any]:
+    """Give a ``config.bundle`` envelope the header the editor requires (``schema_version``, ``itemsBySchemaRef``)."""
+    envelope.setdefault("schema_version", TIMELINE_BUNDLE_SCHEMA_VERSION)
+    envelope.setdefault("itemsBySchemaRef", {})
+    return envelope
+
+
+def record_choice(bundle: dict[str, Any], media: str, media_document_ids: set[str], document_id: str,
+                  source: str, asset_ids: Sequence[str]) -> dict[str, Any]:
+    """Record one media's explicit choice in ``bundle`` (in place) and return its completed ``config.bundle`` envelope."""
+    envelope = bundle.setdefault("parent", {}).setdefault("config", {}).setdefault("bundle", {})
+    refs = envelope.setdefault("transcriptReferences", {"schema": REFERENCES_SCHEMA})
+    refs["schema"] = REFERENCES_SCHEMA
+    rows = with_reference(bundle, media, media_document_ids, document_id, source, asset_ids)
+    refs["associations"] = backfill_asset_ids(bundle, rows)
+    return complete_envelope(envelope)
