@@ -220,12 +220,14 @@ def _prepared_host_frames_at(
                 "fps": profile.fps_rational[0] / profile.fps_rational[1],
             }
             source.validate(timeline_path, assets_path)
-            stage_summary = prepared[5]
-            answers = host_frames_at(
-                props, basis, requested,
-                _render_roots=stage_summary.get("render_pack_roots"),
-                _registry_root=stage_summary.get("project_registry_root"),
-            )
+            stage_summary = prepared[5] if len(prepared) > 5 else {}
+            selectors = {
+                key: stage_summary[source_key]
+                for key, source_key in (("_render_roots", "render_pack_roots"),
+                                        ("_registry_root", "project_registry_root"))
+                if stage_summary.get(source_key) is not None
+            }
+            answers = host_frames_at(props, basis, requested, **selectors)
             source.validate(timeline_path, assets_path)
             if any(answer.get("width") != profile.width or answer.get("height") != profile.height
                    for answer in answers):
