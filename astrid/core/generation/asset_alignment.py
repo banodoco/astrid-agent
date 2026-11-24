@@ -667,7 +667,7 @@ def align(*, entry_id=None, all_entries=False, apply=False, consent=(), target=N
     packs = [pack for manifest in manifests for mode in manifest['modes'] for pack in mode['node_packs']]
     if apply and packs:
         from .entries import find_entry
-        from .node_approvals import authorize_nodes, approval_record, reviewed_approvals
+        from .node_approvals import approval_record, authorize_nodes, reviewed_approvals
         manifests = [{**manifest, 'modes': [{**mode, 'node_packs': [dict(pack) for pack in mode['node_packs']]}
                                          for mode in manifest['modes']]} for manifest in manifests]
         packs = [pack for manifest in manifests for mode in manifest['modes'] for pack in mode['node_packs']]

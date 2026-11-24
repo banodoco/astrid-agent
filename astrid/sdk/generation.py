@@ -272,7 +272,7 @@ def _generation_controls(*, engine, consent):
             raise GenerationInputError('Phase 1 target generation supports only comfyui')
     from astrid.core.generation.consent import consent_scope
     if not isinstance(consent, (tuple, list)):
-        raise GenerationInputError('consent must be a sequence of user_env or code=<token> choices')
+        raise GenerationInputError('consent must be a sequence of user_env or code=<token> choices; rent with `astrid machines claim`')
     try:
         for scope in consent:
             consent_scope(scope)
