@@ -37,6 +37,7 @@
     "kind": "wrapper",
     "name": "Scale In",
     "phase": "entrance",
+    "supportsEasing": true,
     "pack_id": "rendering"
   },
   "pack_id": "rendering",
