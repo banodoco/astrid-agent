@@ -147,7 +147,7 @@ def test_sdk_no_archive_public_inputs_round_trip(canonical, tmp_path, real_runti
 
     daemon = real_runtime()
     raw = RawRuntimeClient(daemon.endpoint, daemon.token)
-    project_id = raw.create_project("RA6 SDK round trip", idempotency_key="ra6-project")["project_id"]
+    project_id = raw.create_project("RA6 SDK round trip", slug="ra6-sdk", idempotency_key="ra6-project")["project_id"]
     wire = _wire_inputs(canonical, raw, project_id)
     bindings = {"prompt": "a new blue circle", "seed": 29, "width": 768, "height": 512}
     inputs = {**canonical, "workflow_inputs": json.dumps(bindings)}
@@ -168,18 +168,34 @@ def test_sdk_no_archive_public_inputs_round_trip(canonical, tmp_path, real_runti
         )
 
 
-def test_managed_asset_manifest_bindings_are_recomputed(canonical, tmp_path):
-    from astrid.packs.vibecomfy.asset_manifest import write_archive
+def test_managed_asset_manifest_bindings_are_recomputed(tmp_path, monkeypatch):
+    from PIL import Image
+    from vibecomfy.nodes.core import LoadImage, SaveImage
+    from vibecomfy.templates import InputSpec, OutputSpec, ReadyMetadata, new_workflow
+    from astrid.packs.vibecomfy.asset_manifest import resolve_inputs, write_archive
 
-    bindings = {"prompt": "managed input prompt", "seed": 23, "width": 768}
+    monkeypatch.setenv("VIBECOMFY_HEADLESS", "1")
+    with new_workflow(ReadyMetadata.build(template_id="ra6-load", capability="image")) as workflow:
+        image = LoadImage(_id="1", image="initial.png")
+        save = SaveImage(_id="2", images=image.out("IMAGE"), filename_prefix="astrid")
+        workflow.finalize({
+            "image": InputSpec(node="1", field="image", default="initial.png", type="STRING", media_semantics="image"),
+            "save_name": InputSpec(node="2", field="filename_prefix", default="astrid", type="STRING"),
+        }, outputs=[OutputSpec(node=save)])
+    canonical = _publish(workflow, tmp_path / "admitted")
+    source = tmp_path / "portrait.png"
+    Image.new("RGB", (16, 16)).save(source)
     archive = tmp_path / "bindings.zip"
-    write_archive({}, archive, workflow_inputs=bindings)
-    receipt = preflight_invocation(canonical["python"], run_inputs=bindings)
+    manifest = write_archive({"image": source}, archive, workflow_inputs={"save_name": "first"})
+    receipt = preflight_invocation(canonical["python"], run_inputs=resolve_inputs(manifest))
     inputs = {**canonical, "managed_assets": str(archive)}
     verify_admitted_invocation_receipt(receipt, inputs, tmp_path / "host")
-    write_archive({}, archive, workflow_inputs={**bindings, "seed": 24})
+    changed = tmp_path / "changed.zip"
+    write_archive({"image": source}, changed, workflow_inputs={"save_name": "second"})
     with pytest.raises(InvocationReceiptMismatch, match="api_digest"):
-        verify_admitted_invocation_receipt(receipt, inputs, tmp_path / "changed")
+        verify_admitted_invocation_receipt(
+            receipt, {**inputs, "managed_assets": str(changed)}, tmp_path / "changed",
+        )
 
 
 @pytest.mark.parametrize("field", ["api_digest", "revision_id", "workflow_content_digest", "invocation_preflight", None],
@@ -220,7 +236,7 @@ def test_direct_runtime_post_reaches_host_gate(field, comfy, tmp_path, monkeypat
         host.discover()
         host.preflight()
         host.register()
-        project_id = raw.create_project("RA6 direct POST", idempotency_key="ra6-project")["project_id"]
+        project_id = raw.create_project("RA6 direct POST", slug="ra6-direct", idempotency_key="ra6-project")["project_id"]
         wire = _wire_inputs(inputs, raw, project_id)
         spec = {"inputs": {**wire, "comfy_url": comfy.url, "workflow_inputs": "{}"}}
         if field != "invocation_preflight":
