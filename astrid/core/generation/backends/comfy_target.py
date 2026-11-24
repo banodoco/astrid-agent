@@ -21,7 +21,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from urllib import error as urllib_error
 from urllib import parse as urllib_parse
 from urllib import request as urllib_request
@@ -30,6 +30,9 @@ from astrid.core.generation.engine_contracts import TransportError
 from astrid.core.media import MediaProbeError, ffprobe_metadata_strict
 from astrid.core.path_utils import has_url_scheme, is_native_absolute_path, is_network_share_path
 from astrid.core.util.http import os_trust_ssl_context, request_error_host
+
+if TYPE_CHECKING:
+    from astrid.core.generation.prepared_templates import NodeListCapture
 
 MAX_JSON_BYTES = 32 * 1024 * 1024
 MAX_DESCRIPTOR_INFO_BYTES = 64 * 1024
@@ -152,6 +155,7 @@ class ComfyTargetClient:
         self._witnessed_prompts: set[str] = set()
         self._folder_paths_read = False
         self._folder_paths: Any = None
+        self.node_list_capture: NodeListCapture | None = None
 
     @property
     def http_origin(self) -> str:
@@ -208,11 +212,17 @@ class ComfyTargetClient:
         if not raw and acknowledge_empty:
             return {"acknowledged": True}
         try:
-            return json.loads(raw.decode("utf-8"))
+            decoded = json.loads(raw.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError):
             if acknowledge_empty:
                 return {"acknowledged": True}
             raise ValueError("Comfy response is not JSON") from None
+        if path == "/object_info" and payload is None and isinstance(decoded, dict):
+            # Retain the existing bounded read, without another request or
+            # serializing the parsed multi-megabyte response for a cache key.
+            from astrid.core.generation.prepared_templates import NodeListCapture
+            self.node_list_capture = NodeListCapture(raw, decoded, self.http_origin)
+        return decoded
 
     def request_json(self, path: str, payload: Any = None, *, timeout: float = 10.0,
                      response_limit: int = 64 * 1024) -> Any:
@@ -265,6 +275,8 @@ class ComfyTargetClient:
 
     def object_info(self) -> dict[str, Any]:
         """Capture schema through this target's existing attested transport."""
+        # Parsed-only transports cannot inherit a prior raw-response witness.
+        self.node_list_capture = None
         if self.endpoint_transport is not None:
             payload = self.endpoint_transport.object_info(deadline=time.monotonic() + HTTP_TRANSFER_SECONDS)
         else:

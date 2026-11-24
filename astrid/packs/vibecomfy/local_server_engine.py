@@ -257,7 +257,8 @@ def run_scoped_overrides(workflow: Any, attempt_id: str, *, empty_prefix_nodes: 
 
 
 def local_server_bundle(resolved: Any, destination: Path, *, output_identity: str | None = None,
-                        allow_empty_image: bool = False, run_inputs: Mapping[str, Any] | None = None) -> Any:
+                        allow_empty_image: bool = False, run_inputs: Mapping[str, Any] | None = None,
+                        node_capture: Any = None) -> Any:
     """Derive attempt-owned image bindings and fresh output filenames.
 
     A seedless graph can otherwise reuse SaveImage's cached result from an
@@ -310,6 +311,17 @@ def local_server_bundle(resolved: Any, destination: Path, *, output_identity: st
         workflow = run_scoped_overrides(workflow, output_identity, empty_prefix_nodes=frozenset(empty_prefix_nodes))
     if not changed:
         return bundle
+    from astrid.core.generation.prepared_templates import PreparationSession
+    from astrid.core.generation.target_inventory import declared_rows
+
+    preparation = PreparationSession(source_path=bundle.python_path,
+        source_identity={"host_workflow": bundle.workflow_identity})
+    if bundle.python_path is not None:
+        preparation.retain_validated_source(bundle.python_path)
+    preparation.prepare_emission(workflow, capture=node_capture,
+        role_plan={"model_assets": list(declared_rows(bundle.workflow)),
+                   "uploaded_media": sorted(_uploaded_media_targets(bundle, run_inputs)),
+                   "allow_empty_image": allow_empty_image})
     root = destination / "local-server-workflow"
     root.mkdir(parents=True, exist_ok=True)
     source = bundle.python_path.with_name("source.json") if bundle.python_path else None
@@ -324,7 +336,7 @@ def local_server_bundle(resolved: Any, destination: Path, *, output_identity: st
     # either way, so whichever renderer round-trips the graph exactly is the one that is used.
     for source_format in ("ready_template", "scratchpad"):
         try:
-            derived = emit_bundle_with_candidate(
+            derived = preparation.emit(emit_bundle_with_candidate,
                 workflow, root / "workflow.py", Provenance.USER_CONFIRMED, bundle.ui_sidecar,
                 parent_revision=bundle.revision_id, operation="authored",
                 parent_evidence={"revision_id": bundle.revision_id, "workflow_identity": bundle.workflow_identity},
@@ -448,6 +460,7 @@ def run_local_server(
     # live dependency gaps before deriving the attempt's private save prefixes.
     bundle = local_server_bundle(
         bundle, destination, output_identity=attempt_identity or task_identity, run_inputs=run_inputs,
+        node_capture=getattr(client, "node_list_capture", None),
     )
     bindings = dict(run_inputs or {})
     output_ids = {str(output.node_id) for output in bundle.workflow.outputs}
