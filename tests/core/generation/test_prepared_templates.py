@@ -468,7 +468,7 @@ def test_live_schema_objects_are_not_silently_stripped_or_cached(tmp_path, monke
     graph = _workflow()
     schema = NodeSchema(class_type="Integer", pack=None, inputs={}, outputs=[])
     graph.nodes["1"].metadata["schema"] = schema
-    monkeypatch.setattr(prepared, "compiler_witness", lambda: {"fixture": "compiler"})
+    monkeypatch.setattr(prepared, "compiler_witness", lambda: pytest.fail("known live state must refuse before expensive hashing"))
     collector = TimingCollector()
     with timing_scope(collector):
         session.prepare_emission(graph, capture=prepared.NodeListCapture(b"{}", {}, "http://fixture"), role_plan={})

@@ -436,6 +436,15 @@ class PreparationSession:
             _recompute("entry_invalid", detail="executable or unwitnessed source")
             self.use = PreparedUse(workflow, reason="entry_invalid")
             return
+        from vibecomfy.schema.provider import NodeSchema
+        if (workflow.metadata.get("_workflow_snapshot") is not None
+                or any(isinstance(node.metadata.get("schema"), NodeSchema) for node in workflow.nodes.values())):
+            # These two known live authorities are outside the submitted JSON
+            # contract. Avoid hashing a compiler closure that cannot be used;
+            # retain the objects intact for the ordinary current emitter.
+            _recompute("entry_invalid", detail=f"{self.source_identity}: retained live schema/snapshot")
+            self.use = PreparedUse(workflow, reason="entry_invalid")
+            return
         source_path = self.source_path
 
         def witness() -> Mapping[str, Any]:
