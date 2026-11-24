@@ -118,18 +118,6 @@ def attached_model_readiness(entry: str | None, placements, *, target=None) -> d
     return readiness_envelope(entry=selected, target=target, issues=issues, fixes=fixes)
 
 
-def _is_comfyui_core_repo(repo: str) -> bool:
-    """A pack whose repository is ComfyUI itself ships with ComfyUI, not as a custom node."""
-    from urllib.parse import urlsplit
-
-    parsed = urlsplit(repo)
-    if parsed.hostname != 'github.com':
-        return False
-    return parsed.path.lower().rstrip('/').removesuffix('.git') in {
-        '/comfyanonymous/comfyui', '/comfy-org/comfyui',
-    }
-
-
 def _locked_commit(lock: Any, pack: Any) -> str | None:
     """The commit the lock pins for this pack's repository, if the lock declares one."""
     from vibecomfy.node_packs import read_lockfile
@@ -173,7 +161,7 @@ def attached_asset_readiness(entry: str | None, *, nodes=(), models=(), lockfile
     classes name the missing provider and require identification, not an
     unrelated ComfyUI update. Astrid installs and restarts nothing there.
     """
-    from vibecomfy.node_packs import resolve_lockfile_path, resolve_node_packs
+    from vibecomfy.node_packs import is_comfyui_core_repo, resolve_lockfile_path, resolve_node_packs
     from .node_class_authority import core_node_classes
     from .preflight import readiness_envelope
     from .setup_repairs import manual_setup_fix
@@ -186,7 +174,7 @@ def attached_asset_readiness(entry: str | None, *, nodes=(), models=(), lockfile
     core = core_node_classes(nodes)
     for name in nodes:
         providers = resolve_node_packs({name}, lockfile_path=lock)
-        packs = [pack for pack in providers if not _is_comfyui_core_repo(pack.repo)]
+        packs = [pack for pack in providers if not is_comfyui_core_repo(pack.repo)]
         commands = None
         if packs:
             pack = packs[0]
@@ -201,7 +189,7 @@ def attached_asset_readiness(entry: str | None, *, nodes=(), models=(), lockfile
                 details.update(commands=argv, after=PACK_AFTER)
                 commands = argv
             message = f'Your ComfyUI does not have {name}, which comes from the custom node pack {pack.name}. {action}'
-        elif name in core or any(_is_comfyui_core_repo(pack.repo) for pack in providers):
+        elif name in core or any(is_comfyui_core_repo(pack.repo) for pack in providers):
             action = 'Update ComfyUI, then retry.'
             message = (f'Your ComfyUI does not have {name}, which is part of ComfyUI itself; '
                        'update ComfyUI, then retry.')

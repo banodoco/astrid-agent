@@ -80,13 +80,13 @@ def readiness_envelope(*, entry=None, target=None, issues=(), fixes=(), attempt_
     from copy import deepcopy
 
     from .setup_contract import validate_setup_envelope
-    from .setup_repairs import project_setup_facts
+    from .setup_repairs import project_setup_facts, project_target_record
     issues = [deepcopy({**issue, 'details': issue.get('details', {})}) for issue in issues]
     # An attached target's fix names what the person does on their own ComfyUI; it has no argv to run.
     fixes = [deepcopy({**fix, **({'argv': list(fix['argv'])} if isinstance(fix.get('argv'), tuple) else {}),
               'details': fix.get('details', {})})
              for fix in fixes]
-    target = deepcopy(target.as_dict() if hasattr(target, 'as_dict') else target)
+    target = deepcopy(project_target_record(target))
     issues, fixes = project_setup_facts(issues, fixes, entry=entry, target=target)
     status = ('blocked' if any(issue['severity'] == 'error' for issue in issues) else
               'ready_with_warnings' if issues else 'ready')
@@ -432,7 +432,8 @@ def _managed_install_fix() -> ReadinessFix | None:
     scope = f'installs Astrid-managed ComfyUI under {root}; user scope; no system changes'
     size = (f'at least {model_bytes} bytes of locked models; additional runtime download size unknown'
             if model_bytes is not None else 'size unknown')
-    return {'argv': ['astrid', 'engines', 'install', recipe.engine,
+    return {'id': 'install-managed-engine', 'who': 'human',
+            'argv': ['astrid', 'engines', 'install', recipe.engine,
                      '--platform', recipe.platform, '--placement', 'local'],
             'scope': 'managed_write',
             'details': {'bytes': model_bytes, 'size_scope': 'locked_models',
@@ -601,11 +602,24 @@ def _installed_managed_target(entry_id=None):
                 raise GenerationReadinessError(asset_readiness(None, models=missing,
                     target={'root': str(selected.root), 'endpoint': selected.url, 'owner': 'astrid'})) from exc
         fix = _managed_install_fix()
+        if fix is None:
+            from .setup_repairs import manual_setup_fix
+
+            # A platform without an indexed installer still has a concrete,
+            # safe next step. Never recommend an unsupported installation or
+            # adopt an unrelated listener just to make the request runnable.
+            step = ("Verify ownership of the selected installed ComfyUI. Do not adopt or restart an unrelated service."
+                    if exc.code == 'endpoint_ownership' else
+                    "Inspect and repair the selected installed ComfyUI on its supported platform.")
+            fix = manual_setup_fix(
+                'inspect-managed-engine', step, target={'placement': 'managed'},
+                scope='read_only', code='engine_not_found',
+            )
         raise generation_error(
             ValueError('The installed managed ComfyUI engine is not ready; repair its installation. '
                        + _gpu_guidance()),
             code='engine_not_found', details={'field': 'target', 'engine_code': exc.code},
-            fixes=(() if fix is None else (fix,)),
+            fixes=(fix,),
         ) from exc
     endpoint = installed.endpoint
     facts = {'object_info_sha256': endpoint.health.object_info_sha256}

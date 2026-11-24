@@ -285,3 +285,21 @@ def test_unregistered_native_error_retains_original_code_as_evidence():
     assert issue["code"] == "generation_failed"
     assert issue["details"]["native_code"] == "future_native_refusal"
     assert issue["fix_ids"] == [fix["id"] for fix in result["fixes"]]
+
+
+def test_target_record_projection_is_shared_by_envelope_and_repair():
+    from astrid.core.generation.setup_repairs import manual_setup_fix
+    from astrid.core.generation.setup_contract import validate_setup_envelope
+    from astrid.core.generation.targets import TargetRecord
+
+    record = TargetRecord(endpoint="http://127.0.0.1:8188")
+    expected = record.as_dict()
+    fix = manual_setup_fix("inspect", "Inspect the selected target.", target=record,
+                           scope="attached_target")
+    result = readiness_envelope(target=record, issues=[_issue("target_unreachable", ["inspect"])],
+                                fixes=[fix])
+    validate_setup_envelope(result)
+    assert result["target"] == expected
+    assert fix["instruction"]["then_argv"] == [
+        "astrid", "generate", "targets", "--placement", record.endpoint, "--json",
+    ]

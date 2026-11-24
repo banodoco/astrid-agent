@@ -14,9 +14,13 @@ from typing import Any
 from .setup_contract import canonical_issue_code, repair_step
 
 
+def project_target_record(target: Any) -> Any:
+    """One projection for target records at the readiness/repair boundary."""
+    return target.as_dict() if hasattr(target, "as_dict") else target
+
+
 def _target_probe(target: Mapping[str, Any] | None) -> tuple[list[str], dict[str, str]]:
-    if hasattr(target, "as_dict"):
-        target = target.as_dict()
+    target = project_target_record(target)
     target = target if isinstance(target, Mapping) else {}
     selector = target.get("endpoint") or target.get("placement") or target.get("kind")
     if (not isinstance(selector, str)

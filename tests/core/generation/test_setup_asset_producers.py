@@ -203,3 +203,24 @@ def test_unselected_invalid_or_incomplete_models_record_their_excluded_authority
     assert excluded[0]["missing"] == ["url", "sha256", "size_bytes"]
     assert excluded[1]["code"]
     assert "Excluded non-provisionable model declaration for entry inventory-only" in caplog.text
+
+
+def test_attached_repository_named_comfyui_is_not_upstream_core(monkeypatch):
+    """A pack's basename is not authority to advise a core update."""
+    from types import SimpleNamespace
+
+    from astrid.core.generation.setup_contract import validate_setup_envelope
+
+    pack = SimpleNamespace(name="ThirdPartyComfyUI", repo="https://github.com/example/ComfyUI.git",
+                           classes={"ThirdPartyClass"})
+    monkeypatch.setattr("vibecomfy.node_packs.resolve_node_packs", lambda names, **kwargs:
+                        [pack] if names & pack.classes else [])
+    monkeypatch.setattr("astrid.core.generation.asset_gaps._locked_commit", lambda *args: "a" * 40)
+    result = attached_asset_readiness("saved", nodes=["ThirdPartyClass"])
+    validate_setup_envelope(result)
+    issue = result["issues"][0]
+    assert issue["code"] == "missing_node_pack"
+    assert issue["details"]["repository"] == pack.repo
+    assert "custom node pack ThirdPartyComfyUI" in issue["message"]
+    assert "update ComfyUI" not in issue["message"]
+    assert result["fixes"][0]["who"] == "human"
