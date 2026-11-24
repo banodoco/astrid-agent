@@ -135,7 +135,7 @@ def test_preparation_keeps_installation_guidance_for_unreadable_receipt(tmp_path
     try:
         with pytest.raises(EngineNotInstalled, match="astrid engines install comfyui") as error:
             preparation.prepare(workflow, execution_identity="execution", inputs={},
-                                canonical_workflow=None, input_digests={})
+                                canonical_workflow=SimpleNamespace(metadata={}), input_digests={})
         assert error.value.next_action == "astrid engines install comfyui"
     finally:
         preparation.close()
@@ -741,9 +741,11 @@ def fetch_volume(tmp_path, monkeypatch):
         {'name': 'need.bin', 'subdir': 'checkpoints', 'size': 9,
          'sha256': hashlib.sha256(b'need-more').hexdigest()},
     ]
-    manifest = {'models_root': str(models), 'models': rows}
+    manifest = {'models_root': str(models), 'models': rows, 'extra': {'nodes': []}}
     prep = ManagedEnginePreparation.__new__(ManagedEnginePreparation)
     prep.mode = 'align'
+    prep.code_approvals = []
+    prep.placement_class = 'local'
     prep.deadline = time.monotonic() + 20
     prep.cancelled = lambda: False
     native, quota_calls = [], []
@@ -826,7 +828,7 @@ def fetch_volume(tmp_path, monkeypatch):
 
     prep._verify_alignment = alignment_complete
 
-    workflow = SimpleNamespace(compile=lambda backend, *, run_inputs: {})
+    workflow = SimpleNamespace(metadata={}, compile=lambda backend, *, run_inputs: {})
     def fetch(**inputs):
         try:
             prep._prepare(source, execution_identity='execution', inputs=inputs,

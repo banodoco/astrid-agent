@@ -7245,6 +7245,7 @@ class GenericPackHost:
             invocation_id=f"{task_id}:{attempt_id}:{fence}", task_id=str(task_id), attempt_id=str(attempt_id),
             scratch=root, progress_path=root / ".astrid-progress.json",
             align=_machine_align_mode(task_data), timing=timing,
+            code_approvals=metadata.get("code_approvals", []),
         )
         def claimed(lease):
             # Which machine runs this attempt, recorded as soon as it is claimed (failures keep it too).
@@ -12756,7 +12757,9 @@ class GenericPackHost:
                 admitted_mode = _align_admission(task_data).get("align", "check")
                 engine_preparation = ManagedEnginePreparation(task=str(task_id), attempt=str(attempt_id),
                     mode=admitted_mode, deadline=lifetime.deadline(), cancelled=cancelled,
-                    scratch=root / "engine-preparation", device=local_device, logs_root=_host_log_root(root))
+                    scratch=root / "engine-preparation", device=local_device, logs_root=_host_log_root(root),
+                    code_approvals=((_task_generation_intent(task_data) or {}).get("metadata") or {}).get("code_approvals", []),
+                    placement_class="local")
                 from contextlib import suppress
 
                 from astrid.core.generation.engine_custody import declare_engine_log
