@@ -1213,11 +1213,50 @@ def _workflow_description(entry: Mapping[str, Any]) -> dict[str, Any]:
     return {'id': entry.get('id'), 'engine': 'comfyui'}
 
 
-def _deferred_missing_node_classes(workflow: Any) -> list[str]:
+def _shipped_node_provider_available(*, pending_target: Mapping[str, Any] | None,
+                                     align: str, engine_missing: bool) -> bool:
+    """Does this placement prepare or already link the shipped custom nodes?
+
+    Managed alignment calls link_vibecomfy_custom_node on the verified worker
+    checkout before restoring nodes. Check/trust never does that. An attached
+    target is handled separately by its live object_info, never this helper.
+    """
+    if engine_missing:
+        return False
+    if pending_target is not None:
+        # The retained RunPod owner aligns by default; an explicit check/trust
+        # must not assume a rented machine already has the package linked.
+        return (pending_target.get('placement') == 'runpod'
+                and pending_target.get('engine') == 'comfyui' and align == 'align')
+
+    from .engine_local_endpoint import DEFAULT_ENGINE, DEFAULT_PLATFORM, recorded_engine_root
+    from .engine_recipe import load_recipe
+
+    root = recorded_engine_root(DEFAULT_ENGINE)
+    if root is None:
+        return False
+    recipe = load_recipe(DEFAULT_ENGINE, DEFAULT_PLATFORM)
+    checkout = Path(root) / next(source.relative_path for source in recipe.sources if source.name == 'vibecomfy')
+    comfy = Path(root) / next(source.relative_path for source in recipe.sources if source.name == 'comfyui')
+    source = checkout / 'vibecomfy' / 'comfy_nodes'
+    if not (source / '__init__.py').is_file() or not (comfy / 'main.py').is_file():
+        return False
+    if align == 'align':
+        return True  # managed preparation links this verified checkout
+    # Read-only witness of the current or legacy link created by VibeComfy.
+    return any(link.is_dir() and link.resolve() == source.resolve()
+               for link in (comfy / 'custom_nodes' / 'vibecomfy_custom_nodes',
+                            comfy / 'custom_nodes' / 'vibecomfy'))
+
+
+def _deferred_missing_node_classes(workflow: Any, *, pending_target: Mapping[str, Any] | None = None,
+                                   align: str = 'check', engine_missing: bool = False) -> list[str]:
     """Active classes that lack an installable provider on a deferred target.
 
     A schema is evidence of an interface, not installation. The only schema
     exemption is a core class in VibeComfy's shipped ComfyUI schema index.
+    The shipped VibeComfy registry is a separate provider, and only counts
+    when the selected placement links it or has a verified link already.
     Other classes need an exact shipped catalog pin or a declared pinned ref.
     The host still checks consent, restoration and the actual object_info.
     """
@@ -1257,6 +1296,14 @@ def _deferred_missing_node_classes(workflow: Any) -> list[str]:
         pack_file = Path(schema.source_cache_path)
         if pack_file.resolve().is_relative_to(root.resolve()) and pack_file.name.startswith(('comfy_core@', 'comfy_extras@')):
             unresolved.remove(name)
+    if unresolved:
+        from vibecomfy.comfy_nodes import NODE_CLASS_MAPPINGS
+
+        shipped = unresolved.intersection(NODE_CLASS_MAPPINGS)
+        if shipped and _shipped_node_provider_available(
+            pending_target=pending_target, align=align, engine_missing=engine_missing,
+        ):
+            unresolved -= shipped
     return sorted(unresolved)
 
 
@@ -1278,7 +1325,10 @@ def target_schema(entry: dict[str, Any], workflow: Any, client: Any, *, engine: 
     from astrid.core.generation.preflight import GenerationReadinessError, readiness_envelope
 
     if client is None:
-        missing_classes = _deferred_missing_node_classes(workflow)
+        missing_classes = _deferred_missing_node_classes(
+            workflow, pending_target=pending_target, align=align,
+            engine_missing=initial_readiness is not None,
+        )
         observed = {}
     else:
         observed = client.object_info()
