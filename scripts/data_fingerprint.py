@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# MIRRORED from astrid-dev scripts/qualification/data_fingerprint.py (stdlib only, byte-for-byte apart from this
+# comment). It must stay in sync: change it there first and re-copy. No existing repo helper keeps per-file sha256,
+# the realm id list, the "changed while read" refusal and the live owner.lock tolerance together.
 """Fingerprint an Astrid data root so "no project data lost" is a comparison, not a belief (items 2a, 2e).
 
   python3 -I data_fingerprint.py snap DATA_ROOT --out before.json [--realm-glob 'realms/*'] [--exclude GLOB ...]
