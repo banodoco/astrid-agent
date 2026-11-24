@@ -20,7 +20,13 @@ def _run_failure(monkeypatch, capsys, failure):
 def test_unexpected_stage_failure_keeps_issue_and_traceback(monkeypatch, capsys):
     payload, stderr = _run_failure(monkeypatch, capsys, ValueError('boom'))
     assert payload['issues'] == [{'code': 'generation_failed', 'message': 'boom',
-                                  'severity': 'error', 'details': {}}]
+                                  'severity': 'error', 'details': {},
+                                  'fix_ids': ['inspect-and-repair']}]
+    assert len(payload['fixes']) == 1
+    fix = payload['fixes'][0]
+    assert fix['id'] == 'inspect-and-repair' and fix['who'] == 'human'
+    assert 'Inspect the reported failure' in fix['instruction']['step']
+    assert fix['instruction']['then_argv'] and 'argv' not in fix
     assert 'Traceback (most recent call last)' in stderr
     assert 'failing_stage' in stderr
     assert 'ValueError: boom' in stderr

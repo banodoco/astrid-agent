@@ -272,14 +272,18 @@ def test_unexpected_fetch_failure_is_debug_logged_and_reported_without_traceback
     result = alignment.main(SimpleNamespace(entry='fake', all=False, apply=True,
                                             consent=['user_env'], json=True))
 
-    assert result == 1
+    assert result == 2
     assert 'fetch failed for locked model diffusion_models/fake.safetensors' in caplog.text
     assert 'RuntimeError: transport adapter exploded' in caplog.text
     assert 'Traceback (most recent call last)' in caplog.text
-    stderr = capsys.readouterr().err
-    assert 'download failed' in stderr
-    assert 'retry astrid generate align --apply --consent user_env --entry fake' in stderr
-    assert 'Traceback' not in stderr
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload['status'] == 'blocked'
+    assert 'download failed' in payload['issues'][0]['message']
+    assert 'retry astrid generate align --apply --consent user_env --entry fake' in payload['issues'][0]['message']
+    assert payload['issues'][0]['fix_ids'] == [fix['id'] for fix in payload['fixes']]
+    assert 'Traceback' not in captured.err
+    assert 'Traceback' not in captured.out
 
 
 def test_server_ignoring_range_restarts_without_claiming_resume(fake):
@@ -421,8 +425,15 @@ def test_cli_routes_inspection_all_and_consent(fake, capsys):
     assert json.loads(capsys.readouterr().out)['total_missing_bytes'] == len(DATA)
     assert cli.main(['align', '--all', '--json']) == 0
     assert json.loads(capsys.readouterr().out)['align_command'].endswith('--all')
-    assert cli.main(['align', '--apply', '--entry', 'fake', '--json']) == 1
-    assert '--consent user_env' in json.loads(capsys.readouterr().err)['error']['message']
+    assert cli.main(['align', '--apply', '--entry', 'fake', '--json']) == 2
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload['status'] == 'blocked'
+    assert '--consent user_env' in payload['issues'][0]['message']
+    assert payload['issues'][0]['fix_ids'] == [fix['id'] for fix in payload['fixes']]
+    assert all(fix['who'] == 'human' for fix in payload['fixes'])
+    assert 'Traceback' not in captured.err
+    assert fake.calls == [] and not fake.target.root.exists()
 
 
 def test_align_selector_exclusivity_and_generate_help(fake, capsys):
@@ -494,8 +505,12 @@ def test_noneditable_wheel_align_entrypoint_and_module(tmp_path):
             assert 'align' not in checked.stdout
     refused = subprocess.run([sys.executable, '-m', 'astrid', 'generate', 'align', '--apply', '--entry', 'z-image', '--json'],
                              cwd=tmp_path, env=environment, capture_output=True, text=True, timeout=30)
-    assert refused.returncode == 1
-    assert '--apply --consent user_env' in json.loads(refused.stderr)['error']['message']
+    assert refused.returncode == 2
+    refusal = json.loads(refused.stdout)
+    assert refusal['status'] == 'blocked'
+    assert '--apply --consent user_env' in refusal['issues'][0]['message']
+    assert refusal['issues'][0]['fix_ids'] == [fix['id'] for fix in refusal['fixes']]
+    assert 'Traceback' not in refused.stderr
 
 
 def test_selected_managed_receipt_is_offline_and_validates_models_lock(tmp_path, monkeypatch):

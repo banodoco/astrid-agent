@@ -162,8 +162,12 @@ def test_readiness_missing_drift_unknown_and_details():
     error = preflight.generation_error({'code': 'COMFY_TARGET_UNAVAILABLE', 'message': 'down'})
     assert error.to_envelope()['issues'][0]['code'] == 'target_unreachable'
     assert error.to_envelope()['issues'][0]['details']['engine_code'] == 'COMFY_TARGET_UNAVAILABLE'
-    blocked = preflight.readiness_envelope(issues=[*warnings, *error.readiness['issues']])
-    assert blocked['status'] == 'blocked' and blocked['fixes'] == []
+    blocked = preflight.readiness_envelope(issues=[*warnings, *error.readiness['issues']],
+                                           fixes=error.readiness['fixes'])
+    assert blocked['status'] == 'blocked' and blocked['fixes'] == error.readiness['fixes']
+    assert blocked['issues'] == [*warnings, *error.readiness['issues']]
+    assert blocked['issues'][-1]['fix_ids'] == [fix['id'] for fix in blocked['fixes']]
+    assert all(not warning.get('fix_ids') for warning in warnings)
 
 
 def test_read_only_commands_do_not_write_config_sources_or_locks(authored, monkeypatch, tmp_path, capsys):

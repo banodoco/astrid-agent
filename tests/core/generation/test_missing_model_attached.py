@@ -70,7 +70,7 @@ def test_managed_missing_model_keeps_align_message_and_fixes(monkeypatch):
     error, seen = _capture("managed", monkeypatch)
     argv = align_argv("z-image")
     assert error.readiness["fixes"] == [{
-        "argv": argv, "scope": "user_env",
+        "id": "align-locked-assets", "who": "human", "argv": argv, "scope": "user_env",
         "details": {"action": "Install missing locked assets on the managed target; unlocked assets require a manifest."},
     }]
     assert str(error).endswith("run: " + " ".join(argv))
@@ -78,6 +78,7 @@ def test_managed_missing_model_keeps_align_message_and_fixes(monkeypatch):
         "code": "missing_model", "severity": "error",
         "message": "Missing model ae.safetensors, FLUX1\\ae.safetensors (role vae). Run: " + " ".join(argv),
         "details": {"model": "ae.safetensors, FLUX1\\ae.safetensors (role vae)"},
+        "fix_ids": ["align-locked-assets"],
     }]
     assert "/internal/folder_paths" not in seen
 
