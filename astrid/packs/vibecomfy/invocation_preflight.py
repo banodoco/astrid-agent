@@ -639,10 +639,14 @@ def verify_admitted_invocation_receipt(
                 # without writing engine files or contacting a target.
                 archive = read_archive(inputs["managed_assets"])
                 bindings = resolve_inputs(archive.manifest, bindings)
+                # Only an H3 prepared source is both the worker's source_video and the
+                # archive's source asset; any other pairing is still a duplicate.
                 archive_source_digests = [
                     str(record.get("sha256"))
                     for record in archive.manifest.get("assets", ())
                     if isinstance(record, Mapping) and record.get("binding") == "source_video"
+                    and isinstance(record.get("lineage"), Mapping)
+                    and record["lineage"].get("kind") == "h3_source_conform"
                 ]
             if inputs.get("source_video"):
                 if supplied_source_video:
@@ -655,8 +659,11 @@ def verify_admitted_invocation_receipt(
                     # asset's own member name (the host's own preflight does the same),
                     # so the staged file must be exactly that asset's bytes.
                     import hashlib
+                    import stat
 
                     try:
+                        if not stat.S_ISREG(os.lstat(inputs["source_video"]).st_mode):
+                            raise OSError("staged source_video is not a regular file")
                         with open(inputs["source_video"], "rb") as staged:
                             staged_digest = hashlib.file_digest(staged, "sha256").hexdigest()
                     except OSError as exc:

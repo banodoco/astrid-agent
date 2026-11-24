@@ -662,7 +662,9 @@ def test_archive_bound_source_video_is_the_staged_file_or_refused(tmp_path, monk
     clip = tmp_path / "clip.mp4"
     clip.write_bytes(b"prepared-source-bytes")
     archive = tmp_path / "assets.zip"
-    manifest = write_archive({"source_video": clip}, archive)
+    manifest = write_archive(
+        {"source_video": clip}, archive, lineage={"source_video": {"kind": "h3_source_conform"}},
+    )
     receipt = preflight_invocation(canonical["python"], run_inputs=resolve_inputs(manifest))
     inputs = {**canonical, "managed_assets": str(archive), "source_video": str(clip)}
     verify_admitted_invocation_receipt(receipt, inputs, tmp_path / "host")
@@ -680,6 +682,18 @@ def test_archive_bound_source_video_is_the_staged_file_or_refused(tmp_path, monk
     with pytest.raises(InvocationReceiptMismatch, match="bytes_unrecomputable"):
         verify_admitted_invocation_receipt(
             receipt, {**inputs, "source_video": str(tmp_path / "missing.mp4")}, tmp_path / "missing-host",
+        )
+    link = tmp_path / "link.mp4"
+    link.symlink_to(clip)
+    with pytest.raises(InvocationReceiptMismatch, match="bytes_unrecomputable"):
+        verify_admitted_invocation_receipt(receipt, {**inputs, "source_video": str(link)}, tmp_path / "link-host")
+    # Only an H3 prepared source may be both the worker's source_video and the archive asset.
+    plain = tmp_path / "plain.zip"
+    plain_manifest = write_archive({"source_video": clip}, plain)
+    plain_receipt = preflight_invocation(canonical["python"], run_inputs=resolve_inputs(plain_manifest))
+    with pytest.raises(InvocationReceiptMismatch, match="duplicate source_video"):
+        verify_admitted_invocation_receipt(
+            plain_receipt, {**inputs, "managed_assets": str(plain)}, tmp_path / "plain-host",
         )
 
 
