@@ -5,6 +5,7 @@ import copy
 
 from ._command_state import CommandError, State, equal, root_identity
 from .capture import number
+from .native_occurrence_create import parent_start_ms
 from .native_occurrence_duplicate import OCCURRENCE_INTENT
 from .native_timeline_duplicate import SOURCE_REF
 
@@ -204,7 +205,8 @@ def _place_foreign(ctx, command):
     created.pop('revision_id', None)
     created['occurrence_id'] = args['occurrence_id']
     created['shot_id'] = identity
-    created.setdefault('placement', {})['start_ms'] = number(args['on'] * 1000, 'start_ms')
+    created.setdefault('placement', {})['start_ms'] = parent_start_ms(
+        ctx, number(args['on'], 'on'), row.get('duration_ms', 1000) / 1000 or 1)
     from astrid.core.timeline.authoring_bundle import _rederive_root_identity
 
     _rederive_root_identity(created, target['project_id'], target['timeline_id'], row['shot_revision_id'])
@@ -314,7 +316,8 @@ def occurrence_place_shared(ctx, command):
     created.pop('revision_id', None)
     created['occurrence_id'] = command['args']['occurrence_id']
     created['shot_id'] = reopen_shared_source(ctx.state.bundle, owner)
-    created.setdefault('placement', {})['start_ms'] = number(on * 1000, 'start_ms')
+    created.setdefault('placement', {})['start_ms'] = parent_start_ms(
+        ctx, on, row.get('duration_ms', 1000) / 1000 or 1)
     from astrid.core.timeline.authoring_bundle import _rederive_root_identity
 
     origin = ctx.state.bundle['source_mapping']['shots'][created['shot_id']]
