@@ -8,7 +8,9 @@ import pytest
 from astrid.core.generation import cli, entries, preflight
 from astrid.packs.vibecomfy.production_engine import load_workflow_path
 from tests.core.generation.backends.test_comfy_model_resolution import install_target
-from tests.core.generation.backends.test_comfy_target import network  # noqa: F401
+from tests.core.generation.backends.test_comfy_target import (  # noqa: F401
+    engine_configuration, network, observation_configuration,
+)
 from tests.core.generation.fixtures.plan56_sam import sam_api_path, sam_object_info  # noqa: F401
 
 SAM_CLASSES = {"SAMAudioPipelineLoader", "SAMAudioTextSeparator"}
