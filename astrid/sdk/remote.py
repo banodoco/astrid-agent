@@ -121,7 +121,10 @@ def _vibecomfy_invocation_preflight(
         for name, path in paths.items():
             path.write_bytes(read_object(descriptors[name][0], name))
         source_video_path = None
-        run_inputs: dict[str, Any] = {}
+        from astrid.packs.vibecomfy.invocation_preflight import invocation_run_inputs
+
+        supplied_workflow_inputs = invocation_run_inputs(inputs.get("workflow_inputs"))
+        run_inputs = dict(supplied_workflow_inputs)
         managed_manifest: dict[str, Any] | None = None
         managed_members: dict[str, bytes] = {}
         if managed_descriptor is not None:
@@ -139,18 +142,6 @@ def _vibecomfy_invocation_preflight(
                 raise ValueError(str(exc)) from exc
             managed_manifest = resolved.manifest
             managed_members = resolved.members
-            supplied_workflow_inputs: dict[str, Any] = {}
-            raw_workflow_inputs = inputs.get("workflow_inputs")
-            if isinstance(raw_workflow_inputs, str):
-                try:
-                    decoded_workflow_inputs = json.loads(raw_workflow_inputs or "{}")
-                except json.JSONDecodeError as exc:
-                    raise ValueError("workflow_inputs must be valid JSON") from exc
-                if not isinstance(decoded_workflow_inputs, Mapping):
-                    raise ValueError("workflow_inputs must be a JSON object")
-                supplied_workflow_inputs = dict(decoded_workflow_inputs)
-            elif isinstance(raw_workflow_inputs, Mapping):
-                supplied_workflow_inputs = dict(raw_workflow_inputs)
             try:
                 run_inputs = resolve_inputs(managed_manifest, supplied_workflow_inputs)
             except AssetManifestError as exc:
