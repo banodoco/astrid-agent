@@ -658,10 +658,11 @@ def describe_workflow(path: Path, mode: str | None = None, *, _native=False, com
     return result if _native else public_description(result)
 
 
-def resolve_workflow_inputs(path: Path, inputs: Mapping[str, Any], *, mode=None, comfy_url: str = ''):
-    """Validate inputs against the workflow's description, read on the attached server when ``comfy_url`` names one."""
+def resolve_workflow_inputs(path: Path, inputs: Mapping[str, Any], *, mode=None, comfy_url: str = '',
+                            required: bool = True):
+    """Validate supplied inputs, requiring run inputs unless only saving a reusable entry."""
     description = describe_workflow(path, mode=mode, _native=True, comfy_url=comfy_url)
-    values = validate_inputs(description, _dimension_values(description, inputs))
+    values = validate_inputs(description, _dimension_values(description, inputs), required=required)
     return public_description(description), values
 
 
