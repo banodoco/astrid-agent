@@ -141,7 +141,8 @@ def test_missing_statvfs_is_unknown_not_an_unsafe_path(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("relative", [True, False])
-def test_selected_unsafe_model_root_surfaces_as_typed_issue(tmp_path, monkeypatch, relative):
+@pytest.mark.parametrize("has_statvfs", [True, False])
+def test_selected_unsafe_model_root_surfaces_as_typed_issue(tmp_path, monkeypatch, relative, has_statvfs):
     from astrid.core.generation.preflight import GenerationReadinessError
 
     # A file in place of the selected model directory is a real unsafe
@@ -149,7 +150,10 @@ def test_selected_unsafe_model_root_surfaces_as_typed_issue(tmp_path, monkeypatc
     root = Path("models") if relative else tmp_path / "not-a-directory"
     if not relative:
         root.write_bytes(b"do not overwrite")
-    monkeypatch.setattr(storage.os, "statvfs", object(), raising=False)
+    if has_statvfs:
+        monkeypatch.setattr(storage.os, "statvfs", object(), raising=False)
+    else:
+        monkeypatch.delattr(storage.os, "statvfs", raising=False)
     with pytest.raises(GenerationReadinessError) as caught:
         storage.selected_target_download_notice(
             [{"repo": SAM_REPO, "commit": SAM_PIN}], SAM_CLASSES,

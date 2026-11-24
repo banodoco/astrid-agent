@@ -208,10 +208,8 @@ def _quota(path: Path, *, deadline: float) -> dict[str, _QuotaRow]:
     return _quota_rows(result.stdout)
 
 
-def available_model_bytes(parent: Path, *, deadline: float,
-                          check: Callable[[], None]) -> tuple[int | None, bool]:
-    """Tightest measured budget for one directory; never infer a shared scope."""
-    check()
+def _capacity_directory(parent: Path) -> Path | None:
+    """Resolve the existing directory to measure without following a symlink."""
     probe = parent
     try:
         while not probe.exists():
@@ -219,6 +217,16 @@ def available_model_bytes(parent: Path, *, deadline: float,
         if not probe.is_dir() or any(path.is_symlink() for path in (parent, *parent.parents)):
             raise UnsafePathError("unsafe target path")
     except OSError:
+        return None
+    return probe
+
+
+def available_model_bytes(parent: Path, *, deadline: float,
+                          check: Callable[[], None]) -> tuple[int | None, bool]:
+    """Tightest measured budget for one directory; never infer a shared scope."""
+    check()
+    probe = _capacity_directory(parent)
+    if probe is None:
         return None, True
     available = []
     try:
@@ -281,7 +289,12 @@ def observe_download_storage(models_root: Path, *, deadline: float,
     end = min(deadline, time.monotonic() + 2)
     if not models_root.is_absolute() or ".." in models_root.parts:
         raise UnsafePathError("unsafe target path")
-    if not hasattr(os, "statvfs") or time.monotonic() >= end:
+    if time.monotonic() >= end:
+        return DownloadStorageObservation(None, True, volume_status)
+    if not hasattr(os, "statvfs"):
+        # The platform cannot measure capacity, but the existing directory
+        # safety check still distinguishes a known unsafe root from unknown.
+        _capacity_directory(models_root)
         return DownloadStorageObservation(None, True, volume_status)
     free, uncertain = available_model_bytes(models_root, deadline=end, check=check)
     if volume is not None and time.monotonic() < end:
