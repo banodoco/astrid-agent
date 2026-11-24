@@ -432,8 +432,7 @@ def _managed_install_fix() -> ReadinessFix | None:
     scope = f'installs Astrid-managed ComfyUI under {root}; user scope; no system changes'
     size = (f'at least {model_bytes} bytes of locked models; additional runtime download size unknown'
             if model_bytes is not None else 'size unknown')
-    return {'id': 'install-managed-engine', 'who': 'human',
-            'argv': ['astrid', 'engines', 'install', recipe.engine,
+    return {'argv': ['astrid', 'engines', 'install', recipe.engine,
                      '--platform', recipe.platform, '--placement', 'local'],
             'scope': 'managed_write',
             'details': {'bytes': model_bytes, 'size_scope': 'locked_models',

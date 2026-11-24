@@ -85,7 +85,7 @@ def test_unowned_installed_engine_blocks_without_falling_back(monkeypatch):
             if offers_install:
                 assert envelope['fixes'][0]['argv'][:4] == [
                     'astrid', 'engines', 'install', 'comfyui']
-                assert issue['fix_ids'] == ['install-managed-engine']
+                assert issue['fix_ids'] == [envelope['fixes'][0]['id']]
             else:
                 # No installer for this platform: the linked human repair
                 # must inspect only the selected managed target, not install
