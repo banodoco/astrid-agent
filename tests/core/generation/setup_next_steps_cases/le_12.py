@@ -29,4 +29,24 @@ def collision_case():
     raise AssertionError("existing entry did not refuse implicit replacement")
 
 
-CASES = [("entry_already_exists", "entry_exists", collision_case)]
+def unavailable_schema_case():
+    """Exercise the actual setup refusal at its bounded HTTP boundary."""
+    from unittest.mock import patch
+    from astrid.core.generation.backends.comfy_target import ComfyTargetClient
+    from astrid.core.generation.preflight import GenerationReadinessError
+    from astrid.core.generation.workflow_entry_setup import _attached_entry_schema
+
+    with patch.object(ComfyTargetClient, "request_json", side_effect=ValueError("object_info request failed")) as read:
+        try:
+            _attached_entry_schema("http://127.0.0.1:8188", "example")
+        except GenerationReadinessError as exc:
+            assert read.call_count == 1
+            assert read.call_args.args == ("/object_info",)
+            return exc.to_envelope()
+    raise AssertionError("unavailable attached schema did not refuse")
+
+
+CASES = [
+    ("entry_already_exists", "entry_exists", collision_case),
+    ("attached_schema_unavailable", "target_schema_unavailable", unavailable_schema_case),
+]
