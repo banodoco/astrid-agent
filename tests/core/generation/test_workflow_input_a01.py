@@ -204,5 +204,3 @@ def test_workflow_inputs_cross_real_runtime_and_preserve_exact_source(
     finally:
         host.shutdown()
 
-
-from tests.core.generation.test_generate_target_journey import loopback_comfy
