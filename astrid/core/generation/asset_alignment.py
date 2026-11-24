@@ -375,19 +375,12 @@ def catalog_manifests(entry_id: str | None = None) -> list[dict[str, Any]]:
             packs, unlocked = [], []
             if entry['source'] == 'user-entry':
                 from vibecomfy.custom_node_refs import workflow_lock_entries
-                from vibecomfy.entries import entries_dir, load_entry
                 from vibecomfy.node_recipes import recipe_sha256
 
-                from .node_approvals import approval_matches, read_entry_approvals
+                from .node_approvals import approval_matches, entry_approval_directory, read_entry_approvals
 
-                # Approvals belong beside the saved manifest, not inside a
-                # versioned bundle or a similarly named contributed entry.
-                directory = entries_dir() / entry_id
-                approvals = []
-                if (directory / 'entry.json').is_file():
-                    saved = load_entry(directory)
-                    if saved['id'] == entry_id and saved['bundle'] == entry['bundle']:
-                        approvals = read_entry_approvals(directory)
+                directory = entry_approval_directory(entry)
+                approvals = read_entry_approvals(directory) if directory is not None else []
 
                 # User entries carry their own identities. Never replace a
                 # missing or different pin with a same-named shipped pack.
