@@ -15,9 +15,13 @@ from .setup_contract import canonical_issue_code, repair_step
 
 
 def _target_probe(target: Mapping[str, Any] | None) -> tuple[list[str], dict[str, str]]:
-    target = target or {}
+    if hasattr(target, "as_dict"):
+        target = target.as_dict()
+    target = target if isinstance(target, Mapping) else {}
     selector = target.get("endpoint") or target.get("placement") or target.get("kind")
-    if not isinstance(selector, str) or selector not in {"auto", "managed", "local", "runpod"} and not selector.startswith(("http://", "https://")):
+    if (not isinstance(selector, str)
+            or (selector not in {"auto", "managed", "local", "runpod"}
+                and not selector.startswith(("http://", "https://")))):
         selector = "<PLACEMENT>"
     placeholders = {"PLACEMENT": "The originally selected target or its explicit ComfyUI URL"} if selector == "<PLACEMENT>" else {}
     return ["astrid", "generate", "targets", "--placement", selector, "--json"], placeholders
@@ -27,10 +31,15 @@ def _inspect(entry, target, *, attached=False, code=None):
     if attached or code in {"target_unreachable", "engine_not_found", "placement_invalid",
                             "unsupported_placement", "endpoint_ownership", "endpoint_unhealthy"}:
         return _target_probe(target)
-    if isinstance(entry, Mapping) and isinstance(entry.get("id"), str) and entry["id"]:
-        return ["astrid", "generate", "describe", "--entry", entry["id"], "--json"], {}
     if code == "entry_missing":
         return ["astrid", "generate", "list", "--json"], {}
+    if isinstance(entry, Mapping) and isinstance(entry.get("id"), str) and entry["id"]:
+        identifier = entry["id"]
+        if re.search(r"<[^<>]+>", identifier):
+            return ["astrid", "generate", "describe", "--entry", "<ENTRY>", "--json"], {
+                "ENTRY": "The originally selected generation entry",
+            }
+        return ["astrid", "generate", "describe", "--entry", identifier, "--json"], {}
     return ["astrid", "generate", "list", "--json"], {}
 
 
@@ -59,19 +68,19 @@ def manual_setup_fix(fix_id: str, step: str, *, entry=None, target=None,
             "placeholders": placeholders}
 
 
-def native_setup_fix(issue, *, entry=None, target=None, fix_id="inspect-and-repair"):
+def native_setup_fix(issue, *, entry=None, target=None, task_id=None, fix_id="inspect-and-repair"):
     """Use the named code's documented repair, not an invented write command."""
     code = issue["code"]
     step = repair_step(code)
     if step is None:
         raise ValueError(f"setup issue {code!r} needs an explicit blocking fix")
-    details = issue.get("details", {})
-    # A producer's explicit human guidance is useful, but never interpreted as
-    # a command or a grant of consent.
-    guidance = details.get("fix")
-    if isinstance(guidance, str) and guidance.strip():
-        step = guidance
-    return manual_setup_fix(fix_id, step, entry=entry, target=target, code=code)
+    fix = manual_setup_fix(fix_id, step, entry=entry, target=target, code=code)
+    if isinstance(task_id, str) and task_id and not re.search(r"<[^<>]+>", task_id):
+        if code in {"output_delivery_failed", "generation_failed", "comfy_execution_error",
+                    "executor_failed", "host_restarted_during_job", "deadline_exceeded"}:
+            fix["instruction"]["then_argv"] = ["astrid", "tasks", "logs", task_id]
+            fix["placeholders"] = {}
+    return fix
 
 
 def _project_legacy_fix(fix, fix_id, *, entry, target):
@@ -138,13 +147,7 @@ def project_setup_facts(issues, fixes, *, entry=None, target=None):
                 issue["fix_ids"] = [fix_id]
         else:
             raise ValueError("legacy setup fixes have ambiguous issue ownership")
-    elif unlinked:
-        # Only an old issue with no supplied modern fixes may use its named
-        # native repair. An explicit but dangling link must fail validation.
-        if fixes:
-            raise ValueError("setup issues must link to their declared fixes")
-        for issue in unlinked:
-            fix_id = fresh_id(len(fixes) + 1)
-            fixes.append(native_setup_fix(issue, entry=entry, target=target, fix_id=fix_id))
-            issue["fix_ids"] = [fix_id]
+    # Missing or explicitly dangling modern links are never repaired here.
+    # The native exception adapter selects its own named repair before
+    # calling readiness_envelope; the validator rejects missing links.
     return issues, fixes

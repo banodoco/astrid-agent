@@ -130,13 +130,19 @@ class GenerationReadinessError(AstridError, ValueError):
 
     def to_envelope(self) -> dict[str, Any]:
         from copy import deepcopy
-        return {**deepcopy(self.readiness), 'status': 'blocked', 'task_id': self.task_id}
+        from .setup_contract import validate_setup_envelope
+
+        result = {**deepcopy(self.readiness), 'status': 'blocked', 'task_id': self.task_id}
+        validate_setup_envelope(result)
+        return result
 
 
 def generation_error(error: Any, *, entry=None, target=None, code=None,
                      details=None, fixes=(), task_id=None, attempt_count=None) -> GenerationReadinessError:
     """Normalize old engine/ExecError spellings at the generation boundary."""
     if isinstance(error, GenerationReadinessError):
+        from .setup_contract import validate_setup_envelope
+        validate_setup_envelope(error.readiness)
         return error
     from collections.abc import Mapping
     if isinstance(error, Mapping) and {'entry', 'target', 'status', 'issues', 'fixes'} <= error.keys():
@@ -189,9 +195,13 @@ def generation_error(error: Any, *, entry=None, target=None, code=None,
         detail.setdefault('constraint', message)
     issue = {'code': normalized, 'severity': 'error', 'message': message, 'details': detail}
     fixes = list(fixes)
-    if not fixes and (setup_fix := get('setup_fix')) is not None:
+    if not fixes:
+        setup_fix = get('setup_fix')
+        if setup_fix is None:
+            from .setup_repairs import native_setup_fix
+            setup_fix = native_setup_fix(issue, entry=entry, target=target, task_id=task_id)
         fixes = [setup_fix]
-    if fixes and all('id' in fix for fix in fixes):
+    if all('id' in fix for fix in fixes):
         issue['fix_ids'] = [fix['id'] for fix in fixes]
     return GenerationReadinessError(readiness_envelope(entry=entry, target=target,
         issues=[issue], fixes=fixes, attempt_count=attempt_count), task_id=task_id)
@@ -237,12 +247,18 @@ class LocalGenerationReadiness:
     fixes: tuple[ReadinessFix, ...] = ()
 
     def to_envelope(self) -> ReadinessEnvelope:
-        issues = self.issues
+        issues, fixes = self.issues, self.fixes
         if not self.ready and not issues:
-            issues = ({'code': 'engine_not_found', 'severity': 'error',
-                       'message': self.reason, 'details': {}},)
+            issue = {'code': 'engine_not_found', 'severity': 'error',
+                     'message': self.reason, 'details': {}}
+            if not fixes:
+                from .setup_repairs import native_setup_fix
+                fix = native_setup_fix(issue, entry=self.entry, target=self.target)
+                issue['fix_ids'] = [fix['id']]
+                fixes = (fix,)
+            issues = (issue,)
         return readiness_envelope(entry=self.entry, target=self.target,
-                                  issues=issues, fixes=self.fixes)
+                                  issues=issues, fixes=fixes)
 
 
 def _gpu_guidance(mode: str | None = None) -> str:

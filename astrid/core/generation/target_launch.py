@@ -352,17 +352,24 @@ def launch_target(target: TargetRecord | TargetSelection, *, consent=(),
     def blocked(reason, message, *, code="target_unreachable"):
         details = {"reason": reason, "manual_start": True,
                    "process_may_be_running": launched or process is not None}
-        fixes = []
+        from .setup_repairs import manual_setup_fix
+
+        fix_id = "inspect-selected-launch"
         if reason == "launch_timeout" and isinstance(plan, TargetLaunchPlan):
-            fixes.append({"argv": list(plan.argv), "scope": "user_env", "details": {
-                "manual_start": True, "cwd": plan.root, "check_existing_process": True}})
-        elif record is not None:
-            fixes.append({"argv": ["astrid", "generate", "targets", "--placement",
-                                    record.endpoint or "auto"], "scope": "read_only",
-                          "details": {"manual_start": True}})
+            # The exact launch command is for a human, not a retry the
+            # generation agent may execute over an existing process.
+            fix = {"id": fix_id, "who": "human", "argv": list(plan.argv), "scope": "user_env",
+                   "details": {"manual_start": True, "cwd": plan.root, "check_existing_process": True}}
+        else:
+            step = ("Obtain the person's explicit user_env consent before launching the selected ComfyUI."
+                    if reason == "user_env_required" else
+                    "Correct the launch refusal and verify the originally selected ComfyUI before retrying.")
+            fix = manual_setup_fix(fix_id, step, target=record, scope="attached_target",
+                                   details={"manual_start": True}, code=code)
         envelope = readiness_envelope(target=record, issues=[{
             "code": code, "severity": "error", "message": message, "details": details,
-        }], fixes=fixes)
+            "fix_ids": [fix_id],
+        }], fixes=[fix])
         return TargetLaunchResult(record, envelope, launched,
                                   process.pid if process else None,
                                   process.birth_id if process else None)

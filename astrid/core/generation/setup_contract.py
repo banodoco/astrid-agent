@@ -99,6 +99,8 @@ _NATIVE_ALIASES = {
 
 def canonical_issue_code(code: str) -> str:
     """Translate only established native spellings; reject undeclared issues later."""
+    if not isinstance(code, str):
+        raise ValueError("native issue code must be a string")
     return _NATIVE_ALIASES.get(code, code)
 
 
