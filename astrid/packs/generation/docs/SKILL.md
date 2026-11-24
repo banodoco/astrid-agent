@@ -367,7 +367,14 @@ Candidates are not runnable; lookup does not install code.
 
 ### LE-5 — Candidates and manual lookup
 
-<!-- LE-5: fill this subsection in the same change as the card. -->
+<!-- LE-5: target_schema wiring pending ownership handoff. -->
+For missing custom nodes, use class evidence and a derived pack-name search
+from the workflow's authored provenance or shared class-name prefix. A
+repository candidate is evidence only: a "name match only" is especially
+uncertain. Verify that the repository provides the required classes before
+supplying its URL with `--add`; do not execute a candidate as a command.
+If the lookup yields no source, find the repository manually, or stop if it
+cannot be identified. Preserve lookup warnings and unavailable-tier status.
 
 ### LE-6 — Check the target after setup
 
