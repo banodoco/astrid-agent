@@ -592,27 +592,39 @@ def verify_admitted_invocation_receipt(
             "invocation_preflight", admitted="<canonical bundle required>", receipt="<invalid>",
         )
 
-    with staged_workflow_path(
-        workflow=None, python=inputs["python"], companion=inputs["companion"],
-        source=inputs["source"], scratch=scratch,
-    ) as (workflow_path, _authority):
-        # Detect edited companion bytes even when loading that companion
-        # would fail its own authority checks. This is the existing content
-        # digest, including source.json, not a new generation_id derivation.
-        _compare_receipt_digest(receipt, "workflow_content_digest", _workflow_content_digest(workflow_path))
-        loaded = load_workflow_path(workflow_path, scratch / "canonical-loader")
-        _compare_receipt_digest(receipt, "revision_id", loaded.workflow_revision)
-        _compare_receipt_digest(receipt, "workflow_content_digest", loaded.workflow_content_digest)
+    # Match the host's existing canonical-loader isolation. Never let a
+    # schema/engine import bootstrap the live ComfyUI process during this gate.
+    import os
 
-        bindings = invocation_run_inputs(inputs.get("workflow_inputs"))
-        if inputs.get("managed_assets"):
-            archive = read_archive(inputs["managed_assets"])
-            bindings = resolve_inputs(archive.manifest, bindings)
-        if inputs.get("source_video"):
-            if "source_video" in bindings:
-                raise InvocationPreflightError("source_video was supplied by more than one input path")
-            bindings["source_video"] = Path(inputs["source_video"]).name
-        api = loaded.resolved.workflow.compile("api", run_inputs=bindings)
-        if not isinstance(api, Mapping):
-            raise InvocationPreflightError("VIBECOMFY_API_COMPILE: projection is not an object")
-        _compare_receipt_digest(receipt, "api_digest", _canonical_digest(api))
+    previous_headless = os.environ.get("VIBECOMFY_HEADLESS")
+    os.environ["VIBECOMFY_HEADLESS"] = "1"
+    try:
+        with staged_workflow_path(
+            workflow=None, python=inputs["python"], companion=inputs["companion"],
+            source=inputs["source"], scratch=scratch,
+        ) as (workflow_path, _authority):
+            # Detect edited companion bytes even when loading that companion
+            # would fail its own authority checks. This is the existing content
+            # digest, including source.json, not a new generation_id derivation.
+            _compare_receipt_digest(receipt, "workflow_content_digest", _workflow_content_digest(workflow_path))
+            loaded = load_workflow_path(workflow_path, scratch / "canonical-loader")
+            _compare_receipt_digest(receipt, "revision_id", loaded.workflow_revision)
+            _compare_receipt_digest(receipt, "workflow_content_digest", loaded.workflow_content_digest)
+
+            bindings = invocation_run_inputs(inputs.get("workflow_inputs"))
+            if inputs.get("managed_assets"):
+                archive = read_archive(inputs["managed_assets"])
+                bindings = resolve_inputs(archive.manifest, bindings)
+            if inputs.get("source_video"):
+                if "source_video" in bindings:
+                    raise InvocationPreflightError("source_video was supplied by more than one input path")
+                bindings["source_video"] = Path(inputs["source_video"]).name
+            api = loaded.resolved.workflow.compile("api", run_inputs=bindings)
+            if not isinstance(api, Mapping):
+                raise InvocationPreflightError("VIBECOMFY_API_COMPILE: projection is not an object")
+            _compare_receipt_digest(receipt, "api_digest", _canonical_digest(api))
+    finally:
+        if previous_headless is None:
+            os.environ.pop("VIBECOMFY_HEADLESS", None)
+        else:
+            os.environ["VIBECOMFY_HEADLESS"] = previous_headless
