@@ -582,7 +582,9 @@ def _workflow_command(parsed: argparse.Namespace, *, output=None) -> int:
         else:
             entry = import_as_entry(path, parsed.as_entry)
         from astrid.core.generation.node_approvals import (
-            entry_approval_directory, require_approved_nodes, write_entry_approvals,
+            entry_approval_directory,
+            require_approved_nodes,
+            write_entry_approvals,
         )
         entry = dict(entry, source='user-entry')
         actual_nodes = entries.engine_table()['comfyui'].workflow_requirements(

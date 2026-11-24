@@ -20,25 +20,48 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import Any
+
+from vibecomfy.node_approvals import (
+    PLACEMENT_CLASSES as PLACEMENT_CLASSES,
+)
+from vibecomfy.node_approvals import (
+    NodeApproval as NodeApproval,
+)
+from vibecomfy.node_approvals import (
+    NodeIdentity as NodeIdentity,
+)
+from vibecomfy.node_approvals import (
+    PlacementClass as PlacementClass,
+)
+from vibecomfy.node_approvals import (
+    approval_matches as approval_matches,
+)
+from vibecomfy.node_approvals import (
+    approval_record as approval_record,
+)
+from vibecomfy.node_approvals import (
+    consent_matches as consent_matches,
+)
+from vibecomfy.node_approvals import (
+    consent_token as consent_token,
+)
+from vibecomfy.node_approvals import (
+    require_approved_nodes as require_approved_nodes,
+)
+from vibecomfy.node_approvals import (
+    reviewed_approvals as reviewed_approvals,
+)
+from vibecomfy.node_approvals import (
+    validate_approval_record as validate_approval_record,
+)
+from vibecomfy.node_approvals import (
+    validate_approvals as _records,
+)
 
 from .consent import consent_scope
 
-from vibecomfy.node_approvals import (
-    NodeApproval as NodeApproval,
-    NodeIdentity as NodeIdentity,
-    PlacementClass as PlacementClass,
-    PLACEMENT_CLASSES as PLACEMENT_CLASSES,
-    approval_record as approval_record,
-    approval_matches as approval_matches,
-    consent_matches as consent_matches,
-    consent_token as consent_token,
-    require_approved_nodes as require_approved_nodes,
-    require_approved_nodes as target_approvals,
-    reviewed_approvals as reviewed_approvals,
-    validate_approval_record as validate_approval_record,
-    validate_approvals as _records,
-)
+# Explicit alias for callers that import the approval gate under its target name.
+target_approvals = require_approved_nodes
 
 APPROVALS_FILENAME = "code-approvals.json"
 
