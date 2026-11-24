@@ -271,7 +271,7 @@ catalog. Incomplete model declarations appear in `unlocked` as typed
 `model_lock_incomplete` issues with the missing facts and a named repair step.
 They are not downloadable models, and apply stops without asset writes until
 the selected entry's declaration is complete. Supply verified source, SHA-256
-and byte size through workflow authoring; LE-9 adds `--add-model DEST=URL#sha256`.
+and byte size through workflow authoring.
 `--all` still inspects the catalog, not every saved workflow.
 
 For a managed target, `--apply --consent user_env` cannot approve new code.
@@ -323,10 +323,6 @@ before running it. Keep `attempt_count` with the result; it counts actual setup
 attempts, not reads or displays. A warning does not authorize a repair. Legacy
 issues without these fields retain their existing guidance; do not invent a fix.
 
-### LE-1b — Missing assets and failed checks
-
-<!-- LE-1b: fill this subsection in the same change as the card. -->
-
 ### LE-2a — Approval identity and consent tokens
 
 Treat workflow source refs and saved code approvals separately. An approval
@@ -360,9 +356,7 @@ network. Dependencies are resolved at install time; Astrid never runs a pack's
 Only after the person agrees, run the instruction's exact `then_argv`, including
 each `--consent code=TOKEN`. `user_env` is separate permission and never approves
 new node code. Bare `--consent code`, a stale token, a changed commit or recipe,
-or a different placement returns the warning again. An offered `--add` is
-frozen to the displayed full commit in that retry command; do not replace it
-with a branch or tag.
+or a different placement returns the warning again.
 
 `workflow --as-entry NAME --no-run` can save the approved declaration without
 executing it. The approval is stored beside the saved entry and reused only
@@ -373,10 +367,6 @@ pip: an additional, changed or unapproved ref refuses the batch. No code
 approval grants permission to rent a machine or install into an attached
 ComfyUI.
 
-### LE-3 — Add a pinned node pack
-
-<!-- LE-3: fill this subsection in the same change as the card. -->
-
 ### LE-4 — Lookup availability
 
 VibeComfy's missing-node resolver returns evidence, not install permission. Its
@@ -385,10 +375,6 @@ evidence survives an incomplete lookup), and `unavailable`. Do not describe an
 unavailable source as searched with no match. A registry schema permission
 failure can leave a repository candidate with a warning and no usable schema.
 Candidates are not runnable; lookup does not install code.
-
-### LE-5 — Candidates and manual lookup
-
-<!-- LE-5: fill this subsection in the same change as the card. -->
 
 ### LE-6 — Check the target after setup
 
@@ -401,34 +387,6 @@ input name verified against the workflow. Use those labels to correct the
 workflow or review a compatible pin; never bypass diagnosis. An attached
 target is not granted managed installation permission by this check.
 
-### LE-8 — Model downloads and available space
-
-<!-- LE-8: fill this subsection in the same change as the card. -->
-
-### LE-9 — Declare a missing model
-
-<!-- LE-9: fill this subsection in the same change as the card. -->
-
-### LE-10 — Recorded and installed versions
-
-<!-- LE-10: fill this subsection in the same change as the card. -->
-
-### LE-11 — Explain the warning
-
-<!-- LE-11: fill this subsection in the same change as the card. -->
-
-### LE-12 — Preview, replace and run again
-
-<!-- LE-12: fill this subsection in the same change as the card. -->
-
-### LE-13 — Declare an unlisted recipe
-
-<!-- LE-13: fill this subsection in the same change as the card. -->
-
-### LE-14 — Target failures and recovery
-
-<!-- LE-14: fill this subsection in the same change as the card. -->
-
 ### LE-15 — Workflow inputs
 
 Re-run a saved raw audio entry with
@@ -437,26 +395,6 @@ Use `--audio-ref FILE` when the graph declares exactly one audio input, or
 `--input NAME=VALUE` for its declared ports. Remove `--dry-run` only after
 readiness is satisfied and the user approves a run. This explicit mode does
 not add a default music, TTS or sound-effects slot.
-
-### LE-16 — Several node packs
-
-<!-- LE-16: fill this subsection in the same change as the card. -->
-
-### LE-17 — Pins that conflict
-
-<!-- LE-17: fill this subsection in the same change as the card. -->
-
-### LE-18b — Terminal and JSON results
-
-<!-- LE-18b: fill this subsection in the same change as the card. -->
-
-### RS1 — Consent boundary review
-
-<!-- RS1: fill this subsection in the same change as the card. -->
-
-### WS-L — Live SAM proof
-
-<!-- WS-L: fill this subsection in the same change as the card. -->
 
 ### WS-5 — Manager lookup
 
@@ -471,14 +409,6 @@ approved, or runnable.
 Use the populated subsections for the behavior they describe. An empty subsection
 does not introduce a command, install path or permission. Keep the user's requested
 placement and the reported next step together throughout setup.
-
-### WS-6b — Complete setup walkthrough
-
-<!-- WS-6b: fill this subsection in the same change as the card. -->
-
-### R — Integrated review
-
-<!-- R: fill this subsection in the same change as the card. -->
 
 ## Defaults
 
