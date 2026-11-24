@@ -36,7 +36,9 @@ def log_lease_diagnostic(*, task_id: str, attempt_id: str | None,
                          category: str, last_acknowledged_heartbeat: str | None,
                          elapsed_seconds: float | None, verdict: str | None = None,
                          runtime_code: str | None = None, reason: str | None = None,
-                         wait_seconds: float | None = None) -> None:
+                         wait_seconds: float | None = None, deadline_at: str | None = None,
+                         deadline_remaining_seconds: float | None = None,
+                         lease_expires_at: str | None = None) -> None:
     """Write one structured lifecycle observation to the host's redirected stderr."""
     event = {
         "task_id": task_id, "attempt_id": attempt_id, "category": category,
@@ -49,6 +51,12 @@ def log_lease_diagnostic(*, task_id: str, attempt_id: str | None,
         event["reason"] = reason
     if wait_seconds is not None:
         event["wait_seconds"] = round(max(0.0, wait_seconds), 3)
+    if deadline_at is not None:
+        event["deadline_at"] = deadline_at
+    if deadline_remaining_seconds is not None:
+        event["deadline_remaining_seconds"] = round(deadline_remaining_seconds, 3)
+    if lease_expires_at is not None:
+        event["lease_expires_at"] = lease_expires_at
     print("generic host: lease " + json.dumps(event, sort_keys=True), file=sys.stderr, flush=True)
 
 
