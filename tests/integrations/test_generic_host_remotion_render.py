@@ -407,91 +407,165 @@ def test_generic_host_remotion_register_claim_execute_settle_and_cas(
         daemon.stop()
 
 
-def test_short_contract_builtin_element_through_command_worker(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, real_runtime, remotion_launch: Path
-) -> None:
-    """Render a two-second visual element through the real host and Runtime.
-
-    This first contract case deliberately exercises the existing end-to-end
-    lifecycle, including output registration, before adding cases that need
-    collection and admitted project packs.
-    """
-    make_media = _make_media
-
-    def make_contract_media(root: Path) -> tuple[Path, Path]:
-        timeline_path, assets_path = make_media(root)
-        timeline = json.loads(timeline_path.read_text(encoding="utf-8"))
-        timeline["tracks"] = [{"id": "picture", "kind": "visual", "label": "Picture"}]
-        timeline["clips"] = [{
-            "id": "builtin-colour",
-            "at": 0,
-            "hold": 2,
-            "track": "picture",
-            "clipType": "audio-reactive-colour",
-            "params": {"schemaVersion": 1, "initialColor": "#2ecc71", "events": []},
-        }]
-        timeline_path.write_text(json.dumps(timeline), encoding="utf-8")
-        return timeline_path, assets_path
-
-    monkeypatch.setattr(sys.modules[__name__], "_make_media", make_contract_media)
-    test_generic_host_remotion_register_claim_execute_settle_and_cas(
-        tmp_path, real_runtime, remotion_launch
-    )
-
-    # Sampling the encoded output makes a blank or truncated render fail too.
-    output = tmp_path / "attempt" / "outputs" / "generic.mp4"
-    sample = subprocess.run(
-        ["ffmpeg", "-v", "error", "-ss", "1", "-i", str(output), "-frames:v", "1",
-         "-vf", "format=rgb24,crop=1:1:0:0", "-f", "rawvideo", "-"],
+def _rn11_frame_colour(video: Path, seconds: str) -> tuple[int, int, int]:
+    # Average the whole frame: the two authored layers are solid colours, so
+    # this cannot pass just because one corner or an unrelated title is drawn.
+    raw = subprocess.run(
+        ["ffmpeg", "-v", "error", "-ss", seconds, "-i", str(video),
+         "-frames:v", "1", "-vf", "scale=1:1", "-pix_fmt", "rgb24", "-f", "rawvideo", "-"],
         check=True, capture_output=True,
     ).stdout
-    assert len(sample) == 3
-    assert all(abs(actual - expected) <= 12 for actual, expected in zip(sample, (46, 204, 113)))
+    assert len(raw) == 3, f"RN-11: missing frame at {seconds}s"
+    return raw[0], raw[1], raw[2]
 
 
-def test_short_managed_contract_own_object_route_and_fade_easing(
+def test_short_managed_contract_builtin_and_fade_through_command_worker(
     tmp_path: Path, real_runtime, remotion_launch: Path
 ) -> None:
-    """Publish a synthetic Runtime timeline and render it via the command host.
+    """One short product-authored render, including visible built-in and fade.
 
-    The active source and unused registry entries have the Runtime's own object
-    routes, as in an App-published timeline. Both must survive managed snapshot
-    resolution; the built-in fade also carries explicit easing.
+    The explicit non-linear easing must survive the RN-6 declaration/admission
+    path. The pinned composition package does not consume fade easing (#1739);
+    these pixels prove a visible fade, not the non-linear curve's semantics.
+    RN-4 must land before adding the collection/project-pack cases.
     """
-    from tests.integrations.test_media_only_render_without_remotion import Film
+    from uuid import uuid4
 
-    daemon = real_runtime()
+    from astrid.sdk.timeline import Timeline
+    from astrid.sdk.timeline._clip_commands import capture_clip_add
+    from tests.editing_conformance.test_commit_runtime_m1 import open_client
+    from tests.helpers.runtime import vendored_runtime_commit
+
+    daemon = real_runtime(commit=vendored_runtime_commit(), authoring_profile="astrid")
     host = None
     try:
-        film = Film(daemon, tmp_path)
+        owner = open_client(daemon)
+        project_result = owner.projects.create(
+            slug="rn11-render-contract", name="RN-11 render contract",
+            idempotency_key="rn11-project",
+        )
+        assert project_result.ok, project_result.as_dict()
+        project_id = project_result.data["project_id"]
+
+        listed = owner.timelines.list(project_id)
+        assert listed.ok, listed.as_dict()
+        rows, cursor = listed.data
+        assert not cursor, listed.data
+        if rows:
+            assert len(rows) == 1, rows
+            timeline_id = rows[0]["timeline_id"]
+        else:
+            timeline_id = str(uuid4())
+            created = owner.timelines.create_empty(
+                project=project_id, timeline_id=timeline_id, name="RN-11",
+                config={"theme_overrides": {"visual": {"canvas": {
+                    "width": 320, "height": 180, "fps": 10,
+                }}}},
+                idempotency_key="rn11-timeline",
+            )
+            assert created.ok, created.as_dict()
+
+        timeline = Timeline.open(
+            project_id, timeline_id, client=owner, outbox_path=tmp_path / "rn11-outbox.json",
+        )
+        # Generate our own media and let the real SDK import and bind it, rather
+        # than fabricating media IDs, digest fields or object locators.
+        background = tmp_path / "rn11-background.png"
+        subprocess.run(
+            ["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=c=0xe8452c:s=320x180:r=1",
+             "-frames:v", "1", "-threads", "1", "-c:v", "png", str(background)],
+            check=True, capture_output=True,
+        )
+
+        def place_background(t):
+            t.track("titles", above="V1")
+            t.add(background, at=0, hold=2.2, track="V1", id="source")
+
+        imported = timeline.commit(place_background, label="RN-11 managed background", key="rn11-media")
+        assert imported["receipt"]["receipt_id"]
+        entrance = {"type": "fade", "duration": 0.8, "params": {"easing": "out"}}
+        row = {
+            "id": "builtin", "at": 0.4, "hold": 1.4, "track": "titles",
+            "clipType": "audio-reactive-colour",
+            "params": {"schemaVersion": 1, "initialColor": "#2ecc71", "events": []},
+            "entrance": entrance,
+        }
+        published = timeline.commit(
+            [capture_clip_add(timeline.bundle, "parent", row)],
+            label="RN-11 built-in with easing", key="rn11-element",
+        )
+        assert published["receipt"]["receipt_id"]
+        revision = published["data"]["accepted_revision_id"]
+        parent = published["data"]["canonical_document"]["parent_revision"]["payload"]
+        tracks = [track["id"] for track in parent["config"]["tracks"]]
+        assert tracks.index("titles") < tracks.index("V1"), tracks
+        clips = {clip["id"]: clip for clip in parent["clips"]}
+        assert clips["builtin"]["entrance"] == entrance
+        assert clips["builtin"]["clipType"] == "audio-reactive-colour"
+        source = parent["registry"]["assets"][clips["source"]["asset"]]
+        assert source["media_id"] == "sha256:" + hashlib.sha256(background.read_bytes()).hexdigest()
+
         host = GenericPackHost(
             pack_roots=[ROOT / "astrid" / "packs" / "rendering"],
             client=RuntimeProtocolClient(daemon.endpoint, daemon.worker_token),
-            executor_id="astrid-pack-host",
+            executor_id=PACK_HOST_ACTOR,
             attempt_root=tmp_path / "attempts",
         )
         host.discover()
         host.preflight("rendering.render")
-        assert host.capabilities["rendering.render"].ready is True
+        record = host.capabilities["rendering.render"]
+        assert record.ready and record.preflight["remotion"]["ok"] is True
         host.register(deliberate=True)
-        film.publish([
-            {"id": "source", "at": 0, "track": "V1", "clipType": "media",
-             "asset": "marker", "from": 0, "to": 2, "speed": 1},
-            {"id": "builtin", "at": 0, "hold": 2, "track": "V1",
-             "clipType": "audio-reactive-colour",
-             "params": {"schemaVersion": 1, "initialColor": "#2ecc71", "events": []},
-             "entrance": {"type": "fade", "duration": 0.4, "params": {"easing": "out"}}},
-        ], film.assets)
-        task_id = film.admit("rendering.remotion")
+
+        # Admit by canonical timeline reference, not a caller-local file or an
+        # injected materialized registry. The host must run the real worker.
+        admitted = owner.tasks.create(
+            project_id=project_id, capability="rendering.render",
+            capability_digest=record.capability_digest,
+            input_manifest=[], idempotency_key="rn11-render",
+            spec={
+                "family": "rendering.render",
+                "params": {"timeline_ref": timeline_id, "selector": "rendering.remotion",
+                           "output_name": "rn11.mp4"},
+                "output_policy": {"format": "mp4", "destination": "download", "filename": "rn11.mp4"},
+            },
+        )
+        assert admitted.ok, admitted.as_dict()
+        task_id = admitted.data["task_id"]
         settled = host.run(once=True)
         assert len(settled) == 1
-        task = film.task(task_id)
-        assert task["state"] in ("completed", "succeeded"), task
-        videos = [item for item in task["result"]["outputs"]
-                  if str(item.get("media_type", "")).startswith("video")]
-        assert len(videos) == 1
-        status, data = film.request("GET", f"/v1/objects/{videos[0]['digest']}")
-        assert status == 200 and isinstance(data, bytes) and len(data) > 0
+        shown = owner.tasks.show(task_id)
+        assert shown.ok, shown.as_dict()
+        task = shown.data
+        assert task["state"] == "succeeded", task
+        authority = task["spec"]["spec"]["inputs"]["timeline_authority"]
+        assert authority["parent_revision_id"] == revision
+        result = task["result"]
+        selection = result["renderer_selection"]
+        assert selection["selector"] == "rendering.remotion"
+        assert selection["remotion_ok"] is True
+        videos = [item for item in result["outputs"]
+                  if str(item.get("media_type", "")).startswith("video/")]
+        assert len(videos) == 1, result
+        digest = videos[0]["digest"]
+        generated = WorkspaceClient(daemon.endpoint, daemon.token)
+        generated.handshake("rn11-output", "1", ["objects:read"])
+        content = generated.get_object(digest).data
+        assert content and digest == "sha256:" + hashlib.sha256(content).hexdigest()
+        output = tmp_path / "rn11.mp4"
+        output.write_bytes(content)
+
+        before = _rn11_frame_colour(output, "0.2")
+        during = _rn11_frame_colour(output, "0.8")
+        after = _rn11_frame_colour(output, "1.5")
+        tail = _rn11_frame_colour(output, "2.0")
+        # Tolerate the encoded video's colour conversion, not blank frames,
+        # wrong layer order, missing animation, or missing/truncated media.
+        for sample in (before, tail):
+            assert all(abs(a - b) <= 16 for a, b in zip(sample, (232, 69, 44))), sample
+        assert all(abs(a - b) <= 16 for a, b in zip(after, (46, 204, 113))), after
+        assert after[0] + 20 < during[0] < before[0] - 20, (before, during, after)
+        assert before[1] + 20 < during[1] < after[1] - 20, (before, during, after)
     finally:
         if host is not None:
             host.shutdown()
