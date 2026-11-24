@@ -24,6 +24,9 @@ from astrid.sdk.command_timing import TimingCollector, timing_scope
 from astrid.sdk.generation import _prepare_catalog_target_workflow
 from vibecomfy.workflow_bundle import emit_bundle
 
+_OWNER_SUPPORTED = hasattr(os, "geteuid") or hasattr(os, "getuid")
+_OWNER_REQUIRED = pytest.mark.skipif(not _OWNER_SUPPORTED, reason="disk reuse requires current-user ownership verification")
+
 
 def _events(collector):
     return [(event["outcome"], event.get("reason")) for event in collector.cache_event_snapshot()
@@ -69,6 +72,8 @@ def _catalog_command(raw, inputs, destination, *, session, retain_source=None):
 
 @pytest.fixture
 def catalog(tmp_path, monkeypatch):
+    if not _OWNER_SUPPORTED:
+        pytest.skip("disk reuse requires current-user ownership verification; full fallback has a separate witness")
     from tests.core.generation.backends.test_comfy_model_resolution import target_info
     from vibecomfy.registry import ready
     from vibecomfy.porting.emit import emit_ready
@@ -177,6 +182,51 @@ def test_fresh_role_and_raw_node_response_changes_force_real_source_build(catalo
     assert changed.result == full.result
 
 
+def test_helper_module_change_invalidates_catalog_source_closure(catalog, tmp_path, monkeypatch):
+    from vibecomfy import resources
+    import vibecomfy.templates as helpers
+    helper = Path(helpers.__file__).resolve()
+    copied_helper = tmp_path / "builder-helper.py"
+    copied_helper.write_bytes(helper.read_bytes())
+    actual = prepared._file_digest_current
+    witnessed = []
+    paths = set()
+
+    def current_bytes(path):
+        paths.add(path.resolve())
+        if path.resolve() == helper:
+            witnessed.append(path)
+            # Edit a stand-in copy, never the installed package. The production
+            # closure walk and stat/content witness still do the observation.
+            return actual(copied_helper)
+        return actual(path)
+
+    monkeypatch.setattr(prepared, "_file_digest_current", current_bytes)
+    inputs = {"prompt": "unchanged template, current helper", "seed": 5}
+    cold, first = catalog.run(inputs)
+    warm, _ = catalog.run(inputs)
+    assert catalog.builds == ["image/z_image_turbo"]
+    assert ("hit", None) in warm.events
+    before = first.use.context["source_provenance"]
+    assert before["builder_closure"] == first.use.context["compiler_identity"]
+    copied_helper.write_bytes(copied_helper.read_bytes() + b"\n# current helper revision\n")
+    changed, revised = catalog.run(inputs)
+    after = revised.use.context["source_provenance"]
+    assert witnessed
+    assert resources._resource_location("template_index").resolve() in paths
+    ready_root = resources._resource_location("ready_templates").resolve()
+    assert ready_root not in helper.parents
+    assert any(ready_root in path.parents for path in paths)
+    assert before["members"] == after["members"]  # Template bytes/pin unchanged.
+    assert before["builder_closure"] != after["builder_closure"]
+    assert catalog.builds == ["image/z_image_turbo", "image/z_image_turbo"]
+    assert changed.events[:2] == [("miss", "key_changed:compiler_identity"),
+                                  ("recompute", "key_changed:compiler_identity")]
+    assert ("hit", None) not in changed.events
+    assert cold.result == warm.result == changed.result
+
+
+@_OWNER_REQUIRED
 def test_public_generate_admits_current_members_on_hit_and_exposes_command_counters(tmp_path, monkeypatch):
     from urllib.parse import urlsplit
     from astrid.core.generation.backends import comfy_target
@@ -274,6 +324,7 @@ print(json.dumps({"digests": fields, "events": result.events, "requests": result
 '''
 
 
+@_OWNER_REQUIRED
 def test_two_fresh_catalog_processes_share_store_and_all_current_output_digests(tmp_path):
     from tests.core.generation.backends.test_comfy_model_resolution import target_info
     response, output, marker = tmp_path / "object_info.json", tmp_path / "workflow.py", tmp_path / "builds"

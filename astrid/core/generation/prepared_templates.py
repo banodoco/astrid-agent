@@ -85,7 +85,12 @@ class Lookup:
 
 
 class PreparedTemplateStore:
-    """One install-data-root store; no install/package/project writes."""
+    """Current-user-owned data-root store, with the custody of template sources.
+
+    Content digests detect damage, not forgery by that user. Refuse a store
+    whose ownership/private permissions cannot be established; full preparation
+    remains available on platforms without a current-user ownership primitive.
+    """
 
     def __init__(self, data_root: Path | None = None) -> None:
         try:
@@ -94,7 +99,37 @@ class PreparedTemplateStore:
             raise StoreUnavailable("prepared-template data root is unavailable") from exc
         if root is None:
             raise StoreUnavailable("prepared-template store requires a runtime data root")
-        self.root = Path(root) / "cache" / "prepared-template" / "v1" / "comfyui"
+        self.data_root = Path(root).absolute()
+        self.root = self.data_root / "cache" / "prepared-template" / "v1" / "comfyui"
+
+    @staticmethod
+    def _owner() -> int:
+        current_user = getattr(os, "geteuid", None) or getattr(os, "getuid", None)
+        if current_user is None:
+            raise StoreUnavailable("prepared-template current-user ownership is unavailable")
+        return current_user()
+
+    def _check_owned(self, info: os.stat_result, *, private: bool) -> None:
+        if info.st_uid != self._owner():
+            raise StoreUnavailable("prepared-template cache has a foreign owner")
+        forbidden = 0o077 if private else 0o022
+        if stat.S_IMODE(info.st_mode) & forbidden:
+            raise StoreUnavailable("prepared-template cache permissions do not preserve owner custody")
+
+    def _mkdir_private(self, path: Path) -> None:
+        # Create missing ancestors one at a time: parents=True only applies its
+        # mode to the leaf. Never chmod/adopt an existing shared cache tree.
+        self._owner()
+        self._check_path(path)
+        missing = []
+        parent = path
+        while not parent.exists():
+            missing.append(parent)
+            parent = parent.parent
+        for directory in reversed(missing):
+            directory.mkdir(mode=0o700, exist_ok=True)
+            self._check_path(directory)
+        self._check_path(path)
 
     @staticmethod
     def locator(identity: Any) -> str:
@@ -114,12 +149,20 @@ class PreparedTemplateStore:
                 continue
             if stat.S_ISLNK(info.st_mode):
                 raise StoreUnavailable(f"linked prepared-template cache path: {part}")
+            if part == self.data_root or self.data_root in part.parents:
+                private_root = self.data_root / "cache" / "prepared-template"
+                private = part == private_root or private_root in part.parents
+                self._check_owned(info, private=private)
+                if part != path and not stat.S_ISDIR(info.st_mode):
+                    raise StoreUnavailable("prepared-template cache ancestor is not a directory")
 
     def _read(self, path: Path, limit: int) -> bytes:
         self._check_path(path)
         fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | _filelock.nofollow_flag(path))
         with os.fdopen(fd, "rb") as stream:
-            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            info = os.fstat(stream.fileno())
+            self._check_owned(info, private=True)
+            if not stat.S_ISREG(info.st_mode):
                 raise StoreUnavailable("prepared-template entry is not a regular file")
             data = stream.read(limit + 1)
         if len(data) > limit:
@@ -154,6 +197,8 @@ class PreparedTemplateStore:
         try:
             self._check_path(object_path)
             self._check_path(hint_path)
+            self._mkdir_private(object_path.parent)
+            self._mkdir_private(hint_path.parent)
             write_bytes_atomic(object_path, template.to_bytes())
             write_bytes_atomic(hint_path, _json_bytes({"format": _HINT_FORMAT, "key": template.key}))
         except OSError as exc:
@@ -168,8 +213,12 @@ class PreparedTemplateStore:
             path = self._path("locks", locator, ".lock")
             try:
                 self._check_path(path)
-                path.parent.mkdir(parents=True, exist_ok=True)
+                self._mkdir_private(path.parent)
                 fd = os.open(path, os.O_RDWR | os.O_CREAT | _filelock.nofollow_flag(path), 0o600)
+                info = os.fstat(fd)
+                self._check_owned(info, private=True)
+                if not stat.S_ISREG(info.st_mode):
+                    raise StoreUnavailable("prepared-template lock is not a regular file")
                 _filelock.lock_fd(fd)
                 acquired = True
             except OSError:
@@ -244,6 +293,10 @@ class PreparedUse:
         from vibecomfy.prepared_template import TemplateNotReusable
         if self.filled is None or self.store is None or self.locator is None or self.witness is None:
             return
+        if self.filled.emission.no_store_reason is not None:
+            # resolve() already reported the full/no-store path through its
+            # event callback. Do not create or replace even a locator hint.
+            return
         with stage("prepared template store"):
             with self.store.locked(self.locator) as locked:
                 if not locked:
@@ -263,8 +316,8 @@ class PreparedUse:
                     self.store.publish(self.locator, self.filled.snapshot())
                 except StoreUnavailable:
                     _event("miss", "store_unreadable")
-                except TemplateNotReusable:
-                    _event("miss", "entry_invalid")
+                except TemplateNotReusable as exc:
+                    _event("miss", exc.reason)
 
 
 def _layout_event(event: Any) -> None:
@@ -585,6 +638,9 @@ def declarative_source(data: bytes) -> bool:
             for alias in node.names:
                 if alias.name == "*" or alias.name.startswith("_"):
                     return False
+                if node.module == "vibecomfy.templates" and alias.name not in {
+                        "InputSpec", "ModelAsset", "ReadyMetadata", "new_workflow"}:
+                    return False  # Other helper APIs may consult unwitnessed I/O.
                 constructors.add(alias.asname or alias.name)
             continue
         if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
@@ -664,8 +720,9 @@ def compiler_witness() -> dict[str, Any]:
     """Hash current compiler/data bytes; no dirty label or persistent mtime cache.
 
     P82-06's install stamp is not assumed. The complete VibeComfy package source
-    and JSON/lock data plus this Agent binding closure are witnessed on every
-    key observation. A content hash may be memoized only in this process, by
+    and JSON/lock data, selected ready-tree/index, authoring schemas and this
+    Agent binding closure are witnessed on every key observation. A content
+    hash may be memoized only in this process, by
     path/size/mtime plus inode/ctime; dirty changes never share a generic tag.
     The lane measures the explicit key stage against 0.1 s warm.
     """
@@ -690,10 +747,16 @@ def compiler_witness() -> dict[str, Any]:
     from vibecomfy.schema.provider import SourceSchemaProvider
     # resources selects one installed/check-out layout, never a mixture. Bind
     # its actual bytes, including checkout resources outside the package.
-    for name in ("coverage_manifest", "custom_nodes_lock", "strict_ready_exceptions", "comfy_metadata"):
+    for name in ("template_index", "coverage_manifest", "custom_nodes_lock", "strict_ready_exceptions", "comfy_metadata"):
         path = resources._resource_location(name)
         records.append(["resource/" + name, str(path.resolve()),
                         _file_digest_current(path) if path.is_file() else "absent"])
+    ready_root = resources._resource_location("ready_templates")
+    records.append(["ready-root", str(ready_root.resolve()), ready_root.is_dir()])
+    if ready_root.is_dir():
+        for path in sorted(ready_root.rglob("*")):
+            if (path.suffix in {".py", ".json", ".lock"} or path.name == "CURRENT") and path.is_file():
+                records.append(["ready-member", str(path.resolve()), _file_digest_current(path)])
     provider = get_authoring_schema_provider(on_demand_schemas=False)
     records.append(["node-index", str(provider.node_index_path.resolve()),
                     _file_digest_current(provider.node_index_path) if provider.node_index_path.is_file() else "absent"])
@@ -726,6 +789,9 @@ def offline_source_schemas(data: bytes) -> bool:
     """Do not skip a builder that could consult an unwitnessed on-demand pack."""
     from vibecomfy.schema import get_authoring_schema_provider
     from vibecomfy.schema.provider import SchemaProviderError
+    from vibecomfy.workflow_context import active_workflow
+    if active_workflow() is not None:
+        return False  # Preserve new_workflow's current nested-context refusal.
     provider = get_authoring_schema_provider(on_demand_schemas=False)
     for node in ast.parse(data).body:
         if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("vibecomfy.nodes."):
@@ -739,7 +805,7 @@ def offline_source_schemas(data: bytes) -> bool:
 
 
 def key_context(*, source: Mapping[str, Any], role_plan: Mapping[str, Any],
-                capture: NodeListCapture) -> dict[str, Any]:
+                capture: NodeListCapture, source_is_builder: bool = False) -> dict[str, Any]:
     from importlib.metadata import PackageNotFoundError, version
     try:
         current_version = version("vibecomfy")
@@ -747,6 +813,14 @@ def key_context(*, source: Mapping[str, Any], role_plan: Mapping[str, Any],
         # A source-only import can still take the original preparation path;
         # it cannot claim a distribution witness it does not possess.
         raise OSError("VibeComfy distribution version is unavailable") from exc
-    return {"compiler_identity": compiler_witness(), "source_provenance": dict(source),
+    compiler = compiler_witness()
+    provenance = dict(source)
+    if source_is_builder:
+        # The cached structure is recipe integrity, not independent freshness.
+        # Bind the complete supported builder/helper/schema/data closure and
+        # its structural environment into source authority, without hashing it
+        # twice. Extra executable imports/helpers are ineligible above.
+        provenance["builder_closure"] = compiler
+    return {"compiler_identity": compiler, "source_provenance": provenance,
             "vibecomfy_version": current_version, "role_plan": dict(role_plan),
             "node_list_digest": capture.digest()}

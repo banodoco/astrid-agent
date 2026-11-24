@@ -5,6 +5,7 @@ import io
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -17,6 +18,9 @@ from astrid.sdk.command_timing import (
 )
 from vibecomfy.prepared_template import ValueSlot, prepare_template
 from vibecomfy.workflow import VibeInput, VibeWorkflow, WorkflowSource
+
+_OWNER_SUPPORTED = hasattr(os, "geteuid") or hasattr(os, "getuid")
+_OWNER_REQUIRED = pytest.mark.skipif(not _OWNER_SUPPORTED, reason="disk reuse requires current-user ownership verification")
 
 
 def _workflow():
@@ -44,6 +48,8 @@ def _context(source: Path):
 
 @pytest.fixture
 def harness(tmp_path, monkeypatch):
+    if not _OWNER_SUPPORTED:
+        pytest.skip("disk reuse requires current-user ownership verification; full fallback has a separate witness")
     source = tmp_path / "source.py"
     source.write_text("fixed source v1\n")
     root = tmp_path / "runtime-data"
@@ -179,6 +185,172 @@ def test_store_deletion_only_causes_a_cold_preparation(harness):
     assert len(builds) == 2
     assert _events(collector)[:2] == [("miss", "absent"), ("recompute", "absent")]
     assert list((store.root / "objects").glob("*.json"))
+
+
+def test_store_creation_is_owner_only_even_with_an_open_umask(harness):
+    _, store, _, _, use = harness
+    original = os.umask(0)
+    try:
+        use().published()
+    finally:
+        os.umask(original)
+    owner = store._owner()
+    for path in (store.data_root, *store.data_root.rglob("*")):
+        info = path.stat()
+        assert info.st_uid == owner
+        assert stat.S_IMODE(info.st_mode) & 0o077 == 0
+
+
+@pytest.mark.parametrize("group", ["objects", "sources", "locks"])
+def test_foreign_owner_on_opened_entry_hint_or_lock_is_a_cache_miss(harness, monkeypatch, group):
+    from types import SimpleNamespace
+    _, store, builds, _, use = harness
+    use().published()
+    target = next((store.root / group).iterdir()).stat()
+    actual = os.fstat
+
+    def changed_owner(fd):
+        info = actual(fd)
+        if (info.st_dev, info.st_ino) == (target.st_dev, target.st_ino):
+            return SimpleNamespace(st_mode=info.st_mode, st_uid=info.st_uid + 1)
+        return info
+
+    monkeypatch.setattr(prepared.os, "fstat", changed_owner)
+    collector = TimingCollector()
+    with timing_scope(collector):
+        current = use(79)
+    assert current.workflow.inputs["seed"].value == 79
+    assert builds == ["build", "build"]
+    assert _events(collector)[:2] == [("miss", "store_unreadable"), ("recompute", "store_unreadable")]
+    assert ("hit", None) not in _events(collector)
+
+
+def test_shared_cache_directory_is_not_adopted_or_chmodded(harness):
+    _, store, builds, _, use = harness
+    use().published()
+    directory = store.data_root / "cache" / "prepared-template"
+    directory.chmod(0o770)
+    collector = TimingCollector()
+    with timing_scope(collector):
+        current = use(83)
+        current.published()
+    assert current.workflow.inputs["seed"].value == 83
+    assert builds == ["build", "build"]
+    assert stat.S_IMODE(directory.stat().st_mode) == 0o770
+    assert _events(collector)[:2] == [("miss", "store_unreadable"), ("recompute", "store_unreadable")]
+
+
+def test_foreign_owned_cache_directory_is_refused(harness, monkeypatch):
+    from types import SimpleNamespace
+    _, store, builds, _, use = harness
+    use().published()
+    directory = store.data_root / "cache" / "prepared-template"
+    actual = Path.lstat
+
+    def changed_owner(path, *args, **kwargs):
+        info = actual(path, *args, **kwargs)
+        if path == directory:
+            return SimpleNamespace(st_mode=info.st_mode, st_uid=info.st_uid + 1)
+        return info
+
+    monkeypatch.setattr(Path, "lstat", changed_owner)
+    collector = TimingCollector()
+    with timing_scope(collector):
+        current = use(87)
+        current.published()
+    assert current.workflow.inputs["seed"].value == 87
+    assert builds == ["build", "build"]
+    assert _events(collector)[:2] == [("miss", "store_unreadable"), ("recompute", "store_unreadable")]
+
+
+def test_missing_owner_verifier_uses_full_preparation_without_writing(tmp_path, monkeypatch):
+    source = tmp_path / "source.py"
+    source.write_text("current source")
+    store = prepared.PreparedTemplateStore(tmp_path / "data")
+    collector = TimingCollector()
+    with monkeypatch.context() as patch:
+        patch.delattr(prepared.os, "geteuid", raising=False)
+        patch.delattr(prepared.os, "getuid", raising=False)
+        with pytest.raises(prepared.StoreUnavailable, match="current-user ownership is unavailable"):
+            store._owner()
+
+    def unavailable():
+        raise prepared.StoreUnavailable("current-user ownership is unavailable")
+
+    monkeypatch.setattr(store, "_owner", unavailable)
+    with timing_scope(collector):
+        current = prepared.prepare_workflow(identity="owner-unavailable", witness=lambda: _context(source),
+            build=_workflow, store=store, slots=_slots(), values={"seed": 89})
+        current.published()
+    assert current.workflow.inputs["seed"].value == 89
+    assert not store.root.exists()
+    assert _events(collector)[:2] == [("miss", "store_unreadable"), ("recompute", "store_unreadable")]
+    assert ("hit", None) not in _events(collector)
+
+
+def test_link_shaped_current_value_does_not_replace_or_evict_a_good_entry(harness):
+    source, store, _, _, _ = harness
+    builds = []
+    slots = (ValueSlot("seed", _slots()[0].paths),)
+
+    def use(value):
+        def build():
+            builds.append(value)
+            workflow = _workflow()
+            workflow.nodes["1"].inputs["value"] = value
+            workflow.inputs["seed"].value = value
+            return workflow
+        return prepared.prepare_workflow(identity="link-value", witness=lambda: _context(source),
+            build=build, store=store, slots=slots, values={"seed": value})
+
+    use(7).published()
+    before = {str(path): path.read_bytes() for group in ("objects", "sources")
+              for path in (store.root / group).iterdir()}
+    collector = TimingCollector()
+    with timing_scope(collector):
+        current = use(["1", 0])
+        current.published()
+    assert current.workflow.inputs["seed"].value == ["1", 0]
+    assert _events(collector)[:2] == [("miss", "value_graph_link"), ("recompute", "value_graph_link")]
+    assert all(reason != "entry_invalid" for _, reason in _events(collector))
+    assert before == {str(path): path.read_bytes() for group in ("objects", "sources")
+                      for path in (store.root / group).iterdir()}
+    warm_events = TimingCollector()
+    with timing_scope(warm_events):
+        warm = use(97)
+    assert warm.workflow.inputs["seed"].value == 97
+    assert builds == [7, ["1", 0]]
+    assert _events(warm_events) == [("hit", None)]
+
+
+@pytest.mark.parametrize("failure,reason", [("cap", "layout_capacity"), ("validate", "layout_not_reusable")])
+def test_layout_refusal_finishes_emission_without_publishing(harness, monkeypatch, failure, reason):
+    import vibecomfy.prepared_template as contract
+    _, store, _, _, use = harness
+    current = use(101)
+    monkeypatch.setattr(contract, "_MAX_LAYOUTS", 1)
+
+    def layout():
+        return {"node_order": ["1"], "sections": [], "imports": [], "constructors": [["1", [None, None]]]}
+
+    def validate(value):
+        if failure == "validate":
+            raise contract.TemplateNotReusable("full layout is not cacheable")
+
+    def emit(workflow, *, emission_session):
+        if failure == "cap":
+            emission_session.resolve({"shape": 1}, layout)
+        emission_session.resolve({"shape": 2}, layout, validate=validate)
+        return {"published_current_seed": workflow.inputs["seed"].value}
+
+    collector = TimingCollector()
+    with timing_scope(collector):
+        result = prepared.emit_prepared(emit, current.workflow, prepared=current)
+    assert result == {"published_current_seed": 101}
+    assert not list(store.root.glob("objects/*.json"))
+    assert not list(store.root.glob("sources/*.json"))
+    assert ("miss", reason) in _events(collector)
+    assert ("recompute", reason) in _events(collector)
 
 
 @pytest.mark.parametrize("group", ["sources", "objects"])
@@ -328,9 +500,18 @@ def test_closed_source_policy_accepts_declarative_assembly():
 
 @pytest.mark.parametrize("extra", [b'\nimport time\n', b'\nimport os\n',
     b'\ndef helper():\n    return 1\n', b'\nSIDE = open("other.py").read()\n',
-    b'\nexec("print(1)")\n'])
+    b'\nexec("print(1)")\n', b'\nfrom vibecomfy.templates import node\n'])
 def test_unwitnessed_dependencies_and_executable_source_are_not_reused(extra):
     assert not prepared.declarative_source(_CLOSED + extra)
+
+
+def test_live_workflow_context_forces_the_original_builder_path(monkeypatch):
+    import vibecomfy.schema as schema
+    import vibecomfy.workflow_context as context
+    monkeypatch.setattr(context, "active_workflow", lambda: object())
+    monkeypatch.setattr(schema, "get_authoring_schema_provider",
+                        lambda **kwargs: pytest.fail("nested workflow context must refuse before schema work"))
+    assert not prepared.offline_source_schemas(_CLOSED)
 
 
 def test_raw_response_identity_is_not_recanonicalized_or_taken_from_another_read():
@@ -368,6 +549,7 @@ print(json.dumps({"events": ns["_events"](collector),
 '''
 
 
+@_OWNER_REQUIRED
 def test_two_processes_share_entry_and_source_change_invalidates(tmp_path):
     source, root, marker = tmp_path / "source.py", tmp_path / "data", tmp_path / "builds"
     source.write_text("fixed source v1")
@@ -392,6 +574,7 @@ def test_two_processes_share_entry_and_source_change_invalidates(tmp_path):
 
 
 @pytest.mark.parametrize("field", ["compiler_identity", "source_provenance", "node_list_digest", "role_plan", "vibecomfy_version"])
+@_OWNER_REQUIRED
 def test_separate_process_rejects_each_stale_current_witness(tmp_path, field):
     source, root, marker = tmp_path / "source.py", tmp_path / "data", tmp_path / "builds"
     source.write_text("fixed source")

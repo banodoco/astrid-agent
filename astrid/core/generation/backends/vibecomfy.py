@@ -322,7 +322,8 @@ def _load_pinned_catalog_workflow(spec: BackendSpec, *, retain_source=None,
         current = source_witness(template_path_resolved, identity=source_identity)
         if dict(current["members"])["python"] != expected_hash.lower():
             raise ValueError(f"VibeComfy template {canonical_id!r} failed its sha256 pin")
-        return key_context(source=current, role_plan=role_plan, capture=node_capture)
+        return key_context(source=current, role_plan=role_plan, capture=node_capture,
+                           source_is_builder=True)
 
     def admit_hit():
         # workflow_from_ready owns this gate on a miss. Keep it on a hit too,
