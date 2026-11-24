@@ -401,14 +401,11 @@ Candidates are not runnable; lookup does not install code.
 
 ### LE-5 — Candidates and manual lookup
 
-<!-- LE-5: target_schema wiring pending ownership handoff. -->
-For missing custom nodes, use class evidence and a derived pack-name search
-from the workflow's authored provenance or shared class-name prefix. A
-repository candidate is evidence only: a "name match only" is especially
-uncertain. Verify that the repository provides the required classes before
-supplying its URL with `--add`; do not execute a candidate as a command.
-If the lookup yields no source, find the repository manually, or stop if it
-cannot be identified. Preserve lookup warnings and unavailable-tier status.
+<!-- LE-5 helper staged; production readiness wiring pending. -->
+The lookup helper can project class and derived pack-name evidence. It is not
+yet called by generation readiness, so do not expect the CLI or SDK to emit
+these candidate suggestions. The existing read-only lookup and manual
+identification path remains in use.
 
 ### LE-6 — Check the target after setup
 
@@ -472,12 +469,10 @@ not add a default music, TTS or sound-effects slot.
 
 ### LE-16 — Several node packs
 
-<!-- LE-16: staged grouping/choice helper; target_schema and CLI wiring pending. -->
-Treat shared authored pack identifiers as grouping evidence; a shared class-name
-prefix is only a provisional group. For several missing packs, verify each
-repository separately and supply the chosen URLs together with repeatable
-`--add` flags. A name-only match or an ambiguous candidate set is a human
-choice, never an executable repair. New code still needs consent.
+<!-- LE-16 helper staged; production readiness and drop-ref wiring pending. -->
+The grouping and combined choice helpers are not yet called by generation
+readiness. Repeatable `--add` is available, but grouped issue suggestions and
+combined repair instructions are not emitted by the CLI or SDK yet.
 
 ### LE-17 — Pins that conflict
 
