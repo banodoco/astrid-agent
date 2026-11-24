@@ -99,10 +99,14 @@ def write_entry_approvals(entry_directory: str | Path, records: list[NodeApprova
 
 
 def entry_approval_directory(entry):
-    """Resolve the actual saved entry, never a workflow-authored sidecar path.
+    """Resolve the saved entry directory that owns this row's approvals, or None.
 
-    A contributed built-in row (it carries ``contribution``) has no saved
-    directory beside it, so it persists no approvals; per-run consent still applies.
+    Rule: only a ``user-entry`` row without ``contribution`` can own approvals,
+    and its directory is ``entries_dir()/<id>``. ``load_entry`` records no
+    directory on the row (it resolves only ``bundle``), so the directory counts
+    only when it holds an ``entry.json``. A row with no saved directory (a
+    contributed built-in, or an unsaved row) persists no approvals and returns
+    None; per-run consent still applies. Never a workflow-authored sidecar path.
     """
     if not entry or entry.get("source") != "user-entry" or entry.get("contribution"):
         return None
@@ -111,6 +115,8 @@ def entry_approval_directory(entry):
     directory = entries_dir() / entry["id"]
     if directory.parent != entries_dir() or directory.is_symlink():
         raise ValueError("code approvals require a plain saved entry directory")
+    if not (directory / "entry.json").is_file():
+        return None
     saved = load_entry(directory)
     if saved["id"] != entry["id"] or saved["bundle"] != entry["bundle"]:
         raise ValueError("saved entry changed before code approval")
