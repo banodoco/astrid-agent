@@ -22,7 +22,8 @@ from astrid.sdk.exceptions import ServiceError
 from astrid.sdk.remote import RemoteMedia
 from astrid.sdk.timeline._command_state import ABSENT, State, equal, present
 from astrid.sdk.timeline.commands import execute
-from astrid.sdk.timeline.sync import CommitConflict, TimelineSession, _connection
+from astrid.sdk.timeline.native_source_inputs import materialize_transcript_inputs
+from astrid.sdk.timeline.sync import CommitConflict, TimelineSession, _connection, _pin
 from astrid.sdk.workspace_client import WorkspaceClientError
 
 
@@ -149,6 +150,14 @@ def _settle_held_flight(session, held):
     if held is None:
         return True
     return session._flush(expected_flight=held, release_conflict=True) is not None
+
+
+def _element_capture_bundle(owner, project, opened):
+    """Hydrate only the publication's retained transcripts for local execution."""
+    bundle = copy.deepcopy(opened.data['bundle'])
+    bundle['source_mapping'].pop('pinned_documents', None)
+    return materialize_transcript_inputs(bundle, [], client=owner._client, project=project,
+                                         include_retained=True)
 
 
 def _clip(bundle, clip_id):
@@ -313,7 +322,9 @@ def update_parent_element(owner: Any, project: str, timeline: str, *, realm: str
                 {'expected_head': expected_head, 'actual_head': current.data['head']['revision_id'],
                  'outbox_base': state['base']['revision_id']}),
                 idempotency_key=key)
-        opened = owner.open_bundle(session.project_id, session.timeline_id, revision_id=expected_head)
+        basis = state['base']
+        opened = owner.open_bundle(session.project_id, session.timeline_id, revision_id=expected_head,
+                                   publication_id=basis['publication_id'])
         if not opened.ok:
             return opened
         before = _clip(opened.data['bundle'], clip_id)
@@ -321,15 +332,18 @@ def update_parent_element(owner: Any, project: str, timeline: str, *, realm: str
         cleanup, cleanup_reads = _orphan_cleanup(opened.data['bundle'], clip_id, element)
 
         def capture(state):
-            if state['base']['revision_id'] != expected_head:
+            if state['base'] != basis:
                 raise ValueError('Session base changed before element capture')
             current = owner.history(session.project_id, session.timeline_id, limit=1)
             if not current.ok:
                 raise ValueError(current.error.message)
-            if current.data['head']['revision_id'] != expected_head:
+            head = _pin(current.data['head'])
+            if head != basis:
                 raise CommitConflict({'code': 'conflict', 'message': 'Timeline head changed before element capture',
                                       'details': {'expected_head': expected_head,
-                                                  'actual_head': current.data['head']['revision_id']}})
+                                                  'actual_head': head['revision_id'],
+                                                  'expected_publication': basis['publication_id'],
+                                                  'actual_publication': head['publication_id']}})
             old_ref = before.get('elementRef') or before.get('element_ref')
             if (not isinstance(old_ref, dict) or old_ref.get('kind') != 'effect'
                     or before.get('clipType') != old_ref.get('id')
@@ -340,14 +354,15 @@ def update_parent_element(owner: Any, project: str, timeline: str, *, realm: str
                     or element.get('id') != old_ref.get('id')
                     or old_ref.get('packId') is not None and old_ref['packId'] != element.get('packId')):
                 raise ValueError('Update must preserve the existing effect identity and pack owner')
+            bundle = _element_capture_bundle(owner, session.project_id, opened)
             if all(call['op'] == 'clip.set' for call in fresh_calls):
-                return execute(opened.data['bundle'], fresh_calls, realm_id=realm).commands
+                return execute(bundle, fresh_calls, realm_id=realm).commands
             if all(call['op'] != 'clip.set-element' for call in fresh_calls):
                 authority, inputs, _ = _read_selected_param_inputs(
                     owner, session.project_id, session.timeline_id, realm=realm,
                     through=state['base'], select=f'parent/clip:{clip_id}')
                 pin = authority['source']
-                return execute(opened.data['bundle'], _calls(
+                return execute(bundle, _calls(
                     clip_id, element, duration, params, clear_params, pin, before),
                     schema_inputs=inputs, realm_id=realm).commands
             document_id, document = _read_document(client, realm, session.project_id)
@@ -365,7 +380,7 @@ def update_parent_element(owner: Any, project: str, timeline: str, *, realm: str
             snapshot = {**descriptor, 'bytes_base64': base64.b64encode(
                 client.media.read_bytes(descriptor['object_id'])).decode('ascii')}
             inputs = [({'pin': pin, 'document': document}, {descriptor['object_id']: snapshot})]
-            return execute(opened.data['bundle'], _calls(
+            return execute(bundle, _calls(
                 clip_id, element, duration, params, clear_params, pin) + cleanup,
                 schema_inputs=inputs, realm_id=realm).commands
 
@@ -502,7 +517,9 @@ def place_element(owner: Any, project: str, timeline: str, *, realm: str, target
                 {'expected_head': expected_head, 'actual_head': current.data['head']['revision_id'],
                  'outbox_base': state['base']['revision_id']}),
                 idempotency_key=key)
-        opened = owner.open_bundle(session.project_id, session.timeline_id, revision_id=expected_head)
+        basis = state['base']
+        opened = owner.open_bundle(session.project_id, session.timeline_id, revision_id=expected_head,
+                                   publication_id=basis['publication_id'])
         if not opened.ok:
             return opened
         before = _placement_clip(opened.data['bundle'], target)
@@ -511,18 +528,22 @@ def place_element(owner: Any, project: str, timeline: str, *, realm: str, target
             raise ValueError('First placement supports effect elements only')
 
         def capture(state):
-            if state['base']['revision_id'] != expected_head:
+            if state['base'] != basis:
                 raise ValueError('Session base changed before element placement capture')
             current = owner.history(session.project_id, session.timeline_id, limit=1)
             if not current.ok:
                 raise ValueError(current.error.message)
-            if current.data['head']['revision_id'] != expected_head:
+            head = _pin(current.data['head'])
+            if head != basis:
                 raise CommitConflict({'code': 'conflict', 'message': 'Timeline head changed before element placement capture',
                                       'details': {'expected_head': expected_head,
-                                                  'actual_head': current.data['head']['revision_id']}})
+                                                  'actual_head': head['revision_id'],
+                                                  'expected_publication': basis['publication_id'],
+                                                  'actual_publication': head['publication_id']}})
             pin, inputs = _admitted_element_inputs(
                 owner, client, session.project_id, realm=realm, element=element)
-            return execute(opened.data['bundle'], [
+            bundle = _element_capture_bundle(owner, session.project_id, opened)
+            return execute(bundle, [
                 {**calls[0], 'args': {**calls[0]['args'], 'schema_source': pin}}],
                 schema_inputs=inputs, realm_id=realm).commands
 
