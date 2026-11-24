@@ -47,7 +47,7 @@ import time
 import zipfile
 from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import asdict, dataclass, field, is_dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from functools import partial
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType, SimpleNamespace
@@ -5394,17 +5394,10 @@ class RuntimeProtocolClient:
                     f"{self._heartbeat_session}-{heartbeat_sequence}"
                 ),
                 "runtime_epoch": runtime_epoch,
-                # R6 stopgap: a long render starves heartbeats while the
-                # Runtime serves its inputs; ask for a lease that survives it.
-                "lease_seconds": 7200,
             }
             if progress is not None:
                 payload["progress"] = dict(progress)
-            client = self._lifecycle_client(deadline=deadline)
-            if hasattr(client, "timeout"):
-                client.timeout = max(float(client.timeout), 20.0) if deadline is None else max(
-                    float(client.timeout), min(20.0, max(0.1, deadline - time.monotonic())))
-            return client.heartbeat_attempt(attempt_id, **payload)
+            return self._lifecycle_client(deadline=deadline).heartbeat_attempt(attempt_id, **payload)
         finally:
             self._heartbeat_lock.release()
             if lock_wait_seconds >= 0.001:
@@ -11551,11 +11544,18 @@ class GenericPackHost:
             """Log one bounded lease-pump event without request or payload data."""
             diagnostic = terminal["lease_diagnostic"]
             try:
+                observed_at = time.monotonic()
+                deadline = lifetime.deadline()
+                remaining = None if deadline is None else deadline - observed_at
+                deadline_at = (None if remaining is None else
+                               (datetime.now(timezone.utc) + timedelta(seconds=remaining)).isoformat())
                 log_lease_diagnostic(
                     task_id=str(data["id"]), attempt_id=exact_attempt, category=category,
                     last_acknowledged_heartbeat=diagnostic["last_successful_heartbeat_at_utc"],
-                    elapsed_seconds=time.monotonic() - lifetime.started_at,
+                    elapsed_seconds=observed_at - lifetime.started_at,
                     reason=reason, wait_seconds=wait_seconds,
+                    deadline_at=deadline_at, deadline_remaining_seconds=remaining,
+                    lease_expires_at=diagnostic["last_successful_heartbeat_expiry"],
                 )
             except Exception:
                 pass  # Diagnostics must not change attempt behavior.
