@@ -367,11 +367,94 @@ def catalog_manifests(entry_id: str | None = None) -> list[dict[str, Any]]:
             from .asset_gaps import declared_model_specs
             from .entries import _load_entry_workflow, find_entry
             entry = find_entry(entry_id)
-            if entry is None or entry.get('source') != 'ready-template':
-                raise AlignmentError(f'Unknown pinned entry {entry_id}; astrid generate align requires a catalog or ready-template entry ID')
+            if entry is None or entry.get('source') not in {'ready-template', 'user-entry'}:
+                raise AlignmentError(f'Unknown pinned entry {entry_id}; astrid generate align requires a catalog, ready-template or saved user entry ID')
             workflow = _load_entry_workflow(entry)
             classes = {node.class_type for node in workflow.runtime_nodes().values()}
             packs, unlocked = [], []
+            if entry['source'] == 'user-entry':
+                from vibecomfy.custom_node_refs import workflow_lock_entries
+                from vibecomfy.entries import entries_dir, load_entry
+                from vibecomfy.node_recipes import recipe_sha256
+
+                from .node_approvals import approval_matches, read_entry_approvals
+
+                # Approvals belong beside the saved manifest, not inside a
+                # versioned bundle or a similarly named contributed entry.
+                directory = entries_dir() / entry_id
+                approvals = []
+                if (directory / 'entry.json').is_file():
+                    saved = load_entry(directory)
+                    if saved['id'] == entry_id and saved['bundle'] == entry['bundle']:
+                        approvals = read_entry_approvals(directory)
+
+                # User entries carry their own identities. Never replace a
+                # missing or different pin with a same-named shipped pack.
+                by_name = {}
+                declared = set()
+                for row in workflow_lock_entries(workflow):
+                    declared.update({row.name, row.slug or row.name})
+                    revision, repo = row.git_commit_sha or row.commit, row.url
+                    if not repo or not revision or not re.fullmatch('[0-9a-f]{40}', revision):
+                        unlocked.append({'kind': 'node_pack', 'name': row.name,
+                                         'missing': ['locked_repository_and_sha']})
+                        continue
+                    pack = {'name': row.name, 'repository': repo, 'revision': revision,
+                            'classes': sorted(set(row.class_set) & classes)}
+                    _validate_pack(pack)
+                    recipe = {'requirements_txt': row.requirements_txt, 'pip_no_deps': row.pip_no_deps}
+                    recipe_hash = recipe_sha256(recipe)
+                    shipped = node_locks.get(row.name)
+                    shipped_match = (
+                        shipped is not None and shipped.url == repo
+                        and (shipped.git_commit_sha or shipped.commit) == revision
+                        and recipe_sha256({'requirements_txt': shipped.requirements_txt,
+                                           'pip_no_deps': shipped.pip_no_deps}) == recipe_hash)
+                    if not shipped_match:
+                        node = {'repo': repo, 'commit': revision, **recipe}
+                        approved = any(approval_matches(record, node, placement_class='local')
+                                       for record in approvals)
+                        if not approved:
+                            pack['requires_code_consent'] = True
+                        # The existing alignment installer does not consume an
+                        # approved recipe; never send a novel recipe through
+                        # it. LE-2b owns the controlled admission/install path.
+                        pack['bundle_install_pending'] = True
+                    prior = by_name.get(row.name)
+                    if prior is not None:
+                        if prior[0] != recipe_hash or (prior[1]['repository'], prior[1]['revision']) != (repo, revision):
+                            raise AlignmentError(f'Conflicting bundle node pack pins or recipes for {row.name}')
+                        pack['classes'] = sorted(set(prior[1]['classes']) | set(pack['classes']))
+                    by_name[row.name] = (recipe_hash, pack)
+                for name in sorted(set(workflow.requirements.custom_nodes) - declared):
+                    unlocked.append({'kind': 'node_pack', 'name': name,
+                                     'missing': ['locked_repository_and_sha']})
+                packs = [pack for _, pack in by_name.values()]
+                incomplete = []
+                models = list(declared_model_specs(workflow.metadata.get('model_assets', []),
+                                                   incomplete=incomplete))
+                retry = shlex.join(['astrid', 'generate', 'align', '--entry', entry_id, '--json'])
+                for record in incomplete:
+                    name = record['name']
+                    subdir = record['subdir']
+                    destination = (f'{subdir}/{name}' if isinstance(subdir, str) and subdir not in ('', '.')
+                                   and name else name)
+                    label = destination or 'the unnamed model declaration'
+                    unlocked.append({
+                        'kind': 'model', 'code': 'model_lock_incomplete', 'severity': 'error',
+                        'name': name, 'destination': destination, 'missing': record['missing'],
+                        'next_action': (
+                            f'Obtain the verified HTTPS source, SHA-256 and exact byte size for {label} '
+                            'and supply the missing facts in the saved bundle model declaration. '
+                            'The --add-model DEST=URL#sha256 repair is not available in this build; '
+                            f'until it is available, complete the declaration through the workflow authoring path. Then run {retry}.'),
+                    })
+                # Assets belong to the workflow even if its saved generation
+                # mode has not been chosen (e.g. an imported audio workflow).
+                return [{'id': entry_id, 'provider_only': False, 'modes': [
+                    {'mode': mode, 'workflow': workflow, 'models': models,
+                     'node_packs': packs, 'unlocked': unlocked}
+                    for mode in (entry['modes'] or ['workflow'])]}]
             for pack in resolve_node_packs(classes, lockfile_path=lockpath):
                 row = node_locks.get(pack.name)
                 revision, repo = getattr(row, 'git_commit_sha', None), getattr(row, 'url', None)
@@ -523,9 +606,14 @@ def inspect_assets(manifests, target: ManagedAssetTarget, *, observed=None, dead
     deadline = deadline or time.monotonic() + 3600
     unique_missing = {}
     entries = []
+    code_next_action = None
+    model_next_action = None
     for manifest in manifests:
         modes = []
         for mode in manifest['modes']:
+            if model_next_action is None:
+                model_next_action = next((gap['next_action'] for gap in mode['unlocked']
+                                          if gap.get('code') == 'model_lock_incomplete'), None)
             model_rows, pack_rows = [], []
             for model in mode['models']:
                 relative, url = _validate_model(model)
@@ -537,11 +625,18 @@ def inspect_assets(manifests, target: ManagedAssetTarget, *, observed=None, dead
                     unique_missing[model.destination] = model.bytes
                 model_rows.append({**asdict(model), 'source_url': url, 'target_path': str(path),
                                    'target_folder': str(path.parent), 'status': state})
+            code_blocked = False
             for pack in mode['node_packs']:
-                pack_rows.append({**pack, 'status': _pack_state(target, pack)})
+                state = _pack_state(target, pack)
+                pack_rows.append({**pack, 'status': state})
+                problem = _bundle_alignment_code_problem(pack, state)
+                if problem:
+                    code_blocked = True
+                    if code_next_action is None:
+                        code_next_action = problem + shlex.join(align_argv(manifest['id']))
             nodes, models = (workflow_asset_gaps(mode['workflow'], observed)
                              if observed is not None else ([], []))
-            ready = (observed is not None and not mode['unlocked'] and not nodes and not models
+            ready = (observed is not None and not code_blocked and not mode['unlocked'] and not nodes and not models
                      and all(row['status'] == 'verified' for row in [*model_rows, *pack_rows]))
             modes.append({'mode': mode['mode'], 'models': model_rows, 'node_packs': pack_rows,
                           'unlocked': mode['unlocked'], 'missing_nodes': nodes,
@@ -560,7 +655,9 @@ def inspect_assets(manifests, target: ManagedAssetTarget, *, observed=None, dead
                            'status': 'ok' if free >= required else 'blocked',
                            'basis': 'missing_locked_models; additional node/dependency space is unquantified'},
             'object_info': 'unknown' if observed is None else 'observed',
-            'status': 'ready' if all(entry['status'] in {'ready', 'provider_only'} for entry in entries) else 'not_ready'}
+            'status': 'ready' if all(entry['status'] in {'ready', 'provider_only'} for entry in entries) else 'not_ready',
+            **({'next_action': code_next_action or model_next_action}
+               if code_next_action or model_next_action else {})}
 
 
 def align(*, entry_id=None, all_entries=False, apply=False, consent=(), target=None, manifests=None,
@@ -580,6 +677,24 @@ def align(*, entry_id=None, all_entries=False, apply=False, consent=(), target=N
     return _align_selected(manifests, target, entry_id=entry_id, apply=False, deadline=deadline)
 
 
+def _bundle_alignment_code_problem(pack, state):
+    if pack.get('requires_code_consent'):
+        return (
+            f"Node pack {pack['name']} at {pack['revision']} has no matching shipped pin or local code approval; "
+            "user_env consent does not authorize installing new node code. "
+            "Have the user approve that exact repository, commit and recipe for the managed target, then retry ")
+    if pack.get('bundle_install_pending') and state != 'verified':
+        return (
+            f"Approved node pack {pack['name']} at {pack['revision']} is not installed at its pinned revision; "
+            "install the exact approved recipe through the controlled node-code setup path, then retry ")
+    return None
+
+
+def _check_bundle_alignment_code(pack, state, retry):
+    if problem := _bundle_alignment_code_problem(pack, state):
+        raise AlignmentError(problem + retry)
+
+
 def _align_selected(manifests, target, *, entry_id, apply, deadline, client=None, installer=None):
     observed = target.cached_object_info()
     report = inspect_assets(manifests, target, observed=observed, deadline=deadline)
@@ -595,6 +710,13 @@ def _align_selected(manifests, target, *, entry_id, apply, deadline, client=None
             for row in [*mode['models'], *mode['node_packs']]:
                 if row['status'] == 'mismatch':
                     raise IntegrityError(f"Existing asset {row.get('destination', row.get('name'))} differs from its lock; restore verified bytes before running astrid generate align")
+                _check_bundle_alignment_code(row, row['status'], report['align_command'])
+    if any(gap.get('code') == 'model_lock_incomplete'
+           for entry in report['entries'] for mode in entry['modes']
+           for gap in mode.get('unlocked', [])):
+        # Keep the typed issue and repair instruction, and make no asset writes
+        # while the selected saved entry lacks an authoritative model lock.
+        return report
     if report['disk_check']['status'] == 'blocked':
         raise AlignmentError(f"Insufficient disk for missing locked models: need {report['total_missing_bytes']} bytes, free {report['disk_check']['free_bytes']}; free disk and retry {report['align_command']}")
     target.verify_installation(deadline=deadline)
@@ -611,7 +733,9 @@ def _align_selected(manifests, target, *, entry_id, apply, deadline, client=None
                     seen_models.add(model.destination)
             for pack in mode['node_packs']:
                 if pack['name'] not in seen_packs:
-                    if _pack_state(target, pack) != 'verified':
+                    state = _pack_state(target, pack)
+                    _check_bundle_alignment_code(pack, state, report['align_command'])
+                    if state != 'verified':
                         if installer is None:
                             _install_pack(target, pack, deadline=deadline)
                         else:
@@ -626,7 +750,7 @@ def _align_selected(manifests, target, *, entry_id, apply, deadline, client=None
         target.cache_object_info(observed)
         report = inspect_assets(manifests, target, observed=observed, deadline=deadline)
     report.update(applied=True, actions=actions, align_command=shlex.join(align_argv(entry_id)))
-    if any(mode['missing_nodes'] for entry in report['entries'] for mode in entry['modes']):
+    if not report.get('next_action') and any(mode['missing_nodes'] for entry in report['entries'] for mode in entry['modes']):
         report['next_action'] = 'Restart the selected managed ComfyUI to load installed node packs, then retry ' + report['align_command']
     if report['status'] == 'ready':
         try:

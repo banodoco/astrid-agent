@@ -11,7 +11,9 @@ from tests.core.generation.backends.test_comfy_model_resolution import install_t
 from tests.core.generation.backends.test_comfy_target import (  # noqa: F401
     engine_configuration, network, observation_configuration,
 )
-from tests.core.generation.fixtures.plan56_sam import sam_api_path, sam_object_info  # noqa: F401
+from tests.core.generation.fixtures.plan56_sam import (  # noqa: F401
+    sam_api_path, sam_object_info, sam_offline_lookup,
+)
 from vibecomfy.entries import load_entry
 
 
