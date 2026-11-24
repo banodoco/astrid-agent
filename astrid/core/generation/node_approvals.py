@@ -21,25 +21,48 @@ import os
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+
+from vibecomfy.node_approvals import (
+    PLACEMENT_CLASSES as PLACEMENT_CLASSES,
+)
+from vibecomfy.node_approvals import (
+    NodeApproval as NodeApproval,
+)
+from vibecomfy.node_approvals import (
+    NodeIdentity as NodeIdentity,
+)
+from vibecomfy.node_approvals import (
+    PlacementClass as PlacementClass,
+)
+from vibecomfy.node_approvals import (
+    approval_matches as approval_matches,
+)
+from vibecomfy.node_approvals import (
+    approval_record as approval_record,
+)
+from vibecomfy.node_approvals import (
+    consent_matches as consent_matches,
+)
+from vibecomfy.node_approvals import (
+    consent_token as consent_token,
+)
+from vibecomfy.node_approvals import (
+    require_approved_nodes as require_approved_nodes,
+)
+from vibecomfy.node_approvals import (
+    reviewed_approvals as reviewed_approvals,
+)
+from vibecomfy.node_approvals import (
+    validate_approval_record as validate_approval_record,
+)
+from vibecomfy.node_approvals import (
+    validate_approvals as _records,
+)
 
 from .consent import consent_scope
 
-from vibecomfy.node_approvals import (
-    NodeApproval as NodeApproval,
-    NodeIdentity as NodeIdentity,
-    PlacementClass as PlacementClass,
-    PLACEMENT_CLASSES as PLACEMENT_CLASSES,
-    approval_record as approval_record,
-    approval_matches as approval_matches,
-    consent_matches as consent_matches,
-    consent_token as consent_token,
-    require_approved_nodes as require_approved_nodes,
-    require_approved_nodes as target_approvals,
-    reviewed_approvals as reviewed_approvals,
-    validate_approval_record as validate_approval_record,
-    validate_approvals as _records,
-)
+# Explicit alias for callers that import the approval gate under its target name.
+target_approvals = require_approved_nodes
 
 APPROVALS_FILENAME = "code-approvals.json"
 
@@ -101,10 +124,14 @@ def write_entry_approvals(entry_directory: str | Path, records: list[NodeApprova
 
 
 def entry_approval_directory(entry):
-    """Resolve the actual saved entry, never a workflow-authored sidecar path.
+    """Resolve the saved entry directory that owns this row's approvals, or None.
 
-    A contributed built-in row (it carries ``contribution``) has no saved
-    directory beside it, so it persists no approvals; per-run consent still applies.
+    Rule: only a ``user-entry`` row without ``contribution`` can own approvals,
+    and its directory is ``entries_dir()/<id>``. ``load_entry`` records no
+    directory on the row (it resolves only ``bundle``), so the directory counts
+    only when it holds an ``entry.json``. A row with no saved directory (a
+    contributed built-in, or an unsaved row) persists no approvals and returns
+    None; per-run consent still applies. Never a workflow-authored sidecar path.
     """
     if not entry or entry.get("source") != "user-entry" or entry.get("contribution"):
         return None
@@ -113,6 +140,8 @@ def entry_approval_directory(entry):
     directory = entries_dir() / entry["id"]
     if directory.parent != entries_dir() or directory.is_symlink():
         raise ValueError("code approvals require a plain saved entry directory")
+    if not (directory / "entry.json").is_file():
+        return None
     saved = load_entry(directory)
     if saved["id"] != entry["id"] or saved["bundle"] != entry["bundle"]:
         raise ValueError("saved entry changed before code approval")

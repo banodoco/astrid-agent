@@ -177,6 +177,8 @@ def publish_entry_candidate(source, prepared, *, replace, placement_class, retry
     merged = retained_entry_approvals(prepared.previous_records, prepared.approvals)
     directory = entry_approval_directory(entry)
     if prepared.previous is None or merged != prepared.previous_records:
+        if directory is None:
+            raise ValueError("just-saved entry has no code approval directory")
         write_entry_approvals(directory, merged)
     return entry
 

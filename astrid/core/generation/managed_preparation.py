@@ -24,7 +24,6 @@ from .engine_contracts import (
     SourcePatch,
 )
 from .engine_local_endpoint import DEFAULT_ENGINE
-
 from .node_approvals import NodeApproval as NodeApproval
 
 if TYPE_CHECKING:

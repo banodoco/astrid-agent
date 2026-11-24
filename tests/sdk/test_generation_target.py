@@ -681,7 +681,10 @@ def test_audio_runpod_workflow_admits_existing_receipt_and_policy(mode, explicit
     from tests.helpers.generation_defaults import default_entries
     SLOT_DEFAULTS = default_entries()
     selected = '00-audio-test' if explicit else SLOT_DEFAULTS[('audio', mode)][0]
-    assert inputs['generation_intent']['metadata'] == {'model': selected, 'mode': mode}
+    metadata = dict(inputs['generation_intent']['metadata'])
+    # Shipped catalog pins are approved records; declared-but-unpinned nodes add none.
+    assert {record['placement_class'] for record in metadata.pop('code_approvals')} <= {'runpod'}
+    assert metadata == {'model': selected, 'mode': mode}
     assert all(inputs[name]['digest'].startswith('sha256:') for name in ('source', 'python', 'companion'))
 
 
@@ -894,7 +897,10 @@ def test_public_local_foley_stages_video_submits_and_delivers_through_runtime(wa
             assert task.ok and task.data['state'] == 'queued'
             assert len(invocations) == 1
             inputs = invocations[0]['inputs']
-            assert inputs['generation_intent']['metadata'] == {'model': 'audio/hunyuan_video_foley', 'mode': 'sfx'}
+            metadata = dict(inputs['generation_intent']['metadata'])
+            # The explicit --placement URL is an attached endpoint; shipped pins are its only records.
+            assert {record['placement_class'] for record in metadata.pop('code_approvals')} <= {'attached'}
+            assert metadata == {'model': 'audio/hunyuan_video_foley', 'mode': 'sfx'}
             folder = tmp_path / 'admitted'
             folder.mkdir()
             for field, filename in [('python', 'workflow.py'), ('companion', 'workflow.vibe.json')]:

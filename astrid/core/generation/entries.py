@@ -1416,6 +1416,10 @@ def target_schema(entry: dict[str, Any], workflow: Any, client: Any, *, engine: 
     from astrid.core.generation.backends.comfy_target import _resolve_roles
     from astrid.core.generation.preflight import GenerationReadinessError, readiness_envelope
 
+    if client is None and workflow is None:
+        # Without a workflow or a client there is no inventory to check (as on main).
+        return TargetSchemaResult(None, ())
+
     # Validate declarations before the deferred provider reads their typed refs.
     # The notices are returned only if target admission succeeds.
     version_notices = tuple(selected_pack_version_notices(
