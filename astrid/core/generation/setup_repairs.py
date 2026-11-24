@@ -119,8 +119,7 @@ def project_setup_facts(issues, fixes, *, entry=None, target=None):
             normalized = canonical_issue_code(native)
             if normalized != native:
                 issue["code"] = normalized
-                if native != "version_drift":
-                    issue.setdefault("details", {}).setdefault("engine_code", native)
+                issue.setdefault("details", {}).setdefault("engine_code", native)
     used = {fix.get("id") for fix in fixes if isinstance(fix.get("id"), str)}
 
     def fresh_id(index):

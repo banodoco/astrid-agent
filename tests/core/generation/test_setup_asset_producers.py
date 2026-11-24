@@ -155,7 +155,7 @@ def test_installed_recipe_and_runtime_version_warnings_have_one_code():
     validate_setup_envelope(result)
     assert result["status"] == "ready_with_warnings"
     assert len(result["issues"]) == 2
-    assert {issue["code"] for issue in result["issues"]} == {"pack_version_differs"}
+    assert {issue["code"] for issue in result["issues"]} == {"version_drift"}
     assert all(issue["severity"] == "warning" and not issue.get("fix_ids")
                for issue in result["issues"])
     assert result["fixes"] == []

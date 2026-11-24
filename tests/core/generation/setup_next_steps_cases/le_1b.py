@@ -55,7 +55,7 @@ CASES = [
     ("managed-missing-model", "missing_model", _missing_model),
     ("attached-core-class", "missing_node_pack", _missing_node),
     ("incomplete-model-declaration", "model_lock_incomplete", _incomplete_model),
-    ("runtime-version-warning", "pack_version_differs", _version_warning),
+    ("runtime-version-warning", "version_drift", _version_warning),
     ("model-download-advisory", "model_download_notice", _model_download_warning),
     ("old-engine-unavailable", "target_unreachable", partial(
         _native_case, "COMFY_TARGET_UNAVAILABLE", "Target unavailable", expected="target_unreachable")),

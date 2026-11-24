@@ -243,7 +243,7 @@ def compare_versions(recorded: dict[str, Any], observed: dict[str, Any]) -> list
         except (InvalidVersion, InvalidSpecifier):
             continue
         if different:
-            issues.append({'code': 'pack_version_differs', 'severity': 'warning',
+            issues.append({'code': 'version_drift', 'severity': 'warning',
                            'message': f'{name} recorded version differs from the selected target',
                            'details': {'name': name, 'recorded': version, 'observed': current}})
     return issues

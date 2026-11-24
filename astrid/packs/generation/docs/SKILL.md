@@ -340,9 +340,10 @@ integrity failure and insufficient target disk have distinct issue codes and
 human repairs. Re-inspect a changed attached download plan before confirming it;
 never overwrite a model or repeat a completed task just to recover delivery.
 
-A known recorded/observed version difference uses `pack_version_differs`
-(including core/runtime or installed-recipe provenance); advisory warnings
-carry no repair links. No recorded or observed version means unknown, not a
+A known engine/runtime or installed-recipe source difference uses
+`version_drift`; a pack's recorded/selected version difference uses
+`pack_version_differs`. Both can appear together and advisory warnings carry
+no repair links. No recorded or observed version means unknown, not a
 fabricated difference.
 
 ### LE-2a — Approval identity and consent tokens

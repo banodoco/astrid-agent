@@ -238,15 +238,22 @@ def test_existing_error_is_revalidated_before_serialization():
         generation_error(error)
 
 
-def test_only_the_canonical_version_code_is_registered():
+def test_engine_and_pack_version_codes_are_distinct_and_preserved_together():
+    from astrid.core.generation.preflight import compare_versions
     from astrid.core.generation.setup_contract import SETUP_ISSUE_CODES
 
-    assert {"pack_version_differs", "model_download_notice", "missing_node_pack"} <= SETUP_ISSUE_CODES
-    assert "version_drift" not in SETUP_ISSUE_CODES
-    result = readiness_envelope(issues=[{"code": "version_drift", "severity": "warning",
-                                        "message": "Version differs", "details": {"recorded": "1", "observed": "2"}}])
-    assert result["issues"] == [{"code": "pack_version_differs", "severity": "warning",
-                                 "message": "Version differs", "details": {"recorded": "1", "observed": "2"}}]
+    assert {"version_drift", "pack_version_differs", "model_download_notice", "missing_node_pack"} <= SETUP_ISSUE_CODES
+    drift = compare_versions({"comfyui": "1.0"}, {"comfyui": "2.0"})
+    pack = {"code": "pack_version_differs", "severity": "warning",
+            "message": "Selected pack version differs", "details": {"recorded": "1", "selected": "2"}}
+    notice = {"code": "model_download_notice", "severity": "warning",
+              "message": "Model download may need space", "details": {}}
+    result = readiness_envelope(issues=[*drift, pack, notice])
+    assert result["issues"] == [*drift, pack, notice]
+    assert [issue["code"] for issue in result["issues"]] == [
+        "version_drift", "pack_version_differs", "model_download_notice",
+    ]
+    assert result["status"] == "ready_with_warnings"
     assert result["fixes"] == []
 
 

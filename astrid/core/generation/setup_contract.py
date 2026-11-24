@@ -17,6 +17,9 @@ _ISSUE_REPAIR_STEPS = {
     "needs_consent": "Review the exact repository, commit, recipe and target with the person. Obtain the specific approval token before attempting installation.",
     "entry_exists": "Choose whether to retain the existing entry or explicitly replace it; do not remove the existing entry to retry.",
     "pin_conflict": "Choose one consistent source and immutable commit for the conflicting declaration.",
+    # Engine/runtime (including installed-recipe source) drift is distinct
+    # from the recorded/selected version of a custom-node pack.
+    "version_drift": None,
     "pack_version_differs": None,
     "unknown_input": "Review the changed input against the selected node schema; correct the saved workflow before retrying.",
     "source_unreachable": "Check that the exact HTTPS repository is reachable and its source is correct.",
@@ -87,7 +90,6 @@ _NATIVE_ALIASES = {
     "comfyui.missing_node": "missing_node_pack",
     "comfyui.models_missing": "missing_model",
     "COMFY_MODEL_MISSING": "missing_model",
-    "version_drift": "pack_version_differs",
     "insufficient_space": "insufficient_storage",
     "present_file_mismatch": "integrity_failed",
     "license_gated": "model_license_required",
