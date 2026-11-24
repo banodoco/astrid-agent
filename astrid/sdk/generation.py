@@ -2237,6 +2237,44 @@ class GenerationFacade:
                 comfy_url=(target_client.target.url if placement.kind == 'attached' and target_client is not None else None),
                 lineage=transport.lineage, source_video=transport.preflight_source_video,
                 approved_files=approved_files, save_preview_omitted_fields=save_preview_omitted_fields)
+            # Only the admitted graph's selected manifest may supply the advisory.
+            # This stays on the dry-run path, after admission and before the response.
+            from astrid.core.generation.model_storage import (
+                DECLARED_VOLUME,
+                selected_target_download_notice,
+            )
+            local_root = None
+            if placement.kind == 'local':
+                local_root = Path(readiness['entry']['requirements']['models_root'])
+            volume_declared = None
+            if placement.kind == 'runpod' and placement.machine is None:
+                # A saved policy describes a future claim, not retained custody.
+                # An unnamed run can reuse a live lease, whose volume is not
+                # exposed by the journal projection; leave that fact unknown.
+                raw_policy = settings_snapshot.content.get('machines', {}).get('runpod')
+                if raw_policy is not None and not any(
+                        row.get('live') for row in placements._runpod_leases('runpod')):
+                    from astrid.packs.runpod.target_selection import PaidSelectionError, RunPodPreferences
+                    try:
+                        volume_declared = RunPodPreferences.from_mapping(raw_policy).volume_id is not None
+                    except PaidSelectionError:
+                        # Incomplete policy is not evidence of an ephemeral claim.
+                        volume_declared = None
+            download_notice = selected_target_download_notice(
+                node_manifest['extra']['nodes'],
+                {node.class_type for node in workflow.runtime_nodes().values()},
+                placement=placement.kind, local_models_root=local_root,
+                local_volume=DECLARED_VOLUME.get() if local_root is not None else None,
+                volume_declared=volume_declared,
+            )
+            if download_notice is not None:
+                # Project the complete envelope, preserving any existing warning
+                # and its severity rather than mutating the derived status.
+                readiness = readiness_envelope(
+                    entry=readiness['entry'], target=readiness['target'],
+                    issues=[*readiness['issues'], download_notice], fixes=readiness['fixes'],
+                    attempt_count=readiness.get('attempt_count'),
+                )
             readiness['entry'].update(preview)
             if align == 'trust':
                 readiness['alignment'] = {'mode': 'trust', 'verified': False}
