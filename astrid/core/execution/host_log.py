@@ -38,8 +38,12 @@ def log_lease_diagnostic(*, task_id: str, attempt_id: str | None,
                          runtime_code: str | None = None, reason: str | None = None,
                          wait_seconds: float | None = None, deadline_at: str | None = None,
                          deadline_remaining_seconds: float | None = None,
-                         lease_expires_at: str | None = None) -> None:
-    """Write one structured lifecycle observation to the host's redirected stderr."""
+                         lease_expires_at: str | None = None, pump: bool = False) -> None:
+    """Write one structured lifecycle observation to the host's redirected stderr.
+
+    Lease-pump events (``pump=True``) use their own ``generic host: lease-pump `` prefix so
+    consumers of the verdict lines under ``generic host: lease `` see only those.
+    """
     event: dict[str, Any] = {
         "task_id": task_id, "attempt_id": attempt_id, "category": category,
         "last_acknowledged_heartbeat": last_acknowledged_heartbeat,
@@ -57,7 +61,8 @@ def log_lease_diagnostic(*, task_id: str, attempt_id: str | None,
         event["deadline_remaining_seconds"] = round(deadline_remaining_seconds, 3)
     if lease_expires_at is not None:
         event["lease_expires_at"] = lease_expires_at
-    print("generic host: lease " + json.dumps(event, sort_keys=True), file=sys.stderr, flush=True)
+    prefix = "generic host: lease-pump " if pump else "generic host: lease "
+    print(prefix + json.dumps(event, sort_keys=True), file=sys.stderr, flush=True)
 
 
 def _replace(source: Path, destination: Path) -> None:

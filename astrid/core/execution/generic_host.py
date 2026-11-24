@@ -5408,7 +5408,7 @@ class RuntimeProtocolClient:
                 log_lease_diagnostic(
                     task_id=str(task_id), attempt_id=attempt_id, category="heartbeat_lock_wait",
                     last_acknowledged_heartbeat=None, elapsed_seconds=None,
-                    reason=reason, wait_seconds=lock_wait_seconds,
+                    reason=reason, wait_seconds=lock_wait_seconds, pump=True,
                 )
             except Exception:  # noqa: BLE001 - diagnostics must not change heartbeat behavior
                 pass
@@ -11644,7 +11644,7 @@ class GenericPackHost:
                     task_id=str(data["id"]), attempt_id=exact_attempt, category=category,
                     last_acknowledged_heartbeat=diagnostic["last_successful_heartbeat_at_utc"],
                     elapsed_seconds=observed_at - lifetime.started_at,
-                    reason=reason, wait_seconds=wait_seconds,
+                    reason=reason, wait_seconds=wait_seconds, pump=True,
                     deadline_at=deadline_at, deadline_remaining_seconds=remaining,
                     lease_expires_at=diagnostic["last_successful_heartbeat_expiry"],
                 )

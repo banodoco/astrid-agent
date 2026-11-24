@@ -97,8 +97,8 @@ def test_ack_logs_effective_attempt_deadline_and_exact_lease_expiry(
         assert abs((datetime.fromisoformat(row["deadline_at"]) - deadline).total_seconds()) < 0.1
         assert 0 < row["deadline_remaining_seconds"] <= 600
     stderr = capsys.readouterr().err
-    serialized = [json.loads(line.removeprefix("generic host: lease "))
-                  for line in stderr.splitlines() if line.startswith("generic host: lease ")]
+    serialized = [json.loads(line.removeprefix("generic host: lease-pump "))
+                  for line in stderr.splitlines() if line.startswith("generic host: lease-pump ")]
     assert any(row.get("lease_expires_at") == expiry and row.get("deadline_at")
                for row in serialized if row["category"] == "heartbeat_acknowledged")
     assert "lease-result" not in stderr
