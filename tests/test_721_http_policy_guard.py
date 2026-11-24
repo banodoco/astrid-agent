@@ -197,7 +197,7 @@ LOOPBACK_HTTP_OPENINGS = {
     ),
     ("astrid/mcp_server.py", "_comfy_workflow_import", "urllib.request.build_opener"): (
         1,
-        "4da7fcc51b87402b63716a4195db09233a4e0f68ac979d6d38fd5ff286503ea7",
+        "26d004dde92d90dcfc6e4edf101905406502d630971998becee8282dfd4584ca",
     ),
     ("astrid/packs/runpod/pod_reset.py", "_post", "urllib.request.urlopen"): (
         1,

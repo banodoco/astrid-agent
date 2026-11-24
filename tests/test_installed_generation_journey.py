@@ -8,6 +8,7 @@ from __future__ import annotations
 import ast
 import json
 import os
+import re
 import subprocess
 import sys
 import sysconfig
@@ -117,7 +118,8 @@ def test_generation_mcp_selectors_preserve_paid_and_release_controls():
         "claim", ["paid"], 2.0, "2099-01-01T00:00:00Z")
     assert {"max_usd", "deadline", "allow_paid", "until_release"}.isdisjoint(
         tools["generate_image"]["definition"]["inputSchema"]["properties"])
-    assert "paid" not in tools["generate_image"]["definition"]["inputSchema"]["properties"]["consent"]["items"]["enum"]
+    consent_item = tools["generate_image"]["definition"]["inputSchema"]["properties"]["consent"]["items"]
+    assert re.fullmatch(consent_item["pattern"], "paid") is None
     release = mcp_server.argv_for(tools["generate_release"], {
         "engine": "comfyui", "placement": "runpod", "no_wait": True,
     })

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import re
 import subprocess
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass
@@ -210,7 +211,11 @@ def test_generate_schema_and_argv_for_all_leaves():
         if name == "generate_video":
             expected_types["video_ref"] = "string"  # r13/compose: --video-ref on video (and audio)
         assert {key: value["type"] for key, value in props.items()} == expected_types
-        assert props["consent"]["items"]["enum"] == ["user_env"]
+        consent_item = props["consent"]["items"]
+        assert "enum" not in consent_item
+        assert re.fullmatch(consent_item["pattern"], "user_env")
+        assert re.fullmatch(consent_item["pattern"], "code=0123456789ab")
+        assert re.fullmatch(consent_item["pattern"], "paid") is None
         assert tools[name]["definition"]["inputSchema"]["required"] == []
         arguments = {"prompt": "portrait", "named_prompt": "alternate", "model": "m", "entry": "e",
                      "inputs_json": "declared.json", "mode": "image", "execution": "catalog",
@@ -243,7 +248,8 @@ def test_generate_schema_and_argv_for_all_leaves():
         "guidance_scale": "number", "dry_run": "boolean", "input": "array", "engine": "string",
         "no_wait": "boolean", "consent": "array", "recovery_path": "string", "inputs": "object",
     }
-    assert schema["properties"]["consent"]["items"]["enum"] == ["user_env"]
+    assert re.fullmatch(schema["properties"]["consent"]["items"]["pattern"], "user_env")
+    assert re.fullmatch(schema["properties"]["consent"]["items"]["pattern"], "paid") is None
     assert schema["required"] == ["workflow"]
     assert schema["properties"]["inputs"]["type"] == "object"
     args = {"workflow": "bundle.json", "as_entry": "new", "replace": True, "inputs_json": "in.json",
