@@ -1,6 +1,6 @@
 """RS1.10: actual-node and approval-write refusal must leave saved bytes intact."""
-from pathlib import Path
 import json
+from pathlib import Path
 
 import pytest
 
@@ -12,7 +12,7 @@ PIN = "a" * 40
 
 
 def _source(tmp_path, *, name="source", ref=None):
-    from vibecomfy.templates import ReadyMetadata, new_workflow, OutputSpec
+    from vibecomfy.templates import OutputSpec, ReadyMetadata, new_workflow
     from vibecomfy.nodes.core import EmptyImage, SaveImage
     from vibecomfy.security.provenance import Provenance
     from vibecomfy.workflow_bundle import emit_bundle_with_candidate
