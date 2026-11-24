@@ -260,7 +260,12 @@ def _prepared_remotion_root_selected(
         registry_state = backend._effective_registry_state(theme_path)
         if backend.gen_effect_registry is not None:
             element_registry = backend.gen_effect_registry._element_registry()
-            if backend.gen_effect_registry.compute_generated_registry_state(registry=element_registry) != registry_state:
+            # Only a real generated state (it carries per-kind content hashes) is
+            # comparable; callers that substitute an opaque state are not.
+            if (
+                isinstance(registry_state.get("content_hashes"), dict)
+                and backend.gen_effect_registry.compute_generated_registry_state(registry=element_registry) != registry_state
+            ):
                 raise ValueError("render element registry changed during preparation")
     else:
         registry_state = backend._write_selected_element_registries(registry_root, element_registry)
