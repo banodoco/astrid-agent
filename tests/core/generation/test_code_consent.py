@@ -103,6 +103,8 @@ def test_entry_approval_directory_skips_contributed_rows_and_keeps_saved_entries
     contributed = {"id": "transcription", "source": "user-entry", "bundle": "x.json",
                    "contribution": "pack.transcription", "contribution_scope": "pack"}
     assert approvals.entry_approval_directory(contributed) is None
+    unsaved = {"id": "not-saved-yet", "source": "user-entry", "bundle": "x.py", "binds": {}}
+    assert approvals.entry_approval_directory(unsaved) is None
 
 
 def test_valid_dry_run_does_not_write_an_approval(tmp_path, monkeypatch):

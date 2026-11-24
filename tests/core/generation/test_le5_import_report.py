@@ -15,4 +15,5 @@ def test_json_loader_returns_import_report_without_mutating_sealed_revision(tmp_
         row.get("class_type") for row in report["diagnostics"]
         if row["code"] in {"unresolved_runtime_class", "unknown_class_type"}
     }
+    assert not hasattr(loaded.resolved.workflow, "_astrid_import_report")
     assert "_astrid_import_report" not in loaded.resolved.workflow.metadata
