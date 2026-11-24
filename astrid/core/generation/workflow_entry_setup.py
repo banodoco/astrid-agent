@@ -107,6 +107,45 @@ def _source_nodes(entry):
     return entries.engine_table()["comfyui"].workflow_requirements([workflow])["extra"]["nodes"]
 
 
+def _attached_entry_schema(endpoint, entry_id):
+    """Capture exactly one read-only schema for both imports; never fall back."""
+    from vibecomfy.schema.provider import SchemaProviderError, TargetSchemaProvider
+
+    from .backends.comfy_target import (
+        LOCAL_HTTP_SECONDS,
+        MAX_JSON_BYTES,
+        ComfyTarget,
+        ComfyTargetClient,
+    )
+    from .engine_contracts import TransportError
+
+    # The normal attached target boundary validates loopback and owns the
+    # bounded HTTP transport. A capture used only for conversion has no
+    # refresh callback or authority to queue a prompt.
+    target = ComfyTarget(endpoint, "attached")
+    try:
+        captured = ComfyTargetClient(target).request_json(
+            "/object_info", timeout=LOCAL_HTTP_SECONDS, response_limit=MAX_JSON_BYTES,
+        )
+        if not isinstance(captured, dict) or not captured:
+            raise ValueError("object_info must be a nonempty class mapping")
+        return TargetSchemaProvider.from_object_info(captured, server_url=target.url)
+    except (ValueError, OSError, TransportError, SchemaProviderError) as exc:
+        raise generation_error(
+            ValueError("The attached ComfyUI schema is unavailable or malformed; start or repair that server before saving this JSON workflow."),
+            code="target_schema_unavailable", entry={"id": entry_id},
+            target={"kind": "attached", "endpoint": target.url},
+            details={"field": "target", "endpoint": target.url, "reason": str(exc)},
+            fixes=[{
+                "id": "inspect-attached-schema", "who": "human", "scope": "read_only",
+                "instruction": {
+                    "step": "Start or repair your selected ComfyUI and verify its schema; do not start or adopt another service automatically.",
+                    "then_argv": ["astrid", "generate", "targets", "--placement", target.url, "--json"],
+                },
+            }],
+        ) from exc
+
+
 def prepare_entry_candidate(source, entry_id, *, replace, additions, placement_class,
                             consent, retry_argv, scratch, attached_endpoint=None):
     from vibecomfy.custom_node_refs import CustomNodeRefConflict
@@ -123,15 +162,7 @@ def prepare_entry_candidate(source, entry_id, *, replace, additions, placement_c
     selected = merge_entry_added_node_refs(retained, refs)
     schema_provider = None
     if attached_endpoint is not None and Path(source).suffix.lower() == ".json":
-        from vibecomfy.schema.provider import get_target_schema_provider
-
-        from .backends.comfy_target import validate_attached_url
-
-        # One private, validated target capture interprets both imports of the
-        # frozen JSON. Never consult an unrelated offline schema on publication.
-        schema_provider = get_target_schema_provider(
-            validate_attached_url(attached_endpoint), cache_dir=Path(scratch) / ".vibecomfy-schema",
-        )
+        schema_provider = _attached_entry_schema(attached_endpoint, entry_id)
     try:
         entry = import_as_entry(source, entry_id, directory=scratch, replace=False,
                                 added_node_refs=selected, schema_provider=schema_provider)
