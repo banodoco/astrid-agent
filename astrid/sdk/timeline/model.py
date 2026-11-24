@@ -413,7 +413,11 @@ class Clip(_Suggest):
         """Move by seconds and/or frames. A clip on a moment keeps it: the nudge becomes its offset (``"viral" +2f``)."""
         current = intent.on(self.data)
         if current:
-            moment = mo.parse(current).with_offset(seconds=float(seconds), frames=int(frames))
+            declaration = mo.parse(current)
+            moment = declaration.with_offset(seconds=float(seconds), frames=int(frames))
+            guard = getattr(self._tl, "_guard_anchored_nudge", None)
+            if callable(guard) and moment != declaration:
+                guard(self, moment)
             return self.on(moment)
         delta = float(seconds) + frames / self._tl.fps
         new_start = self._tl.quantize(self.start + delta)
@@ -789,7 +793,16 @@ class Clip(_Suggest):
         To change the media behind a key for every clip, use ``tl.replace_asset(KEY, HANDLE)``."""
         registry = self._tl._registry(self.shot_id)
         old_entry = copy.deepcopy(registry.get(str(self.data.get("asset"))) or {})
+        before = copy.deepcopy(registry)
         key = self._tl._register_asset(self.shot_id, asset)
+        if key in before and registry[key] != before[key] and any(
+            clip.shot_id == self.shot_id and clip.data is not self.data and clip.asset == key
+            for clip in self._tl.clips()
+        ):
+            registry[key] = before[key]
+            raise TimelineEditError(
+                f"asset key {key!r} is used by another clip; choose another key or use replace_asset to change all clips"
+            )
         self.data["asset"] = key
         new_entry = self._tl._registry(self.shot_id).get(key) or {}
         if self.is_audio and not intent.cut_of(self.data) and new_entry.get("media_id") != old_entry.get("media_id"):
@@ -826,6 +839,12 @@ class Clip(_Suggest):
         return self
 
     def remove(self) -> None:
+        stage = getattr(self._tl, "_stage_command", None)
+        if self.shot_id == PARENT_SHOT and callable(stage):
+            stage({"schema_version": 1, "op": "clip.delete", "version": "1",
+                   "select": f"parent/clip:{self.id}", "args": {}, "intent": {}},
+                  label="Remove clip", capture=True)
+            return
         command = getattr(self._tl, "command", None)
         if self.shot_id == PARENT_SHOT and callable(command):
             from .capture import capture_clip_delete
@@ -854,8 +873,13 @@ class _TrackRef:
     def rename(self, label: str) -> "_TrackRef":
         if not isinstance(label, str) or not label.strip():
             raise TimelineEditError("track label must be a nonempty string")
+        stage = getattr(self._tl, "_stage_command", None)
         command = getattr(self._tl, "command", None)
-        if callable(command):
+        if callable(stage):
+            stage({"schema_version": 1, "op": "track.set", "version": "1",
+                   "select": f"parent/track:{self.id}", "args": {"values": {"label": label}, "clear": []}},
+                  label="Rename track", capture=True)
+        elif callable(command):
             from ._scalar_commands import capture_track_set
 
             captured = capture_track_set(self._tl.bundle, f"parent/track:{self.id}", values={"label": label})

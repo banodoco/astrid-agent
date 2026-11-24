@@ -60,9 +60,14 @@ def _target_pin(bundle, owner, clip_id):
         "variant_id": binding.get("variantId", binding.get("variant_id")),
         "object_id": binding.get("media_id", binding.get("object_id")),
     }
-    if not all(isinstance(value, str) and value for value in values.values()):
-        raise ValueError("selected clip's authored media binding is not immutable and complete")
-    return values
+    if not isinstance(values['object_id'], str) or not values['object_id']:
+        raise ValueError("selected clip's authored media binding has no immutable object")
+    if bool(values['generation_id']) != bool(values['variant_id']):
+        raise ValueError("selected clip's authored media binding has a partial catalog pin")
+    # Legacy authored entries can name an immutable CAS object without a
+    # catalog association. Both selections are still verified by Runtime;
+    # native capture observes and validates the complete retained entry.
+    return {key: value for key, value in values.items() if value is not None}
 
 
 def _pending_matches(command, *, owner, clip_id, source_object_id, old_media, media):

@@ -432,13 +432,44 @@ def helper_client(retained_pack, monkeypatch, tmp_path):
             'native_inspection': {'project_id': case.project, 'timeline_id': 'film'},
             'summary': {'head_revision_id': case.head()['revision_id']}})
 
-        def opened(project, timeline, *, revision_id=None):
+        def opened(project, timeline, *, revision_id=None, publication_id=None):
+            from astrid.sdk.contracts import ErrorObject
+
             head = case.head()['revision_id']
             revision = revision_id or head
+            if publication_id is not None:
+                if not revision_id or not isinstance(publication_id, str) or not publication_id:
+                    return DomainResult.failure(ErrorObject(
+                        'protocol_error', 'source hydration requires the exact original revision/publication pair', {}))
             document = case.service._timeline_commits()[0].revision_closure(project, timeline, revision)
+            bundle = commit.bundle_from_document(document)
+            if publication_id is not None:
+                cursor, seen = None, set()
+                while True:
+                    page = owner.history(project, timeline, cursor=cursor, limit=100)
+                    if not page.ok:
+                        return page
+                    entry = next((row for row in page.data['items']
+                                  if row['publication_id'] == publication_id), None)
+                    if entry is not None:
+                        if entry['revision_id'] != revision or entry['receipt']['receipt_id'] != publication_id:
+                            message = 'original revision/publication pair changed'
+                            break
+                        message = None
+                        break
+                    cursor = page.data.get('next_cursor')
+                    if cursor is None or cursor in seen:
+                        message = 'original publication is unavailable'
+                        break
+                    seen.add(cursor)
+                if message is not None:
+                    return DomainResult.failure(ErrorObject(
+                        'protocol_error', f'could not open the timeline closure: {message}',
+                        {'timeline': timeline, 'revision_id': revision}))
+            if publication_id is not None:
+                bundle['base_parent']['publication_id'] = publication_id
             return DomainResult.success({'project_id': project, 'timeline_id': timeline,
-                'head_revision_id': head, 'revision_id': revision,
-                'bundle': commit.bundle_from_document(document)})
+                'head_revision_id': head, 'revision_id': revision, 'bundle': bundle})
 
         owner.open_bundle = opened
         return owner
@@ -448,6 +479,20 @@ def helper_client(retained_pack, monkeypatch, tmp_path):
                             raising=False)
     return SimpleNamespace(connect=connect, calls=calls, lost_ack=lost_ack, before_submit=before_submit,
                            outbox=lambda: next((tmp_path / 'support/timeline-outbox').glob('*.json')))
+
+
+def test_helper_open_bundle_refuses_mismatched_publication(retained_pack, helper_client):
+    case = retained_pack
+    original = case.head()
+    case.submit(case.request([capture_track_set(case.bundle(), 'parent/track:picture',
+                                               values={'label': 'Newer'})]), 'mismatch-newer')
+    revision = case.head()['revision_id']
+    assert revision != original['revision_id']
+    result = helper_client.connect().open_bundle(
+        case.project, 'film', revision_id=revision, publication_id=original['publication_id'])
+    assert not result.ok
+    assert result.error.code == 'protocol_error'
+    assert result.error.message == 'could not open the timeline closure: original revision/publication pair changed'
 
 
 @pytest.mark.parametrize('key', [None, 'public-element'])
