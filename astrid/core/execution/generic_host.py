@@ -13022,6 +13022,50 @@ class GenericPackHost:
                     if port.type == "file"
                 ),
             )
+            # Freeze admitted bytes before any canonical import or trusted
+            # alignment command can read them. Cancellation guards recheck this
+            # baseline during preparation as well as execution.
+            immutable_input_baseline = {}
+            for input_root in (root / "inputs", root / "managed-objects"):
+                immutable_input_baseline.update(self.execution_policy.immutable_input_baseline(input_root))
+            if capability_id == "vibecomfy.run":
+                original_baseline = dict(immutable_input_baseline)
+                def input_nodes(paths):
+                    nodes = {}
+                    for path in paths:
+                        info = os.lstat(path)
+                        if not stat.S_ISREG(info.st_mode):
+                            raise HostError("managed generation input was replaced")
+                        nodes[path] = (info.st_dev, info.st_ino, info.st_mode, info.st_nlink)
+                    return nodes
+                original_nodes = input_nodes(original_baseline)
+                def assert_managed_input_identity():
+                    current = {}
+                    for input_root in (root / "inputs", root / "managed-objects"):
+                        current.update(self.execution_policy.immutable_input_baseline(input_root))
+                    if current != original_baseline or input_nodes(current) != original_nodes:
+                        raise HostError("managed generation admitted input bytes changed during preparation")
+                admitted = _admitted_task_spec(task_data)
+                # Only the Runtime-owned outer envelope can identify a
+                # delegated child. Those and legacy UI tasks predate receipts;
+                # ordinary canonical root tasks must not omit the receipt.
+                outer = task_data["spec"]
+                delegated = (
+                    isinstance(outer.get("spec"), Mapping)
+                    and isinstance(outer.get("delegated_parent"), Mapping)
+                )
+                canonical = any(inputs.get(name) for name in ("python", "companion", "source")) or Path(inputs.get("workflow") or "").suffix.lower() == ".py"
+                if "invocation_preflight" in admitted or (canonical and not delegated):
+                    from astrid.packs.vibecomfy.invocation_preflight import (
+                        verify_admitted_invocation_receipt,
+                    )
+
+                    verify_admitted_invocation_receipt(
+                        admitted.get("invocation_preflight"), inputs, root / "workflow-receipt",
+                    )
+                    # Loading user-confirmed Python executes code in the host.
+                    # Recheck the pre-import witness before any target routing.
+                    assert_managed_input_identity()
             local_device = None
             placement_policy = inputs.get("placement_policy")
             if record.definition.metadata.get("host_target_operation") and not placement_policy:
@@ -13070,12 +13114,6 @@ class GenericPackHost:
                     readiness_profile = None
                 inputs.pop("placement_policy", None)
             _terminal["inputs"] = inputs
-            # Freeze admitted bytes before any canonical import or trusted
-            # alignment command can read them. Cancellation guards recheck this
-            # baseline during preparation as well as execution.
-            immutable_input_baseline = {}
-            for input_root in (root / "inputs", root / "managed-objects"):
-                immutable_input_baseline.update(self.execution_policy.immutable_input_baseline(input_root))
             evidence_root = root
             if (capability_id == "vibecomfy.run" and machine_policy is None
                     and not inputs.get("comfy_url") and readiness_profile is None):
@@ -13101,22 +13139,6 @@ class GenericPackHost:
                                          "device": engine_preparation.visibility if engine_preparation.visibility is not None else "auto"}
                 original_input_digests = {name: hashlib.sha256(Path(value).read_bytes()).hexdigest()
                     for name, value in inputs.items() if name in {"workflow", "python", "companion", "source"} and value}
-                original_baseline = dict(immutable_input_baseline)
-                def input_nodes(paths):
-                    nodes = {}
-                    for path in paths:
-                        info = os.lstat(path)
-                        if not stat.S_ISREG(info.st_mode):
-                            raise HostError("managed generation input was replaced")
-                        nodes[path] = (info.st_dev, info.st_ino, info.st_mode, info.st_nlink)
-                    return nodes
-                original_nodes = input_nodes(original_baseline)
-                def assert_managed_input_identity():
-                    current = {}
-                    for input_root in (root / "inputs", root / "managed-objects"):
-                        current.update(self.execution_policy.immutable_input_baseline(input_root))
-                    if current != original_baseline or input_nodes(current) != original_nodes:
-                        raise HostError("managed generation admitted input bytes changed during preparation")
                 def prepare_engine(workflow_path, identity, loaded):
                     assert_managed_input_identity()
                     from astrid.packs.vibecomfy.production_engine import _canonical_bundle_value
