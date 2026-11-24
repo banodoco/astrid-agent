@@ -1,14 +1,17 @@
-"""Independent RA-0b witnesses; existing schema-forging tests are untouched."""
+"""RA-0b witnesses for the seal and the shared test-only forging helper."""
 
 from __future__ import annotations
 
 import os
 import stat
-from contextlib import contextmanager
 
 import pytest
 
 from astrid.installer.core import install_stamp
+from tests.installer.schema_seal_helpers import (
+    _forge_installed_file,
+    _temporary_schema_write_access,
+)
 from tests.test_installer_installed_schema import (
     SCHEMA,
     release_wheel,  # noqa: F401 - pytest fixture dependency
@@ -16,32 +19,6 @@ from tests.test_installer_installed_schema import (
 )
 
 pytestmark = pytest.mark.linux_native
-
-
-@contextmanager
-def _temporary_schema_write_access(path):
-    """Test-only permission scope: restore the seal even if forging raises.
-
-    A missing file is intentionally missing and a forged symlink is left for
-    the reader to reject. Never chmod the target of such a symlink.
-    """
-    parent_mode = stat.S_IMODE(path.parent.lstat().st_mode)
-    file_mode = stat.S_IMODE(path.lstat().st_mode)
-    path.parent.chmod(parent_mode | stat.S_IWUSR)
-    try:
-        path.chmod(file_mode | stat.S_IWUSR)
-        yield
-    finally:
-        try:
-            try:
-                info = path.lstat()
-            except FileNotFoundError:
-                pass
-            else:
-                if stat.S_ISREG(info.st_mode):
-                    path.chmod(file_mode)
-        finally:
-            path.parent.chmod(parent_mode)
 
 
 def test_staged_schema_denies_owner_write_and_unlink(staged_installer):  # noqa: F811
@@ -80,14 +57,7 @@ def test_staged_schema_damage_refused_after_permissions_restored(
     target = state.outside / "identical-schema-for-seal-witness.json"
     target.write_bytes(path.read_bytes())
     target_mode = target.stat().st_mode
-    with _temporary_schema_write_access(path):
-        if damage == "missing":
-            path.unlink()
-        elif damage == "symlink":
-            path.unlink()
-            path.symlink_to(target)
-        else:
-            path.write_text("{}", encoding="utf-8")
+    _forge_installed_file(path, damage, target)
 
     # Restoration occurs before testing the stamp. The mismatch case must
     # refuse on bytes, not on a still-writable file or directory.

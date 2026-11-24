@@ -312,16 +312,18 @@ schema = _local_schema.load_verified_schema(root, str(path))
 assert reader._shared_timeline_validator().schema == schema
 assert reader.validate_timeline_config_for_container({'tracks': [], 'clips': []})
 kind = sys.argv[4]
+_forge_installed_file = __import__('runpy').run_path(
+    str(Path(sys.argv[2]) / 'tests/installer/schema_seal_helpers.py')
+)['_forge_installed_file']
 if kind == 'symlink':
     target = Path.cwd() / 'identical-installed-schema.json'
     target.write_bytes(path.read_bytes())
-    path.unlink()
-    path.symlink_to(target)
+    _forge_installed_file(path, kind, target)
 elif kind == 'missing':
-    path.unlink()
+    _forge_installed_file(path, kind)
 else:
     assert kind == 'mismatch'
-    path.write_text('{}')
+    _forge_installed_file(path, kind)
 rejected = []
 for name, consume in (
     ('verified', lambda: _local_schema.load_verified_schema(root, str(path))),

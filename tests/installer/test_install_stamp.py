@@ -249,7 +249,7 @@ def test_uninstall_removes_sealed_program_and_keeps_workspace(installed, tmp_pat
     retained = data / "user.txt"
     retained.write_text("keep")
     home = tmp_path / "home"
-    home.mkdir()
+    home.mkdir(exist_ok=True)
     selection = home / "selection.json"
     core.write_json(selection, {"owner": "haus.astrid.runtime", "program_root": str(program),
                                 "data_root": str(data)})
