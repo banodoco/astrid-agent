@@ -208,7 +208,7 @@ def native_unknown_input_readiness(inputs: tuple[dict[str, str], ...]) -> dict[s
         "id": "review_workflow_inputs", "who": "human", "scope": "read_only",
         "details": {},
         "instruction": {
-            "step": ("The selected pack no longer accepts the reported workflow input(s). "
+            "step": ("The selected target does not accept the reported workflow input(s). "
                      "Review the target schema and edit the original workflow to use the supported inputs, "
                      "then inspect the revised workflow before retrying."),
             "then_argv": ["astrid", "generate", "describe", "<WORKFLOW>", "--json"],
@@ -217,7 +217,7 @@ def native_unknown_input_readiness(inputs: tuple[dict[str, str], ...]) -> dict[s
     }
     issues = [
         {"code": "unknown_input", "severity": "error",
-         "message": (f"Node {row['node_id']} ({row['class_type']}) no longer accepts "
+         "message": (f"Node {row['node_id']} ({row['class_type']}) does not accept "
                      f"input {row['input']!r} on the selected target."),
          "details": {**row, "field": row["input"]}, "fix_ids": [fix["id"]]}
         for row in inputs

@@ -53,6 +53,14 @@ def test_setup_case_has_a_traceable_next_step(case_name, code, run):
     validate_setup_envelope(result)
     assert code in {issue["code"] for issue in result["issues"]}, case_name
     assert json.loads(json.dumps(result)) == result
+    if result["status"] == "ready_with_warnings":
+        # Advisory cases have no fix and are never projected as errors.
+        assert all(issue["severity"] == "warning" and not issue.get("fix_ids")
+                   for issue in result["issues"])
+        assert result["fixes"] == []
+        with pytest.raises(ValueError, match="blocking issue"):
+            GenerationReadinessError(result, task_id="task-test")
+        return
     error = GenerationReadinessError(result, task_id="task-test")
     assert error.to_envelope() == {**result, "task_id": "task-test"}
 
