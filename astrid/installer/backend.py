@@ -1381,7 +1381,7 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         except subprocess.CalledProcessError as exc:
             output = exc.output or ""
             if exc.returncode == 2 and re.search(
-                r"(?m)^.*: error: argument command: invalid choice: 'remove-history-guards' \\(choose from ",
+                r"(?m)^.*: error: argument command: invalid choice: 'remove-history-guards' \(choose from ",
                 output,
             ):
                 return
