@@ -437,6 +437,10 @@ Preview a reusable entry with `astrid generate workflow FILE --as-entry NAME
 same controller preflight as execution, without saving an entry or queuing a
 task. Execution-only input values are optional in the save preview; supplied
 values are still validated. `--no-run` saves only, after any required approval.
+For an attached JSON workflow, both preview and save require the selected ComfyUI
+to be reachable: they read its live `/object_info` schema to interpret the saved
+widgets. An unavailable or malformed schema blocks the save; there is no offline
+fallback. `--no-run` never queues a prompt or opens Runtime.
 
 An existing entry refuses implicit overwrite (`entry_exists`); only an explicit
 `--replace` changes it. Replacement keeps unrelated earlier `--add` declarations
