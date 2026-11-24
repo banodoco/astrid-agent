@@ -1361,6 +1361,57 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                 remove_pack_tree(destination)
             raise
 
+    def remove_history_guards(self, candidate: Version, realm_root: str, realm_id: str) -> None:
+        """Prepare the stopped realm for a guard-unaware Runtime on rollback."""
+        # This is the candidate's offline protocol CLI, not the Agent-facing
+        # astrid_runtime CLI (which requires a selected data-root/daemon).
+        # The protocol CLI's older versions reject an unknown subcommand with
+        # argparse exit 2. Only that specific refusal is a compatibility no-op.
+        root = absolute(realm_root)
+        if not isinstance(realm_id, str) or not realm_id:
+            raise ValueError("History guard rollback requires the exact realm identity.")
+        argv = [candidate.python, "-X", "utf8", "-I", "-m", "runtime_protocol.cli",
+                "remove-history-guards", "--root", str(root),
+                "--confirm", f"REMOVE HISTORY GUARDS {realm_id}"]
+        env = dict(candidate.env)
+        env.pop("ASTRID_INSTALLER_OPERATION_ID", None)
+        failure = "Could not remove history guards before activating the previous Runtime"
+        try:
+            output = self.run(argv, extra_env=env)
+        except subprocess.CalledProcessError as exc:
+            output = exc.output or ""
+            if exc.returncode == 2 and re.search(
+                r"(?m)^.*: error: argument command: invalid choice: 'remove-history-guards' \\(choose from ",
+                output,
+            ):
+                return
+            try:
+                result = _runtime_json(output)
+            except (TypeError, ValueError):
+                raise RuntimeOperationError(f"{failure}: no valid Runtime result.") from exc
+            error = result.get("error") if isinstance(result, dict) else None
+            if exc.returncode == 1 and isinstance(result, dict) and result.get("ok") is False and isinstance(error, dict):
+                # The candidate has classified an exact historical realm,
+                # e.g. a restored pre-U33 backup. Layer 1 only exists on U33.
+                if (error.get("code") == "validation_error"
+                        and error.get("message") == "history guard rollback requires exact canonical U33"):
+                    return
+                message = error.get("message") or "Runtime refused the operation."
+                raise RuntimeOperationError(f"{failure}: {message}") from exc
+            raise RuntimeOperationError(f"{failure}: Runtime exited unsuccessfully.") from exc
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise RuntimeOperationError(f"{failure}: {self._command_failure(exc)}") from exc
+        try:
+            result = _runtime_json(output)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeOperationError(f"{failure}: invalid Runtime result.") from exc
+        if (not isinstance(result, dict) or result.get("ok") is not True
+                or result.get("realm_id") != realm_id
+                or type(result.get("changed")) is not bool
+                or type(result.get("history_guard_layer")) is not int
+                or result["history_guard_layer"] != 0):
+            raise RuntimeOperationError(f"{failure}: Runtime did not verify the removal.")
+
     def restore(self, old: Version, data: Path, realm: dict, backup: dict) -> None:
         if platform.sys.platform == "win32":
             platform.private_directory(data)

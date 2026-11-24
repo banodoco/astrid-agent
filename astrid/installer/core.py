@@ -322,6 +322,12 @@ def rollback_transaction(root: Path, data: Path, backend, transaction: dict, *,
         save("recovering")
         if backup is not None and restore_workspace and kind == "migration":
             backend.restore(old, data, realm, backup)
+        # A same-schema candidate can have installed the history guard layer
+        # even when no workspace backup was taken. Replay after restore as well:
+        # the candidate's offline command is idempotent on a stopped realm.
+        remove_guards = getattr(backend, "remove_history_guards", None)
+        if candidate is not None and remove_guards is not None:
+            remove_guards(candidate, realm["realm_root"], realm["realm_id"])
         if candidate is not None and old.release < 13 <= candidate.release:
             # R13 retires the R9--R12 boot rows even without a Runtime schema
             # change (and therefore without an installer workspace backup).
