@@ -42,3 +42,35 @@ def test_replacement_retains_old_pin_and_other_placement_records_without_grantin
     assert saved == [old, other]
     assert [record for record in merged if approval_matches(
         record, new_node, placement_class="local")] == [new]
+
+
+def test_preview_authority_only_reuses_exact_already_authorized_records(tmp_path):
+    import pytest
+
+    from astrid.core.generation.node_approvals import (
+        approval_record, authorize_nodes, consent_token, preview_entry_authority,
+    )
+    from astrid.core.generation.preflight import GenerationReadinessError
+
+    node = {"repo": "https://github.com/example/preview-only", "commit": "a" * 40}
+    retry = ["astrid", "generate", "workflow", "source.json", "--as-entry", "example"]
+    record = approval_record(node, placement_class="local")
+    authorized = authorize_nodes([node], placement_class="local",
+                                 consent=["code=" + consent_token(record)], retry_argv=retry)
+    entry = {"id": "example", "bundle": str(tmp_path / "candidate")}
+    with preview_entry_authority(entry, authorized, "local"):
+        assert authorize_nodes([node], placement_class="local", entry=entry, retry_argv=retry) == authorized
+        with pytest.raises(GenerationReadinessError):
+            authorize_nodes([dict(node, commit="b" * 40)], placement_class="local",
+                            entry=entry, retry_argv=retry)
+        with pytest.raises(GenerationReadinessError):
+            authorize_nodes([node], placement_class="runpod", entry=entry, retry_argv=retry)
+        with pytest.raises(GenerationReadinessError):
+            authorize_nodes([node], placement_class="local",
+                            entry=dict(entry, bundle=str(tmp_path / "other")), retry_argv=retry)
+        with pytest.raises(GenerationReadinessError):
+            authorize_nodes([node], placement_class="local", entry=entry,
+                            retry_argv=retry, persist=True)
+    with pytest.raises(GenerationReadinessError):
+        authorize_nodes([node], placement_class="local", entry=entry, retry_argv=retry)
+    assert not (tmp_path / "candidate").exists()
