@@ -190,6 +190,27 @@ def install_identity(version_root: Path) -> dict:
             "managed_by": managed_by}
 
 
+def install_stamp(
+    package_root: Path | None = None, *, verify: bool = False,
+) -> tuple[str | None, str | None]:
+    """Return (stamp, None) or (None, named_reason) for the shipped package.
+
+    The default is a cheap metadata check where the platform supports it.
+    Explicit verify rehashes the shipped bytes for diagnostics; it does not
+    refresh tokens or authorize a later cheap hit. The optional path is the
+    Astrid package, not a project root; ordinary callers should omit it.
+    """
+    from ._install_stamp import read_install_stamp
+
+    return read_install_stamp(package_root, verify=verify)
+
+
+def install_stamp_line(package_root: Path | None = None, *, verify: bool = False) -> str:
+    """One diagnostic line for the installed timing lane."""
+    stamp, reason = install_stamp(package_root, verify=verify)
+    return stamp if stamp is not None else f"None:{reason}"
+
+
 def persist_install_identity(version: Version, program_root: Path, *,
                              selection: Path | None = None, fields: dict | None = None) -> None:
     """Stamp version metadata and merge the K2 identity at a caller's commit point."""

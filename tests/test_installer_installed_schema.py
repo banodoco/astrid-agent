@@ -312,16 +312,18 @@ schema = _local_schema.load_verified_schema(root, str(path))
 assert reader._shared_timeline_validator().schema == schema
 assert reader.validate_timeline_config_for_container({'tracks': [], 'clips': []})
 kind = sys.argv[4]
+_forge_installed_file = __import__('runpy').run_path(
+    str(Path(sys.argv[2]) / 'tests/installer/schema_seal_helpers.py')
+)['_forge_installed_file']
 if kind == 'symlink':
     target = Path.cwd() / 'identical-installed-schema.json'
     target.write_bytes(path.read_bytes())
-    path.unlink()
-    path.symlink_to(target)
+    _forge_installed_file(path, kind, target)
 elif kind == 'missing':
-    path.unlink()
+    _forge_installed_file(path, kind)
 else:
     assert kind == 'mismatch'
-    path.write_text('{}')
+    _forge_installed_file(path, kind)
 rejected = []
 for name, consume in (
     ('verified', lambda: _local_schema.load_verified_schema(root, str(path))),
@@ -476,3 +478,24 @@ def test_pack_build_requires_pinned_node_archive(staged_installer):
                                     "shared_modules": {"url": "https://example.org/lock", "sha256": "b" * 64}}
     with pytest.raises(ValueError, match="SHA256-pinned"):
         state.backend.stage(state.manifest, state.root, state.data)
+
+
+def test_stage_publishes_stamp_read_by_installed_interpreter(staged_installer):
+    """The actual wheel's Backend.stage path publishes a complete stamp."""
+    state = staged_installer
+    version = state.backend.stage(state.manifest, state.root, state.data)
+    from astrid.installer.core import install_stamp
+
+    package = state.product_root / "astrid"
+    stamp, reason = install_stamp(package)
+    assert stamp and reason is None
+    observed = _installed_script(state, version, r'''
+import json
+from astrid.installer.core import install_stamp
+print(json.dumps(install_stamp()))
+''')
+    assert observed == [stamp, None]
+    doc = core.read_json(version.root / "install-stamp.json")
+    assert any(path.endswith("/astrid/core/model_catalog/models.yaml") for path in doc["files"])
+    assert any(path.endswith("/pack.yaml") for path in doc["files"])
+    assert not (package / "core/model_catalog/models.yaml").stat().st_mode & 0o222

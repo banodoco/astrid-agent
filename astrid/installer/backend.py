@@ -1617,6 +1617,19 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         from .boundary_registration import stage_runtime_launcher
 
         stage_runtime_launcher(version)
+        # Precompile the selected interpreter's actual shipped packages before
+        # sealing. Keep ordinary timestamp bytecode; detaching shared leaves
+        # during sealing preserves the source mtime and contents.
+        shipped = [product_root / "astrid"]
+        client_package = product_root / "astrid_runtime_client"
+        if client_package.is_dir():
+            shipped.append(client_package)
+        self.run([python, "-X", "utf8", "-I", "-B", "-m", "compileall", "-q", "-f",
+                  "-o", "0", "--invalidation-mode", "timestamp", *shipped], extra_env=env)
+        # Version/profile/service records and user/runtime data stay writable.
+        from ._install_stamp import write_install_stamp
+
+        write_install_stamp(version, product_root)
         return version
 
     def validate_candidate(self, version: Version, data: Path, realm: dict) -> None:
