@@ -289,9 +289,13 @@ machine is claimed. A `missing_node_pack` issue names the missing class;
 identify its providing pack before declaring a pinned source. When a local
 engine is not installed, the same readiness result also retains
 `engine_not_found`; missing packs are not hidden by that engine failure.
-A cached schema does not establish installation. Only ComfyUI core evidence
-or an exact catalog/bundle pin resolves the provider requirement; actual host
-restoration, consent and loaded classes still need verification.
+A cached schema does not establish installation. Only ComfyUI core evidence,
+an exact catalog/bundle pin, or the shipped VibeComfy node registry on a placement
+that links those nodes resolves the provider requirement. RunPod defaults to
+alignment, which links the shipped nodes; explicit check/trust cannot assume
+that link exists without evidence. Attached targets must report loaded nodes
+in their own inventory. Actual host restoration, consent and loaded classes
+still need verification.
 
 ### WS-7a — Node recipe declarations
 

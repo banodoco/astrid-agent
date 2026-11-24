@@ -59,26 +59,33 @@ def test_sam_deferred_target_dry_run_blocks_both_missing_classes(
 
 
 def test_cached_custom_schema_does_not_make_runpod_ready(monkeypatch, sam_api_path, tmp_path):
-    from types import SimpleNamespace
+    from dataclasses import replace
 
     from vibecomfy.entries import draft_entry
-    from vibecomfy.schema.provider import TargetSchemaProvider
+    from vibecomfy.schema.provider import ObjectInfoIndexSchemaProvider, TargetSchemaProvider
     from astrid.core.generation.preflight import GenerationReadinessError
     from astrid.sdk.generation import _explicit_workflow_needs
 
     graph = load_workflow_path(sam_api_path, tmp_path / "cached-canonical").resolved.workflow
     entry = draft_entry(graph, "sam")
     entry["needs"] = _explicit_workflow_needs(entry["needs"])
-    # Simulate a known authoring schema without a declared/locked provider.
-    # This is schema knowledge, not a selected target's object_info.
+    # Feed non-core cache evidence to the actual shipped-index lookup used by
+    # readiness, not the separate authoring provider. A cached schema still
+    # cannot establish a custom-node installable provider.
     ambient = TargetSchemaProvider.from_object_info(
         sam_object_info(), server_url="http://127.0.0.1:8188", model_availability="target",
     )
-    ordinary = entries._schema_provider()
-    monkeypatch.setattr(entries, "_schema_provider", lambda: SimpleNamespace(
-        get_schema=lambda name: ambient.get_schema(name) if name in SAM_CLASSES else ordinary.get_schema(name),
-    ))
-    assert all(entries._schema_provider().get_schema(name) is not None for name in SAM_CLASSES)
+    original = ObjectInfoIndexSchemaProvider.get_schema
+    seen = set()
+
+    def cached(provider, name):
+        if name in SAM_CLASSES:
+            seen.add(name)
+            return replace(ambient.get_schema(name), source_provider="object_info_index",
+                           source_cache_path=str(provider.root / "unreviewed-custom@fixture.json"))
+        return original(provider, name)
+
+    monkeypatch.setattr(ObjectInfoIndexSchemaProvider, "get_schema", cached)
 
     # Core SaveAudio is deliberately outside VibeComfy's legacy explicit
     # CORE_COMFY_CLASSES set; the shipped core index must still cover it.
@@ -90,6 +97,72 @@ def test_cached_custom_schema_does_not_make_runpod_ready(monkeypatch, sam_api_pa
     assert {issue["details"]["node"] for issue in readiness["issues"]
             if issue["code"] == "missing_node_pack"} == SAM_CLASSES
     assert readiness["target"] == pending
+    assert seen == SAM_CLASSES
+
+
+def test_shipped_transcription_runpod_dry_run_reaches_normal_preflight(monkeypatch, tmp_path, sam_offline_lookup):
+    import wave
+
+    from astrid.packs.vibecomfy import invocation_preflight
+    from astrid.sdk import generation
+
+    audio = tmp_path / "speech.wav"
+    with wave.open(str(audio), "wb") as stream:
+        stream.setnchannels(1)
+        stream.setsampwidth(2)
+        stream.setframerate(16000)
+        stream.writeframes(b"\0\0" * 16000)
+    calls = []
+    original = invocation_preflight.preflight_invocation
+
+    def record(*args, **kwargs):
+        calls.append(kwargs.get("phase"))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(invocation_preflight, "preflight_invocation", record)
+    monkeypatch.setattr(generation, "_require_claimed_machine",
+                        lambda *args, **kwargs: pytest.fail("dry run required a machine"))
+    monkeypatch.setenv("VIBECOMFY_ENTRIES_DIR", str(tmp_path / "entries"))
+    result = generation.generate.audio(entry="transcription", mode="transcribe",
+                                       audio_ref=str(audio), placement="runpod", dry_run=True)
+    assert calls == ["dry-run"]
+    assert result["status"] != "blocked"
+    assert not any(issue["code"] == "missing_node_pack" for issue in result["issues"])
+
+
+@pytest.mark.parametrize("align", ["check", "trust"])
+def test_unprepared_runpod_does_not_assume_shipped_node_is_linked(align, sam_offline_lookup):
+    from vibecomfy.comfy_nodes import NODE_CLASS_MAPPINGS
+    from astrid.core.generation.preflight import GenerationReadinessError
+
+    entry = entries.find_entry("transcription")
+    graph = entries._load_entry_workflow(entry)
+    shipped = {node.class_type for node in graph.runtime_nodes().values()} & NODE_CLASS_MAPPINGS.keys()
+    assert shipped, "bundled transcription must exercise the actual shipped registry"
+    pending = {"engine": "comfyui", "placement": "runpod", "state": "pending_host_readiness"}
+    with pytest.raises(GenerationReadinessError) as caught:
+        entries.target_schema(entry, graph, None, pending_target=pending, align=align)
+    assert shipped <= {issue["details"]["node"] for issue in caught.value.readiness["issues"]
+                       if issue["code"] == "missing_node_pack"}
+
+
+def test_shipped_node_on_attached_target_requires_live_inventory(sam_offline_lookup):
+    from types import SimpleNamespace
+    from vibecomfy.comfy_nodes import NODE_CLASS_MAPPINGS
+    from astrid.core.generation.preflight import GenerationReadinessError
+
+    entry = entries.find_entry("transcription")
+    graph = entries._load_entry_workflow(entry)
+    active = {node.class_type for node in graph.runtime_nodes().values()}
+    shipped = active & NODE_CLASS_MAPPINGS.keys()
+    assert shipped
+    # No managed-node preparation on an attached server; it must report its
+    # own loaded classes even if the controller ships them.
+    client = SimpleNamespace(object_info=lambda: {name: {} for name in active - shipped})
+    with pytest.raises(GenerationReadinessError) as caught:
+        entries.target_schema(entry, graph, client)
+    assert shipped <= {issue["details"]["node"] for issue in caught.value.readiness["issues"]
+                       if issue["code"] == "missing_node_pack"}
 
 
 def test_sam_actual_attached_inventory_is_authoritative(network, monkeypatch, sam_api_path, tmp_path):
