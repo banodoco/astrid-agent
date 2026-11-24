@@ -129,11 +129,18 @@ def entry_approval_directory(entry):
     raw = json.loads(manifest.read_text(encoding="utf-8"))
     raw_bundle = Path(raw["bundle"])
     resolved_bundle = Path(saved["bundle"])
-    if raw["id"] != saved["id"] or (directory / raw_bundle).resolve() != resolved_bundle:
+    saved_root = directory.resolve()
+    raw_target = raw_bundle.expanduser()
+    if raw["id"] != saved["id"] or (directory / raw_target).resolve() != resolved_bundle:
         raise ValueError("saved entry changed before code approval")
-    resolved_parts = (resolved_bundle.relative_to(directory.resolve()).parts
-                      if resolved_bundle.is_relative_to(directory.resolve()) else ())
-    if not any(part.startswith("revision-v2-") for part in (*raw_bundle.parts, *resolved_parts)):
+    # Ignore the saved directory's own name when inspecting an absolute legacy
+    # bundle path. A resolved v2 path reached through an alias still fails closed.
+    raw_parts = (raw_target.relative_to(directory.absolute()).parts
+                 if raw_target.is_absolute() and raw_target.is_relative_to(directory.absolute())
+                 else raw_bundle.parts)
+    resolved_parts = (resolved_bundle.relative_to(saved_root).parts
+                      if resolved_bundle.is_relative_to(saved_root) else (resolved_bundle.parent.name,))
+    if not any(part.startswith("revision-v2-") for part in (*raw_parts, *resolved_parts)):
         return directory
 
     parts = raw_bundle.parts
@@ -145,7 +152,7 @@ def entry_approval_directory(entry):
     bundle = revision / "bundle"
     revision_manifest = revision / "entry.json"
     if (revision.is_symlink() or not revision.is_dir()
-            or revision.resolve().parent != directory.resolve()
+            or revision.resolve().parent != saved_root
             or bundle.is_symlink() or not bundle.is_dir()
             or bundle.resolve() != resolved_bundle
             or revision_manifest.is_symlink() or not revision_manifest.is_file()):
