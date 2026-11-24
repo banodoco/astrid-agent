@@ -70,11 +70,11 @@ def test_two_commit_schema_fixture_warns_then_doctor_names_removed_input(
                            "url": "https://example.test/fixture-pack",
                            "commit": selected, "class_set": ["EmptyLatentImage"]}],
     )
-    notices = []
     pending = {"engine": "comfyui", "placement": "runpod"}
-    assert target_schema({"id": "fixture"}, graph, None,
-                         pending_target=pending, align="align", version_notices=notices) is None
-    notice, = notices
+    checked = target_schema({"id": "fixture"}, graph, None,
+                            pending_target=pending, align="align")
+    assert checked.provider is None
+    notice, = checked.version_notices
     preview = readiness_envelope(issues=[notice["issue"]], target=pending)
     assert preview["status"] == "ready_with_warnings"
     assert preview["issues"][0]["code"] == "pack_version_differs"

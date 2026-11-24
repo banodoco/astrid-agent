@@ -107,7 +107,7 @@ def test_selected_managed_inventory_reaches_real_bundle_approval(tmp_path, monke
         with pytest.raises(ValueError, match='model-root'):
             entries.target_schema({'id': 'auxiliary-contract'}, workflow, client)
         return
-    provider = entries.target_schema({'id': 'auxiliary-contract'}, workflow, client)
+    provider = entries.target_schema({'id': 'auxiliary-contract'}, workflow, client).provider
     bundle = emit_bundle(workflow, tmp_path / 'workflow.py', {'operation': 'authored'})
     assert bundle.compile(schema_provider=provider).api_digest
     declaration = next(row for row in provider._approval_diagnostics if row['code'] == 'target_model_asset')
@@ -129,7 +129,7 @@ def test_attached_target_cannot_adopt_managed_inventory(tmp_path, monkeypatch):
     client, workflow, _path = _selected_managed_target(tmp_path, monkeypatch)
     attached = SimpleNamespace(target=ComfyTarget(client.target.url, 'attached', client.target.facts),
                                object_info=client.object_info, http_origin=client.http_origin)
-    provider = entries.target_schema({'id': 'auxiliary-contract'}, workflow, attached)
+    provider = entries.target_schema({'id': 'auxiliary-contract'}, workflow, attached).provider
     assert provider.auxiliary_model_custody == 'local'
     assert 'models_root' not in workflow.metadata
     bundle = emit_bundle(workflow, tmp_path / 'workflow.py', {'operation': 'authored'})
@@ -384,7 +384,7 @@ def test_declared_entry_alignment_reaches_real_managed_custody_and_approval(tmp_
         assert set(fixture.models_root.rglob('*.json')) == before_sidecars
         assert not (tmp_path / 'outputs').exists()
         return
-    provider = entries.target_schema(fixture.entry, fixture.workflow, client)
+    provider = entries.target_schema(fixture.entry, fixture.workflow, client).provider
     bundle = emit_bundle(fixture.workflow, tmp_path / 'approved/workflow.py', {'operation': 'authored'})
     assert bundle.compile(schema_provider=provider).api_digest
     local_provider = local_server_engine._live_preflight(bundle, {}, client.http_origin, tmp_path, client=client)
@@ -395,7 +395,7 @@ def test_declared_entry_alignment_reaches_real_managed_custody_and_approval(tmp_
     other.metadata['model_assets'] = copy.deepcopy(fixture.workflow.metadata['model_assets'][:3])
     other.requirements.models = copy.deepcopy(other.metadata['model_assets'])
     other_client = preflight.select_generation_target('managed', entry_id='image/z_image_turbo')
-    schema = entries.target_schema({'id': 'image/z_image_turbo'}, other, other_client)
+    schema = entries.target_schema({'id': 'image/z_image_turbo'}, other, other_client).provider
     other_bundle = emit_bundle(other, tmp_path / 'other/workflow.py', {'operation': 'authored'})
     assert other_bundle.compile(schema_provider=schema).api_digest
     assert fixture.receipt.read_bytes() == original_receipt
@@ -511,13 +511,13 @@ def test_explicit_ready_template_selection_uses_receipt_custody(tmp_path, monkey
             entries.target_schema({'id': 'image/z_image_turbo'}, fixture.workflow, client)
         assert not (tmp_path / 'approved').exists()
     else:
-        provider = entries.target_schema({'id': 'image/z_image_turbo'}, fixture.workflow, client)
+        provider = entries.target_schema({'id': 'image/z_image_turbo'}, fixture.workflow, client).provider
         bundle = emit_bundle(fixture.workflow, tmp_path / 'approved/workflow.py', {'operation': 'authored'})
         assert bundle.compile(schema_provider=provider).api_digest
         live = local_server_engine._live_preflight(bundle, {}, client.http_origin, tmp_path, client=client)
         assert local_server_engine._approve_live(bundle, {}, live).api_digest
         _assert_auxiliary_verification_sidecar(fixture, before_sidecars)
-        assert entries.target_schema({'id': 'image/z_image_turbo'}, fixture.workflow, client).auxiliary_model_custody == 'target'
+        assert entries.target_schema({'id': 'image/z_image_turbo'}, fixture.workflow, client).provider.auxiliary_model_custody == 'target'
     assert fixture.receipt_path.read_bytes() == before_receipt
     if change not in {'match', 'declaration_backed'}:
         assert set(fixture.models_root.rglob('*.json')) == before_sidecars
@@ -549,7 +549,7 @@ def test_declared_identity_mismatch_refuses_managed_approval(tmp_path, monkeypat
     asset[field] = '0' * 64 if field == 'sha256' else asset[field] + 1
     fixture.workflow.requirements.models = copy.deepcopy(fixture.workflow.metadata['model_assets'])
     with pytest.raises((ValueError, WorkflowBundleError), match='mismatch'):
-        provider = entries.target_schema({'id': 'image/z_image_turbo'}, fixture.workflow, client)
+        provider = entries.target_schema({'id': 'image/z_image_turbo'}, fixture.workflow, client).provider
         bundle = emit_bundle(fixture.workflow, tmp_path / 'approved/workflow.py', {'operation': 'authored'})
         bundle.compile(schema_provider=provider)
 
@@ -603,13 +603,13 @@ def test_user_authored_managed_selection_uses_receipt_custody(tmp_path, monkeypa
             entries.target_schema(entry, workflow, client)
         assert not (tmp_path / 'outputs').exists()
     else:
-        provider = entries.target_schema(entry, workflow, client)
+        provider = entries.target_schema(entry, workflow, client).provider
         approved = emit_bundle(workflow, tmp_path / 'approved/workflow.py', {'operation': 'authored'})
         assert approved.compile(schema_provider=provider).api_digest
         live = local_server_engine._live_preflight(approved, {}, client.http_origin, tmp_path, client=client)
         assert local_server_engine._approve_live(approved, {}, live).api_digest
         _assert_auxiliary_verification_sidecar(fixture, before_sidecars)
-        assert entries.target_schema(entry, workflow, client).auxiliary_model_custody == 'target'
+        assert entries.target_schema(entry, workflow, client).provider.auxiliary_model_custody == 'target'
     assert fixture.receipt_path.read_bytes() == before_receipt
     if change != 'match':
         assert set(fixture.models_root.rglob('*.json')) == before_sidecars

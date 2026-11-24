@@ -79,9 +79,9 @@ def test_saved_explicit_api_pin_notice_reaches_target_schema(
     entry = load_entry(manifest)
     graph = load_bundle(entries.bundle_path(entry), trust=Provenance.USER_CONFIRMED).workflow
     entry["needs"] = _explicit_workflow_needs(entry["needs"])
-    notices = []
-    assert entries.target_schema(entry, graph, client, version_notices=notices) is not None
-    notice = next(row for row in notices if row["details"]["pack"] == "ComfyUI-SAM-Audio")
+    checked = entries.target_schema(entry, graph, client)
+    assert checked.provider is not None
+    notice = next(row for row in checked.version_notices if row["details"]["pack"] == "ComfyUI-SAM-Audio")
     assert notice["message"] == f"ComfyUI-SAM-Audio: version not recorded; pinned at {PIN} by you"
     assert notice["details"]["recorded_versions"] == []
     assert notice["issue"] is None

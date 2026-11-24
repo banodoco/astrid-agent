@@ -66,14 +66,59 @@ def test_target_schema_reports_recorded_and_selected_pack_without_installing():
         graph.requirements, custom_nodes=["fixture-pack"],
         custom_node_refs=_selected(version="2.0.0", class_set=["FixtureNode"]),
     )
-    notices = []
     pending = {"engine": "comfyui", "placement": "runpod", "state": "pending_host_readiness"}
-    assert target_schema({"id": "fixture", "needs": []}, graph, None,
-                         pending_target=pending, align="align", version_notices=notices) is None
-    notice, = notices
+    checked = target_schema({"id": "fixture", "needs": []}, graph, None,
+                            pending_target=pending, align="align")
+    assert checked.provider is None
+    notice, = checked.version_notices
     assert notice["message"] == f"fixture-pack: recorded 1.0.0, installing 2.0.0 ({SECOND})"
     assert notice["issue"]["code"] == "pack_version_differs"
     assert graph.requirements.custom_node_refs[0]["commit"] == SECOND
     result = readiness_envelope(issues=[notice["issue"]], target=pending)
     assert result["status"] == "ready_with_warnings"
     assert result["fixes"] == []
+
+
+def test_no_recorded_provenance_is_no_version_comparison():
+    from dataclasses import replace
+
+    from astrid.core.generation.entries import selected_pack_version_notices
+    from vibecomfy.workflow import VibeWorkflow, WorkflowSource
+
+    graph = VibeWorkflow("authored", WorkflowSource("authored"))
+    graph.requirements = replace(graph.requirements, custom_node_refs=_selected())
+    assert "source_provenance" not in graph.metadata
+    assert selected_pack_version_notices(graph, installing=True) == []
+    # Empty valid requirements are also an explicit no-selected-packs case.
+    graph.requirements = replace(graph.requirements, custom_node_refs=[])
+    assert selected_pack_version_notices(graph, installing=True) == []
+
+
+def test_missing_or_malformed_requirements_refuse_with_typed_issue():
+    import pytest
+
+    from astrid.core.generation.entries import target_schema
+    from astrid.core.generation.preflight import GenerationReadinessError
+    from vibecomfy.workflow import VibeWorkflow, WorkflowSource
+
+    class UnreadableRequirements:
+        @property
+        def requirements(self):
+            raise OSError("PRIVATE_FILE_PATH")
+
+    graph = VibeWorkflow("authored", WorkflowSource("authored"))
+    invalid = [object(), UnreadableRequirements()]
+    for refs in (None, {"slug": "not-an-array"}, [None], [{}]):
+        broken = VibeWorkflow("broken", WorkflowSource("broken"))
+        broken.requirements.custom_node_refs = refs
+        invalid.append(broken)
+
+    for workflow in invalid:
+        with pytest.raises(GenerationReadinessError) as caught:
+            target_schema({"id": "fixture", "needs": []}, workflow, None)
+        result = caught.value.to_envelope()
+        assert result["status"] == "blocked"
+        issue, = result["issues"]
+        assert issue["code"] == "input_rejected"
+        assert issue["details"]["field"] == "requirements.custom_node_refs"
+        assert "PRIVATE_FILE_PATH" not in str(result)
