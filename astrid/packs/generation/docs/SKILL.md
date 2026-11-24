@@ -472,7 +472,12 @@ not add a default music, TTS or sound-effects slot.
 
 ### LE-16 — Several node packs
 
-<!-- LE-16: fill this subsection in the same change as the card. -->
+<!-- LE-16: staged grouping/choice helper; target_schema and CLI wiring pending. -->
+Treat shared authored pack identifiers as grouping evidence; a shared class-name
+prefix is only a provisional group. For several missing packs, verify each
+repository separately and supply the chosen URLs together with repeatable
+`--add` flags. A name-only match or an ambiguous candidate set is a human
+choice, never an executable repair. New code still needs consent.
 
 ### LE-17 — Pins that conflict
 

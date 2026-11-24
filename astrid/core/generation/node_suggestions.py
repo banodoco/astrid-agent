@@ -12,21 +12,27 @@ from typing import Any
 _WORD = re.compile(r"[A-Z]+(?=[A-Z][a-z]|\d|$)|[A-Z]?[a-z]+|[A-Z]+|\d+")
 
 
-def _name_query(classes: tuple[str, ...], import_report: Mapping[str, Any] | None) -> str | None:
+def _provenance_hints(classes: tuple[str, ...], import_report: Mapping[str, Any] | None) -> set[str]:
     # None is an explicit observation from a loader that did not import JSON.
-    if import_report is not None:
-        provenance = import_report["provenance"]["source_provenance"]
-        hints = {
-            row.get("cnr_id") or row.get("aux_id")
-            for row in provenance.get("records", ())
-            if row.get("class_type") in classes and row.get("execution_looking")
-            and (row.get("cnr_id") or row.get("aux_id"))
-        }
-        hints.discard("comfy-core")
-        if len(hints) == 1:
-            return hints.pop()
-        if len(hints) > 1:
-            return None  # LE-16 groups multiple packs; do not choose one here.
+    if import_report is None:
+        return set()
+    provenance = import_report["provenance"]["source_provenance"]
+    hints = {
+        row.get("cnr_id") or row.get("aux_id")
+        for row in provenance["records"]
+        if row.get("class_type") in classes and row.get("execution_looking")
+        and (row.get("cnr_id") or row.get("aux_id"))
+    }
+    hints.discard("comfy-core")
+    return hints
+
+
+def _name_query(classes: tuple[str, ...], import_report: Mapping[str, Any] | None) -> str | None:
+    hints = _provenance_hints(classes, import_report)
+    if len(hints) == 1:
+        return hints.pop()
+    if len(hints) > 1:
+        return None  # Conflicting provenance is not evidence of one pack.
     words = [_WORD.findall(name) for name in classes]
     if not words:
         return None
@@ -90,4 +96,67 @@ def missing_node_suggestions(
             "then supply its URL with --add. If none can be found, stop."
         ),
         "runnable": False,
+    }
+
+
+def missing_node_pack_suggestions(
+    missing_classes: Iterable[str], *, import_report: Mapping[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Partition unresolved classes by authored locator or provisional name prefix.
+
+    No name-based group proves common pack membership. Do not merge conflicting
+    authored locators or unrelated classes merely because both lack evidence.
+    Every class is looked up once; name lookup happens once per group.
+    """
+    groups: dict[tuple[str, str], list[str]] = {}
+    for name in sorted(set(missing_classes)):
+        hints = _provenance_hints((name,), import_report)
+        words = _WORD.findall(name)
+        if len(hints) == 1:
+            key = ("authored", next(iter(hints)))
+        elif not hints and len(words) >= 3:
+            key = ("provisional", " ".join(words[:2]).casefold())
+        else:
+            key = ("unresolved", name)
+        groups.setdefault(key, []).append(name)
+
+    return [
+        {"group_kind": kind, "group_key": key,
+         **missing_node_suggestions(classes, import_report=import_report)}
+        for (kind, key), classes in groups.items()
+    ]
+
+
+def combined_pack_choice(groups: Iterable[Mapping[str, Any]], *, retry_argv: Iterable[str]) -> dict[str, Any]:
+    """One human choice for all missing groups; never a guessed executable fix.
+
+    The caller supplies the actual entry-creation invocation. The ordinary
+    CLI pin resolver and consent path own all subsequent authorization.
+    """
+    from .workflow_additions import repair_workflow_argv
+
+    rows = list(groups)
+    if not rows:
+        raise ValueError("combined pack choice requires unresolved groups")
+    argv, placeholders = repair_workflow_argv(list(retry_argv))
+    if not any(arg == "--as-entry" or arg.startswith("--as-entry=") for arg in argv):
+        raise ValueError("combined pack choice requires an entry creation command")
+    for index, row in enumerate(rows, start=1):
+        key = f"MISSING_PACK_{index}"
+        argv.extend(["--add", f"<{key}>"])
+        placeholders[key] = (
+            "Verified HTTPS repository URL providing " + ", ".join(row["classes"])
+            + "; if no candidate is verified, identify the source manually before retrying"
+        )
+    return {
+        "id": "choose-missing-packs", "who": "human", "scope": "managed_write",
+        "details": {"groups": rows},
+        "instruction": {
+            "step": "Choose and verify the repository for each missing pack or provisional "
+                    "class group. Name-only matches are not verified class evidence. "
+                    "If no source is verified, find it manually or stop. "
+                    "Supply all verified repositories together; new code still requires consent.",
+            "then_argv": argv,
+        },
+        "placeholders": placeholders,
     }
