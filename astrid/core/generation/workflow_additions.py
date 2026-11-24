@@ -14,8 +14,10 @@ from typing import Any
 from .preflight import generation_error
 
 
-def _repair_add_argv(argv: Sequence[str], count: int) -> tuple[list[str], dict[str, str]]:
-    """Keep the invocation, but ask the person to correct its declarations.
+def repair_workflow_argv(
+    argv: Sequence[str], *, correct_add_count: int | None = None, replace_entry: bool = False,
+) -> tuple[list[str], dict[str, str]]:
+    """Keep the invocation, changing only the controls required by the fix.
 
     A changed pin invalidates the displayed code token; do not replay one.
     The caller supplies the actual workflow command, with canonical --add
@@ -34,7 +36,7 @@ def _repair_add_argv(argv: Sequence[str], count: int) -> tuple[list[str], dict[s
             if scope == "user_env":
                 result.extend(["--consent", scope])
             continue
-        if flag == "--add":
+        if flag == "--add" and correct_add_count is not None:
             if not separator:
                 next(items)
             index += 1
@@ -55,8 +57,10 @@ def _repair_add_argv(argv: Sequence[str], count: int) -> tuple[list[str], dict[s
             result.append(f"<{name}>")
         else:
             result.append(arg)
-    if index != count:
+    if correct_add_count is not None and index != correct_add_count:
         raise ValueError("workflow retry argv must contain each --add declaration once")
+    if replace_entry and "--replace" not in result:
+        result.append("--replace")
     if "--json" not in result:
         result.append("--json")
     return result, placeholders
@@ -87,7 +91,7 @@ def resolve_workflow_additions(
         else:
             code = "commit_unavailable"
             step = "Correct the missing, ambiguous or invalid repository reference; "
-        argv, placeholders = _repair_add_argv(retry_argv, len(declarations))
+        argv, placeholders = repair_workflow_argv(retry_argv, correct_add_count=len(declarations))
         raise generation_error(
             exc, code=code, details={"field": "add"},
             fixes=[{
