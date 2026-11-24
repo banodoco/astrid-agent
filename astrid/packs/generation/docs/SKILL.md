@@ -401,14 +401,11 @@ Candidates are not runnable; lookup does not install code.
 
 ### LE-5 — Candidates and manual lookup
 
-<!-- LE-5: target_schema wiring pending ownership handoff. -->
-For missing custom nodes, use class evidence and a derived pack-name search
-from the workflow's authored provenance or shared class-name prefix. A
-repository candidate is evidence only: a "name match only" is especially
-uncertain. Verify that the repository provides the required classes before
-supplying its URL with `--add`; do not execute a candidate as a command.
-If the lookup yields no source, find the repository manually, or stop if it
-cannot be identified. Preserve lookup warnings and unavailable-tier status.
+<!-- LE-5 helper staged; production readiness wiring pending. -->
+The lookup helper can project class and derived pack-name evidence. It is not
+yet called by generation readiness, so do not expect the CLI or SDK to emit
+these candidate suggestions. The existing read-only lookup and manual
+identification path remains in use.
 
 ### LE-6 — Check the target after setup
 

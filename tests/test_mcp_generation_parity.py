@@ -241,7 +241,8 @@ def test_generate_schema_and_argv_for_all_leaves():
     workflow = tools["generate_workflow"]
     schema = workflow["definition"]["inputSchema"]
     assert {key: value["type"] for key, value in schema["properties"].items()} == {
-        "workflow": "string", "as_entry": "string", "replace": "boolean", "no_run": "boolean", "inputs_json": "string",
+        "workflow": "string", "as_entry": "string", "add": "array", "replace": "boolean",
+        "no_run": "boolean", "inputs_json": "string",
         "placement": "string", "mode": "string", "project": "string", "out": "string", "prompt": "string",
         "negative_prompt": "string", "image_ref": "string", "width": "integer", "height": "integer",
         "seed": "integer", "frames": "integer", "fps": "number", "steps": "integer",
@@ -252,6 +253,8 @@ def test_generate_schema_and_argv_for_all_leaves():
     assert re.fullmatch(schema["properties"]["consent"]["items"]["pattern"], "paid") is None
     assert schema["required"] == ["workflow"]
     assert schema["properties"]["inputs"]["type"] == "object"
+    assert schema["properties"]["add"]["items"] == {"type": "string", "minLength": 1}
+    assert schema["properties"]["replace"]["type"] == "boolean"
     args = {"workflow": "bundle.json", "as_entry": "new", "replace": True, "inputs_json": "in.json",
             "placement": "local", "mode": "video", "project": "p", "out": "o.mp4", "prompt": "p",
             "negative_prompt": "n", "image_ref": "i.png", "width": 640, "height": 360, "seed": 4,
@@ -270,6 +273,20 @@ def test_generate_schema_and_argv_for_all_leaves():
     assert parsed.workflow == "bundle.json" and parsed.consent == ["user_env"]
     assert parsed.recovery_path == "receipt.json"
     assert mcp_inputs == {"node:5.value": [1, 2]}
+
+    additions = ["https://github.com/example/first@main",
+                 "https://github.com/example/second@" + "a" * 40]
+    argv, parsed = _parse_tool(workflow, {
+        "workflow": "bundle.json", "as_entry": "new",
+        "add": additions, "replace": True, "dry_run": True,
+    })
+    assert argv == ["generate", "workflow", "bundle.json", "--as-entry", "new",
+                    "--add", additions[0], "--add", additions[1], "--replace",
+                    "--dry-run", "--json"]
+    assert parsed.add == additions and parsed.replace is True
+    argv, parsed = _parse_tool(workflow, {"workflow": "bundle.json", "replace": False})
+    assert argv == ["generate", "workflow", "bundle.json", "--json"]
+    assert parsed.add == [] and parsed.replace is False
 
 
 def test_engine_install_schema_and_argv_including_defaults():
