@@ -1213,6 +1213,44 @@ def _workflow_description(entry: Mapping[str, Any]) -> dict[str, Any]:
     return {'id': entry.get('id'), 'engine': 'comfyui'}
 
 
+def pack_version_notices(source_provenance: Mapping[str, Any],
+                         selected_refs: Sequence[Mapping[str, Any]], *,
+                         installing: bool) -> list[dict[str, Any]]:
+    """Render the selected source, never infer an installed version from a pin.
+
+    VibeComfy owns the matching of authored CNR provenance to selected refs.
+    Callers must supply the actual selected refs, not lookup candidates or
+    unapproved authored selectors. A notice without a known difference is
+    informational; it must not fabricate a pack_version_differs issue.
+    """
+    from vibecomfy.porting.import_service import pack_version_evidence
+
+    notices = []
+    for row in pack_version_evidence(source_provenance, selected_refs):
+        versions = row["recorded_versions"]
+        commit = row["selected_commit"]
+        relation = row["relation"]
+        if not versions:
+            if row["user_selected"]:
+                message = f'{row["pack"]}: version not recorded; pinned at {commit} by you'
+            else:
+                message = f'{row["pack"]}: version not recorded; selected pin {commit}'
+        else:
+            selected = row["selected_version_label"]
+            # The full commit is the selection authority, even if a label is known.
+            destination = f"{selected} ({commit})" if selected else commit
+            action = "installing" if installing else "selected"
+            message = f'{row["pack"]}: recorded {", ".join(versions)}, {action} {destination}'
+            if relation == "unverified":
+                message += "; version correspondence is unverified"
+        differs = relation in {"different_commit", "different_version_label"}
+        notices.append({"message": message, "details": row,
+                        "issue": {"code": "pack_version_differs", "severity": "warning",
+                                  "message": message, "details": row, "fix_ids": []}
+                        if differs else None})
+    return notices
+
+
 def target_schema(entry: dict[str, Any], workflow: Any, client: Any, *, engine: str | None = None,
                   pending_target: Mapping[str, Any] | None = None, align: str = 'check'):
     """Check the selected target's node and exact loader inventory.
