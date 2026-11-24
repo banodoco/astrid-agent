@@ -75,6 +75,9 @@ from astrid.core.execution.platform_helpers import (
     process_control_support,
 )
 from astrid.core.execution.stall_diagnostics import process_stall_diagnostics
+from astrid.core.rendering.revision_notice import (
+    NOTICE_ACK_NAME, pending_notice_phase, verified_revision_warnings,
+)
 from astrid.core.source_identity import (
     _source_digest,
     source_checkout_closure,
@@ -11471,6 +11474,16 @@ class GenericPackHost:
                 if previous and previous[0] == operation:
                     operation, args, kwargs = previous
                 else:
+                    if operation == self.client.settle and data.get("capability") == "rendering.render":
+                        # This is the direct command path, not render_export.
+                        # Carry the exact verified provenance warning into the
+                        # result before freezing the settlement for replay.
+                        warnings = verified_revision_warnings(
+                            terminal.get("outputs", ()), terminal["root"])
+                        if warnings:
+                            payload = kwargs["result"]
+                            payload["warnings"] = list(dict.fromkeys(
+                                [*(payload.get("warnings") or []), *warnings]))
                     terminal["publication_call"] = (operation, copy.deepcopy(args), copy.deepcopy(kwargs))
             try:
                 result = self._handoff_settlement_call(operation, *args, **kwargs)
@@ -11707,7 +11720,9 @@ class GenericPackHost:
             progress = read_progress()
             token = (terminal["stage"], _canonical_digest(progress))
             stall_diagnostics.update(stall_task_key, token)
-            if stall_diagnostics.stalled(stall_task_key):
+            notice = pending_notice_phase(progress) if terminal.get("render_notice_ack_path") else None
+            awaiting_notice = notice is not None and notice != terminal.get("render_notice_acknowledged")
+            if stall_diagnostics.stalled(stall_task_key) and not awaiting_notice:
                 # Piggyback the stuck phase on the existing observer. Fast work
                 # keeps its producer-only progress and its original RPC cadence.
                 progress = {**(progress or {}), "phase": str(terminal["stage"])}
@@ -11817,6 +11832,18 @@ class GenericPackHost:
                     log_lease_pump_event("heartbeat_skipped", reason=skip_reason,
                                          wait_seconds=time.monotonic() - heartbeat_started)
                     return
+                # Runtime appends task.progress in the accepted heartbeat's
+                # transaction. Only acknowledge that exact transmitted phase,
+                # never a rejected-progress retry or a stale lease response.
+                accepted_notice = pending_notice_phase(kwargs.get("progress"))
+                ack_path = terminal.get("render_notice_ack_path")
+                if (ack_path is not None and accepted_notice is not None
+                        and accepted_notice != terminal.get("render_notice_acknowledged")):
+                    try:
+                        write_json_atomic(ack_path, {"phase": accepted_notice})
+                        terminal["render_notice_acknowledged"] = accepted_notice
+                    except (OSError, AstridError):
+                        pass  # Advisory delivery cannot change lease semantics.
                 log_lease_pump_event("heartbeat_acknowledged", reason="accepted",
                                      wait_seconds=time.monotonic() - heartbeat_started)
                 record_lease_diagnostic("heartbeat_progress_invalid" if progress_error else cycle_category,
@@ -12166,6 +12193,13 @@ class GenericPackHost:
             owns_attempt = self._handoff_begin_direct_attempt()
             if exact_attempt and exact_fence is not None:
                 terminal["root"] = self._allocate_attempt_root(str(data["id"]), str(exact_attempt))
+                if data.get("capability") == "rendering.render":
+                    ack_path = terminal["root"] / NOTICE_ACK_NAME
+                    try:
+                        write_json_atomic(ack_path, {"phase": None})
+                        terminal["render_notice_ack_path"] = ack_path
+                    except (OSError, AstridError):
+                        pass
             deadline_at = data.get("deadline_at")
             if deadline_at is not None:
                 try:
