@@ -64,10 +64,8 @@ def _private_readonly_file(path: Path, mode: int, links: int) -> None:
 def _inventory(folder: Path, product_root: Path, *, seal: bool) -> tuple[dict[str, str], list[str]]:
     """Enumerate exactly the shipped trees; mutable runtime roots stay outside.
 
-    Generated CPython bytecode is not shipped. Only ordinary .pyc leaves in
-    __pycache__ may be ignored; a link or another kind of resource is a refusal.
-    This also permits Python's normal bytecode writes on Windows, whose
-    directory read-only attribute is advisory.
+    The selected interpreter precompiles the shipped packages before sealing;
+    every bytecode cache directory and file is included, like source files.
     """
     files: dict[str, str] = {}
     directories: list[str] = []
@@ -87,12 +85,6 @@ def _inventory(folder: Path, product_root: Path, *, seal: bool) -> tuple[dict[st
         info = facts(path)
         relative = path.relative_to(folder).as_posix()
         if stat.S_ISDIR(info.st_mode):
-            if path.name == "__pycache__":
-                for child in sorted(path.iterdir()):
-                    child_info = facts(child)
-                    if child.suffix != ".pyc" or not stat.S_ISREG(child_info.st_mode):
-                        raise _Modified(child, folder)
-                return
             directories.append(relative)
             if not seal and info.st_mode & _WRITE_BITS:
                 raise _Modified(path, folder)

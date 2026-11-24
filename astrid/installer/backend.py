@@ -1617,8 +1617,16 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         from .boundary_registration import stage_runtime_launcher
 
         stage_runtime_launcher(version)
-        # Seal only the installed shipped wheel after every producer has finished.
-        # Version/profile/service records and user/runtime data remain writable.
+        # Precompile the selected interpreter's actual shipped packages before
+        # sealing. Checked-hash bytecode remains valid even if sealing detaches
+        # a uv hardlink and changes the source inode or its timestamp.
+        shipped = [product_root / "astrid"]
+        client_package = product_root / "astrid_runtime_client"
+        if client_package.is_dir():
+            shipped.append(client_package)
+        self.run([python, "-X", "utf8", "-I", "-B", "-m", "compileall", "-q", "-f",
+                  "-o", "0", "--invalidation-mode", "checked-hash", *shipped], extra_env=env)
+        # Version/profile/service records and user/runtime data stay writable.
         from ._install_stamp import write_install_stamp
 
         write_install_stamp(version, product_root)
