@@ -27,7 +27,7 @@ from contextlib import ExitStack
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from tempfile import TemporaryDirectory, gettempdir
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence, cast
 
 from astrid.pack_api import save_registry, timeline_duration_frames, timeline_render_duration_frames
 from astrid.core.element.registry import load_default_registry
@@ -61,8 +61,11 @@ from astrid.packs.rendering.rendering.renderers.remotion.normal_audio import (
 from astrid.core.subprocess_env import build_child_subprocess_env
 from astrid.packs.rendering.rendering.renderers.remotion import lock as remotion_lock
 from astrid.packs.rendering.rendering.renderers.remotion.progress import RemotionProgressRelay
-from astrid.core.rendering.revision_notice import revision_notice_phase, revision_notice_text
-from astrid.packs.rendering.rendering.renderers.remotion.pack_revisions import resolved_pack_revisions
+from astrid.core.rendering.revision_notice import (  # noqa: E402
+    revision_notice_phase,
+    revision_notice_text,
+)
+from astrid.packs.rendering.rendering.renderers.remotion.pack_revisions import resolved_pack_revisions  # noqa: E402
 from astrid.packs.rendering.shared import rendering_backend as _shared
 from astrid.packs.rendering.shared.rendering_backend import (
     _alpha_output_name,
@@ -1529,7 +1532,7 @@ def capture_remotion_frames(
                 frame_resolution=frame_resolution,
                 frame_session=frame_session,
                 frame_session_identity=frame_session_identity,
-                **({"on_scene_props": on_scene_props} if on_scene_props is not None else {}),
+                **cast(dict[str, Any], {"on_scene_props": on_scene_props} if on_scene_props is not None else {}),
             )
     finally:
         marker.unlink(missing_ok=True)

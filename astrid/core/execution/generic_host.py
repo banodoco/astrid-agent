@@ -76,7 +76,9 @@ from astrid.core.execution.platform_helpers import (
 )
 from astrid.core.execution.stall_diagnostics import process_stall_diagnostics
 from astrid.core.rendering.revision_notice import (
-    NOTICE_ACK_NAME, pending_notice_phase, verified_revision_warnings,
+    NOTICE_ACK_NAME,
+    pending_notice_phase,
+    verified_revision_warnings,
 )
 from astrid.core.source_identity import (
     _source_digest,
@@ -5408,8 +5410,8 @@ class RuntimeProtocolClient:
                     last_acknowledged_heartbeat=None, elapsed_seconds=None,
                     reason=reason, wait_seconds=lock_wait_seconds,
                 )
-            except Exception:
-                pass  # Diagnostics must not change heartbeat behavior.
+            except Exception:  # noqa: BLE001 - diagnostics must not change heartbeat behavior
+                pass
 
         if not acquired:
             log_lock_wait("timed_out")
@@ -10949,7 +10951,7 @@ class GenericPackHost:
         # worker import path; arbitrary child PYTHONPATH is still excluded.
         network_hook_roots = (str(attempt_path / ".astrid-network-hook"),) if env.get("ASTRID_NETWORK_POLICY") else ()
         env = _worker_import_environment(
-            storage_record, env, kind='native', pack_roots=self.pack_roots,
+            cast('CapabilityRecord', storage_record), env, kind='native', pack_roots=self.pack_roots,
             python_roots=tuple(import_roots), network_hook_roots=network_hook_roots,
             selected=(admission or {}).get('selected_pack_map') or None,
             relocations=(admission or {}).get('verified_pack_relocations'),
@@ -11646,8 +11648,8 @@ class GenericPackHost:
                     deadline_at=deadline_at, deadline_remaining_seconds=remaining,
                     lease_expires_at=diagnostic["last_successful_heartbeat_expiry"],
                 )
-            except Exception:
-                pass  # Diagnostics must not change attempt behavior.
+            except Exception:  # noqa: BLE001 - diagnostics must not change attempt behavior
+                pass
 
         def record_publication_refusal(error):
             reason = _runtime_authority_refusal(error, operation="settle")
@@ -13918,7 +13920,7 @@ class GenericPackHost:
                     # slot deliberately, without claiming a verified release.
                     try:
                         self.managed_tool_session.fence(reason="command_cleanup_uncertain")
-                    except Exception as exc:
+                    except Exception as exc:  # noqa: BLE001 - fence failure is recorded, cleanup continues
                         cleanup_errors.append(f"managed fence: {exc}")
                 elif not retain_persistent_session:
                     try:

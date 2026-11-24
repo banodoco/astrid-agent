@@ -12,7 +12,7 @@ import shutil
 import subprocess
 import sys
 from contextlib import ExitStack, contextmanager
-from contextvars import ContextVar
+from contextvars import ContextVar  # noqa: E402
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, Callable, Iterator, Mapping, Sequence, cast

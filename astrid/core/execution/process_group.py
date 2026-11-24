@@ -710,7 +710,8 @@ def _observe_tree(process: subprocess.Popen, *, deadline: float | None = None,
                 if entry is None or retained_exit:
                     retired = getattr(process, "_astrid_tree_exited", None)
                     if retired is None:
-                        retired = process._astrid_tree_exited = {}
+                        retired = {}
+                        setattr(process, "_astrid_tree_exited", retired)
                     retired[(pid, birth)] = current.birth
                     del known[pid]
                     continue

@@ -21,7 +21,7 @@ import time
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterator, Mapping
+from typing import Any, Callable, Iterator, Mapping, cast
 
 from astrid.core.env_vars import ASTRID_REMOTION_PROJECT_DIR
 from astrid.pack_api import load_default_registry
@@ -309,7 +309,7 @@ def _pack_revision_warnings(output: Path) -> list[str]:
             f"render upstream {row.get('upstream_revision', row.get('derived_from'))}; "
             f"resolved {row.get('resolved_revision')}; {row.get('identity_verification', 'unverified')}"
         )
-    if not rows and fragment.get("editor_revision_status") == "editor revision not supplied":
+    if not rows and cast(Mapping[str, Any], fragment).get("editor_revision_status") == "editor revision not supplied":
         warnings.append("editor revision not supplied")
     return warnings
 

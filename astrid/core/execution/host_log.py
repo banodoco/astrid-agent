@@ -40,7 +40,7 @@ def log_lease_diagnostic(*, task_id: str, attempt_id: str | None,
                          deadline_remaining_seconds: float | None = None,
                          lease_expires_at: str | None = None) -> None:
     """Write one structured lifecycle observation to the host's redirected stderr."""
-    event = {
+    event: dict[str, Any] = {
         "task_id": task_id, "attempt_id": attempt_id, "category": category,
         "last_acknowledged_heartbeat": last_acknowledged_heartbeat,
         "verdict": verdict, "runtime_code": runtime_code,

@@ -1,8 +1,8 @@
 """Host-owned project render selection for an admitted command source."""
 from __future__ import annotations
 
-import tempfile
 import hashlib
+import tempfile
 from pathlib import Path
 
 

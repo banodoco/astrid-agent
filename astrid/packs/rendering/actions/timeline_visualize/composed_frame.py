@@ -24,7 +24,7 @@ import uuid
 import zlib
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.parse import unquote, urlsplit
 
 RENDERER_IDENTITY = "astrid.remotion.frame-capture.v1|backend=1.0.0|remotion=4.0.509|fonts=local-bundle-v1"
@@ -76,7 +76,9 @@ class CaptureSceneLabels:
         ids = [clip["id"] for clip in clips]
         if len(set(ids)) != len(ids) or set(ids) != set(self._addresses):
             raise SceneQueryUnavailable("exact projected clip address mapping required")
-        from astrid.packs.rendering.rendering.renderers.remotion.root_preparation import scene_selectors
+        from astrid.packs.rendering.rendering.renderers.remotion.root_preparation import (
+            scene_selectors,
+        )
 
         render_roots, registry_root = scene_selectors()
         selectors = {} if render_roots is None and registry_root is None else {
@@ -261,7 +263,9 @@ def _pack_root_digests(
     from astrid.core.element.schema import ELEMENT_MANIFEST_NAMES
     from astrid.core.pack.manifest import load_manifest_mapping
     from astrid.core.rendering.project_elements import (
-        require_project_snapshots, selections, stage_project_elements,
+        require_project_snapshots,
+        selections,
+        stage_project_elements,
     )
     from astrid.packs.rendering.rendering.renderers.remotion.run import _timeline_element_selection
 
@@ -993,8 +997,12 @@ class RemotionFrameProvider:
             raise SceneQueryUnavailable("capture timeline or assets missing")
         expected_timeline = copy.deepcopy(self._timeline)
         from astrid.core.rendering.project_elements import CARRIER, selections
-        from astrid.packs.rendering.rendering.renderers.remotion.root_preparation import scene_element_registry
-        from astrid.packs.rendering.rendering.renderers.remotion.run import _bind_pinned_element_slots
+        from astrid.packs.rendering.rendering.renderers.remotion.root_preparation import (
+            scene_element_registry,
+        )
+        from astrid.packs.rendering.rendering.renderers.remotion.run import (
+            _bind_pinned_element_slots,
+        )
 
         element_registry = scene_element_registry()
         if selections(expected_timeline):
@@ -1063,14 +1071,15 @@ class RemotionFrameProvider:
         effects, aliases = _effect_registry_for_assets(self.theme_path, registry=catalog)
         ref = clip.get("elementRef")
         pinned_kind = ref.get("kind") if isinstance(ref, Mapping) else None
-        effect_id = ref.get("id") if pinned_kind in {"effect", "animation", "transition"} else _effect_id_for_clip(clip, effects, aliases)
+        effect_id = cast(Mapping[str, Any], ref).get("id") if pinned_kind in {"effect", "animation", "transition"} else _effect_id_for_clip(clip, effects, aliases)
         staged = clip.get("params", {}).get("__astridAssets", {})
         if effect_id is None:
             if staged:
                 raise SceneQueryUnavailable("capture staged assets on a non-effect clip")
             return None
         if pinned_kind in {"animation", "transition"}:
-            element = catalog.get(pinned_kind, effect_id, pack_id=ref.get("packId"), revision=ref.get("revision"))
+            ref_mapping = cast(Mapping[str, Any], ref)
+            element = catalog.get(pinned_kind, effect_id, pack_id=ref_mapping.get("packId"), revision=ref_mapping.get("revision"))
             if not element.metadata.get("render_revision"):
                 if staged:
                     raise SceneQueryUnavailable("capture staged assets on an unselected element")

@@ -13,7 +13,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from astrid.core.element.registry import ElementRegistry, load_default_registry
 from astrid.core.element.schema import ELEMENT_MANIFEST_NAMES, ElementDefinition
@@ -332,7 +332,7 @@ def render_pack_roots(*, registry: ElementRegistry | None = None,
     """
     registry = registry if registry is not None else _element_registry()
     plugins = {
-        kind: discover_plugins(kind, registry=registry)
+        kind: discover_plugins(cast(ElementKind, kind), registry=registry)
         for kind in sorted(OUTPUTS)
     }
     imported = [plugin for values in plugins.values() for plugin in values.values()
@@ -375,7 +375,7 @@ def render_pack_roots(*, registry: ElementRegistry | None = None,
             if pack_root is None:
                 raise ValueError(f"rendering element has no owning pack manifest: {root}")
             roots.add((str(pack_root), "pack-rendering-elements"))
-    result = [{"root": root, "scope": scope} for root, scope in sorted(roots)]
+    result: list[dict[str, Any]] = [{"root": root, "scope": scope} for root, scope in sorted(roots)]
     for entry in result:
         if include_aliases:
             entry["kind_roots"] = dict(sorted(kind_roots.get((entry["root"], entry["scope"]), {}).items()))

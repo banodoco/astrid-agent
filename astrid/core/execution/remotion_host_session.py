@@ -360,7 +360,10 @@ class HostRemotionSession:
                         for kind, path in kinds.items()
                     }
                     normalized.append(normalized_row)
-                order = lambda row: json.dumps(row, sort_keys=True, separators=(",", ":"))
+
+                def order(row):
+                    return json.dumps(row, sort_keys=True, separators=(",", ":"))
+
                 if (sorted(normalized, key=order) != sorted(expected, key=order)
                         or "ASTRID_RENDER_REGISTRY_ROOT" not in environment):
                     raise ValueError("renderer project roots differ from host selection")

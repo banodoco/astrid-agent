@@ -70,7 +70,7 @@ def _motion_projection_row(
         "editor_revision": expected,
         "resolved_revision": observed,
         "derived_from": None,
-        "upstream_revision": witness["upstream_commit"] if verified else None,
+        "upstream_revision": witness["upstream_commit"] if verified and witness is not None else None,
         "editor_upstream_revision": upstream,
         "digest_rule": "pack-tree-v1",
         "identity_verification": (
