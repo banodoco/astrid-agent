@@ -138,6 +138,14 @@ class RemotionProbeCleanupError(RemotionValidationError):
 _UNRESOLVED_PROBE_CUSTODY: list[RemotionProbeCleanupError] = []
 
 
+def renderer_backend_modules() -> tuple[Any, Any]:
+    """Return the Remotion renderer's ``(lock, run)`` modules for host-side callers."""
+
+    from astrid.packs.rendering.rendering.renderers.remotion import lock, run
+
+    return lock, run
+
+
 @contextmanager
 def remotion_render_lock() -> Iterator[None]:
     """Expose the renderer lock through the server-owned runtime boundary."""

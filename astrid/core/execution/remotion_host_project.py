@@ -18,8 +18,8 @@ def prepare_project_selection(project, attempt, environment, source):
     timeline, assets = prepared["timeline"]["path"], prepared["registry"]["path"]
     source.validate(timeline, assets)
     from astrid.core.rendering.project_elements import selections, stage_project_elements
-    from astrid.core.rendering.remotion_runtime import _validated_runtime
-    from astrid.packs.rendering.rendering.renderers.remotion import lock, run
+    from astrid.core.rendering.remotion_runtime import _validated_runtime, renderer_backend_modules
+    lock, run = renderer_backend_modules()
     config = run._serialize_timeline(Path(timeline))
     source.validate(timeline, assets)
     if not selections(config):
