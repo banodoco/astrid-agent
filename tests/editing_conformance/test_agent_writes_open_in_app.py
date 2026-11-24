@@ -1,9 +1,11 @@
 """Qualification row 5, phase 1: actual Agent writes through the actual App parser.
 
-ASTRID_APP_ROOT points to the proof owner's pinned App checkout (npm ci already
-done). A required qualification run sets ASTRID_REQUIRE_APP_PARSER=1. Nothing
-in this file installs dependencies or starts Runtime. See the PR's write ledger
-for paths that do not return an authoring bundle in the offline fixtures.
+Select the default-off app_checkout lane with -m app_checkout. A required
+qualification run sets ASTRID_REQUIRE_APP_PARSER=1 and ASTRID_APP_ROOT to the
+proof owner's pinned App checkout (npm ci already done). Nothing in this file
+installs dependencies or starts Runtime. Only transcripts refresh changes the
+typed envelope; the other cases exercise the writers and re-validate the seed.
+See app_open/README.md and the PR's write ledger.
 """
 from __future__ import annotations
 
@@ -24,6 +26,10 @@ from astrid.sdk.timeline_checkout import Checkout
 from tests.packs.timeline.test_cli_commit_move import command, sync_connection  # noqa: F401
 from tests.packs.timeline.test_cli_commit_trim import trim  # noqa: F401
 
+# Already registered as default-off in tests/lanes.py and pyproject.toml.
+# A selected manual lane must fail, not skip, if its prerequisites are missing.
+pytestmark = pytest.mark.app_checkout
+
 PARSER = Path(__file__).parent / "app_open" / "open-bundle.mjs"
 PARSER_SOURCE = "src/tools/video-editor/data/typed/timelineBundle.ts"
 
@@ -38,10 +44,9 @@ def app_parser(monkeypatch, tmp_path):
     if not node:
         missing.append("Node is unavailable")
     if missing:
-        reason = "App parser qualification unavailable: " + "; ".join(missing)
-        if os.environ.get("ASTRID_REQUIRE_APP_PARSER") == "1":
-            pytest.fail(reason)
-        pytest.skip(reason)
+        required = os.environ.get("ASTRID_REQUIRE_APP_PARSER") == "1"
+        mode = "Required App parser qualification" if required else "Selected app_checkout lane"
+        pytest.fail(f"{mode} unavailable: {'; '.join(missing)}")
 
     app = Path(root).resolve()
     assert (app / PARSER_SOURCE).is_file(), f"App parser not found in {app}"
@@ -389,6 +394,7 @@ def _native_case(op, monkeypatch):
     elif op == "clip.set-element":
         base = _seed(element.seeded())
         call = element.capture_clip_set_element(base, element.REF, element=element.ADMITTED)
+        return execute(base, [call], **element.INPUTS)
     elif op == "clip.add":
         base = _seed(clip_add.with_track())
         call = clip_add.capture_clip_add(base, "parent", clip_add.literal_row())
