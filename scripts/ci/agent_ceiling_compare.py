@@ -28,8 +28,10 @@ Exit 2 is bad input.
 
 Parsing follows evidence/cluster_failures.py of Plan 91 (AG-0): an id ends at the first " - " outside its
 [parameters]; a failed subtest has no summary row, so it is read from its SUBFAILED(...) progress line and keyed
-"<nodeid> SUBFAILED(<params>)"; only the job's own last "short test summary info" section before its final result
-line is read, so pytest output that a test prints from an inner run is not counted.
+"<nodeid> SUBFAILED(<params>)"; the last "short test summary info" section before the final result
+line of each of the job's own runs is read, so pytest output that a test prints from an inner run is not counted, and
+a job with several sequential runs (several pytest steps, or a dispatch repeat loop) has every run read (see
+top_level_runs).
 """
 from __future__ import annotations
 
@@ -67,37 +69,96 @@ def read_lines(path: Path):
     return [STAMP.sub("", raw.rstrip("\r\n")) for raw in path.read_text(errors="replace").splitlines()]
 
 
+HEADER = re.compile(r"^=+ test session starts =+$")
+STEP = re.compile(r"^##\[group\]Run ")
+SELECTION = re.compile(r"^===== selection \d+ of \d+: ")
+CANCELLED = re.compile(r"^##\[error\]The operation was cancell?ed\.")
+
+
+def top_level_runs(lines):
+    """The job's own pytest runs as [(start, summary_start or None, end)], plus problems found.
+
+    A job log can hold several sequential runs (several pytest steps, or a dispatch `repeat` loop), and a test can
+    print an inner run's output inside the outer one. In a GitHub job log the log is cut at each step's
+    "##[group]Run" line and at each repeat's "===== selection i of n" line, and each piece's run is its last final
+    result line, with the last summary section before it: inner runs come before the outer summary. In a plain log
+    each "test session starts" line is paired with a final result line like a bracket; a top-level pair is a run and a
+    pair inside another is an inner run. A plain log with no session header is one run (pytest -q). A run that starts
+    and never ends, or a GitHub "operation was canceled" line, is a problem.
+    """
+    runs, problems = [], []
+    if any(CANCELLED.match(line) for line in lines):
+        problems.append("the job was cancelled or timed out (GitHub cancel line)")
+    if any(STEP.match(line) for line in lines):
+        bounds = [i for i, line in enumerate(lines) if STEP.match(line) or SELECTION.match(line)]
+        pieces = list(zip([0] + bounds, bounds + [len(lines)]))
+        for a, b in pieces:
+            finals = [i for i in range(a, b) if FINAL.match(lines[i])]
+            if not finals:
+                if any(HEADER.match(lines[i]) or SUMMARY_START.match(lines[i]) for i in range(a, b)):
+                    problems.append(f"a pytest run from line {a + 1} has no final result line (truncated)")
+                continue
+            last = finals[-1]
+            starts = [i for i in range(a, last) if SUMMARY_START.match(lines[i])]
+            runs.append((a, starts[-1] if starts else None, last))
+        return runs, problems
+    if not any(HEADER.match(line) for line in lines):
+        finals = [i for i, line in enumerate(lines) if FINAL.match(line)]
+        if finals:
+            starts = [i for i in range(finals[-1]) if SUMMARY_START.match(lines[i])]
+            runs.append((0, starts[-1] if starts else None, finals[-1]))
+        return runs, problems
+    stack = []
+    for i, line in enumerate(lines):
+        if HEADER.match(line):
+            stack.append(i)
+        elif FINAL.match(line) and stack:
+            begin = stack.pop()
+            if not stack:
+                starts = [k for k in range(begin, i) if SUMMARY_START.match(lines[k])]
+                runs.append((begin, starts[-1] if starts else None, i))
+    if stack:
+        problems.append(f"a pytest session from line {stack[0] + 1} has no final result line (truncated)")
+    return runs, problems
+
+
 def parse_job_log(lines):
-    """Return (counts, rows). counts is (failed, errors, passed) from the final result line, or None when the job has
-    none. rows is [(status, id, message)] for the job's own run, including failed subtests."""
-    finals = [i for i, line in enumerate(lines) if FINAL.match(line)]
-    if not finals:
-        return None, []
-    end = finals[-1]
-    text = FINAL.match(lines[end]).group(1)
+    """Return (counts, rows, problems). counts is the (failed, errors, passed) sum of the job's own runs' result
+    lines, or None when it has none. rows is [(status, id, message)] over those runs, including failed subtests."""
+    runs, problems = top_level_runs(lines)
+    if not runs:
+        return None, [], problems
+    total, rows = [0, 0, 0], []
+    for begin, summary, end in runs:
+        text = FINAL.match(lines[end]).group(1)
 
-    def number(word):
-        found = re.search(rf"(\d+) {word}", text)
-        return int(found.group(1)) if found else 0
+        def number(word):
+            found = re.search(rf"(\d+) {word}", text)
+            return int(found.group(1)) if found else 0
 
-    counts = (number("failed"), number("errors?"), number("passed"))
-    starts = [i for i in range(end) if SUMMARY_START.match(lines[i])]
-    rows = []
-    if starts:
-        for line in lines[starts[-1] + 1:end]:
-            match = ROW.match(line)
-            if match and "::" in match.group(2):
-                nodeid, message = split_nodeid(match.group(2))
-                rows.append((match.group(1), nodeid.strip(), message.strip()))
-    seen = set()
-    for line in lines[:end]:
-        match = SUBFAILED.match(line)
-        if match:
-            nodeid = f"{match.group(1)} SUBFAILED{match.group(2)}"
-            if nodeid not in seen:
-                seen.add(nodeid)
-                rows.append(("FAILED", nodeid, ""))
-    return counts, rows
+        counts = (number("failed"), number("errors?"), number("passed"))
+        run_rows = []
+        if summary is not None:
+            for line in lines[summary + 1:end]:
+                match = ROW.match(line)
+                if match and "::" in match.group(2):
+                    nodeid, message = split_nodeid(match.group(2))
+                    run_rows.append((match.group(1), nodeid.strip(), message.strip()))
+        seen = set()
+        for line in lines[begin:end]:
+            match = SUBFAILED.match(line)
+            if match:
+                nodeid = f"{match.group(1)} SUBFAILED{match.group(2)}"
+                if nodeid not in seen:
+                    seen.add(nodeid)
+                    run_rows.append(("FAILED", nodeid, ""))
+        got = (sum(1 for r in run_rows if r[0] == "FAILED"), sum(1 for r in run_rows if r[0] == "ERROR"))
+        if got != counts[:2]:
+            problems.append(f"a run ending at line {end + 1}: result line says {counts[0]} failed, {counts[1]} errors; "
+                            f"summary rows are {got[0]} FAILED, {got[1]} ERROR (truncated or misread summary)")
+        total = [x + y for x, y in zip(total, counts)]
+        rows += run_rows
+    return tuple(total), rows, problems
 
 
 def job_family(name: str):
@@ -131,8 +192,9 @@ def load_jobs(logdirs):
     for path in sorted(p for d in logdirs for p in d.glob("*.txt")):
         name = re.sub(r"^\d+_", "", path.stem)
         family, shard = job_family(name)
-        counts, rows = parse_job_log(read_lines(path))
-        families.setdefault(family, []).append({"name": name, "shard": shard, "counts": counts, "rows": rows})
+        counts, rows, problems = parse_job_log(read_lines(path))
+        families.setdefault(family, []).append({"name": name, "shard": shard, "counts": counts, "rows": rows,
+                                                "problems": problems})
     return families
 
 
@@ -164,17 +226,11 @@ def check_jobs(families, expect):
 
 
 def check_one(job):
-    name, counts, rows = job["name"], job["counts"], job["rows"]
+    name, counts = job["name"], job["counts"]
+    out = [f"{name}: {p}" for p in job["problems"]]
     if counts is None:
-        return [f"{name}: no final pytest result line (cancelled, timed out or truncated)"]
-    failed, errors, passed = counts
-    out = []
-    got_failed = sum(1 for s, _, _ in rows if s == "FAILED")
-    got_errors = sum(1 for s, _, _ in rows if s == "ERROR")
-    if (got_failed, got_errors) != (failed, errors):
-        out.append(f"{name}: result line says {failed} failed, {errors} errors; "
-                   f"summary rows are {got_failed} FAILED, {got_errors} ERROR (truncated or misread summary)")
-    if failed + errors + passed == 0:
+        return out + [f"{name}: no final pytest result line (cancelled, timed out or truncated)"]
+    if sum(counts) == 0:
         out.append(f"{name}: zero tests ran")
     return out
 

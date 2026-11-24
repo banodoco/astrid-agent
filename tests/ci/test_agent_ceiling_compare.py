@@ -238,3 +238,93 @@ def test_a_deselected_or_skipped_test_is_a_lost_id(files, capsys):
     code, out = run(files, archive, capsys)
     assert code == 1, out
     assert "FAIL opt-in | tests/o.py::test_one" in out
+
+
+def _stamp(text):
+    return "".join(f"2026-11-24T09:00:{i % 60:02d}.1Z {line}\n" for i, line in enumerate(text.splitlines()))
+
+
+def _session(rows, final):
+    return ("============================= test session starts ==============================\n"
+            "tests/x.py::test_progress PASSED\n"
+            "=========================== short test summary info ============================\n"
+            + "".join(r + "\n" for r in rows) + final + "\n")
+
+
+def _two_run_files(files, first_run_failure):
+    """Baseline: a::one, a::two, b::three pass in one opt-in job. Candidate: the same job runs pytest twice."""
+    tsv(files["baseline"], ("job", "id"), [("opt-in", "tests/a.py::test_one"), ("opt-in", "tests/a.py::test_two"),
+                                           ("opt-in", "tests/b.py::test_three")])
+    tsv(files["ceiling"], ("job", "id"), [])
+    run1 = ["PASSED tests/a.py::test_one",
+            "FAILED tests/a.py::test_two - boom" if first_run_failure else "PASSED tests/a.py::test_two"]
+    final1 = "= 1 failed, 1 passed in 0.10s =" if first_run_failure else "= 2 passed in 0.10s ="
+    return run1, final1
+
+
+def test_a_failure_in_the_first_of_two_sequential_runs_counts(files, capsys):
+    # The Release 16 Lead's probe: run 1 (PASSED a::one, FAILED a::two), then run 2 (PASSED b::three).
+    run1, final1 = _two_run_files(files, first_run_failure=True)
+    archive = files["tmp"] / "cand"
+    archive.mkdir()
+    log = _session(run1, final1) + _session(["PASSED tests/b.py::test_three"], "= 1 passed in 0.10s =")
+    (archive / "0_opt-in.txt").write_text(_stamp(log))
+    code, out = run(files, archive, capsys, "--expect-jobs", "opt-in")
+    assert code == 1, out
+    assert "FAIL opt-in | tests/a.py::test_two | boom" in out
+    assert "1 failed, 0 errors, 2 passed" in out  # both runs' result lines are summed
+
+
+def test_two_github_pytest_steps_are_both_read(files, capsys):
+    run1, final1 = _two_run_files(files, first_run_failure=True)
+    archive = files["tmp"] / "cand"
+    archive.mkdir()
+    log = ("##[group]Run python -m pytest -q -m first\n" + _session(run1, final1).split("\n", 1)[1]
+           + "##[group]Run python -m pytest -q -m second\n"
+           + _session(["PASSED tests/b.py::test_three"], "= 1 passed in 0.10s =").split("\n", 1)[1])
+    (archive / "0_opt-in.txt").write_text(_stamp(log))
+    code, out = run(files, archive, capsys, "--expect-jobs", "opt-in")
+    assert code == 1, out
+    assert "FAIL opt-in | tests/a.py::test_two | boom" in out
+
+
+def test_a_failure_in_an_early_repeat_counts(files, capsys):
+    run1, final1 = _two_run_files(files, first_run_failure=True)
+    archive = files["tmp"] / "cand"
+    archive.mkdir()
+    ok = ["PASSED tests/a.py::test_one", "PASSED tests/a.py::test_two", "PASSED tests/b.py::test_three"]
+    log = ("##[group]Run set +e\n"
+           "===== selection 1 of 2: tests='tests/a.py' =====\n" + _session(run1 + ["PASSED tests/b.py::test_three"], final1.replace("1 passed", "2 passed"))
+           + "===== selection 2 of 2: tests='tests/a.py' =====\n" + _session(ok, "= 3 passed in 0.10s ="))
+    (archive / "0_opt-in.txt").write_text(_stamp(log))
+    code, out = run(files, archive, capsys, "--expect-jobs", "opt-in")
+    assert code == 1, out
+    assert "FAIL opt-in | tests/a.py::test_two | boom" in out
+
+
+def test_an_inner_run_with_its_own_session_header_is_not_a_run(files, capsys):
+    run1, final1 = _two_run_files(files, first_run_failure=False)
+    archive = files["tmp"] / "cand"
+    archive.mkdir()
+    inner = _session(["FAILED tests/inner.py::test_printed - inner"], "= 1 failed in 0.01s =")
+    log = ("============================= test session starts ==============================\n"
+           + inner + "=========================== short test summary info ============================\n"
+           "PASSED tests/a.py::test_one\nPASSED tests/a.py::test_two\nPASSED tests/b.py::test_three\n"
+           "= 3 passed in 0.30s =\n")
+    (archive / "0_opt-in.txt").write_text(_stamp(log))
+    code, out = run(files, archive, capsys, "--expect-jobs", "opt-in")
+    assert code == 0, out
+    assert "test_printed" not in out
+
+
+def test_a_session_that_never_ends_or_a_github_cancel_fails(files, capsys):
+    run1, final1 = _two_run_files(files, first_run_failure=False)
+    for name, tail in (("open", "============================= test session starts ==============================\nPASSED tests/z.py::test_cut\n"),
+                       ("cancel", "##[error]The operation was canceled.\n")):
+        archive = files["tmp"] / name
+        archive.mkdir()
+        log = _session(run1 + ["PASSED tests/b.py::test_three"], "= 3 passed in 0.10s =") + tail
+        (archive / "0_opt-in.txt").write_text(_stamp(log))
+        code, out = run(files, archive, capsys, "--expect-jobs", "opt-in")
+        assert code == 1, (name, out)
+        assert "truncated" in out or "cancelled" in out, out
