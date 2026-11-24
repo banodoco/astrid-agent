@@ -649,7 +649,8 @@ def rn11_pack_launch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     roots = (ROOT / "astrid/packs/rendering", collection)
     try:
         with monkeypatch.context() as env_patch, _execution_env():
-            env_patch.setenv("ASTRID_PACKS_PATH", str(collection.resolve()))
+            # Use the same explicit root tuple for the host and worker launch probes.
+            env_patch.setenv("ASTRID_PACKS_PATH", os.pathsep.join(str(root.resolve()) for root in roots))
             env_patch.setenv("ASTRID_NODE_EXECUTABLE", str(Path(node).resolve()))
             env_patch.setenv("ASTRID_REMOTION_PROJECT_DIR", str(REMOTION.resolve()))
             env_patch.setenv("ASTRID_TIMELINE_SCHEMA_PYTHONPATH", str(SCHEMA_ROOT))
