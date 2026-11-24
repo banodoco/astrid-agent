@@ -86,7 +86,7 @@ def test_as_entry_dry_run_previews_without_writing_or_running(
         stream.setnchannels(1)
         stream.setsampwidth(2)
         stream.setframerate(16000)
-        stream.writeframes(b"\\0\\0" * 16000)
+        stream.writeframes(b"\0\0" * 16000)
     command = ["workflow", str(sam_api_path), "--as-entry", "mine",
                "--placement", "runpod", "--json"]
     inputs = ["--input", f"audio={media}"]
