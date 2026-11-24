@@ -1,0 +1,16 @@
+# Groups of tests that move between runs of unchanged code, from the Release 15 baseline (astrid-dev releases/15/evidence/agent-ci-baseline-8807f820/README.md).
+# A member that fails with the group's message is reported "moving" and does not fail the comparison; a member
+# that fails with a different message is a new failure. Columns: group, id pattern (fnmatch; [ ] are written [[] []]),
+# required message substring (the FAILED row's message, which pytest truncates with "..."). A group may have several rows.
+# The comparison matches ids as they appear in the job family's results (darwin ids carry no "darwin:" prefix).
+group	id pattern	message substring
+pinokio-listener-owner	tests/test_pinokio_platform_adapter.py::*	active process is not the configured listener owner
+readiness-under-load	tests/core/generation/test_readiness_missing_models.py::*	unavailable
+readiness-under-load	tests/core/generation/test_readiness_missing_models.py::test_defaults_is_ready_once_the_files_are_listed	assert (False is True)
+readiness-under-load	tests/core/generation/test_readiness_missing_models.py::test_the_download_plan_and_readiness_agree[[]True[]]	assert False is not []
+macos-render-deadline	tests/packs/test_audio_render.py::AudioRenderTest::test_rendered_mp4_contains_audio_stream	candidate reconciliation budget ran out
+macos-render-deadline	tests/packs/test_text_card_render.py::TextCardRenderTest::test_text_card_render_smoke	candidate reconciliation budget ran out
+registry-mtime-fence	tests/packs/rendering/test_render_export_task_adapter.py::test_registry_qualifying_discovery_refuses_corpus_change[[]new_manifest[]]	DID NOT RAISE RemotionValidationError
+child-bridge-descriptor-flags	tests/core/execution/test_generic_host_child_bridge_d18.py::test_host_bridge_outer_send_diagnostic_preserves_revoke_close[[]False[]]	2049 == 1
+shared-redo-archive	tests/editing_conformance/test_historical_shared_redo_authority.py::test_shared_redo_rechecks_source_archive_at_acceptance	history_unavailable
+shared-redo-archive	tests/editing_conformance/test_historical_shared_redo_authority.py::test_shared_redo_rechecks_source_archive_at_acceptance	store_membership_missing
