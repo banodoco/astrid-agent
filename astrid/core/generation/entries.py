@@ -1325,6 +1325,9 @@ def target_schema(entry: dict[str, Any], workflow: Any, client: Any, *, engine: 
     from astrid.core.generation.preflight import GenerationReadinessError, readiness_envelope
 
     if client is None:
+        if workflow is None:
+            # Without a workflow or a client there is no inventory to check (as on main).
+            return None
         missing_classes = _deferred_missing_node_classes(
             workflow, pending_target=pending_target, align=align,
             engine_missing=initial_readiness is not None,
