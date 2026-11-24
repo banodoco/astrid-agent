@@ -9,6 +9,9 @@ import pytest
 
 from astrid.core.generation import cli, targets
 from astrid.sdk.generation import GenerationFacade, GenerationInputError
+from tests.core.generation.fixtures.plan56_sam import (  # noqa: F401
+    sam_api_path, sam_offline_lookup,
+)
 
 
 def test_target_discovery_and_transient_override_do_not_write(monkeypatch, tmp_path, capsys):
@@ -62,28 +65,59 @@ def test_workflow_cli_calls_public_sdk_once_without_private_probe(monkeypatch, c
     assert json.loads(capsys.readouterr().out) == {'ok': True}
 
 
-def test_as_entry_dry_run_previews_without_writing_or_running(monkeypatch, tmp_path, capsys):
-    from astrid.core.generation import entries
-    source = tmp_path / 'preview.json'
-    source.write_text('{}')
-    described = {'kind': 'image', 'modes': ['t2i'], 'inputs': [{'name': 'prompt'}]}
-    seen = []
-    def preview_inputs(path, values, mode=None, *, required=True):
-        assert required is False
-        seen.append((path, dict(values)))
-        return described, values
+def test_as_entry_dry_run_previews_without_writing_or_running(
+    monkeypatch, tmp_path, capsys, sam_api_path,
+):
+    """Full controller readiness on the CPU RunPod stand-in; no queue or write."""
+    import wave
 
-    monkeypatch.setattr(entries, 'resolve_workflow_inputs', preview_inputs)
-    monkeypatch.setattr(cli, '_open_client', lambda: pytest.fail('preview opened Runtime'))
-    monkeypatch.setattr(cli, '_generate_facade', lambda: pytest.fail('preview ran the workflow'))
-    monkeypatch.setenv('VIBECOMFY_ENTRIES_DIR', str(tmp_path / 'entries'))
-    assert cli.main(['workflow', str(source), '--as-entry', 'mine', '--dry-run',
-                     '--prompt', 'a lighthouse', '--json']) == 0
-    assert seen == [(source, {'prompt': 'a lighthouse'})]
-    assert json.loads(capsys.readouterr().out) == {
-        'dry_run': True, 'written': False, 'would_save_entry': 'mine', 'replaces_existing': False,
-        'kind': 'image', 'modes': ['t2i'], 'inputs': [{'name': 'prompt'}]}
-    assert not (tmp_path / 'entries').exists()
+    from astrid.core.generation import placement as placements
+    from astrid.sdk import generation
+
+    monkeypatch.setattr(placements, "_runpod_leases", lambda kind: [])
+    monkeypatch.setattr(generation, "_require_claimed_machine",
+                        lambda *a, **kw: pytest.fail("blocked preflight required a machine"))
+    monkeypatch.setattr(cli, "_open_client", lambda: pytest.fail("preview/preflight opened Runtime"))
+    root = tmp_path / "entries"
+    monkeypatch.setenv("VIBECOMFY_ENTRIES_DIR", str(root))
+    before = sam_api_path.read_bytes()
+    media = tmp_path / "clip.wav"
+    with wave.open(str(media), "wb") as stream:
+        stream.setnchannels(1)
+        stream.setsampwidth(2)
+        stream.setframerate(16000)
+        stream.writeframes(b"\\0\\0" * 16000)
+    command = ["workflow", str(sam_api_path), "--as-entry", "mine",
+               "--placement", "runpod", "--json"]
+    inputs = ["--input", f"audio={media}"]
+
+    # The actual run's controller preflight blocks before a claimed machine
+    # or publication. The preview must return the same issues and repairs.
+    assert cli.main([*command, *inputs, "--dry-run"]) == 2
+    preview = json.loads(capsys.readouterr().out)
+    assert cli.main([*command, *inputs]) == 2
+    real_preflight = json.loads(capsys.readouterr().out)
+    keys = ("status", "issues", "fixes")
+    assert {key: preview[key] for key in keys} == {
+        key: real_preflight[key] for key in keys
+    }
+    assert preview["status"] == "blocked"
+    assert {issue["details"]["node"] for issue in preview["issues"]
+            if issue["code"] == "missing_node_pack"} == {
+        "SAMAudioPipelineLoader", "SAMAudioTextSeparator",
+    }
+
+    # Save-preview validation is optional: absence of this run's audio does
+    # not turn a reusable entry's preview into a missing-input refusal.
+    assert cli.main([*command, "--dry-run"]) == 2
+    optional = json.loads(capsys.readouterr().out)
+    assert {issue["details"]["node"] for issue in optional["issues"]
+            if issue["code"] == "missing_node_pack"} == {
+        "SAMAudioPipelineLoader", "SAMAudioTextSeparator",
+    }
+    assert not any(issue["code"] == "input_rejected" for issue in optional["issues"])
+    assert not root.exists()
+    assert sam_api_path.read_bytes() == before
 
 
 @pytest.mark.parametrize('flags', [
