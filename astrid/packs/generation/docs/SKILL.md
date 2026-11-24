@@ -253,11 +253,32 @@ treat them as the implicit shipped catalog or write into the packaged resource.
 
 ### WS-0d — Save and replace an entry
 
-<!-- WS-0d: fill this subsection in the same change as the card. -->
+Save without queueing with `generate workflow FILE --as-entry NAME --no-run`.
+An existing name is refused unless you explicitly add `--replace`. Preview with
+`--replace --dry-run --json` before asking for approval; the preview writes nothing.
+On approval use `generate workflow FILE --as-entry NAME --replace --no-run`.
+Save-only and save-preview commands do not require a particular run's media or
+prompt; any supplied inputs are still validated. Generation requires its declared
+run inputs. The new bundle is prepared before the entry manifest is switched; a failed import
+does not erase the previous entry. Never delete an entry as a replacement fallback.
 
 ### WS-0e — Align a saved entry
 
-<!-- WS-0e: fill this subsection in the same change as the card. -->
+Inspect a saved entry with `astrid generate align --entry ID --json`. Its
+bundle's node-lock identities and model declarations are authoritative; a
+different or missing bundle pin is not silently replaced by the shipped
+catalog. Incomplete model declarations appear in `unlocked` as typed
+`model_lock_incomplete` issues with the missing facts and a named repair step.
+They are not downloadable models, and apply stops without asset writes until
+the selected entry's declaration is complete. Supply verified source, SHA-256
+and byte size through workflow authoring; LE-9 adds `--add-model DEST=URL#sha256`.
+`--all` still inspects the catalog, not every saved workflow.
+
+For a managed target, `--apply --consent user_env` cannot approve new code.
+A non-shipped repository/commit/recipe requires a matching saved local code
+approval; show the named next step if approval is absent. Until the controlled
+LE-2b installer is available, do not send even an approved novel recipe through
+the old alignment installer. Do not infer approval from an existing checkout.
 
 ### WS-0g — Missing classes on every placement
 
