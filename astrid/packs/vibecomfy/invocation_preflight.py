@@ -558,12 +558,15 @@ def verify_admitted_invocation_receipt(
     """Bind the admission receipt to host-materialized CAS bytes, offline.
 
     The receipt is evidence, not a source of execution inputs. In particular,
-    media basenames come from the actual archive or staged file. Do this before
-    placement acquisition, live approval, or attempt-private graph rewrites.
+    media basenames come from the actual archive or staged file. Compare content
+    first (before executing any Python), revision second, and API digest last,
+    before placement, live approval, or attempt-private graph rewrites.
     """
-    from astrid.packs.vibecomfy.asset_manifest import read_archive, resolve_inputs
-    from astrid.packs.vibecomfy.production_engine import load_workflow_path, _workflow_content_digest
-    from astrid.packs.vibecomfy.shared.bundle_inputs import staged_workflow_path
+    from vibecomfy.workflow import WorkflowCompileError
+
+    from astrid.packs.vibecomfy.asset_manifest import AssetManifestError, read_archive, resolve_inputs
+    from astrid.packs.vibecomfy.production_engine import ProductionEngineError, load_workflow_path, _workflow_content_digest
+    from astrid.packs.vibecomfy.shared.bundle_inputs import CanonicalBundleInputError, staged_workflow_path
 
     if not isinstance(receipt, Mapping):
         raise InvocationReceiptMismatch(
@@ -599,6 +602,7 @@ def verify_admitted_invocation_receipt(
     previous_headless = os.environ.get("VIBECOMFY_HEADLESS")
     os.environ["VIBECOMFY_HEADLESS"] = "1"
     try:
+        # Same canonical staging/loader as generic_host._prepare_vibecomfy_execution_identity.
         with staged_workflow_path(
             workflow=None, python=inputs["python"], companion=inputs["companion"],
             source=inputs["source"], scratch=scratch,
@@ -611,18 +615,34 @@ def verify_admitted_invocation_receipt(
             _compare_receipt_digest(receipt, "revision_id", loaded.workflow_revision)
             _compare_receipt_digest(receipt, "workflow_content_digest", loaded.workflow_content_digest)
 
-            bindings = invocation_run_inputs(inputs.get("workflow_inputs"))
+            try:
+                bindings = invocation_run_inputs(inputs.get("workflow_inputs"))
+            except InvocationPreflightError as exc:
+                raise InvocationReceiptMismatch(
+                    "bytes_unrecomputable", admitted="<unrecomputable>", receipt="<provided>",
+                ) from exc
             if inputs.get("managed_assets"):
+                # Same archive validation/merge as run.py's _stage_managed_asset_manifest,
+                # without writing engine files or contacting a target.
                 archive = read_archive(inputs["managed_assets"])
                 bindings = resolve_inputs(archive.manifest, bindings)
             if inputs.get("source_video"):
+                # Mirror run.py's _stage_source_video binding, before target custody.
                 if "source_video" in bindings:
-                    raise InvocationPreflightError("source_video was supplied by more than one input path")
+                    raise InvocationReceiptMismatch(
+                        "bytes_unrecomputable", admitted="<duplicate source_video>", receipt="<provided>",
+                    )
                 bindings["source_video"] = Path(inputs["source_video"]).name
             api = loaded.resolved.workflow.compile("api", run_inputs=bindings)
             if not isinstance(api, Mapping):
-                raise InvocationPreflightError("VIBECOMFY_API_COMPILE: projection is not an object")
+                raise InvocationReceiptMismatch(
+                    "bytes_unrecomputable", admitted="<invalid API>", receipt="<provided>",
+                )
             _compare_receipt_digest(receipt, "api_digest", _canonical_digest(api))
+    except (CanonicalBundleInputError, ProductionEngineError, AssetManifestError, WorkflowCompileError) as exc:
+        raise InvocationReceiptMismatch(
+            "bytes_unrecomputable", admitted="<unrecomputable>", receipt="<provided>",
+        ) from exc
     finally:
         if previous_headless is None:
             os.environ.pop("VIBECOMFY_HEADLESS", None)
