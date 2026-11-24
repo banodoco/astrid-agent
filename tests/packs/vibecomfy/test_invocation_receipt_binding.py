@@ -143,17 +143,39 @@ def _wire_inputs(inputs: dict[str, str], client, project_id: str) -> dict:
 
 def test_sdk_no_archive_public_inputs_round_trip(canonical, tmp_path, real_runtime):
     from astrid_runtime_client.generated import WorkspaceClient as RawRuntimeClient
-    from astrid.sdk.remote import _vibecomfy_invocation_preflight
+    from astrid.core.execution.generic_host import GenericPackHost, RuntimeProtocolClient
+    from astrid.sdk.remote import RemoteTasks
+    from astrid.sdk.workspace_client import WorkspaceClient
 
     daemon = real_runtime()
     raw = RawRuntimeClient(daemon.endpoint, daemon.token)
-    project_id = raw.create_project("RA6 SDK round trip", slug="ra6-sdk", idempotency_key="ra6-project")["project_id"]
-    wire = _wire_inputs(canonical, raw, project_id)
-    bindings = {"prompt": "a new blue circle", "seed": 29, "width": 768, "height": 512}
-    inputs = {**canonical, "workflow_inputs": json.dumps(bindings)}
-    receipt = _vibecomfy_invocation_preflight(
-        raw, {"inputs": {**wire, "workflow_inputs": inputs["workflow_inputs"]}}, strict=True,
+    host = GenericPackHost(
+        pack_roots=[Path(__file__).resolve().parents[3] / "astrid/packs/vibecomfy"],
+        client=RuntimeProtocolClient(daemon.endpoint, daemon.worker_token),
+        credential_source={}, attempt_root=tmp_path / "attempt",
     )
+    try:
+        host.discover()
+        host.preflight()
+        host.register()
+        project_id = raw.create_project("RA6 SDK round trip", slug="ra6-sdk", idempotency_key="ra6-project")["project_id"]
+        wire = _wire_inputs(canonical, raw, project_id)
+        bindings = {"prompt": "a new blue circle", "seed": 29, "width": 768, "height": 512}
+        inputs = {**canonical, "workflow_inputs": json.dumps(bindings)}
+        tasks = RemoteTasks(WorkspaceClient(daemon.endpoint, daemon.token))
+        admitted = tasks.create(
+            project_id=project_id, capability="vibecomfy.run",
+            spec={"inputs": {**wire, "workflow_inputs": inputs["workflow_inputs"]}},
+            input_manifest=[row["object_id"] for row in wire.values()],
+            idempotency_key="ra6-sdk-round-trip",
+        )
+        assert admitted.ok, admitted.error
+        task = raw.get_task(admitted.data["task_id"])
+        assert task.state == "queued"
+        receipt = task.spec["spec"]["invocation_preflight"]
+    finally:
+        host.shutdown()
+        daemon.stop()
     assert receipt["run_inputs"] == bindings
     assert receipt["api_digest"] != _receipt(canonical)["api_digest"]
     verify_admitted_invocation_receipt(receipt, inputs, tmp_path / "host")
@@ -221,6 +243,15 @@ def test_direct_runtime_post_reaches_host_gate(field, comfy, tmp_path, monkeypat
                                "color": ["INT", {"default": 0}]}},
         "output": ["IMAGE"], "output_name": ["IMAGE"], "output_node": False,
     }
+    index_path = tmp_path / "node_index.json"
+    index = json.loads(index_path.read_text())
+    index.append({
+        "class_type": "EmptyImage", "pack": "core",
+        "inputs": {name: {"type": "INT", "required": True}
+                   for name in ("width", "height", "batch_size", "color")},
+        "outputs": [{"type": "IMAGE", "name": "IMAGE"}],
+    })
+    index_path.write_text(json.dumps(index))
     inputs = _empty_image(tmp_path / "bundle")
     receipt = _receipt(inputs)
     if field not in (None, "invocation_preflight"):
