@@ -619,7 +619,8 @@ def rn11_pack_launch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """
     from astrid.core.element.registry import clear_default_registry_cache
 
-    collection = tmp_path / "collection"
+    home = tmp_path / "home"
+    collection = home / "Astrid" / "packs"
     pack = collection / "rn11_collection"
     docs = pack / "docs"
     docs.mkdir(parents=True)
@@ -649,8 +650,14 @@ def rn11_pack_launch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     roots = (ROOT / "astrid/packs/rendering", collection)
     try:
         with monkeypatch.context() as env_patch, _execution_env():
-            # Use the same explicit root tuple for the host and worker launch probes.
-            env_patch.setenv("ASTRID_PACKS_PATH", os.pathsep.join(str(root.resolve()) for root in roots))
+            # The real command projection replaces the extra-pack search path
+            # with its selected dependency collections. Both host and worker
+            # still discover the canonical user collection from their shared
+            # home, and built-in rendering roots stay implicit in discovery.
+            env_patch.setenv("HOME", str(home.resolve()))
+            if sys.platform == "win32":
+                env_patch.setenv("USERPROFILE", str(home.resolve()))
+            env_patch.setenv("ASTRID_PACKS_PATH", str(collection.resolve()))
             env_patch.setenv("ASTRID_NODE_EXECUTABLE", str(Path(node).resolve()))
             env_patch.setenv("ASTRID_REMOTION_PROJECT_DIR", str(REMOTION.resolve()))
             env_patch.setenv("ASTRID_TIMELINE_SCHEMA_PYTHONPATH", str(SCHEMA_ROOT))
