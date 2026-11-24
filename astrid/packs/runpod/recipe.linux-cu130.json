@@ -82,7 +82,7 @@
       "node_lock": {
         "source": "vibecomfy",
         "path": "custom_nodes.lock",
-        "sha256": "e823de5bc0173c7f9486336424467f72457519507043a04fba1ad2b44b47df8d"
+        "sha256": "8767ca36f3f260c922fcdf87f0ab38078fa7b8d5dd525db77080b459969de7f1"
       },
       "source_installs": [
         {
