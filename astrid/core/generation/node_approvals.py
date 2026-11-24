@@ -99,28 +99,67 @@ def write_entry_approvals(entry_directory: str | Path, records: list[NodeApprova
 
 
 def entry_approval_directory(entry):
-    """Resolve the saved entry directory that owns this row's approvals, or None.
+    """Resolve the selected saved entry's approval authority, never an authored path.
 
-    Rule: only a ``user-entry`` row without ``contribution`` can own approvals,
-    and its directory is ``entries_dir()/<id>``. ``load_entry`` records no
-    directory on the row (it resolves only ``bundle``), so the directory counts
-    only when it holds an ``entry.json``. A row with no saved directory (a
-    contributed built-in, or an unsaved row) persists no approvals and returns
-    None; per-run consent still applies. Never a workflow-authored sidecar path.
+    Unsaved and contributed rows persist nothing. Initial entries and historical
+    replacements use the root sidecar. A revision-v2-* replacement owns only
+    its own sidecar, even when absent; a damaged revision never becomes legacy.
     """
     if not entry or entry.get("source") != "user-entry" or entry.get("contribution"):
         return None
     from vibecomfy.entries import entries_dir, load_entry
 
-    directory = entries_dir() / entry["id"]
-    if directory.parent != entries_dir() or directory.is_symlink():
+    root = entries_dir()
+    directory = root / entry["id"]
+    if directory.parent != root or directory.is_symlink():
         raise ValueError("code approvals require a plain saved entry directory")
-    if not (directory / "entry.json").is_file():
+    manifest = directory / "entry.json"
+    if manifest.is_symlink():
+        raise ValueError("code approvals require a plain saved entry manifest")
+    if not manifest.exists():
         return None
+    if not directory.is_dir() or not manifest.is_file():
+        raise ValueError("code approvals require a plain saved entry manifest")
     saved = load_entry(directory)
     if saved["id"] != entry["id"] or saved["bundle"] != entry["bundle"]:
         raise ValueError("saved entry changed before code approval")
-    return directory
+
+    # load_entry resolves paths; inspect the original spelling too so absolute
+    # paths, traversal and aliases cannot disguise a v2 revision as historical.
+    raw = json.loads(manifest.read_text(encoding="utf-8"))
+    raw_bundle = Path(raw["bundle"])
+    resolved_bundle = Path(saved["bundle"])
+    if raw["id"] != saved["id"] or (directory / raw_bundle).resolve() != resolved_bundle:
+        raise ValueError("saved entry changed before code approval")
+    resolved_parts = (resolved_bundle.relative_to(directory.resolve()).parts
+                      if resolved_bundle.is_relative_to(directory.resolve()) else ())
+    if not any(part.startswith("revision-v2-") for part in (*raw_bundle.parts, *resolved_parts)):
+        return directory
+
+    parts = raw_bundle.parts
+    if (len(parts) != 2 or not parts[0].startswith("revision-v2-")
+            or parts[0] == "revision-v2-" or parts[1] != "bundle"
+            or raw["bundle"] != f"{parts[0]}/bundle"):
+        raise ValueError("code approvals require an exact relative v2 revision bundle")
+    revision = directory / parts[0]
+    bundle = revision / "bundle"
+    revision_manifest = revision / "entry.json"
+    if (revision.is_symlink() or not revision.is_dir()
+            or revision.resolve().parent != directory.resolve()
+            or bundle.is_symlink() or not bundle.is_dir()
+            or bundle.resolve() != resolved_bundle
+            or revision_manifest.is_symlink() or not revision_manifest.is_file()):
+        raise ValueError("code approvals require plain v2 revision, bundle and manifest paths")
+
+    local = json.loads(revision_manifest.read_text(encoding="utf-8"))
+    if not isinstance(local, dict) or local.get("bundle") != "bundle":
+        raise ValueError("code approvals require the v2 revision's relative bundle")
+    selected = load_entry(revision)
+    if selected["id"] != saved["id"] or selected["bundle"] != saved["bundle"]:
+        raise ValueError("v2 revision manifest does not match the selected entry")
+    # Missing sidecar is an empty approval set at this revision, not a reason
+    # to consult the root or an earlier revision.
+    return revision
 
 
 def _consent_retry(argv, nodes):
