@@ -257,13 +257,17 @@ def project_words(bundle: Mapping[str, Any], transcripts: Mapping[str, Mapping[s
     return rows
 
 
-def timeline_media_ids(bundle: Mapping[str, Any], *, any_media: bool = False) -> list[str]:
+def timeline_media_ids(bundle: Mapping[str, Any], *, any_media: bool = False,
+                       line: str | None = None) -> list[str]:
     """Media digests of the timeline's audio clips (every clip with a digest when ``any_media``),
-    in the parent and every shot's sub-timeline, in order."""
+    in the parent and every shot's sub-timeline, in order. A line restricts the
+    search to the same line ID used by the word projection."""
     media_ids: list[str] = []
     for occ in _occurrences(bundle, "parent"):
         tracks = _holder_tracks(occ["holder"])
         for clip in _holder_clips(occ["holder"]):
+            if line is not None and line != (intent.line(clip) or str(clip.get("id") or "")):
+                continue
             media = _clip_media_id(occ["holder"], clip)
             if media and (any_media or _track_is_audio(tracks, clip)) and media not in media_ids:
                 media_ids.append(media)
