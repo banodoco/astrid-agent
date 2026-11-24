@@ -188,7 +188,7 @@ def test_explicit_choice_is_recorded_and_saved(monkeypatch, capsys):
 
     assert cli_working._cmd_transcripts_refresh(args) == 0
     refs = working.bundle["parent"]["config"]["bundle"]["transcriptReferences"]
-    assert refs["associations"] == [{"documentId": stored[MEDIA_A][whisper]["document_id"],
+    assert refs["associations"] == [{"assetId": "a", "documentId": stored[MEDIA_A][whisper]["document_id"],
                                      "mediaId": MEDIA_A, "sourceId": whisper}]
     assert working.saved
     assert "recorded" in capsys.readouterr().out
