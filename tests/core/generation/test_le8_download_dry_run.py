@@ -82,6 +82,17 @@ def test_attached_dry_run_reports_catalog_hint_without_local_capacity(
         network, monkeypatch, tmp_path, capsys, sam_api_path):
     client, requests = install_target(network, sam_object_info())
     _forbid_controller_capacity(monkeypatch)
+    # Observe the real renderer called through the production CLI/SDK path.
+    # Forward to it rather than manufacturing a warning or bypassing admission.
+    real_renderer = model_storage.model_download_notice
+    rendered = []
+
+    def observe_renderer(packs, storage):
+        notice = real_renderer(packs, storage)
+        rendered.append((packs, storage, notice))
+        return notice
+
+    monkeypatch.setattr(model_storage, "model_download_notice", observe_renderer)
     monkeypatch.setattr(preflight, "_module_available", lambda name: name == "vibecomfy")
     root, audio = _saved_sam(tmp_path, monkeypatch, sam_api_path, "attached")
     before = _entry_bytes(root)
@@ -89,7 +100,11 @@ def test_attached_dry_run_reports_catalog_hint_without_local_capacity(
     assert cli.main(["audio", "--entry", "sam-download", "--mode", "workflow",
                      "--audio-ref", str(audio), "--placement", client.target.url,
                      "--dry-run", "--json"]) == 0
-    _assert_notice(json.loads(capsys.readouterr().out), "unknown")
+    issue = _assert_notice(json.loads(capsys.readouterr().out), "unknown")
+    (packs, storage, notice), = rendered
+    assert packs == {"ComfyUI-SAM-Audio": 14_861_356_211}
+    assert storage == model_storage.DownloadStorageObservation(None, True, "unknown")
+    assert notice == issue
     assert ("GET", "/object_info") in requests
     assert all(method == "GET" for method, _ in requests)
     assert _entry_bytes(root) == before
