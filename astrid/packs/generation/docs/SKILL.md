@@ -257,7 +257,9 @@ Save without queueing with `generate workflow FILE --as-entry NAME --no-run`.
 An existing name is refused unless you explicitly add `--replace`. Preview with
 `--replace --dry-run --json` before asking for approval; the preview writes nothing.
 On approval use `generate workflow FILE --as-entry NAME --replace --no-run`.
-The new bundle is prepared before the entry manifest is switched; a failed import
+Save-only and save-preview commands do not require a particular run's media or
+prompt; any supplied inputs are still validated. Generation requires its declared
+run inputs. The new bundle is prepared before the entry manifest is switched; a failed import
 does not erase the previous entry. Never delete an entry as a replacement fallback.
 
 ### WS-0e — Align a saved entry

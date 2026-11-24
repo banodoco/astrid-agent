@@ -68,8 +68,12 @@ def test_as_entry_dry_run_previews_without_writing_or_running(monkeypatch, tmp_p
     source.write_text('{}')
     described = {'kind': 'image', 'modes': ['t2i'], 'inputs': [{'name': 'prompt'}]}
     seen = []
-    monkeypatch.setattr(entries, 'resolve_workflow_inputs',
-        lambda path, values, mode=None: seen.append((path, dict(values))) or (described, values))
+    def preview_inputs(path, values, mode=None, *, required=True):
+        assert required is False
+        seen.append((path, dict(values)))
+        return described, values
+
+    monkeypatch.setattr(entries, 'resolve_workflow_inputs', preview_inputs)
     monkeypatch.setattr(cli, '_open_client', lambda: pytest.fail('preview opened Runtime'))
     monkeypatch.setattr(cli, '_generate_facade', lambda: pytest.fail('preview ran the workflow'))
     monkeypatch.setenv('VIBECOMFY_ENTRIES_DIR', str(tmp_path / 'entries'))

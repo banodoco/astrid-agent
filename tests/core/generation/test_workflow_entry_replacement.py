@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from astrid.core.generation import cli
+from astrid.core.generation import cli, entries
 from vibecomfy.entries import load_entry
 
 
@@ -32,6 +32,9 @@ def test_workflow_cli_replacement_is_explicit_and_atomic(tmp_path, monkeypatch, 
         return cli.main(["workflow", str(source), "--placement", "local",
                          "--as-entry", "sample", "--json", *flags])
 
+    # The same source still requires image for a real generation request.
+    with pytest.raises(entries.MissingRequiredEntryInputsError, match="image"):
+        entries.resolve_workflow_inputs(old, {})
     assert command(old, "--no-run") == 0
     assert json.loads(capsys.readouterr().out) == {
         "saved": True, "ran": False, "entry": "sample", "replaced": False,
@@ -53,6 +56,13 @@ def test_workflow_cli_replacement_is_explicit_and_atomic(tmp_path, monkeypatch, 
     preview = json.loads(capsys.readouterr().out)
     assert preview["written"] is False
     assert preview["replaces_existing"] is True
+    assert (entry_path / "entry.json").read_bytes() == manifest
+    assert set(entry_path.iterdir()) == original_paths
+
+    # Save-only still refuses an invalid supplied input and changes nothing.
+    assert command(new, "--replace", "--no-run", "--input", "nonexistent=oops") == 2
+    bad_input = json.loads(capsys.readouterr().out)
+    assert "nonexistent" in bad_input["issues"][0]["message"]
     assert (entry_path / "entry.json").read_bytes() == manifest
     assert set(entry_path.iterdir()) == original_paths
 
