@@ -132,3 +132,170 @@ def test_successful_replacement_publishes_exact_revision_approval(tmp_path, entr
     assert approvals.entry_approval_directory(published) == revision
     assert approvals.authorize_nodes(actual, placement_class="local", entry=published,
                                      retry_argv=["astrid", "generate", "image"]) == records
+
+
+def _manifest(bundle, entry_id="mine"):
+    return {"id": entry_id, "kind": "image", "modes": ["t2i"], "bundle": bundle,
+            "needs": [], "binds": {}, "defaults": {}}
+
+
+def _write_manifest(directory, bundle, entry_id="mine"):
+    (directory / "entry.json").write_text(
+        json.dumps(_manifest(bundle, entry_id)), encoding="utf-8")
+
+
+@pytest.mark.parametrize("bundle", ["bundle", "revision-historical/bundle", "workflow.py"])
+def test_legacy_saved_entry_keeps_root_approval_authority(entry_root, bundle):
+    directory = entry_root / "mine"
+    directory.mkdir(parents=True)
+    _write_manifest(directory, bundle)
+    if bundle != "workflow.py":
+        (directory / bundle).mkdir(parents=True)
+    node = {"repo": REPO, "commit": PIN}
+    records = [approvals.approval_record(node, placement_class="local")]
+    approvals.write_entry_approvals(directory, records)
+    saved = dict(load_entry(directory), source="user-entry")
+    assert approvals.entry_approval_directory(saved) == directory
+    assert approvals.authorize_nodes([node], placement_class="local", entry=saved,
+                                     retry_argv=["astrid", "generate", "image"]) == records
+
+
+def test_unsaved_user_entry_keeps_per_run_consent(entry_root):
+    saved = {**_manifest(str(entry_root / "source.py")), "source": "user-entry"}
+    assert approvals.entry_approval_directory(saved) is None
+
+
+@pytest.mark.parametrize("damage", [
+    "missing-manifest", "invalid-json", "manifest-directory", "wrong-id",
+    "wrong-bundle", "absolute-local-bundle", "absolute-root-bundle",
+    "traversal-root-bundle", "revision-symlink", "bundle-symlink",
+    "manifest-symlink", "root-manifest-symlink", "legacy-alias-to-v2",
+])
+def test_v2_revision_path_or_manifest_damage_never_uses_root(tmp_path, entry_root, damage):
+    directory = entries_dir() / "mine"
+    revision = directory / "revision-v2-fixture"
+    bundle = revision / "bundle"
+    bundle.mkdir(parents=True)
+    _write_manifest(directory, f"{revision.name}/bundle")
+    _write_manifest(revision, "bundle")
+    node = {"repo": REPO, "commit": PIN}
+    approvals.write_entry_approvals(directory, [
+        approvals.approval_record(node, placement_class="local")])
+    local_manifest = revision / "entry.json"
+    root_manifest = directory / "entry.json"
+
+    if damage == "missing-manifest":
+        local_manifest.unlink()
+    elif damage == "invalid-json":
+        local_manifest.write_text("{broken", encoding="utf-8")
+    elif damage == "manifest-directory":
+        local_manifest.unlink()
+        local_manifest.mkdir()
+    elif damage == "wrong-id":
+        _write_manifest(revision, "bundle", "other")
+    elif damage == "wrong-bundle":
+        _write_manifest(revision, "another")
+    elif damage == "absolute-local-bundle":
+        _write_manifest(revision, str(bundle))
+    elif damage == "absolute-root-bundle":
+        _write_manifest(directory, str(bundle))
+    elif damage == "traversal-root-bundle":
+        _write_manifest(directory, f"{revision.name}/../{revision.name}/bundle")
+    elif damage == "legacy-alias-to-v2":
+        alias = directory / "revision-historical"
+        alias.symlink_to(revision, target_is_directory=True)
+        _write_manifest(directory, f"{alias.name}/bundle")
+    else:
+        path = {"revision-symlink": revision, "bundle-symlink": bundle,
+                "manifest-symlink": local_manifest, "root-manifest-symlink": root_manifest}[damage]
+        is_directory = path.is_dir()
+        outside = tmp_path / "detached"
+        path.rename(outside)
+        path.symlink_to(outside, target_is_directory=is_directory)
+
+    selected = dict(load_entry(directory), source="user-entry")
+    with pytest.raises(ValueError):
+        approvals.entry_approval_directory(selected)
+
+
+def test_stale_selected_entry_cannot_use_new_revision_approvals(entry_root):
+    directory = entry_root / "mine"
+    previous = directory / "revision-v2-first"
+    current = directory / "revision-v2-second"
+    for revision in (previous, current):
+        (revision / "bundle").mkdir(parents=True)
+        _write_manifest(revision, "bundle")
+    _write_manifest(directory, f"{previous.name}/bundle")
+    stale = dict(load_entry(directory), source="user-entry")
+    _write_manifest(directory, f"{current.name}/bundle")
+    with pytest.raises(ValueError, match="saved entry changed"):
+        approvals.entry_approval_directory(stale)
+
+
+@pytest.mark.parametrize("replacement", ["direct-after-root", "direct-after-revision", "deleted-sidecar"])
+def test_v2_missing_sidecar_requests_consent_in_alignment_and_generation(
+        tmp_path, entry_root, monkeypatch, replacement):
+    from astrid.core.generation import asset_alignment as alignment, entries
+    from astrid.core.generation.preflight import GenerationReadinessError
+
+    node = {"repo": REPO, "commit": PIN}
+    record = approvals.approval_record(node, placement_class="local")
+    source = _source(tmp_path, ref=node)
+    initial = import_as_entry(source, "mine")
+    directory = entry_root / "mine"
+    approvals.write_entry_approvals(directory, [record])
+    initial_sidecar = (directory / approvals.APPROVALS_FILENAME).read_bytes()
+    previous = None
+
+    def attach(staged, revision):
+        assert load_entry(revision) == staged
+        approvals.write_entry_approvals(revision, [record])
+
+    if replacement != "direct-after-root":
+        previous = import_as_entry(source, "mine", replace=True, before_publish=attach)
+        prior_revision = Path(previous["bundle"]).parent
+        assert approvals.read_entry_approvals(prior_revision) == [record]
+        assert approvals.entry_approval_directory(dict(previous, source="user-entry")) == prior_revision
+
+    if replacement == "deleted-sidecar":
+        selected = import_as_entry(source, "mine", replace=True, before_publish=attach)
+        (Path(selected["bundle"]).parent / approvals.APPROVALS_FILENAME).unlink()
+    else:
+        selected = import_as_entry(source, "mine", replace=True)
+
+    revision = Path(selected["bundle"]).parent
+    assert revision.name.startswith("revision-v2-")
+    assert not (revision / approvals.APPROVALS_FILENAME).exists()
+    assert (directory / approvals.APPROVALS_FILENAME).read_bytes() == initial_sidecar
+    assert Path(initial["bundle"]).is_dir()
+    if previous is not None:
+        assert approvals.read_entry_approvals(prior_revision) == [record]
+
+    saved = entries.find_entry("mine")
+    assert approvals.entry_approval_directory(saved) == revision
+    with pytest.raises(GenerationReadinessError) as caught:
+        approvals.authorize_nodes([node], placement_class="local", entry=saved,
+                                  retry_argv=["astrid", "generate", "image"])
+    assert caught.value.readiness["issues"][0]["code"] == "needs_consent"
+
+    [manifest] = alignment.catalog_manifests("mine")
+    [pack] = [pack for pack in manifest["modes"][0]["node_packs"]
+              if pack["repository"] == REPO]
+    assert pack["requires_code_consent"] is True
+    assert pack["code_approvals"] == []
+    monkeypatch.setattr(alignment, "selected_target",
+                        lambda: pytest.fail("unapproved alignment selected a target"))
+    before = _tree(directory)
+    with pytest.raises(GenerationReadinessError) as caught:
+        alignment.align(entry_id="mine", apply=True, consent=("user_env",))
+    assert caught.value.readiness["issues"][0]["code"] == "needs_consent"
+    assert _tree(directory) == before
+
+    # The canonical alignment reader also recognizes a new valid local record.
+    approvals.write_entry_approvals(revision, [record])
+    [manifest] = alignment.catalog_manifests("mine")
+    [pack] = [pack for pack in manifest["modes"][0]["node_packs"]
+              if pack["repository"] == REPO]
+    assert "requires_code_consent" not in pack
+    assert pack["code_approvals"] == [record]
+
