@@ -18,25 +18,30 @@ from pathlib import Path
 import pytest
 
 from astrid.sdk.timeline import commands
-from astrid.sdk.timeline._command_state import State
-from astrid.sdk.timeline.commit import bundle_from_document, document_from_bundle
-from astrid.sdk.timeline.emitter import emit_document_commands
-from astrid.sdk.timeline.native_occurrence_duplicate import capture_occurrence_duplicate
-from astrid.sdk.timeline.native_occurrence_fork import capture_occurrence_fork
-from astrid.sdk.timeline.native_occurrence_shared import (
-    capture_occurrence_place_shared, foreign_shared_command, resolve_source,
-)
-from astrid.sdk.timeline.native_timeline_duplicate import copy_command
 from astrid.sdk.timeline._clip_commands import capture_clip_add
 from astrid.sdk.timeline._clip_scalar_commands import capture_clip_set
-from astrid.sdk.timeline.native_occurrence_media_commands import capture_occurrence_add_media
-from astrid.sdk.timeline.native_parent_media_commands import capture_clip_add_media
-from astrid.sdk.timeline.native_placement_commands import capture_placement, capture_placement_create
-from astrid.sdk.timeline.native_shot_pool_commands import capture_shot_pool
+from astrid.sdk.timeline._command_state import State
 from astrid.sdk.timeline._shot_commands import capture_shot_set
 from astrid.sdk.timeline._split_commands import capture_clip_split
 from astrid.sdk.timeline._trim_commands import capture_clip_trim
 from astrid.sdk.timeline.capture import capture_move
+from astrid.sdk.timeline.commit import bundle_from_document, document_from_bundle
+from astrid.sdk.timeline.emitter import emit_document_commands
+from astrid.sdk.timeline.native_occurrence_duplicate import capture_occurrence_duplicate
+from astrid.sdk.timeline.native_occurrence_fork import capture_occurrence_fork
+from astrid.sdk.timeline.native_occurrence_media_commands import capture_occurrence_add_media
+from astrid.sdk.timeline.native_occurrence_shared import (
+    capture_occurrence_place_shared,
+    foreign_shared_command,
+    resolve_source,
+)
+from astrid.sdk.timeline.native_parent_media_commands import (
+    capture_clip_add_media,
+    capture_clip_duplicate_media,
+)
+from astrid.sdk.timeline.native_placement_commands import capture_placement, capture_placement_create
+from astrid.sdk.timeline.native_shot_pool_commands import capture_shot_pool
+from astrid.sdk.timeline.native_timeline_duplicate import copy_command
 from tests.editing_conformance.test_recipe_occurrence_create import birth, empty_bundle
 from tests.editing_conformance.test_recipe_occurrence_duplicate import duplicate_document
 from tests.editing_conformance.test_recipe_occurrence_media import inputs
@@ -70,6 +75,7 @@ CASES = [
     "clip.split",
     "occurrence.add-media",
     "clip.add-media",
+    "clip.duplicate-media",
     "clip.add",
     "clip.set",
     "shot.set",
@@ -242,8 +248,20 @@ def _case(name):
             (ref, ("at_ms",), frame_ms(on, RATE)),
         ]
 
-    before, old, new, verified = _media_bundle()
-    del old
+    if name == "clip.duplicate-media":
+        _, old, new, verified = inputs("video")
+        empty = empty_bundle(fps=FPS)
+        row = {"id": "source-video", "clipType": "media", "asset": old["asset"],
+               "track": "picture", "at": 0.125, "from": 0, "to": 1.25, "hold": 1.25}
+        before = _plan(empty, capture_clip_add_media(
+            empty, row, old, verified_media=verified), verified).bundle
+        call = capture_clip_duplicate_media(
+            before, "parent/clip:source-video", "duplicate-video", old, new,
+            verified_media=verified,
+        )
+        return before, _plan(before, call, verified), RATE, []
+
+    before, _, new, verified = _media_bundle()
     row = {"id": "ms-image", "clipType": "image", "asset": new["asset"],
            "track": "picture", "at": 0.125, "hold": 1.25}
     if name == "placement.create":
