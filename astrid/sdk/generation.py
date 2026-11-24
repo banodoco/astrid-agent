@@ -925,7 +925,7 @@ def _prepare_catalog_target_workflow(*, registry: Any, candidate: Any, mode: str
                                      modality: str, inputs: dict[str, Any],
                                      target_client: Any, backend: Any, retain_source=None,
                                      defer_target: bool = False, align: str = "check",
-                                     reuse_default_registry: bool = False):
+                                     reuse_default_registry: bool = False, preparation=None):
     """Shared installed-catalog resolution and binding, without admission."""
     from astrid.core.generation.preflight import require_generation_target_readiness
     if not defer_target:
@@ -938,6 +938,8 @@ def _prepare_catalog_target_workflow(*, registry: Any, candidate: Any, mode: str
         **({'align': 'trust'} if align == 'trust' else {}),
     )
     from astrid.core.generation.backends.vibecomfy import VibeComfyBackend
+    if type(backend) is VibeComfyBackend and preparation is not None:
+        kwargs['preparation'] = preparation
     if (type(backend) is VibeComfyBackend
             and reuse_default_registry
             and getattr(registry, '_astrid_default_generation_registry', False)
@@ -1034,10 +1036,13 @@ def _prepare_verified_image_recipe(*, inputs: dict[str, Any], target_client: Any
     if not candidates:
         raise CapabilityValidationError("installed catalog has no local image producer")
     selected = candidates[0]  # Preparation errors never select another candidate.
+    from astrid.core.generation.prepared_templates import PreparationSession
+    preparation = PreparationSession()
     workflow, plan, schema, _assets = _prepare_catalog_target_workflow(
         registry=registry, candidate=selected, mode="t2i", modality="image",
         inputs=effective, target_client=target_client,
         backend=VibeComfyBackend(target_client=target_client),
+        preparation=preparation,
     )
     if schema is None or not isinstance(plan, dict) or not plan.get("roles"):
         raise CapabilityValidationError("private image producer has no resolved target model authority")
@@ -1073,7 +1078,8 @@ def _prepare_verified_image_recipe(*, inputs: dict[str, Any], target_client: Any
                         for key in effective if key != "count" and key in param_map}
     with TemporaryDirectory(prefix="astrid-private-image-recipe-") as scratch:
         root = Path(scratch)
-        bundle = timed_call("workflow emission", emit_bundle, workflow, root / "workflow.py", {"operation": "authored"})
+        bundle = timed_call("workflow emission", preparation.emit, emit_bundle,
+                            workflow, root / "workflow.py", {"operation": "authored"})
         bundle.require_canonical_authority("private verified image preparation")
         approval = bundle.compile(schema_provider=schema, models_root=bound_root.path)
         detached = approval.to_dict()
@@ -1946,6 +1952,8 @@ class GenerationFacade:
                 try:
                     assets = {}
                     approved_files = None
+                    from astrid.core.generation.prepared_templates import PreparationSession
+                    preparation = PreparationSession()
                     transport = BuildTransport()
                     if is_remote_target:
                         template = (None if source == "workflow" else _local_template(candidate, mode))
@@ -1959,11 +1967,12 @@ class GenerationFacade:
                     if source == "catalog":
                         if is_managed_target and not dry_run:
                             timed_call("target check", require_generation_target_readiness, candidate, mode, target_client)
-                        workflow, plan, schema, assets = timed_call("workflow build", _prepare_catalog_target_workflow,
+                        workflow, plan, schema, assets = timed_call("catalog preparation", _prepare_catalog_target_workflow,
                             registry=registry, candidate=candidate, mode=mode, modality=modality,
                             inputs=inputs, target_client=target_client, backend=backend,
                             retain_source=None if dry_run else retain_source,
                             defer_target=is_remote_target or (is_managed_target and not dry_run), align=align,
+                            preparation=preparation,
                             reuse_default_registry=getattr(
                                 registry, '_astrid_default_generation_registry', False))
                     else:
@@ -2030,6 +2039,9 @@ class GenerationFacade:
                             schema = timed_call('target node list', workflow_entries.target_schema,candidate, workflow, target_client, engine=runpod_engine,
                                                                     pending_target=pending_target, align=align)
                         else:
+                            preparation.source_path = workflow_entries.bundle_path(candidate)
+                            preparation.source_identity = {"entry": identifier,
+                                                           "path": str(preparation.source_path)}
                             with _snapshot_generation_workflow(workflow_entries.bundle_path(candidate)) as frozen:
                                 if not dry_run and source_ref is None:
                                     original_path = frozen
@@ -2039,7 +2051,8 @@ class GenerationFacade:
                                     retain_source(original_path.name, original_path.read_bytes())
                                 workflow, plan, assets = timed_call("workflow build", workflow_entries.prepare,
                                     frozen, target_client=target_client, mode=mode,
-                                    binds=candidate.get("binds"), defaults=candidate.get("defaults"), values=candidate_inputs)
+                                    binds=candidate.get("binds"), defaults=candidate.get("defaults"), values=candidate_inputs,
+                                    preparation=preparation)
                             if plan["kind"] != modality:
                                 raise ValueError("entry kind does not match workflow output")
                             if plan["unbound"]:
@@ -2058,11 +2071,18 @@ class GenerationFacade:
                                                                     pending_target=pending_target, align=align)
                     from vibecomfy.workflow_bundle import load_bundle
                     if source == "workflow":
+                        preparation.prepare_emission(workflow,
+                            capture=getattr(target_client, 'node_list_capture', None),
+                            role_plan={"entry": identifier, "mode": mode, "align": align,
+                                       "needs": candidate.get('needs', []),
+                                       "binds": candidate.get('binds'), "defaults": candidate.get('defaults')},
+                            reusable=not candidate.get('hooks_declared'))
                         # Re-emit the edited canonical workflow before approval so
                         # the input bindings are represented by a fresh revision.
                         from vibecomfy.workflow_bundle import emit_bundle
                         with TemporaryDirectory(prefix="astrid-entry-approval-") as scratch:
-                            bundle = timed_call("workflow emission", emit_bundle, workflow, Path(scratch) / "workflow.py", {"operation": "authored"})
+                            bundle = timed_call("workflow emission", preparation.emit, emit_bundle,
+                                workflow, Path(scratch) / "workflow.py", {"operation": "authored"})
                             bundle.require_canonical_authority("generate on target")
                             approval = timed_call("approval compile", bundle.compile, schema_provider=schema) if schema is not None and not assets else None
                             approved_files = (Path(scratch, "workflow.py").read_bytes(),
@@ -2162,7 +2182,7 @@ class GenerationFacade:
                     root = Path(scratch)
                     capsule = root / "workflow.py"
                     if approved_files is None:
-                        emit_bundle(workflow, capsule, {"operation": "authored"})
+                        preparation.emit(emit_bundle, workflow, capsule, {"operation": "authored"})
                     else:
                         capsule.write_bytes(approved_files[0])
                         capsule.with_suffix(".vibe.json").write_bytes(approved_files[1])
@@ -2193,7 +2213,8 @@ class GenerationFacade:
             with stage("bundle materialisation"):
                 root = Path(scratch)
                 if approved_files is None:
-                    timed_call("workflow emission", emit_bundle, workflow, root / "workflow.py", {"operation": "authored"})
+                    timed_call("workflow emission", preparation.emit, emit_bundle,
+                        workflow, root / "workflow.py", {"operation": "authored"})
                 else:
                     (root / "workflow.py").write_bytes(approved_files[0])
                     (root / "workflow.vibe.json").write_bytes(approved_files[1])

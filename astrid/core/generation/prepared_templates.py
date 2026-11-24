@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 _CACHE = "prepared_template"
 _HINT_FORMAT = "astrid.prepared-template-hint/v1"
 _MAX_ENTRY_BYTES = 32 * 1024 * 1024
+_CONTENT_HASHES: dict[tuple[Any, ...], str] = {}
 
 
 def _event(outcome: str, reason: str | None = None) -> None:
@@ -87,9 +88,12 @@ class PreparedTemplateStore:
     """One install-data-root store; no install/package/project writes."""
 
     def __init__(self, data_root: Path | None = None) -> None:
-        root = resolve_runtime_data_root() if data_root is None else data_root
+        try:
+            root = resolve_runtime_data_root() if data_root is None else data_root
+        except (OSError, ValueError) as exc:
+            raise StoreUnavailable("prepared-template data root is unavailable") from exc
         if root is None:
-            raise ValueError("prepared-template store requires a runtime data root")
+            raise StoreUnavailable("prepared-template store requires a runtime data root")
         self.root = Path(root) / "cache" / "prepared-template" / "v1" / "comfyui"
 
     @staticmethod
@@ -113,7 +117,7 @@ class PreparedTemplateStore:
 
     def _read(self, path: Path, limit: int) -> bytes:
         self._check_path(path)
-        fd = os.open(path, os.O_RDONLY | _filelock.nofollow_flag(path))
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | _filelock.nofollow_flag(path))
         with os.fdopen(fd, "rb") as stream:
             if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
                 raise StoreUnavailable("prepared-template entry is not a regular file")
@@ -237,13 +241,8 @@ class PreparedUse:
 
     def published(self) -> None:
         """Save learned layouts only after current-byte publication succeeded."""
+        from vibecomfy.prepared_template import TemplateNotReusable
         if self.filled is None or self.store is None or self.locator is None or self.witness is None:
-            return
-        with stage("prepared template key"):
-            current = self.witness()
-            changed = _first_change(self.context, current)
-        if changed is not None:
-            _event("miss", changed)
             return
         with stage("prepared template store"):
             with self.store.locked(self.locator) as locked:
@@ -251,8 +250,12 @@ class PreparedUse:
                     return
                 # Recheck inside the writer lock; a preparation raced with a
                 # changed source must not overwrite the new source's hint.
-                with stage("prepared template key"):
-                    changed = _first_change(self.context, self.witness())
+                try:
+                    with stage("prepared template key"):
+                        changed = _first_change(self.context, self.witness())
+                except OSError:
+                    _event("miss", "entry_invalid")
+                    return
                 if changed is not None:
                     _event("miss", changed)
                     return
@@ -260,6 +263,8 @@ class PreparedUse:
                     self.store.publish(self.locator, self.filled.snapshot())
                 except StoreUnavailable:
                     _event("miss", "store_unreadable")
+                except TemplateNotReusable:
+                    _event("miss", "entry_invalid")
 
 
 def _layout_event(event: Any) -> None:
@@ -272,7 +277,9 @@ def prepare_workflow(*, identity: Any, witness: Callable[[], Mapping[str, Any]],
                      admit_hit: Callable[[], None] | None = None,
                      store: PreparedTemplateStore | None = None,
                      reusable: bool = True, detail: str | None = None,
-                     current_template: Any = None) -> PreparedUse:
+                     unavailable_reason: str = "entry_invalid",
+                     current_template: Any = None,
+                     initial_context: Mapping[str, Any] | None = None) -> PreparedUse:
     """One full-preparation miss path and one detached fill, with fresh witnesses.
 
     Source callers first prove a closed builder and pass no bound values. Their
@@ -295,11 +302,20 @@ def prepare_workflow(*, identity: Any, witness: Callable[[], Mapping[str, Any]],
             return build()
 
     if not reusable:
+        return PreparedUse(full(unavailable_reason), reason=unavailable_reason)
+    try:
+        with stage("prepared template key"):
+            # Detach the observed witness too: a later mutation of a caller's
+            # nested role/source mapping must not rewrite our prior observation.
+            context = json.loads(_json_bytes(dict(witness() if initial_context is None else initial_context)))
+            locator = PreparedTemplateStore.locator(identity)
+    except OSError as exc:
+        logger.debug("prepared template current key is unavailable: %s", exc)
         return PreparedUse(full("entry_invalid"), reason="entry_invalid")
-    with stage("prepared template key"):
-        context = dict(witness())
-        locator = PreparedTemplateStore.locator(identity)
-    store = store if store is not None else PreparedTemplateStore()
+    try:
+        store = store if store is not None else PreparedTemplateStore()
+    except StoreUnavailable:
+        return PreparedUse(full("store_unreadable"), reason="store_unreadable")
     values = {} if values is None else values
     with stage("prepared template store"):
         with store.locked(locator) as locked:
@@ -323,8 +339,11 @@ def prepare_workflow(*, identity: Any, witness: Callable[[], Mapping[str, Any]],
                 except TemplateNotReusable as exc:
                     reason = exc.reason
                 else:
-                    with stage("prepared template key"):
-                        reason = _first_change(context, witness())
+                    try:
+                        with stage("prepared template key"):
+                            reason = _first_change(context, witness())
+                    except OSError:
+                        reason = "entry_invalid"
                     if reason is None:
                         if admit_hit is not None:
                             admit_hit()
@@ -344,8 +363,11 @@ def prepare_workflow(*, identity: Any, witness: Callable[[], Mapping[str, Any]],
                 _event("miss", exc.reason)
                 logger.debug("prepared template unsupported: %s: %s", detail, exc)
                 return PreparedUse(workflow, reason=exc.reason)
-            with stage("prepared template key"):
-                changed = _first_change(context, witness())
+            try:
+                with stage("prepared template key"):
+                    changed = _first_change(context, witness())
+            except OSError:
+                changed = "entry_invalid"
             if changed is not None:
                 _event("miss", changed)
                 return PreparedUse(workflow, reason=changed)
@@ -378,9 +400,116 @@ class PreparationSession:
     """Explicit output parameter where a historical API returns an IR tuple."""
 
     use: PreparedUse | None = None
+    source_path: Path | None = None
+    source_identity: Any = None
+    validated_source: Mapping[str, Any] | None = None
+
+    def retain_validated_source(self, path: Path) -> None:
+        """Called only after the ordinary canonical loader accepts this pair.
+
+        The SDK may be loading a frozen copy. Its original path is retained
+        separately and must still match this accepted snapshot at lookup and
+        publication; a snapshot's temporary filename is never source authority.
+        """
+        if self.source_path is None:
+            self.source_path = path
+        try:
+            with stage("prepared template key"):
+                self.validated_source = source_witness(path, identity=self.source_identity,
+                                                       companion_required=True)
+        except OSError:
+            # Current canonical admission already succeeded; inability to
+            # witness its cache closure only makes preparation non-reusable.
+            self.validated_source = None
+
+    def prepare_emission(self, workflow: Any, *, capture: NodeListCapture | None,
+                         role_plan: Mapping[str, Any], reusable: bool = True) -> None:
+        if not isinstance(capture, NodeListCapture):
+            _recompute("node_list_unhashable", detail="no current raw target response")
+            self.use = PreparedUse(workflow, reason="node_list_unhashable")
+            return
+        if not reusable or self.source_path is None or self.validated_source is None:
+            _recompute("entry_invalid", detail="executable or unwitnessed source")
+            self.use = PreparedUse(workflow, reason="entry_invalid")
+            return
+        source_path = self.source_path
+
+        def witness() -> Mapping[str, Any]:
+            current = source_witness(source_path, identity=self.source_identity,
+                                     companion_required=True)
+            return key_context(source=current, role_plan=role_plan, capture=capture)
+
+        # The graph has already passed the current loader and request binder.
+        # Compare its own masked structure; never let a cached graph replace it.
+        from vibecomfy.prepared_template import TemplateNotReusable, prepare_template
+        try:
+            with stage("prepared template key"):
+                context = dict(witness())
+        except OSError:
+            _recompute("entry_invalid", detail="accepted snapshot's current source is unavailable")
+            self.use = PreparedUse(workflow, reason="entry_invalid")
+            return
+        with stage("prepared template key"):
+            if context["source_provenance"] != self.validated_source:
+                _recompute("key_changed:source_provenance")
+                self.use = PreparedUse(workflow, reason="key_changed:source_provenance")
+                return
+            slots, values = _emission_values(workflow)
+            try:
+                template = prepare_template(workflow, slots, key_context=context)
+            except TemplateNotReusable as exc:
+                _recompute(exc.reason, detail=f"{self.source_identity}: {exc}")
+                self.use = PreparedUse(workflow, reason=exc.reason)
+                return
+        self.use = prepare_workflow(identity={"emission": self.source_identity},
+            witness=witness, build=lambda: workflow, slots=slots, values=values,
+            current_template=template, initial_context=context)
 
     def emit(self, emit: Callable[..., Any], workflow: Any, *args: Any, **kwargs: Any) -> Any:
         return emit_prepared(emit, workflow, *args, prepared=self.use, **kwargs)
+
+
+def _emission_values(workflow: Any) -> tuple[tuple[Any, ...], dict[str, Any]]:
+    """Mask current public input values and private output prefixes only.
+
+    Authored defaults, omission, graph links and all other structure remain
+    literal recipe data. Current schemas/live state are never stripped to make
+    a recipe fit: the contract refuses them and the current emitter still runs.
+    """
+    from vibecomfy.prepared_template import ValueSlot
+    values: dict[str, Any] = {}
+    slots = []
+    seen: set[tuple[Any, ...]] = set()
+
+    def add(path: tuple[Any, ...], value: Any) -> None:
+        if path in seen:
+            return
+        seen.add(path)
+        name = _json_bytes(list(path)).decode("utf-8")
+        slots.append(ValueSlot(name, (path,), "json", allow_none=True))
+        values[name] = value
+
+    linked = {(str(edge.to_node), edge.to_input) for edge in workflow.edges}
+    for name, spec in workflow.inputs.items():
+        add(("inputs", name, "value"), spec.value)
+        node = workflow.nodes.get(str(spec.node_id))
+        if node is None or (str(node.id), spec.field) in linked:
+            continue
+        for channel in ("inputs", "widgets"):
+            fields = getattr(node, channel)
+            if spec.field in fields:
+                add(("nodes", str(node.id), channel, spec.field), fields[spec.field])
+    for index, output in enumerate(workflow.outputs):
+        add(("outputs", index, "filename_prefix"), output.filename_prefix)
+        node = workflow.nodes.get(str(output.node_id))
+        if node is not None and (str(node.id), "filename_prefix") not in linked:
+            for channel in ("inputs", "widgets"):
+                if "filename_prefix" in getattr(node, channel):
+                    add(("nodes", str(node.id), channel, "filename_prefix"),
+                        getattr(node, channel)["filename_prefix"])
+    if "output_prefix" in workflow.metadata:
+        add(("metadata", "output_prefix"), workflow.metadata["output_prefix"])
+    return tuple(slots), values
 
 
 def declarative_source(data: bytes) -> bool:
@@ -498,12 +627,32 @@ def source_witness(path: Path, *, identity: Any, companion_required: bool = Fals
     return {"identity": identity, "members": members}
 
 
+def _file_digest_current(path: Path) -> str:
+    """Only an in-process memo; changed dirty bytes get a new content hash."""
+    info = path.stat()
+    token = (str(path.resolve()), info.st_dev, info.st_ino, info.st_size,
+             info.st_mtime_ns, info.st_ctime_ns)
+    digest = _CONTENT_HASHES.get(token)
+    if digest is None:
+        digest = _digest(path.read_bytes())
+        after = path.stat()
+        if (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns) != (
+                after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+            raise OSError(f"compiler source changed during witness: {path}")
+        if len(_CONTENT_HASHES) >= 16384:
+            _CONTENT_HASHES.clear()
+        _CONTENT_HASHES[token] = digest
+    return digest
+
+
 def compiler_witness() -> dict[str, Any]:
     """Hash current compiler/data bytes; no dirty label or persistent mtime cache.
 
     P82-06's install stamp is not assumed. The complete VibeComfy package source
-    and JSON/lock data plus this Agent binding closure are read on every key
-    observation. The lane measures the explicit key stage against 0.1 s warm.
+    and JSON/lock data plus this Agent binding closure are witnessed on every
+    key observation. A content hash may be memoized only in this process, by
+    path/size/mtime plus inode/ctime; dirty changes never share a generic tag.
+    The lane measures the explicit key stage against 0.1 s warm.
     """
     import vibecomfy
     vc_root = Path(vibecomfy.__file__).resolve().parent
@@ -516,20 +665,73 @@ def compiler_witness() -> dict[str, Any]:
         "packs/vibecomfy/production_engine.py", "packs/vibecomfy/local_server_engine.py",
         "sdk/generation.py",
     )
-    records = [["agent/" + name, _digest((agent_root / name).read_bytes())] for name in agent_paths]
+    records = [["agent/" + name, _file_digest_current(agent_root / name)] for name in agent_paths]
     for path in sorted(vc_root.rglob("*")):
-        if path.suffix in {".py", ".json", ".lock"} and path.is_file():
-            records.append(["vibecomfy/" + path.relative_to(vc_root).as_posix(), _digest(path.read_bytes())])
-    for name in ("custom_nodes.lock", "node_index.json", "object_info.json"):
-        path = vc_root.parent / name
-        records.append([name, _digest(path.read_bytes()) if path.is_file() else "absent"])
+        if (path.suffix in {".py", ".json", ".lock"} or path.name == "CURRENT") and path.is_file():
+            records.append(["vibecomfy/" + path.relative_to(vc_root).as_posix(), _file_digest_current(path)])
+    from vibecomfy import resources
+    from vibecomfy.schema import get_authoring_schema_provider
+    from vibecomfy.schema.cache import object_info_cache_candidates
+    from vibecomfy.schema.provider import SourceSchemaProvider
+    # resources selects one installed/check-out layout, never a mixture. Bind
+    # its actual bytes, including checkout resources outside the package.
+    for name in ("coverage_manifest", "custom_nodes_lock", "strict_ready_exceptions", "comfy_metadata"):
+        path = resources._resource_location(name)
+        records.append(["resource/" + name, str(path.resolve()),
+                        _file_digest_current(path) if path.is_file() else "absent"])
+    provider = get_authoring_schema_provider(on_demand_schemas=False)
+    records.append(["node-index", str(provider.node_index_path.resolve()),
+                    _file_digest_current(provider.node_index_path) if provider.node_index_path.is_file() else "absent"])
+    roots = [provider.object_info_index_root]
+    # Cache precedence depends on mtime. Keep that ordered path roster as well
+    # as file content, without ever hashing a JSON re-serialization of the live
+    # target response (which has its own raw-byte input).
+    cache_paths = object_info_cache_candidates(provider.object_info_cache_dir)
+    if provider.object_info_cache_path is not None:
+        cache_paths = [provider.object_info_cache_path]
+    records.append(["schema-cache-order", [str(path.resolve()) for path in cache_paths]])
+    for path in cache_paths:
+        records.append(["schema-cache", str(path.resolve()), _file_digest_current(path)])
+    for item in provider._providers:
+        if isinstance(item, SourceSchemaProvider):
+            roots.extend(item.roots)
+    for root in roots:
+        root = Path(root)
+        records.append(["schema-root", str(root.resolve()), root.is_dir()])
+        if root.is_dir():
+            for path in sorted(root.rglob("*")):
+                if (path.suffix in {".py", ".json", ".lock"} or path.name == "CURRENT") and path.is_file():
+                    records.append(["schema-member", str(path.resolve()), _file_digest_current(path)])
     return {"closure": _digest(_json_bytes(records)), "python": list(sys.version_info[:3]),
-            "implementation": sys.implementation.name, "cache_tag": sys.implementation.cache_tag}
+            "implementation": sys.implementation.name, "cache_tag": sys.implementation.cache_tag,
+            "on_demand_schemas": os.environ.get("VIBECOMFY_ON_DEMAND_SCHEMAS", "1")}
+
+
+def offline_source_schemas(data: bytes) -> bool:
+    """Do not skip a builder that could consult an unwitnessed on-demand pack."""
+    from vibecomfy.schema import get_authoring_schema_provider
+    from vibecomfy.schema.provider import SchemaProviderError
+    provider = get_authoring_schema_provider(on_demand_schemas=False)
+    for node in ast.parse(data).body:
+        if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("vibecomfy.nodes."):
+            for alias in node.names:
+                try:
+                    if provider.get_schema(alias.name) is None:
+                        return False
+                except SchemaProviderError:
+                    return False
+    return True
 
 
 def key_context(*, source: Mapping[str, Any], role_plan: Mapping[str, Any],
                 capture: NodeListCapture) -> dict[str, Any]:
-    from importlib.metadata import version
+    from importlib.metadata import PackageNotFoundError, version
+    try:
+        current_version = version("vibecomfy")
+    except PackageNotFoundError as exc:
+        # A source-only import can still take the original preparation path;
+        # it cannot claim a distribution witness it does not possess.
+        raise OSError("VibeComfy distribution version is unavailable") from exc
     return {"compiler_identity": compiler_witness(), "source_provenance": dict(source),
-            "vibecomfy_version": version("vibecomfy"), "role_plan": dict(role_plan),
+            "vibecomfy_version": current_version, "role_plan": dict(role_plan),
             "node_list_digest": capture.digest()}

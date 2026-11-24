@@ -1032,11 +1032,13 @@ def _resolve_binding(workflow: Any, name: str, target: Any) -> str:
 
 def prepare(path: Path, *, target_client: Any, mode: str, binds: dict[str, Any] | None,
             values: dict[str, Any], defaults: dict[str, Any] | None = None,
-            param_map: dict[str, str] | None = None):
+            param_map: dict[str, str] | None = None, preparation: Any = None):
     """Load a canonical workflow and bind controls with its public InputSpecs."""
     from astrid.packs.vibecomfy.production_engine import load_workflow_path
     with TemporaryDirectory(prefix="astrid-entry-inspect-") as scratch:
         loaded = load_workflow_path(path, scratch, comfy_url=target_client.target.url if target_client else "")
+        if preparation is not None:
+            preparation.retain_validated_source(path)
         workflow = loaded.resolved.workflow
         return apply_workflow_inputs(workflow, mode=mode, binds=binds, values=values,
                                      defaults=defaults, param_map=param_map,

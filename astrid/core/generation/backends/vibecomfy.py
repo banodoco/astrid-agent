@@ -243,7 +243,8 @@ def _bind_target_model_roles(workflow: Any, spec: BackendSpec, roles: Mapping[st
         workflow.metadata["model_assets"] = [item for item in assets if name(item) not in replacements]
 
 
-def _load_pinned_catalog_workflow(spec: BackendSpec, *, retain_source=None) -> Any:
+def _load_pinned_catalog_workflow(spec: BackendSpec, *, retain_source=None,
+                                  preparation=None, role_plan=None, node_capture=None) -> Any:
     """Use the canonical repository template loader and catalog source pin."""
     from vibecomfy.registry.ready import (
         repo_ready_template_discovery,
@@ -295,14 +296,58 @@ def _load_pinned_catalog_workflow(spec: BackendSpec, *, retain_source=None) -> A
         )
     if retain_source is not None:
         retain_source(template_path_resolved.name, original)
-    workflow = workflow_from_ready(canonical_id, _discovery=discovery)
-    if canonical_id == 'edit/qwen_image_2_1_turbo_edit':
-        # Keep the pinned source intact. Some materialized edit graphs omit
-        # this required native loader widget; default is the authored value.
-        for node in workflow.runtime_nodes().values():
-            if node.class_type == 'UNETLoader':
-                node.inputs.setdefault('weight_dtype', 'default')
-    return workflow
+    def build():
+        workflow = workflow_from_ready(canonical_id, _discovery=discovery)
+        if canonical_id == 'edit/qwen_image_2_1_turbo_edit':
+            # Keep the pinned source intact. Some materialized edit graphs omit
+            # this required native loader widget; default is the authored value.
+            for node in workflow.runtime_nodes().values():
+                if node.class_type == 'UNETLoader':
+                    node.inputs.setdefault('weight_dtype', 'default')
+        return workflow
+
+    if preparation is None:
+        return build()
+    from astrid.core.generation.prepared_templates import (
+        declarative_source, key_context, offline_source_schemas, prepare_workflow, source_witness,
+    )
+    source_identity = {"template": canonical_id, "scope": "repo", "pin": expected_hash.lower(),
+                       "path": str(template_path_resolved)}
+
+    def witness():
+        current = source_witness(template_path_resolved, identity=source_identity)
+        if dict(current["members"])["python"] != expected_hash.lower():
+            raise ValueError(f"VibeComfy template {canonical_id!r} failed its sha256 pin")
+        return key_context(source=current, role_plan=role_plan, capture=node_capture)
+
+    def admit_hit():
+        # workflow_from_ready owns this gate on a miss. Keep it on a hit too,
+        # before loading current constructor registrations from the source.
+        import ast
+        import importlib
+
+        from vibecomfy.security import current_gate_context, require_confirmation
+        from vibecomfy.security.loader_provenance import _provenance_for_path
+        require_confirmation(class_type=None, operation="scratchpad_exec",
+            provenance=_provenance_for_path(template_path_resolved),
+            capabilities=frozenset({"code_exec"}), details={"path": str(template_path_resolved)},
+            ctx=current_gate_context())
+        for item in ast.parse(original).body:
+            if isinstance(item, ast.ImportFrom) and item.module != "__future__":
+                module = importlib.import_module(item.module)
+                for alias in item.names:
+                    getattr(module, alias.name)
+
+    from astrid.sdk.command_timing import stage
+    with stage("prepared template key"):
+        reusable = (node_capture is not None and role_plan is not None
+                    and declarative_source(original) and offline_source_schemas(original))
+    preparation.use = prepare_workflow(identity={"catalog": str(template_path_resolved)},
+        witness=witness, build=build, admit_hit=admit_hit, reusable=reusable,
+        unavailable_reason="node_list_unhashable" if node_capture is None else "entry_invalid",
+        detail=f"{canonical_id}: " + ("no current raw node capture" if node_capture is None
+                                     else "unwitnessed/executable builder"))
+    return preparation.use.workflow
 
 
 def _catalog_alternative_is_executable(spec: BackendSpec, roles: Mapping[str, str],
@@ -498,6 +543,7 @@ class VibeComfyBackend(BackendAdapter):
         retain_source: Any = None,
         align: str = "check",
         registry: Any | None = None,
+        preparation: Any = None,
     ) -> tuple[Any, dict[str, Any] | None, Any | None]:
         """Resolve and bind a pinned graph for the existing workflow route."""
         # Lazy-import VibeComfy, and snapshot only its repository
@@ -507,7 +553,7 @@ class VibeComfyBackend(BackendAdapter):
         mode_spec = entry.modes[mode]
         backend_spec: BackendSpec = mode_spec.backends["local"]
         template_id = backend_spec.template
-        plan, target_schema = None, None
+        plan, target_schema, node_capture = None, None, None
         if resolve_target or (backend_spec.model_roles and self._model_resolution_client() is not None):
             from astrid.core.model_catalog.registry import ModelRegistry
 
@@ -534,6 +580,8 @@ class VibeComfyBackend(BackendAdapter):
                     mode,
                     **({"align": "trust"} if align == "trust" else {}),
                 )
+            from astrid.core.generation.prepared_templates import current_node_capture
+            node_capture = current_node_capture(client, observed)
             target_schema = TargetSchemaProvider.from_object_info(
                 observed, server_url=client.http_origin, model_availability="target",
                 refresh_object_info=client.object_info,
@@ -550,8 +598,17 @@ class VibeComfyBackend(BackendAdapter):
         if computed_frames is not None:
             logger.debug("Computed frames=%d from duration * fps", computed_frames)
 
-        wf = (_load_pinned_catalog_workflow(backend_spec, retain_source=retain_source)
-              if retain_source is not None else _load_pinned_catalog_workflow(backend_spec))
+        # Request values stay outside this source recipe. The unchanged binders
+        # below apply them afresh, including model roles and target asset checks.
+        prepare_options = {"retain_source": retain_source} if retain_source is not None else {}
+        if preparation is not None:
+            prepare_options.update(preparation=preparation, node_capture=node_capture,
+                role_plan={"selection": plan or {"template": template_id, "mode": mode},
+                           "param_map": param_map, "align": align,
+                           "role_bindings": {role: {"binding": row.binding, "node_class": row.node_class,
+                                                    "input": row.input, "names": list(row.names)}
+                                             for role, row in backend_spec.model_roles.items()}})
+        wf = _load_pinned_catalog_workflow(backend_spec, **prepare_options)
         # Features whose param_map key is in the feature list get mapped.
         # Count is not set on the workflow — the caller loops externally.
         for canon, tmpl_param in param_map.items():

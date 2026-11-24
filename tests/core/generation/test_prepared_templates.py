@@ -115,6 +115,17 @@ def test_current_source_edit_rebuilds(harness):
                                      ("recompute", "key_changed:source_provenance")]
 
 
+def test_mutating_nested_witness_after_prepare_cannot_publish_under_old_key(harness):
+    _, store, _, context, use = harness
+    current = use()
+    context["role_plan"]["model"] = "changed while rendering"
+    collector = TimingCollector()
+    with timing_scope(collector):
+        current.published()
+    assert ("miss", "key_changed:role_plan") in _events(collector)
+    assert not list(store.root.glob("objects/*.json"))
+
+
 @pytest.mark.parametrize("damage", ["truncated", "foreign", "digest", "duplicate", "wrong_object"])
 def test_bad_or_foreign_entry_is_an_explicit_miss(harness, damage):
     _, store, builds, _, use = harness
@@ -340,13 +351,14 @@ from pathlib import Path
 ns = runpy.run_path(sys.argv[1])
 p = ns["prepared"]
 source, root, marker = map(Path, sys.argv[2:5])
+overrides = json.loads(sys.argv[6]) if len(sys.argv) > 6 else {}
 def build():
     with marker.open("a") as stream:
         stream.write("build\n")
     return ns["_workflow"]()
 collector = ns["TimingCollector"]()
 with ns["timing_scope"](collector):
-    use = p.prepare_workflow(identity="subprocess", witness=lambda: ns["_context"](source),
+    use = p.prepare_workflow(identity="subprocess", witness=lambda: {**ns["_context"](source), **overrides},
         build=build, store=p.PreparedTemplateStore(root), slots=ns["_slots"](),
         values={"seed": int(sys.argv[5])})
     use.published()
@@ -377,3 +389,90 @@ def test_two_processes_share_entry_and_source_change_invalidates(tmp_path):
     assert changed["key"] != warm["key"]
     assert changed["events"][:2] == [["miss", "key_changed:source_provenance"],
                                     ["recompute", "key_changed:source_provenance"]]
+
+
+@pytest.mark.parametrize("field", ["compiler_identity", "source_provenance", "node_list_digest", "role_plan", "vibecomfy_version"])
+def test_separate_process_rejects_each_stale_current_witness(tmp_path, field):
+    source, root, marker = tmp_path / "source.py", tmp_path / "data", tmp_path / "builds"
+    source.write_text("fixed source")
+
+    def run(overrides):
+        result = subprocess.run([sys.executable, "-c", _PROCESS, __file__, str(source), str(root),
+                                 str(marker), "67", json.dumps(overrides)], capture_output=True,
+                                text=True, check=True, timeout=60,
+                                env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+        return json.loads(result.stdout)
+
+    cold = run({})
+    changed = (prepared._digest(b"changed raw nodes") if field == "node_list_digest" else
+               "fixture-v2" if field == "vibecomfy_version" else {"current": "changed witness"})
+    stale = run({field: changed})
+    assert marker.read_text().splitlines() == ["build", "build"]
+    assert stale["key"] != cold["key"]
+    assert stale["events"][:2] == [["miss", "key_changed:" + field], ["recompute", "key_changed:" + field]]
+    assert ["hit", None] not in stale["events"]
+
+
+@pytest.mark.parametrize("failure", [OSError("root read failure"), ValueError("malformed root selection")])
+def test_data_root_failure_is_a_counted_cache_miss_not_a_command_failure(tmp_path, monkeypatch, failure):
+    source = tmp_path / "source.py"
+    source.write_text("current source")
+    def fail():
+        raise failure
+    monkeypatch.setattr(prepared, "resolve_runtime_data_root", fail)
+    collector = TimingCollector()
+    with timing_scope(collector):
+        use = prepared.prepare_workflow(identity="root-failure", witness=lambda: _context(source), build=_workflow)
+    assert use.workflow.inputs["seed"].value == 7
+    assert use.filled is None
+    assert _events(collector) == [("miss", "store_unreadable"), ("recompute", "store_unreadable")]
+
+
+def test_dirty_compiler_content_is_rehashed_after_another_same_size_edit(tmp_path):
+    source = tmp_path / "compiler.py"
+    source.write_text("value = 1\n")
+    prior = source.stat()
+    first = prepared._file_digest_current(source)
+    source.write_text("value = 2\n")
+    os.utime(source, ns=(prior.st_atime_ns, prior.st_mtime_ns + 1_000_000_000))
+    second = prepared._file_digest_current(source)
+    source.write_text("value = 3\n")
+    os.utime(source, ns=(prior.st_atime_ns, prior.st_mtime_ns + 2_000_000_000))
+    assert len({first, second, prepared._file_digest_current(source)}) == 3
+
+
+def test_missing_original_after_accepted_snapshot_takes_full_emission(tmp_path, monkeypatch):
+    original, frozen = tmp_path / "source.json", tmp_path / "frozen.json"
+    original.write_text('{"accepted":"source"}')
+    frozen.write_bytes(original.read_bytes())
+    session = prepared.PreparationSession(source_path=original, source_identity="snapshot")
+    session.retain_validated_source(frozen)
+    original.unlink()
+    graph = _workflow()
+    capture = prepared.NodeListCapture(b"{}", {}, "http://fixture")
+    monkeypatch.setattr(prepared, "compiler_witness", lambda: {"fixture": "compiler"})
+    collector = TimingCollector()
+    with timing_scope(collector):
+        session.prepare_emission(graph, capture=capture, role_plan={})
+    assert session.use.workflow is graph
+    assert session.use.filled is None
+    assert _events(collector) == [("miss", "entry_invalid"), ("recompute", "entry_invalid")]
+
+
+def test_live_schema_objects_are_not_silently_stripped_or_cached(tmp_path, monkeypatch):
+    from vibecomfy.schema.provider import NodeSchema
+    source = tmp_path / "source.json"
+    source.write_text('{"accepted":"source"}')
+    session = prepared.PreparationSession(source_path=source, source_identity="live-schema")
+    session.retain_validated_source(source)
+    graph = _workflow()
+    schema = NodeSchema(class_type="Integer", pack=None, inputs={}, outputs=[])
+    graph.nodes["1"].metadata["schema"] = schema
+    monkeypatch.setattr(prepared, "compiler_witness", lambda: {"fixture": "compiler"})
+    collector = TimingCollector()
+    with timing_scope(collector):
+        session.prepare_emission(graph, capture=prepared.NodeListCapture(b"{}", {}, "http://fixture"), role_plan={})
+    assert session.use.workflow is graph
+    assert session.use.filled is None
+    assert graph.nodes["1"].metadata["schema"] is schema
+    assert _events(collector) == [("miss", "entry_invalid"), ("recompute", "entry_invalid")]
