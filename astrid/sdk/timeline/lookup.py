@@ -223,6 +223,9 @@ class _LookupMixin:
         """
         from astrid.sdk.timeline.words import load_timeline_transcripts, timeline_media_ids
 
+        retained = getattr(self, "_reflow_transcripts", None)
+        if retained is not None:
+            return retained
         client, project = getattr(self, "_scene_client", None), getattr(self, "_scene_project", None)
         if client is None or not project:
             return {}

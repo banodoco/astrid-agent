@@ -11,6 +11,7 @@ import json
 import re
 import shlex
 import uuid
+from collections.abc import Mapping
 from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,6 +22,22 @@ from astrid.core.receipts.contract import CommandReceipt
 from astrid.sdk.timeline._common import TimelineEditError
 from astrid.sdk.timeline.outbox import Outbox, request_bytes
 from astrid.sdk.workspace_client import WorkspaceClientError
+
+
+def _strip_retained_transcript_captures(bundle):
+    """Keep execution-only retained transcript bytes out of a projected bundle."""
+    from ._shot_word_retime import retained_retime_pins
+
+    mapping = bundle.get("source_mapping", {})
+    pins = retained_retime_pins(mapping.get("_runtime_document"))
+    captures = mapping.get("pinned_documents", [])
+    if pins and captures:
+        public = [capture for capture in captures
+                  if not isinstance(capture, Mapping) or capture.get("pin") not in pins]
+        if public:
+            mapping["pinned_documents"] = public
+        else:
+            mapping.pop("pinned_documents")
 
 
 @contextmanager
@@ -497,7 +514,7 @@ class TimelineSession:
         bundle.get("source_mapping", {}).pop("_runtime_document", None)
         return bundle
 
-    def _capture_bundle(self, state, extra_commands=()):
+    def _capture_bundle(self, state, extra_commands=(), *, for_execution=False):
         """Keep the complete exact-pair input private to capture and execution."""
         from astrid.sdk.timeline.commands import execute
         from astrid.sdk.timeline.native_source_inputs import materialize_transcript_inputs
@@ -512,15 +529,19 @@ class TimelineSession:
         bundle = fetch_bundle(self.project_id, self.timeline_id,
                               revision_id=state["base"]["revision_id"], client=self.client, **source)
         materialize_transcript_inputs(
-            bundle, commands,
-            client=self.client.timelines._client, project=self.project_id)
-        return execute(bundle, state["pending"]).bundle if state["pending"] else bundle
+            bundle, commands, client=self.client.timelines._client, project=self.project_id,
+            include_retained=for_execution or bool(state["pending"]))
+        if state["pending"]:
+            bundle = execute(bundle, state["pending"]).bundle
+        if not for_execution:
+            _strip_retained_transcript_captures(bundle)
+        return bundle
 
     def queue_move(self, select, on):
         """Capture once against the original state plus earlier local commands."""
         from astrid.sdk.timeline.capture import capture_move
 
-        return self._queue(lambda state: capture_move(self._capture_bundle(state), select, on))
+        return self._queue(lambda state: capture_move(self._capture_bundle(state, for_execution=True), select, on))
 
     def admit_assembly(self, child_outputs, *, replace_clips, assembler_digest, idempotency_key,
                        rationale="Assemble ordered child visuals"):
@@ -609,7 +630,8 @@ class TimelineSession:
         from astrid.sdk.timeline.commands import execute
 
         commands = [_native_command(command) for command in commands]
-        return self._stage(lambda state: execute(self._capture_bundle(state, commands), commands).commands)
+        return self._stage(lambda state: execute(
+            self._capture_bundle(state, commands, for_execution=True), commands).commands)
 
     def commit(self, command, *, idempotency_key=None, dry_run=False, via="python", verified_media=(),
                label=None, steps=None, merge="fields", reads=None):
@@ -673,7 +695,8 @@ class TimelineSession:
                     return copy.deepcopy(commands)
                 return execute(captured_bundle, commands, verified_media=verified_media).commands
             return copy.deepcopy(commands) if runtime_capture else execute(
-                self._capture_bundle(state, commands), commands, verified_media=verified_media
+                self._capture_bundle(state, commands, for_execution=True), commands,
+                verified_media=verified_media
             ).commands
 
         self._stage(capture,
@@ -735,7 +758,7 @@ class TimelineSession:
                              dry_run=dry_run, via=via)
         if retried is not None:
             return retried
-        self._queue(lambda state: capture_move(self._capture_bundle(state), select, on),
+        self._queue(lambda state: capture_move(self._capture_bundle(state, for_execution=True), select, on),
                     lambda pending: len(pending) == 1 and pending[0]["op"] == "clip.move"
                     and pending[0]["select"] == select and pending[0]["args"] == {"on": on})
         return self.flush(idempotency_key=idempotency_key, dry_run=dry_run, via=via)
@@ -751,7 +774,8 @@ class TimelineSession:
                              dry_run=dry_run, via=via)
         if retried is not None:
             return retried
-        self._queue(lambda state: capture_clip_trim(self._capture_bundle(state), select, in_s=in_s, out_s=out_s),
+        self._queue(lambda state: capture_clip_trim(
+            self._capture_bundle(state, for_execution=True), select, in_s=in_s, out_s=out_s),
                     lambda pending: len(pending) == 1 and pending[0]["op"] == "clip.trim"
                     and pending[0]["select"] == select
                     and pending[0]["args"] == {"in_s": in_s, "out_s": out_s})
@@ -900,7 +924,8 @@ class TimelineSession:
 
     def save_interrupted(self, commands, *, base, label, steps, merge, reads, key, evaluation,
                          failure=None, release_flight=None, release_dry_run=False,
-                         pending_id=None, pending_path=None, pending_part=None, pending_identity=None):
+                         pending_id=None, pending_path=None, pending_part=None, pending_identity=None,
+                         via='python'):
         """Save captured intent without changing another writer's queue or flight."""
         from ._pending import clash, snapshot
 
@@ -908,7 +933,7 @@ class TimelineSession:
             raise TimelineEditError("idempotency key must be nonempty")
         body = {"api_version": 1, "project_id": self.project_id, "timeline_id": self.timeline_id,
                 "base_revision_id": base["revision_id"], "base_publication_id": base["publication_id"],
-                "commands": copy.deepcopy(commands), "source": {"via": "python"}, "dry_run": False,
+                "commands": copy.deepcopy(commands), "source": {"via": via}, "dry_run": False,
                 "label": label, "steps": copy.deepcopy(steps), "merge": merge}
         if reads is not None:
             body["reads"] = copy.deepcopy(reads)
@@ -976,7 +1001,7 @@ class TimelineSession:
                idempotency_key=None, dry_run=False, expected_state, base=None, evaluation=None,
                pending_id=None, pending_path=None, pending_part=None, pending_how="retry", group_id=None,
                pending_identity=None,
-               logical_key=None, rationale=None, imports=()):
+               logical_key=None, rationale=None, imports=(), via="python"):
         """Freeze an already captured v2 batch, without recapturing its guards.
 
         A replacement is allowed only after an explicit conflict. Transport
@@ -1040,7 +1065,7 @@ class TimelineSession:
         release_conflict = (not isinstance(evaluation, dict)
                             or evaluation.get("kind") != "function"
                             or evaluation.get("count", 0) >= 3)
-        return self._flush(idempotency_key=idempotency_key, dry_run=dry_run, prepare=prepare,
+        return self._flush(idempotency_key=idempotency_key, dry_run=dry_run, via=via, prepare=prepare,
                            release_conflict=release_conflict)
 
     def _flush(self, *, idempotency_key=None, dry_run=False, via="python", prepare=None,

@@ -9,6 +9,51 @@ from PIL import Image
 from astrid.sdk.timeline._common import TimelineEditError
 from astrid.sdk.timeline.checkout import Checkout
 from astrid.sdk.timeline.commit_session import Timeline
+from tests.sdk.test_timeline_checkout import bundle
+
+
+def test_local_registered_media_uses_raw_content_digest(tmp_path, monkeypatch):
+    from astrid.sdk.timeline import media_add
+
+    source = tmp_path / "image.png"
+    Image.new("RGB", (4, 3), "red").save(source)
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    pin = {"asset": "image", "object_id": "sha256:" + digest,
+           "generation_id": "generation", "variant_id": "variant",
+           "catalog_digest": "sha256:" + "a" * 64}
+    verified = {"selection": pin.copy(), "media_type": "image/png", "width": 4, "height": 3}
+    monkeypatch.setattr(media_add, "_selection", lambda *_args: (pin, verified))
+    data = bundle()
+    clip = data["shots"]["A"]["internal_timeline"]["clips"][0]
+    clip["app"] = {"astrid": {"anchor": "existing"}}
+    session = SimpleNamespace(project_id="p", client=SimpleNamespace(
+        _remote=SimpleNamespace(_transport=object())))
+    timeline = Timeline(session, data, {"revision_id": "rev-0"}, evaluating=True)
+
+    key = timeline._register_asset("A", source)
+
+    entry = timeline._registry("A")[key]
+    assert entry["media_id"] == "sha256:" + digest
+    assert entry["content_sha256"] == digest
+    assert entry["resolution"] == "4x3"
+    assert timeline._verified_media[0]["pin"]["content_digest"] == "sha256:" + digest
+    assert timeline.bundle["shots"]["A"]["internal_timeline"]["clips"][0]["app"] == {"astrid": {"anchor": "existing"}}
+
+
+@pytest.mark.parametrize("object_id", ["sha256:" + "A" * 64, "sha256:" + "a" * 63, "a" * 64])
+def test_local_registered_media_rejects_invalid_digest(tmp_path, monkeypatch, object_id):
+    from astrid.sdk.timeline import media_add
+
+    source = tmp_path / "image.png"
+    Image.new("RGB", (4, 3), "red").save(source)
+    pin = {"asset": "image", "object_id": object_id, "generation_id": "generation", "variant_id": "variant"}
+    monkeypatch.setattr(media_add, "_selection", lambda *_args: (pin, {"selection": pin}))
+    session = SimpleNamespace(project_id="p", client=SimpleNamespace(
+        _remote=SimpleNamespace(_transport=object())))
+    timeline = Timeline(session, bundle(), {"revision_id": "rev-0"}, evaluating=True)
+
+    with pytest.raises(TimelineEditError, match="invalid local media object digest"):
+        timeline._register_asset("A", source)
 
 
 def test_runtime_timeline_preserves_legacy_add_dispatch(monkeypatch):
