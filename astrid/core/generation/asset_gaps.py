@@ -16,7 +16,8 @@ from typing import Any
 
 
 def declared_model_specs(assets: Any, *, require_complete: bool = True,
-                         incomplete: list[dict[str, Any]] | None = None):
+                         incomplete: list[dict[str, Any]] | None = None,
+                         entry_id: str | None = None):
     """Project canonical workflow declarations into the existing downloader type.
 
     Incomplete declarations grant no custody authority. Inventory composition
@@ -27,6 +28,7 @@ def declared_model_specs(assets: Any, *, require_complete: bool = True,
     """
     from .engine_contracts import EngineError, IntegrityError, ModelLockValidationError, ModelSpec
     from .model_downloader import _safe_relative, _validate_model
+    from .model_declarations import IncompleteModelDeclaration
 
     if not isinstance(assets, (list, tuple)):
         raise ModelLockValidationError('entry model_assets must be a list')
@@ -37,13 +39,12 @@ def declared_model_specs(assets: Any, *, require_complete: bool = True,
         missing = [key for key in ('name', 'url', 'sha256', 'size_bytes')
                    if asset.get(key) is None or asset.get(key) == '']
         if missing:
+            record = {'name': asset.get('name'), 'subdir': asset.get('subdir'), 'missing': missing}
             if incomplete is not None:
-                incomplete.append({'name': asset.get('name'), 'subdir': asset.get('subdir'),
-                                   'missing': missing})
+                incomplete.append(record)
                 continue
             if require_complete:
-                raise ModelLockValidationError(
-                    f"Declared model {asset.get('name', '?')} is unavailable: missing {', '.join(missing)}")
+                raise IncompleteModelDeclaration(record, entry_id=entry_id)
             continue
         try:
             name = _safe_relative(asset['name'])
@@ -138,18 +139,22 @@ def attached_asset_readiness(entry: str | None, *, nodes=(), models=(), lockfile
                              custom_nodes: str | None = None) -> dict[str, Any]:
     """Readiness for an attached ComfyUI: the person fixes it on their ComfyUI; Astrid installs and restarts nothing there.
 
-    A node no locked pack provides is part of ComfyUI itself. A node a locked custom pack provides
-    names that pack, and its repository when the lock declares a URL. For such a pack Astrid only
-    shows the commands; the person or their coding agent runs them.
+    Core nodes use the shipped core-class evidence, never absence of a pack.
+    Known custom packs retain their manual installation guidance; unknown
+    classes name the missing provider and require identification, not an
+    unrelated ComfyUI update. Astrid installs and restarts nothing there.
     """
     from vibecomfy.node_packs import resolve_lockfile_path, resolve_node_packs
+    from .node_class_authority import core_node_classes
 
     lock = resolve_lockfile_path(lockfile_path)
     issues, fixes = [], []
     fixed_packs: set[str] = set()
+    nodes = tuple(nodes)
+    core = core_node_classes(nodes)
     for name in nodes:
-        packs = [pack for pack in resolve_node_packs({name}, lockfile_path=lock)
-                 if not _is_comfyui_core_repo(pack.repo)]
+        providers = resolve_node_packs({name}, lockfile_path=lock)
+        packs = [pack for pack in providers if not _is_comfyui_core_repo(pack.repo)]
         commands = None
         if packs:
             pack = packs[0]
@@ -164,10 +169,15 @@ def attached_asset_readiness(entry: str | None, *, nodes=(), models=(), lockfile
                 details.update(commands=argv, after=PACK_AFTER)
                 commands = argv
             message = f'Your ComfyUI does not have {name}, which comes from the custom node pack {pack.name}. {action}'
-        else:
+        elif name in core or any(_is_comfyui_core_repo(pack.repo) for pack in providers):
             action = 'Update ComfyUI, then retry.'
             message = (f'Your ComfyUI does not have {name}, which is part of ComfyUI itself; '
                        'update ComfyUI, then retry.')
+            details = {'node': name, 'pack': None, 'repository': None}
+        else:
+            action = ('Identify the providing custom node pack and its exact source before installing '
+                      'it on your ComfyUI; restart ComfyUI yourself, then retry.')
+            message = f'Your ComfyUI does not have {name}; no known providing pack. {action}'
             details = {'node': name, 'pack': None, 'repository': None}
         issues.append({'code': 'missing_node_pack', 'severity': 'error', 'message': message, 'details': details})
         if commands is not None and pack.name in fixed_packs:
