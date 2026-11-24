@@ -605,7 +605,13 @@ def describe_entry(entry_id: str, mode: str | None = None, *, registry: Any = No
         matches = users or (_discovery.ready_for(entry_id) if _discovery is not None
                             else _ready_entries_for(entry_id))
         if len(matches) != 1:
-            raise ValueError(f'unknown generation entry {entry_id!r}')
+            from .preflight import generation_error
+
+            raise generation_error(
+                ValueError(f'unknown generation entry {entry_id!r}'),
+                entry={'id': entry_id}, code='entry_missing' if not matches else 'conflict',
+                details={'field': 'entry'},
+            )
         entry = {**matches[0], 'source': 'user-entry' if users else 'ready-template'}
         modes = entry['modes']
         if not modes or entry.get('kind') not in _KINDS:

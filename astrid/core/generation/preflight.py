@@ -166,6 +166,20 @@ def generation_error(error: Any, *, entry=None, target=None, code=None,
     from .setup_contract import native_issue_code
     normalized = native_issue_code(native)
     detail = {**(get('details') or {}), **(details or {})}
+    # The managed/attached model paths retain the exact typed cause when
+    # adding transfer or alignment context. Recover only known typed causes,
+    # never infer a license or hash failure from free-form stderr.
+    if code is None and native in {'download_failed', 'asset_alignment_failed'}:
+        from .engine_contracts import IntegrityError, ModelFetchHTTPError
+        cause = getattr(error, '__cause__', None)
+        seen = set()
+        while cause is not None and id(cause) not in seen:
+            seen.add(id(cause))
+            if isinstance(cause, (ModelFetchHTTPError, IntegrityError)):
+                normalized = native_issue_code(cause.code)
+                detail.update(getattr(cause, 'details', {}))
+                break
+            cause = cause.__cause__
     diagnostic = get('engine_diagnostic')
     if isinstance(diagnostic, Mapping):
         detail['engine_diagnostic'] = {key: diagnostic[key] for key in

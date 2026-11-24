@@ -714,8 +714,31 @@ def main(args) -> int:
             result = plan_attached_model_download(client, args.entry, args.mode)
             text = render_attached_download_plan(result)
     except (AttachedDownloadRefused, ValueError, OSError, KeyError, RuntimeError) as exc:
-        print(json.dumps({'error': {'code': getattr(exc, 'code', 'download_failed'), 'message': str(exc)}},
-                         sort_keys=True), file=sys.stderr)
-        return 1
+        from .preflight import GenerationReadinessError, generation_error
+        from .setup_repairs import manual_setup_fix
+        from .setup_contract import repair_step
+
+        if isinstance(exc, GenerationReadinessError):
+            raise
+        selected = {'id': args.entry, 'mode': args.mode, 'engine': 'comfyui'}
+        target = {'endpoint': args.comfy_url, 'owner': 'human'}
+        error = generation_error(exc, entry=selected, target=target)
+        # Plan confirmation remains an explicit later human decision. The
+        # repair re-inspects the exact attached target, never auto-applies.
+        code = error.code
+        step = repair_step(code)
+        fix = manual_setup_fix('inspect-attached-model-plan', step, entry=selected,
+                               target=target, scope='attached_target', code=code)
+        if code not in {'placement_invalid', 'target_unreachable'}:
+            fix['instruction']['then_argv'] = [
+                'astrid', 'generate', 'fetch-models', args.entry, args.mode,
+                '--comfy-url', args.comfy_url, '--json',
+            ]
+            fix['placeholders'] = {}
+        issue = {**error.readiness['issues'][0], 'fix_ids': [fix['id']]}
+        from .preflight import readiness_envelope
+
+        raise GenerationReadinessError(readiness_envelope(
+            entry=selected, target=target, issues=[issue], fixes=[fix])) from exc
     print(json.dumps(result, sort_keys=True) if args.json else text)
     return 0

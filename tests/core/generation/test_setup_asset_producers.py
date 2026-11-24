@@ -90,3 +90,53 @@ def test_each_attached_node_and_model_links_to_its_specific_manual_repair(monkey
     assert all(fix["who"] == "human" and "argv" not in fix for fix in result["fixes"])
     assert all(fix["instruction"]["then_argv"][-3:] ==
                ["--placement", "http://127.0.0.1:8188", "--json"] for fix in result["fixes"])
+
+
+@pytest.mark.parametrize(("status", "code"), [
+    (401, "model_license_required"), (403, "model_license_required"), (404, "fetch_404"),
+])
+def test_recorded_model_http_refusal_is_typed_without_parsing_message(tmp_path, status, code):
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    from astrid.core.generation.asset_alignment import fetch_verified
+    from astrid.core.generation.engine_contracts import ModelFetchHTTPError
+    from astrid.core.generation.preflight import generation_error
+    from astrid.core.generation.setup_contract import validate_setup_envelope
+
+    class RecordedClient:
+        @contextmanager
+        def stream(self, method, url, **kwargs):
+            assert method == "GET"
+            yield SimpleNamespace(status_code=status, headers={}, url=url)
+
+    path = tmp_path / "model.safetensors"
+    part = path.with_suffix(".part")
+    entry = {"name": path.name, "subdir": "", "url": "https://huggingface.co/example/model/resolve/main/model.safetensors",
+             "size_bytes": 4, "sha256": "a" * 64}
+    with pytest.raises(ModelFetchHTTPError) as caught:
+        fetch_verified(entry, path, root=tmp_path, part=part, label=path.name, client=RecordedClient())
+    assert caught.value.code == code
+    assert caught.value.details == {"http_status": status}
+    assert not path.exists() and not part.exists()
+    result = generation_error(caught.value, entry={"id": "example"}).to_envelope()
+    validate_setup_envelope(result)
+    assert result["issues"][0]["code"] == code
+    assert result["issues"][0]["details"]["http_status"] == status
+
+
+def test_removed_saved_entry_is_named_without_automatic_deletion(monkeypatch):
+    from astrid.core.generation import entries
+    from astrid.core.generation.preflight import GenerationReadinessError
+    from astrid.core.model_catalog.registry import ModelRegistry
+
+    monkeypatch.setattr(entries, "user_entries", lambda: [])
+    monkeypatch.setattr(entries, "action_entries", lambda: [])
+    monkeypatch.setattr(entries, "_ready_entries_for", lambda entry_id: [])
+    with pytest.raises(GenerationReadinessError) as caught:
+        entries.describe_entry("removed-entry", registry=ModelRegistry([]))
+    result = caught.value.to_envelope()
+    assert result["issues"][0]["code"] == "entry_missing"
+    fix = result["fixes"][0]
+    assert fix["who"] == "human"
+    assert fix["instruction"]["then_argv"] == ["astrid", "generate", "list", "--json"]

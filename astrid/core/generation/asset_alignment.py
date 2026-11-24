@@ -29,6 +29,7 @@ from .engine_contracts import (
     EngineError,
     EngineRecipe,
     IntegrityError,
+    ModelFetchHTTPError,
     ModelSpec,
     UnsafePathError,
     effective_models_root,
@@ -154,6 +155,7 @@ class _ResumingClient:
     def __init__(self, inner, part: Path, deadline: float | None, progress=None):
         self.inner, self.part, self.deadline, self.progress = inner, part, deadline, progress
         self.resumed_from = 0
+        self.response_status: int | None = None
 
     @contextlib.contextmanager
     def stream(self, method, url, **kwargs):
@@ -179,7 +181,9 @@ class _SplicedResponse:
 
     @property
     def status_code(self) -> int:
-        return 200 if 200 <= self._response.status_code < 300 else self._response.status_code
+        status = self._response.status_code
+        self._client.response_status = status
+        return 200 if 200 <= status < 300 else status
 
     def iter_bytes(self):
         client = self._client
@@ -246,6 +250,10 @@ def fetch_verified(entry: dict[str, Any], path: Path, *, root: Path, part: Path,
         kept = '; prefix retained for resume' if part.exists() else ''
         if isinstance(error, DownloadError):
             raise error
+        if error is not None and resuming.response_status in {401, 403, 404}:
+            raise ModelFetchHTTPError(
+                resuming.response_status, f'{label}: download failed ({error}){kept}',
+            ) from error
         raise DownloadError(f'{label}: download failed ({error}){kept}') from error
     part.unlink(missing_ok=True)
     return resuming.resumed_from

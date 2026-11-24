@@ -94,6 +94,15 @@ _NATIVE_ALIASES = {
     "gated": "model_license_required",
     "hash_mismatch": "integrity_failed",
     "incomplete_install": "partial_install",
+    "not_same_machine": "placement_invalid",
+    "folder_not_writable": "unsafe_path",
+    "confirmation_required": "input_rejected",
+    "plan_changed": "conflict",
+    "nothing_to_download": "missing_model",
+    "file_exists": "conflict",
+    "unsafe_partial": "unsafe_path",
+    "present_file_missing": "missing_model",
+    "present_file_unreadable": "integrity_failed",
 }
 
 

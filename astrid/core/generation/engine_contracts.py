@@ -421,6 +421,17 @@ class DownloadError(RecipeError):
     code = "download_failed"
 
 
+class ModelFetchHTTPError(DownloadError):
+    """HTTP refusal at the selected locked model source, not a filesystem guess."""
+
+    def __init__(self, status: int, message: str):
+        if status not in {401, 403, 404}:
+            raise ValueError("unsupported model fetch refusal status")
+        super().__init__(message)
+        self.code = "fetch_404" if status == 404 else "model_license_required"
+        self.details = {"http_status": status}
+
+
 class DeadlineExceeded(DownloadError):
     code = "deadline_exceeded"
 

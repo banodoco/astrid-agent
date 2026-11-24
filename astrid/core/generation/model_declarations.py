@@ -21,7 +21,7 @@ def incomplete_model_repair(record: dict[str, Any], entry_id: str | None = None)
     # placeholder syntax must not mistake authored filenames for variables.
     label = str(label).replace("<", "\\u003c").replace(">", "\\u003e")
     return {
-        "id": "complete-model-declaration", "who": "human", "scope": "read_only",
+        "id": "complete-model-declaration", "who": "human", "scope": "read_only", "details": {},
         "instruction": {
             "step": f"Obtain the verified HTTPS source, SHA-256 and exact byte size for {label}; "
                     "complete the saved workflow's model declaration before requesting installation. "
