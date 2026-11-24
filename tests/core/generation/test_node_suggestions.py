@@ -1,14 +1,13 @@
 """LE-5 independent lookup witnesses; recorded HTTP, no installation."""
 from __future__ import annotations
 
-import json
-from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
 import pytest
 
 from astrid.core.generation.node_suggestions import missing_node_suggestions
+from tests.core.generation.fixtures.plan56_sam import SAM_API
 
 SAM_URL = "https://github.com/ethanfel/ComfyUI-SAM-Audio"
 SAM_CLASSES = ("SAMAudioPipelineLoader", "SAMAudioTextSeparator")
@@ -56,9 +55,7 @@ def recorded_lookup(tmp_path, monkeypatch):
 
 
 def _sam_missing_classes():
-    fixture = Path(__file__).parent / "fixtures" / "le5-sam-audio-separation.api.json"
-    workflow = json.loads(fixture.read_text(encoding="utf-8"))
-    return sorted({node["class_type"] for node in workflow.values()}
+    return sorted({node["class_type"] for node in SAM_API.values()}
                   - {"LoadAudio", "SaveAudio"})
 
 

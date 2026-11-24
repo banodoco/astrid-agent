@@ -35,6 +35,7 @@ def run_owned_action(workflow: Path, out: Path, *, task_identity: str, attempt_i
 
 def _run_owned_action(workflow: Path, out: Path, *, task_identity: str, attempt_identity: str,
                       align: str, expected_execution_identity: str | None = None,
+                      code_approvals=(), placement_class="local",
                       **kwargs: Any) -> dict[str, Any]:
     """Prepare under owned custody, then execute once against its HTTP endpoint."""
     import hashlib
@@ -141,7 +142,7 @@ def _run_owned_action(workflow: Path, out: Path, *, task_identity: str, attempt_
         # expiry carried to this job before this one-hour bound can grow.
         preparation = ManagedEnginePreparation(task=task_identity, attempt=attempt_identity, mode=align,
             deadline=time.monotonic() + 3600, cancelled=cancelled.is_set, scratch=scratch / "engine",
-            logs_root=out, on_phase=on_phase)
+            logs_root=out, on_phase=on_phase, code_approvals=code_approvals, placement_class=placement_class)
         from contextlib import suppress
 
         from astrid.core.generation.engine_custody import declare_engine_log
@@ -257,7 +258,8 @@ def _validate_h3_prepared_handoff(inputs: dict[str, Any], files: dict[str, str])
 
 
 def run_prepared_job(entry: str, inputs: dict[str, Any], execution: dict[str, Any], bindings: dict[str, Any], out: Path,
-                      *, task: str, attempt: str, mode: str | None, align: str, discovery: Any = None) -> dict[str, Any]:
+                      *, task: str, attempt: str, mode: str | None, align: str, discovery: Any = None,
+                      code_approvals=(), placement_class="local") -> dict[str, Any]:
     """Execute a controller-prepared bundle; public inputs never include transport controls."""
     from astrid.core.generation import entries
 
@@ -292,7 +294,8 @@ def run_prepared_job(entry: str, inputs: dict[str, Any], execution: dict[str, An
         if entries.entry_hooks(described).get("build"):
             return run_named_entry(described, entry, inputs, files if entry == "h3" else {}, out,
                                     task=task, attempt=attempt, mode=mode, align=align, bindings=bindings,
-                                    discovery=discovery, resolved=(description, inputs))
+                                    discovery=discovery, resolved=(description, inputs),
+                                    code_approvals=code_approvals, placement_class=placement_class)
         # The facade has already bound this exact graph. Rebinding or rebuilding it
         # would discard its chosen seed, native controls and uploaded media bindings.
     from astrid.packs.vibecomfy.shared.bundle_inputs import staged_workflow_path
@@ -300,13 +303,15 @@ def run_prepared_job(entry: str, inputs: dict[str, Any], execution: dict[str, An
                               companion=execution.get("companion"), source=execution.get("source")) as (workflow, _):
         return run_owned_action(
             workflow, out, task_identity=task, attempt_identity=attempt, entry=named,
-            workflow_inputs=json.dumps(bindings, sort_keys=True), align=align, **files)
+            workflow_inputs=json.dumps(bindings, sort_keys=True), align=align,
+            code_approvals=code_approvals, placement_class=placement_class, **files)
 
 
 def run_named_entry(described: dict[str, Any], named: str, inputs: dict[str, Any], files: dict[str, str],
                      out: Path, *, task: str, attempt: str, mode: str | None, align: str,
                      bindings: dict[str, Any] | None = None, discovery: Any = None,
-                     resolved: tuple[dict[str, Any], dict[str, Any]] | None = None) -> dict[str, Any]:
+                     resolved: tuple[dict[str, Any], dict[str, Any]] | None = None,
+                     code_approvals=(), placement_class="local") -> dict[str, Any]:
     """A named entry through the contract the controller's facade applies (sdk/generation.py).
 
     * the CLI's own validation of the entry's public inputs; the resolved values (aliases to public
@@ -424,7 +429,8 @@ def run_named_entry(described: dict[str, Any], named: str, inputs: dict[str, Any
         result = run_owned_action(
             workflow, out, task_identity=task, attempt_identity=attempt,
             workflow_inputs=json.dumps(workflow_inputs, sort_keys=True, default=str), entry=named,
-            align=align, manifest=manifest, **hook_job, **run_files)
+            align=align, manifest=manifest, code_approvals=code_approvals,
+            placement_class=placement_class, **hook_job, **run_files)
         return result
     finally:
         if job_dir is not None:

@@ -624,7 +624,7 @@ def test_generate_help_excludes_paid_renting_and_job_override_flags(capsys):
     output = capsys.readouterr().out
     for flag in ("--max-usd", "--deadline", "--gpu", "--datacenter"):
         assert flag not in output
-    assert "--consent {user_env}" in output
+    assert "--consent {user_env,code}" in output
 
 
 def test_list_json_contains_all_six_default_entries(tmp_path):
