@@ -146,3 +146,45 @@ def test_runpod_dry_run_reports_only_selected_volume_policy(
     assert "no persistent volume declared" not in issue["message"]
     assert _entry_bytes(root) == before
     assert sam_api_path.read_bytes() == source_before
+
+
+def test_managed_dry_run_reports_selected_model_root_capacity(
+        monkeypatch, tmp_path, capsys, sam_api_path):
+    from astrid.core.generation import managed_preparation
+
+    models = tmp_path / "managed" / "models"
+    models.mkdir(parents=True)
+    monkeypatch.setattr(preflight, "_module_available", lambda name: name == "vibecomfy")
+    monkeypatch.setattr(preflight, "_registered_managed_engine", lambda: {
+        "owner": "astrid", "endpoint": "http://127.0.0.1:8188",
+        "root": str(models.parent),
+    })
+    monkeypatch.setattr(managed_preparation, "configured_models_root", lambda: str(models))
+    monkeypatch.setattr(cli, "_open_client",
+                        lambda: pytest.fail("dry run opened Runtime"))
+    monkeypatch.setattr(model_storage.os, "statvfs", object(), raising=False)
+    seen = []
+
+    def measure(root, **kwargs):
+        seen.append(root)
+        return 123, False
+
+    monkeypatch.setattr(model_storage, "available_model_bytes", measure)
+    root, audio = _saved_sam(tmp_path, monkeypatch, sam_api_path, "local")
+    before = _entry_bytes(root)
+    source_before = sam_api_path.read_bytes()
+    assert cli.main(["audio", "--entry", "sam-download", "--mode", "workflow",
+                     "--audio-ref", str(audio), "--placement", "managed",
+                     "--dry-run", "--json"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "ready_with_warnings", result
+    issue, = [row for row in result["issues"] if row["code"] == "model_download_notice"]
+    assert issue["severity"] == "warning"
+    assert issue["fix_ids"] == []
+    assert issue["details"]["free_bytes"] == 123
+    assert issue["details"]["volume_status"] == "not_declared"
+    assert result["fixes"] == []
+    assert seen == [models]
+    assert not list(models.iterdir())
+    assert _entry_bytes(root) == before
+    assert sam_api_path.read_bytes() == source_before
