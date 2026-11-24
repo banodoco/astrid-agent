@@ -121,7 +121,7 @@ def test_catalog_cold_repeated_and_changed_values_match_full_bytes_receipt_and_s
     full, _ = catalog.run(inputs, cached=False)
     assert cold.result == warm.result == full.result
     assert ("hit", None) in warm.events
-    assert not any(row["stage"] == "workflow build" for row in warm.timings)
+    assert not any(row["stage"] == "source workflow build" for row in warm.timings)
     assert any(row["stage"] == "prepared template key" for row in warm.timings)
     assert warm.requests == cold.requests == full.requests
     assert len(warm.requests) == 1

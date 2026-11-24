@@ -301,7 +301,9 @@ def prepare_workflow(*, identity: Any, witness: Callable[[], Mapping[str, Any]],
             _event("recompute", reason)
         else:
             _recompute(reason, detail=detail)
-        with stage("workflow build"):
+        # Keep the SDK's established workflow-build parent tree; time only the
+        # original source builder here, separately from key/store/fill work.
+        with stage("source workflow build"):
             return build()
 
     if not reusable:

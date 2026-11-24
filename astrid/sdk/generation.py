@@ -1967,7 +1967,7 @@ class GenerationFacade:
                     if source == "catalog":
                         if is_managed_target and not dry_run:
                             timed_call("target check", require_generation_target_readiness, candidate, mode, target_client)
-                        workflow, plan, schema, assets = timed_call("catalog preparation", _prepare_catalog_target_workflow,
+                        workflow, plan, schema, assets = timed_call("workflow build", _prepare_catalog_target_workflow,
                             registry=registry, candidate=candidate, mode=mode, modality=modality,
                             inputs=inputs, target_client=target_client, backend=backend,
                             retain_source=None if dry_run else retain_source,

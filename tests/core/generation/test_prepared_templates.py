@@ -85,7 +85,7 @@ def test_changed_values_fill_without_rebuilding_and_use_existing_data_root(harne
     assert store.root == source.parent / "runtime-data/cache/prepared-template/v1/comfyui"
     assert _events(collector) == [("hit", None)]
     assert any(row["stage"] == "prepared template key" for row in collector.snapshot())
-    assert not any(row["stage"] == "workflow build" for row in collector.snapshot())
+    assert not any(row["stage"] == "source workflow build" for row in collector.snapshot())
 
 
 @pytest.mark.parametrize("field", ["compiler_identity", "vibecomfy_version", "role_plan", "node_list_digest"])
