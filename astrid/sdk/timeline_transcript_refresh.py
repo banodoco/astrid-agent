@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from astrid.core.timeline.bundle import TIMELINE_BUNDLE_SCHEMA_VERSION
 from astrid.sdk.timeline import words as W
 
 REFERENCES_SCHEMA = "media.transcript.references/v1"
@@ -113,12 +114,46 @@ def stale_anchors(bundle: Mapping[str, Any], transcripts: Mapping[str, Mapping[s
     return found
 
 
+def resolve_asset_id(bundle: Mapping[str, Any], media: str) -> str | None:
+    """The project-registry asset id whose media is ``media`` (parent first, then each shot's timeline).
+
+    The editor's ``transcriptReferences`` rows are keyed by ``assetId``; the registry key is that id."""
+    for _label, holder in _holders(bundle, None):
+        for asset_id, asset in sorted(W._registry_assets(holder).items(), key=lambda kv: str(kv[0])):
+            if isinstance(asset, Mapping) and media in (asset.get("media_id"), asset.get("content_sha256")):
+                return str(asset_id)
+    return None
+
+
 def with_reference(bundle: Mapping[str, Any], media: str, media_document_ids: set[str],
-                   document_id: str, source: str) -> list[dict[str, Any]]:
+                   document_id: str, source: str, asset_id: str | None = None) -> list[dict[str, Any]]:
     """Associations after recording one media's explicit choice: that media's earlier pins are
     replaced; every other media's pin is kept. The row names its media and source so it can be
-    loaded again (see ``words.load_timeline_transcripts``)."""
+    loaded again (see ``words.load_timeline_transcripts``), and its ``assetId`` (the editor's key)
+    when given."""
     kept = [row for row in W.reference_rows(bundle)
             if row.get("mediaId") != media and row["documentId"] not in media_document_ids]
-    kept.append({"documentId": document_id, "mediaId": media, "sourceId": source})
+    row: dict[str, Any] = {"documentId": document_id, "mediaId": media, "sourceId": source}
+    if asset_id is not None:
+        row = {"assetId": asset_id, **row}
+    kept.append(row)
     return kept
+
+
+def backfill_asset_ids(bundle: Mapping[str, Any], rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Rows written before ``assetId`` existed get it from the registry when their media resolves."""
+    out = []
+    for row in rows:
+        if "assetId" not in row and isinstance(row.get("mediaId"), str):
+            found = resolve_asset_id(bundle, row["mediaId"])
+            if found is not None:
+                row = {"assetId": found, **row}
+        out.append(row)
+    return out
+
+
+def complete_envelope(envelope: dict[str, Any]) -> dict[str, Any]:
+    """Give a ``config.bundle`` envelope the header the editor requires (``schema_version``, ``itemsBySchemaRef``)."""
+    envelope.setdefault("schema_version", TIMELINE_BUNDLE_SCHEMA_VERSION)
+    envelope.setdefault("itemsBySchemaRef", {})
+    return envelope

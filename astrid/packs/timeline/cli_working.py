@@ -498,11 +498,15 @@ def _cmd_transcripts_refresh(parsed: argparse.Namespace) -> int:
         REFERENCES_SCHEMA as W_REFERENCES_SCHEMA,
     )
     from astrid.sdk.timeline_transcript_refresh import (
+        backfill_asset_ids,
+        complete_envelope,
         cut_words,
         inventory,
+        resolve_asset_id,
         stale_anchors,
         with_reference,
     )
+    from astrid.core.timeline.bundle import TimelineBundleValidationError, validate_timeline_bundle
 
     project = need_project(parsed)
     if parsed.run_missing and not parsed.placement:
@@ -588,6 +592,13 @@ def _cmd_transcripts_refresh(parsed: argparse.Namespace) -> int:
     if not planned:
         print("nothing to record: the chosen transcripts are already pinned")
         return 0
+    # Resolve every asset first: one unresolvable media refuses the whole refresh and saves nothing.
+    assets = {}
+    for media, _docs, _target in planned:
+        assets[media] = resolve_asset_id(tl.bundle, media)
+        if assets[media] is None:
+            raise VerbError(f"cannot record a transcript for media {media_id_text(media)}: no asset in the project "
+                            "registry has this media id, and the editor needs an assetId to open the project", 2)
     working, _existed = working_copy(parsed, create=True)
     for media, docs, target in planned:
         source = next(name for name, doc in docs.items() if doc is target)
@@ -595,7 +606,14 @@ def _cmd_transcripts_refresh(parsed: argparse.Namespace) -> int:
         bundle_config = working.bundle.setdefault("parent", {}).setdefault("config", {}).setdefault("bundle", {})
         refs = bundle_config.setdefault("transcriptReferences", {"schema": W_REFERENCES_SCHEMA})
         refs["schema"] = W_REFERENCES_SCHEMA
-        refs["associations"] = with_reference(working.bundle, media, media_ids, target["document_id"], source)
+        rows = with_reference(working.bundle, media, media_ids, target["document_id"], source, assets[media])
+        refs["associations"] = backfill_asset_ids(working.bundle, rows)
+        complete_envelope(bundle_config)
+        try:
+            validate_timeline_bundle(bundle_config)
+        except TimelineBundleValidationError as exc:
+            raise VerbError(f"refusing to save: the timeline bundle would not open in the editor "
+                            f"({exc.pointer}: {exc.message}); nothing was saved", 2) from exc
         print(f"recorded {media} -> {source} in transcriptReferences")
     working.save(quiet=True)
     print("recorded in the working copy (publish to keep it)")

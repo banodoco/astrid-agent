@@ -80,6 +80,33 @@ def _item(value: Any, pointer: str) -> None:
         _string(provenance["recordedAt"], f"{pointer}/provenance/recordedAt")
 
 
+def _transcript_references(value: Any, pointer: str) -> None:
+    """Mirror of the editor's ``transcriptReferences``: each row needs ``assetId`` and ``documentId``;
+    ``mediaId``/``sourceId`` are the optional Agent-side keys; anything else is refused."""
+    if not isinstance(value, Mapping):
+        raise TimelineBundleValidationError(pointer, "must be an object")
+    unknown = sorted(set(value).difference({"schema", "associations"}))
+    if unknown:
+        raise TimelineBundleValidationError(pointer, f"contains unsupported field(s): {', '.join(unknown)}")
+    if value.get("schema") != "media.transcript.references/v1":
+        raise TimelineBundleValidationError(f"{pointer}/schema", "must be 'media.transcript.references/v1'")
+    rows = value.get("associations")
+    if not isinstance(rows, list):
+        raise TimelineBundleValidationError(f"{pointer}/associations", "must be an array")
+    for index, row in enumerate(rows):
+        at = f"{pointer}/associations/{index}"
+        if not isinstance(row, Mapping):
+            raise TimelineBundleValidationError(at, "must be an object")
+        unknown = sorted(set(row).difference({"assetId", "documentId", "mediaId", "sourceId"}))
+        if unknown:
+            raise TimelineBundleValidationError(at, f"contains unsupported field(s): {', '.join(unknown)}")
+        _string(row.get("assetId"), f"{at}/assetId")
+        _string(row.get("documentId"), f"{at}/documentId")
+        for optional in ("mediaId", "sourceId"):
+            if optional in row:
+                _string(row[optional], f"{at}/{optional}")
+
+
 def validate_timeline_bundle(value: Any) -> dict[str, Any]:
     """Validate and return a lossless v1 bundle copy.
 
@@ -95,6 +122,8 @@ def validate_timeline_bundle(value: Any) -> dict[str, Any]:
             "/bundle/schema_version",
             f"unsupported schema_version {version!r}; supported: {TIMELINE_BUNDLE_SCHEMA_VERSION}",
         )
+    if "transcriptReferences" in value:
+        _transcript_references(value["transcriptReferences"], "/bundle/transcriptReferences")
     items = value.get("itemsBySchemaRef")
     if not isinstance(items, Mapping):
         raise TimelineBundleValidationError(
