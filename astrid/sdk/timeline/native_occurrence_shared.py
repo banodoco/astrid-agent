@@ -9,6 +9,15 @@ from .native_occurrence_create import parent_start_ms
 from .native_occurrence_duplicate import OCCURRENCE_INTENT
 from .native_timeline_duplicate import SOURCE_REF
 
+
+def _shared_start_ms(ctx, on, hold):
+    """Integer start_ms: an exact whole-millisecond `on` is kept; otherwise frame-snapped."""
+    exact = on * 1000
+    if abs(exact - round(exact)) <= 1e-6:
+        return int(round(exact))
+    return parent_start_ms(ctx, on, hold)
+
+
 PARAMETERS = {
     'type': 'object', 'required': ['occurrence_id', 'on'],
     'properties': {'occurrence_id': {'type': 'string', 'pattern': r'^(?!.*::)[^/]+$'},
@@ -205,7 +214,7 @@ def _place_foreign(ctx, command):
     created.pop('revision_id', None)
     created['occurrence_id'] = args['occurrence_id']
     created['shot_id'] = identity
-    created.setdefault('placement', {})['start_ms'] = parent_start_ms(
+    created.setdefault('placement', {})['start_ms'] = _shared_start_ms(
         ctx, number(args['on'], 'on'), row.get('duration_ms', 1000) / 1000 or 1)
     from astrid.core.timeline.authoring_bundle import _rederive_root_identity
 
@@ -316,7 +325,7 @@ def occurrence_place_shared(ctx, command):
     created.pop('revision_id', None)
     created['occurrence_id'] = command['args']['occurrence_id']
     created['shot_id'] = reopen_shared_source(ctx.state.bundle, owner)
-    created.setdefault('placement', {})['start_ms'] = parent_start_ms(
+    created.setdefault('placement', {})['start_ms'] = _shared_start_ms(
         ctx, on, row.get('duration_ms', 1000) / 1000 or 1)
     from astrid.core.timeline.authoring_bundle import _rederive_root_identity
 

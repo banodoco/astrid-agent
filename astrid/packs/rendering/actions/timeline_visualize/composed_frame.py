@@ -326,6 +326,34 @@ def _snapshot_config(snapshot: Mapping[str, Any]) -> Mapping[str, Any]:
     return config if isinstance(config, Mapping) else snapshot
 
 
+class _SelectedElements:
+    """Registry view limited to the elements a render selects plus the product rendering pack."""
+
+    def __init__(self, registry: Any, selected: Sequence[Any]) -> None:
+        owned = [item for item in registry.list(include_shadowed=True) if item.source == "pack:rendering"]
+        self._elements = tuple({id(item): item for item in (*selected, *owned)}.values())
+
+    def list(self, kind: str | None = None, *, pack_id: str | None = None,
+             include_shadowed: bool = False) -> tuple[Any, ...]:
+        return tuple(item for item in self._elements
+                     if (kind is None or item.kind == kind)
+                     and (pack_id is None or item.source == f"pack:{pack_id}"))
+
+
+def _selected_elements(config: Mapping[str, Any], registry: Any) -> list[Any]:
+    from astrid.packs.rendering.rendering.renderers.remotion.run import _timeline_element_selection
+
+    if not config.get("clips"):
+        return []
+    resolved, effects, _, _ = _timeline_element_selection(config, registry=registry)
+    elements = list(effects.values())
+    for kind, rows in resolved.items():
+        for row in rows:
+            elements.append(registry.get(kind, row["element_id"], pack_id=row["source_pack_id"],
+                                         revision=row.get("revision")))
+    return elements
+
+
 def _render_registry_cache_inputs(config: Mapping[str, Any] | None) -> tuple[list[dict[str, Any]], str]:
     """Bind the generated imports and the shared sources they can resolve.
 
@@ -349,10 +377,20 @@ def _render_registry_cache_inputs(config: Mapping[str, Any] | None) -> tuple[lis
                                        "nonce": uuid.uuid4().hex, "project": str(project.resolve())}]
         rendering_roots = [project.resolve().parent / "astrid/packs/rendering"]
     else:
-        registry = generator._element_registry()
+        # The checkout-rooted registry the identity already admitted (cached).
+        from astrid.core.element.registry import load_default_registry
 
-        def collect(registry: Any, staged: list[dict[str, str]]) -> tuple[list[dict[str, Any]], list[Path]]:
-            mapping = generator.render_pack_roots(registry=registry, include_aliases=True)
+        registry = load_default_registry(project_root=_checkout_root())
+
+        def collect(registry: Any, staged: list[dict[str, str]],
+                    only: Sequence[Any] | None = None) -> tuple[list[dict[str, Any]], list[Path]]:
+            if only is None:
+                mapping = generator.render_pack_roots(registry=registry, include_aliases=True)
+            else:
+                # Unselected packs cannot affect this render; never open them.
+                with generator.without_fingerprints():
+                    mapping = generator.render_pack_roots(
+                        registry=_SelectedElements(registry, only), include_aliases=True)
             project_roots = [(Path(row["root"]).resolve(), row["scope"]) for row in staged]
 
             def stable(value: Any) -> Any:
@@ -381,7 +419,7 @@ def _render_registry_cache_inputs(config: Mapping[str, Any] | None) -> tuple[lis
                 selected, staged = stage_project_elements(config or {}, Path(temporary), registry=registry)
                 roots, rendering_roots = collect(selected, staged)
         else:
-            roots, rendering_roots = collect(registry, [])
+            roots, rendering_roots = collect(registry, [], _selected_elements(config or {}, registry))
 
     # Read bytes on every identity calculation. File timestamps alone do not
     # establish that the shared executable closure is unchanged.

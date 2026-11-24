@@ -13,6 +13,8 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any, Literal, cast
 
 from astrid.core.element.registry import ElementRegistry, load_default_registry
@@ -265,7 +267,23 @@ def _plugin_from_element(element: ElementDefinition) -> PluginRecord:
     )
 
 
+_FINGERPRINTS_ENABLED = True
+
+
+@contextmanager
+def without_fingerprints() -> Iterator[None]:
+    """Skip element content fingerprints for callers that only need roots and scopes."""
+    global _FINGERPRINTS_ENABLED
+    previous, _FINGERPRINTS_ENABLED = _FINGERPRINTS_ENABLED, False
+    try:
+        yield
+    finally:
+        _FINGERPRINTS_ENABLED = previous
+
+
 def _fingerprint_element(element: ElementDefinition) -> str:
+    if not _FINGERPRINTS_ENABLED:
+        return ""
     root = element.root.resolve()
     files: dict[str, Path] = {}
 
