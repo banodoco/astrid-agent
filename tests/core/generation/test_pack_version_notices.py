@@ -51,3 +51,29 @@ def test_incomparable_label_does_not_manufacture_a_mismatch():
         f"fixture-pack: recorded 1.0.0, installing {SECOND}; version correspondence is unverified"
     )
     assert notice["issue"] is None
+
+
+def test_target_schema_reports_recorded_and_selected_pack_without_installing():
+    from dataclasses import replace
+
+    from astrid.core.generation.entries import target_schema
+    from vibecomfy.workflow import VibeNode, VibeWorkflow, WorkflowSource
+
+    graph = VibeWorkflow("version-fixture", WorkflowSource("version-fixture"))
+    graph.nodes["1"] = VibeNode("1", "FixtureNode")
+    graph.metadata["source_provenance"] = _receipt("1.0.0")
+    graph.requirements = replace(
+        graph.requirements, custom_nodes=["fixture-pack"],
+        custom_node_refs=_selected(version="2.0.0", class_set=["FixtureNode"]),
+    )
+    notices = []
+    pending = {"engine": "comfyui", "placement": "runpod", "state": "pending_host_readiness"}
+    assert target_schema({"id": "fixture", "needs": []}, graph, None,
+                         pending_target=pending, align="align", version_notices=notices) is None
+    notice, = notices
+    assert notice["message"] == f"fixture-pack: recorded 1.0.0, installing 2.0.0 ({SECOND})"
+    assert notice["issue"]["code"] == "pack_version_differs"
+    assert graph.requirements.custom_node_refs[0]["commit"] == SECOND
+    result = readiness_envelope(issues=[notice["issue"]], target=pending)
+    assert result["status"] == "ready_with_warnings"
+    assert result["fixes"] == []
