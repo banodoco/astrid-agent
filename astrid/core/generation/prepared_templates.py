@@ -290,7 +290,10 @@ def prepare_workflow(*, identity: Any, witness: Callable[[], Mapping[str, Any]],
     builder. Product errors from that gate or ``build`` are never caught here.
     """
     from vibecomfy.prepared_template import (
-        TemplateNotReusable, fill_template, key_record, prepare_template,
+        TemplateNotReusable,
+        fill_template,
+        key_record,
+        prepare_template,
     )
 
     def full(reason: str, *, counted: bool = False) -> Any:
@@ -313,7 +316,8 @@ def prepare_workflow(*, identity: Any, witness: Callable[[], Mapping[str, Any]],
         logger.debug("prepared template current key is unavailable: %s", exc)
         return PreparedUse(full("entry_invalid"), reason="entry_invalid")
     try:
-        store = store if store is not None else PreparedTemplateStore()
+        with stage("prepared template store"):
+            store = store if store is not None else PreparedTemplateStore()
     except StoreUnavailable:
         return PreparedUse(full("store_unreadable"), reason="store_unreadable")
     values = {} if values is None else values

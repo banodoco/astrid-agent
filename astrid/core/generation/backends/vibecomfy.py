@@ -309,7 +309,11 @@ def _load_pinned_catalog_workflow(spec: BackendSpec, *, retain_source=None,
     if preparation is None:
         return build()
     from astrid.core.generation.prepared_templates import (
-        declarative_source, key_context, offline_source_schemas, prepare_workflow, source_witness,
+        declarative_source,
+        key_context,
+        offline_source_schemas,
+        prepare_workflow,
+        source_witness,
     )
     source_identity = {"template": canonical_id, "scope": "repo", "pin": expected_hash.lower(),
                        "path": str(template_path_resolved)}
