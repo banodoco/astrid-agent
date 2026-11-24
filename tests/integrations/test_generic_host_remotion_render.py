@@ -685,11 +685,14 @@ def rn11_pack_launch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 def test_short_managed_contract_project_and_collection_elements_through_command_worker(
     tmp_path: Path, real_runtime, rn11_pack_launch: tuple[Path, ...],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Both pack sources must paint their own pixels in one real short render."""
     from uuid import uuid4
 
+    import astrid.sdk as sdk
     from astrid.core.element import catalog, project_packs
+    from astrid.core.rendering.project_elements import CARRIER
     from astrid.sdk.timeline import Timeline
     from astrid.sdk.timeline._clip_commands import capture_clip_add
     from tests.editing_conformance.test_commit_runtime_m1 import open_client
@@ -818,20 +821,46 @@ def test_short_managed_contract_project_and_collection_elements_through_command_
         capability = host.capabilities["rendering.render"]
         assert capability.ready and capability.preflight["remotion"]["ok"] is True
         host.register(deliberate=True)
-        admitted = owner.tasks.create(
-            project_id=project_id, capability="rendering.render",
-            capability_digest=capability.capability_digest,
-            input_manifest=[], idempotency_key="rn11-pack-render",
-            spec={
-                "family": "rendering.render",
-                "params": {"timeline_ref": timeline_id, "selector": "rendering.remotion",
-                           "output_name": "rn11-packs.mp4"},
-                "output_policy": {"format": "mp4", "destination": "download",
-                                  "filename": "rn11-packs.mp4"},
-            },
-        )
+        # Exercise the normal SDK's managed-render preparation and CAS
+        # publication, not raw task admission (which lacks project snapshots).
+        # Observe the genuine admission exactly as the imported-theme proof
+        # does; neither the request nor the Runtime response is modified.
+        admissions = []
+        create_task = owner.tasks.create
+
+        def capture_admission(**request):
+            response = create_task(**request)
+            admissions.append((request, response))
+            return response
+
+        with monkeypatch.context() as invoke_env:
+            invoke_env.setattr(owner.tasks, "create", capture_admission)
+            invoked = sdk.invoke(
+                "rendering.render", kind="executor", project=project_id,
+                client=owner, wait=False, idempotency_key="rn11-pack-render",
+                inputs={"timeline_ref": timeline_id, "selector": "rendering.remotion",
+                        "output_name": "rn11-packs.mp4"},
+            )
+        assert invoked.ok, invoked.to_dict()
+        assert len(admissions) == 1
+        request, admitted = admissions[0]
         assert admitted.ok, admitted.as_dict()
         task_id = admitted.data["task_id"]
+        assert invoked.kernel_task_id == task_id
+
+        # Independently witness the SDK-produced, Runtime-ingested snapshot
+        # before drawing. This is a read of admitted CAS bytes, not a carrier
+        # assembled or supplied by the test.
+        snapshot_ref = request["spec"]["inputs"]["timeline_snapshot_ref"]
+        assert snapshot_ref["revision_id"] == revision
+        assert snapshot_ref["digest"] in request["input_manifest"]
+        snapshot_bytes = owner.media.read_bytes(snapshot_ref["digest"])
+        assert snapshot_ref["digest"] == "sha256:" + hashlib.sha256(snapshot_bytes).hexdigest()
+        snapshot = json.loads(snapshot_bytes)
+        selection, = [row for row in snapshot["config"]["app"][CARRIER]
+                      if row["reference"] == project_ref]
+        assert selection["realm"] == realm and selection["project"] == project_id
+        assert selection["verified"]["pin"] == pin
         assert len(host.run(once=True)) == 1
         shown = owner.tasks.show(task_id)
         assert shown.ok, shown.as_dict()
