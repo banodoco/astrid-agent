@@ -899,7 +899,8 @@ class RunPodMachine:
         body = {"schema": "astrid.machine-job.v1", "entry": job.entry, "mode": job.mode, "align": job.align,
                 "task_identity": job.task_id, "attempt_identity": job.attempt_id,
                 "idempotency_key": f"remote:{job.task_id}:{job.attempt_id}",
-                "inputs": public_inputs, "bindings": bindings, "execution": shipped}
+                "inputs": public_inputs, "bindings": bindings, "execution": shipped,
+                "code_approvals": list(job.code_approvals)}
         from astrid.core.generation.settings import model_trust_unchanged
 
         body["generation_settings"] = {"models": {"trust_unchanged": model_trust_unchanged()}}
