@@ -38,12 +38,21 @@ def remove_pack_tree(path, *, ignore_errors=False):
             def fail(error):
                 raise error
 
-            for _name, _dirs, _files, directory in os.fwalk(
+            # Repair the root before fwalk tries to open it. For each child
+            # use the parent's descriptor before descent; unreadable children
+            # would otherwise fail in fwalk before its callback can see them.
+            access = stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR
+            root_mode = os.lstat(path).st_mode
+            if stat.S_ISDIR(root_mode) and root_mode & access != access:
+                os.chmod(path, stat.S_IMODE(root_mode) | access, follow_symlinks=False)
+            for _name, dirs, _files, directory in os.fwalk(
                 path, topdown=True, follow_symlinks=False, onerror=fail,
             ):
-                mode = os.fstat(directory).st_mode
-                if not mode & stat.S_IWUSR:
-                    os.fchmod(directory, stat.S_IMODE(mode) | stat.S_IWUSR)
+                for child in dirs:
+                    mode = os.stat(child, dir_fd=directory, follow_symlinks=False).st_mode
+                    if stat.S_ISDIR(mode) and mode & access != access:
+                        os.chmod(child, stat.S_IMODE(mode) | access,
+                                 dir_fd=directory, follow_symlinks=False)
         shutil.rmtree(path, onerror=retry)
     except OSError:
         if not ignore_errors:
