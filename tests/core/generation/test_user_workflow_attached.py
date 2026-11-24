@@ -279,17 +279,65 @@ def test_workflow_accepts_the_seed_input_describe_lists(fake_comfy, saved_workfl
     assert payload.get("status", "ready") == "ready", payload
 
 
-def test_as_entry_dry_run_lists_the_inputs_describe_lists(fake_comfy, saved_workflow, capsys):
+def test_as_entry_dry_run_lists_the_inputs_describe_lists(fake_comfy, saved_workflow, capsys, tmp_path, monkeypatch):
+    root = tmp_path / "entries"
+    monkeypatch.setenv("VIBECOMFY_ENTRIES_DIR", str(root))
+    before = saved_workflow.read_bytes()
     assert cli.main(["describe", str(saved_workflow), "--placement", fake_comfy.url, "--json"]) == 0
     described = [item["name"] for item in json.loads(capsys.readouterr().out)["inputs"]]
     code = cli.main(["workflow", str(saved_workflow), "--placement", fake_comfy.url,
                      "--as-entry", "my-portrait", "--dry-run", "--json"])
-    previewed = [item["name"] for item in json.loads(capsys.readouterr().out)["inputs"]]
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0, payload
+    previewed = [item["name"] for item in payload["inputs"]]
 
-    assert code == 0
     assert "seed" in previewed, previewed
     assert previewed == described
     assert fake_comfy.methods() == {"GET"}
+    assert payload["status"] in {"ready", "ready_with_warnings"}
+    assert payload["written"] is False
+    assert not root.exists()
+    assert saved_workflow.read_bytes() == before
+    assert not fake_comfy.prompts
+
+
+def test_as_entry_save_reuses_the_staged_attached_schema(fake_comfy, saved_workflow, capsys, tmp_path, monkeypatch):
+    from vibecomfy.entries import load_entry
+    from vibecomfy.porting import import_service
+    from vibecomfy.security.provenance import Provenance
+    from vibecomfy.workflow_bundle import load_bundle
+
+    root = tmp_path / "entries"
+    monkeypatch.setenv("VIBECOMFY_ENTRIES_DIR", str(root))
+    before = saved_workflow.read_bytes()
+    real_import = import_service.import_workflow_bytes
+    calls = []
+
+    def record_import(source_bytes, **kwargs):
+        calls.append((source_bytes, kwargs["schema_provider"]))
+        return real_import(source_bytes, **kwargs)
+
+    monkeypatch.setattr(import_service, "import_workflow_bytes", record_import)
+    code = cli.main(["workflow", str(saved_workflow), "--placement", fake_comfy.url,
+                     "--as-entry", "my-portrait", "--no-run", "--json"])
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0, result
+    assert result == {"saved": True, "ran": False, "entry": "my-portrait", "replaced": False}
+    assert len(calls) == 2
+    assert calls[0][0] == calls[1][0] == before
+    provider = calls[0][1]
+    assert provider is not None and calls[1][1] is provider
+    assert provider.server_url == fake_comfy.url
+    saved = load_entry(root / "my-portrait")
+    bundle = Path(saved["bundle"])
+    workflow = load_bundle(bundle / "workflow.py", trust=Provenance.USER_CONFIRMED).workflow
+    assert saved["binds"]["seed"] == "seed"
+    assert workflow.inputs["seed"].value == 7
+    assert (bundle / "source.json").read_bytes() == before
+    assert saved_workflow.read_bytes() == before
+    assert fake_comfy.methods() == {"GET"}
+    assert "/object_info" in fake_comfy.paths()
+    assert not fake_comfy.prompts
 
 
 def test_seed_control_is_found_by_the_servers_widget_order():
