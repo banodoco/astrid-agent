@@ -73,7 +73,7 @@ def test_one_root_lock_covers_all_known_runtime_paths() -> None:
         )],
     }
     bundle = json.loads(LOCK.read_text())
-    assert bundle["source_commit"] == "24e2c9291d5bcaface78324696286f2dc896debc"
+    assert bundle["source_commit"] == "c8b861c770aa58fd0392fe2dcefbda9ce23c84d1"
     assert set(bundle["files"]) == expected
     # Timeline commit types are now part of the exact published producer.
     assert (ROOT / "astrid_runtime_client/timeline_commit_types.py").is_file()
