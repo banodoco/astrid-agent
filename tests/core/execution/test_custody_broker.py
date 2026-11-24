@@ -3170,6 +3170,74 @@ def test_pid_for_task_retry_requires_an_acquired_and_cleanly_released_port(obser
     assert "retry_decision" not in owner._capture_failure_observations[0]
 
 
+@pytest.mark.parametrize("phase", ["fresh-census", "retry-pre", "retry-capture", "post-token"])
+@pytest.mark.parametrize("field", ["pid", "uid", "parent_pid", "pgid", "start_sec", "start_usec"])
+def test_pid_for_task_retry_rejects_precise_incarnation_drift(
+    observed_descendant, monkeypatch, phase, field,
+):
+    """A matching public birth string cannot authorize a changed native sample."""
+    owner, census, native, birth = _capture_absence_fixture(observed_descendant, monkeypatch)
+    _, _, identities, tokens = observed_descendant
+    census[103]["status"] = 2
+    native = {**native, "status": 2}
+    identity = {"pid": 103, "uid": 501, "parent_pid": 100, "birth_id": birth}
+    identities[103] = identity
+    observations, captures = [], []
+    changed_observation = {"retry-pre": 3, "retry-capture": 4, "post-token": 5}.get(phase)
+
+    def observe(pid):
+        assert pid == 103
+        observations.append(pid)
+        current = dict(native)
+        if len(observations) == changed_observation:
+            current[field] += 1
+        # Keep the coarse public identity unchanged, including a same-second
+        # birth string when only start_usec changes. Native precision must fence it.
+        return {"outcome": "LIVE", "identity": dict(identity), "native": current}
+
+    def capture(pid):
+        assert pid == 103
+        captures.append(pid)
+        if len(captures) == 1:
+            error = custody.NativeTokenCaptureError(
+                "controlled pid_for_task failure", substage="pid_for_task",
+                kern_return=5, port_acquired=True,
+            )
+            error.capture_failure["port_release_succeeded"] = True
+            raise error
+        assert len(captures) == 2
+        return {**tokens[103], "words": list(tokens[103]["words"])}
+
+    def fresh():
+        rows = {pid: dict(row) for pid, row in census.items()}
+        if phase == "fresh-census":
+            rows[103][field] += 1
+        return rows
+
+    monkeypatch.setattr(custody, "ordinary_candidate_observation", observe)
+    monkeypatch.setattr(custody, "current_process_audit_token", capture)
+    with pytest.raises(custody.CustodyError):
+        owner.observe_census(
+            {pid: row["birth_id"] for pid, row in census.items()},
+            census=census, fresh_census=fresh,
+        )
+    assert captures == ([103, 103] if phase == "post-token" else [103])
+    assert len(observations) == (2 if phase == "fresh-census" else changed_observation)
+    assert set(owner._handles) == {100} and not owner._unadmitted_absent
+    assert not list(owner.root.glob("designation-descendant_103_*.json"))
+    unresolved = owner._uncertain
+    assert unresolved is not None
+    with pytest.raises(custody.CustodyError, match="unresolved"):
+        owner.observe_census({}, census={}, fresh_census=lambda: {})
+    assert owner._uncertain is unresolved
+    saved = json.loads((owner.root / "observed-containment.json").read_text())
+    failure = saved["capture_failures"][0]
+    assert failure["capture_failure"]["substage"] == "pid_for_task"
+    assert failure["observations"]["pre"]["outcome"] == failure["observations"]["post"]["outcome"] == "LIVE"
+    assert failure["retry_decision"]["authority"] == "NONE"
+    assert failure["retry_decision"]["outcome"] in {"REFUSED", "ERROR"}
+
+
 @pytest.mark.darwin_native
 def test_real_owned_terminal_capture_substage_releases_mach_port(tmp_path, monkeypatch):
     import ctypes, select, subprocess, sys, time
