@@ -1263,6 +1263,34 @@ def _completed_process_evidence(
     }
 
 
+def _snapshot_verified_render_outputs(output_root: Path, attempt_output_root: Path) -> Path:
+    """Copy a validated render receipt and its exact bytes before cleanup.
+
+    Descendant custody may remain uncertain after the original command exits.
+    Its mutable output paths cannot then supply the successful publication.
+    """
+    manifest_path = output_root / "manifest.json"
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        raise HostError("render result manifest receipt is unavailable")
+    try:
+        encoded = manifest_path.read_bytes()
+        manifest = json.loads(encoded)
+        if not isinstance(manifest, dict):
+            raise HostError("render result manifest must be an object")
+        validated = validate_result_manifest(manifest, staging_root=output_root)
+        snapshot = Path(tempfile.mkdtemp(prefix=".verified-render-", dir=attempt_output_root))
+        for output in validated.outputs:
+            destination = snapshot / output.path
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(output_root / output.path, destination)
+        (snapshot / "manifest.json").write_bytes(encoded)
+        # Catch a writer changing any source between validation and copy.
+        validate_result_manifest(manifest, staging_root=snapshot)
+    except (OSError, ValueError, AstridError) as exc:
+        raise HostError(f"render output verification failed: {exc}") from exc
+    return snapshot
+
+
 def _bind_host_owned_command_outputs(
     record: "CapabilityRecord", values: dict[str, Any], *, output_root: Path,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -6904,8 +6932,8 @@ class GenericPackHost:
     def _latch_cleanup_uncertainty(self, reason: str) -> None:
         """Record a cleanup doubt for doctor; the host keeps accepting work.
 
-        The caller fails the affected task and keeps its attempt folder.  The
-        note is written beside the host so another process can name what remains.
+        The caller keeps the attempt; an independently verified render may
+        publish its copied outputs. The note names the unresolved custody.
         """
         note = reason or "cleanup outcome unknown"
         if note not in self._unresolved_task_scopes:
@@ -9352,6 +9380,7 @@ class GenericPackHost:
         attempt: Path,
         generation_intent: Mapping[str, Any] | None = None,
         unselected_generation_port: str | None = None,
+        output_root: Path | None = None,
     ) -> list[dict[str, Any]]:
         """Bind validated harvest descriptors to their declared output ports."""
         outputs: list[dict[str, Any]] = []
@@ -9431,9 +9460,9 @@ class GenericPackHost:
             # reconstructed after this ephemeral attempt is cleaned up. Keep
             # that name in the runtime's existing filename field rather than
             # widening the settlement schema with a new path property.
-            output_root = (attempt / "outputs").resolve()
+            filename_root = (output_root if output_root is not None else attempt / "outputs").resolve()
             try:
-                relative_filename = path.relative_to(output_root).as_posix()
+                relative_filename = path.relative_to(filename_root).as_posix()
             except ValueError:
                 relative_filename = path.name
             output = {
@@ -10690,7 +10719,8 @@ class GenericPackHost:
                         # The finally block signals the still-live group.
                         raise HostCancelled(f"capability {record.id!r} cancelled")
                 time.sleep(0.05)
-            cleanup_once()
+            if not render_scope:
+                cleanup_once()
             output_capture.finish()
             output_finished = True
             output_capture.persist()
@@ -10701,6 +10731,8 @@ class GenericPackHost:
                 raise HostCancelled(f"capability {record.id!r} cancelled")
             returncode = process.returncode
             process_id = process.pid
+            if render_scope and (type(returncode) is not int or process.wait(timeout=0) != returncode):
+                raise HostError("render command lacks its original process exit result")
             if returncode != 0:
                 detail = self._scrub_secret_text((stderr or stdout).strip(), secrets)
                 raise HostError(f"capability {record.id!r} exited {returncode}: {detail}")
@@ -10722,6 +10754,10 @@ class GenericPackHost:
                     shutil.copy2(source, destination)
                 output_root = attempt_output_root
                 values = {**values, "out": str(output_root)}
+            producer_output_root = output_root
+            if render_scope:
+                output_root = _snapshot_verified_render_outputs(output_root, attempt_output_root)
+                values = {**values, "out": str(output_root)}
             try:
                 outputs = harvest_staged_outputs(
                     output_root,
@@ -10732,13 +10768,27 @@ class GenericPackHost:
                 )
             except HarvestError as exc:
                 raise HostError(f"capability {record.id!r}: {exc}") from exc
+            cleanup_error = None
+            if render_scope:
+                try:
+                    cleanup_once()
+                except CommandCleanupUnresolved as exc:
+                    # The exact original child exited zero and the receipt's
+                    # bytes were copied and verified before cleanup began.
+                    # Keep the process, marker and attempt as obligations.
+                    cleanup_error = exc
             return SimpleNamespace(
                 outputs=outputs,
                 output_root=output_root,
+                producer_output_root=producer_output_root,
+                cleanup_error=cleanup_error,
                 payload={
                     "returncode": returncode,
                     "capability_digest": record.capability_digest,
                     "process_id": process_id,
+                    **({"cleanup_uncertain": True, "cleanup_error": str(cleanup_error),
+                        "warnings": ["Render outputs verified; cleanup custody remains uncertain."]}
+                       if cleanup_error is not None else {}),
                     **({"child_import_receipt": import_receipt.finish()}
                        if import_receipt is not None else {}),
                 },
@@ -11202,7 +11252,8 @@ class GenericPackHost:
                     staged = self._typed_outputs(
                         record, harvested, root,
                         generation_intent=_task_generation_intent(task),
-                        unselected_generation_port=_named_raw_publication_port(task))
+                        unselected_generation_port=_named_raw_publication_port(task),
+                        output_root=output_root if record.id == "rendering.render" else None)
             except Exception as exc:
                 warnings.append(f"terminal output collection unavailable: {error_text(exc)}")
         outputs = []
@@ -12509,6 +12560,7 @@ class GenericPackHost:
         evidence_failure_receipt: dict[str, Any] | None = None
         storage_failure_receipt: dict[str, Any] | None = None
         command_cleanup_error: CommandCleanupUnresolved | None = None
+        verified_render_cleanup = False
         deadline_failed = False
         render_child_pending = False
         storage_receipt: dict[str, int] | None = None
@@ -12743,7 +12795,8 @@ class GenericPackHost:
                 self._validate_producer_evidence(
                     harvested, output_root=Path(output_root), task_id=task_id, attempt_id=attempt_id,
                 )
-                typed = self._typed_outputs(record, harvested, root)
+                typed = self._typed_outputs(record, harvested, root,
+                    output_root=Path(output_root) if record.id == "rendering.render" else None)
                 task_epoch = task_data.get("runtime_epoch")
                 upload_started = bool(typed)
                 uploaded = self._upload_outputs(
@@ -13306,6 +13359,11 @@ class GenericPackHost:
                             **{key: task_data.get(key) for key in ("operation_id", "submission_id")},
                         },
                     )
+                    if capability_id == "rendering.render" and isinstance(
+                        getattr(result, "cleanup_error", None), CommandCleanupUnresolved
+                    ):
+                        command_cleanup_error = result.cleanup_error
+                        verified_render_cleanup = True
                     # Checkout-server VibeComfy commands run inside the
                     # attested VibeComfy output root. Carry that effective root
                     # back to the outer settlement layer; otherwise harvest
@@ -13429,6 +13487,7 @@ class GenericPackHost:
                 root,
                 generation_intent=_task_generation_intent(task_data),
                 unselected_generation_port=_named_raw_publication_port(task_data),
+                output_root=output_root if capability_id == "rendering.render" else None,
             )
             _bind_named_parent_output(task_data, typed_outputs)
             _terminal["outputs"] = typed_outputs
@@ -13493,7 +13552,7 @@ class GenericPackHost:
                     else None
                 ),
             ) if typed_outputs else []
-            outputs.extend(upload_log_outputs(output_root))
+            outputs.extend(upload_log_outputs(getattr(result, "producer_output_root", output_root)))
             if capability_id == "wan2gp.generate_video":
                 verify_host_result(result.payload["wan_mapping"], attempt_root=output_root)
             # Cancellation can arrive while staged outputs are being read or
@@ -13556,7 +13615,7 @@ class GenericPackHost:
             if self.attempt_root is not None:
                 scratch_disposition = "caller_owned_pending"
                 retained_owner = "caller"
-            elif keep_attempt:
+            elif keep_attempt or command_cleanup_error is not None:
                 scratch_disposition = "retention_pending"
                 retained_owner = "generic-pack-host"
             else:
@@ -13901,11 +13960,14 @@ class GenericPackHost:
                 self._latch_cleanup_uncertainty("; ".join(cleanup_errors))
             self._last_cleanup_receipt = cleanup_receipt
             self._publish_evidence_status()
-            if cleanup_errors and not ((_terminal.get("evidence_pending") or _terminal.get("retain_spool"))
+            if cleanup_errors and not (verified_render_cleanup and settled) and not ((_terminal.get("evidence_pending") or _terminal.get("retain_spool"))
                                        and sys.exc_info()[1] is not None):
                 # Pending evidence retains the spool and latches cleanup above.
                 # Preserve the publication exception already being propagated.
                 raise HostError("owned cleanup incomplete: " + "; ".join(cleanup_errors))
+            # A verified render's successful publication survives cleanup
+            # uncertainty. Every error remains in the receipt/latch above;
+            # retained processes and a failed session release stay fenced.
 
     def _publish_evidence_status(self) -> None:
         """Expose the live evidence charge and warm holds for ``astrid doctor``; never fails a task."""
