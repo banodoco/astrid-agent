@@ -260,16 +260,17 @@ def _prepared_remotion_root_selected(
         registry_state = backend._effective_registry_state(theme_path)
         if backend.gen_effect_registry is not None:
             element_registry = backend.gen_effect_registry._element_registry()
-            # Only a real generated state (it carries per-kind content hashes) is
-            # comparable; callers that substitute an opaque state are not.
+            # Only a fully formed generated state is comparable; a caller that
+            # substitutes an opaque state carries nothing to compare.
             if (
-                isinstance(registry_state.get("content_hashes"), dict)
+                backend.gen_effect_registry.is_generated_registry_state(registry_state)
                 and backend.gen_effect_registry.compute_generated_registry_state(registry=element_registry) != registry_state
             ):
                 raise ValueError("render element registry changed during preparation")
     else:
         registry_state = backend._write_selected_element_registries(registry_root, element_registry)
-    render_pack_roots = (backend.gen_effect_registry.render_pack_roots(registry=element_registry, include_aliases=True)
+    render_pack_roots = (backend.gen_effect_registry.render_pack_roots(registry=element_registry, include_aliases=True,
+                                                                     verify_public=False)
                          if backend.gen_effect_registry is not None else None)
     from astrid.core.env_vars import ASTRID_REMOTION_VALIDATION_LAUNCH
     if ASTRID_REMOTION_VALIDATION_LAUNCH in os.environ:

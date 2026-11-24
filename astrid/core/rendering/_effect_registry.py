@@ -97,6 +97,7 @@ def discover_plugins(
     *,
     include_local: bool = True,
     registry: ElementRegistry | None = None,
+    verify_public: bool = True,
 ) -> dict[str, PluginRecord]:
     _validate_kind(kind)
     registry = registry if registry is not None else _element_registry()
@@ -118,7 +119,12 @@ def discover_plugins(
         # registry so authored defaults, metadata and validation stay
         # discoverable, but a source-less public descriptor must not produce a
         # host import for a file that was retired.
-        if _component_is_host_importable(element):
+        if not verify_public:
+            # The caller already generated this registry, which verified
+            # every source-less component; only file-backed ones are roots.
+            if element.component.is_file():
+                plugins[element.id] = _plugin_from_element(element)
+        elif _component_is_host_importable(element):
             plugins[element.id] = _plugin_from_element(element)
         elif element.id in _public_registry_ids()[element.kind]:
             plugins[element.id] = _plugin_from_element(element)
@@ -322,7 +328,8 @@ def _import_scope_for_element(element: ElementDefinition) -> str:
 
 
 def render_pack_roots(*, registry: ElementRegistry | None = None,
-                      include_aliases: bool = False) -> list[dict[str, Any]]:
+                      include_aliases: bool = False,
+                      verify_public: bool = True) -> list[dict[str, Any]]:
     """Return the pack roots and scopes for the actual host imports.
 
     Use the same registry snapshot and selection rules as generation, including
@@ -332,13 +339,16 @@ def render_pack_roots(*, registry: ElementRegistry | None = None,
     """
     registry = registry if registry is not None else _element_registry()
     plugins = {
-        kind: discover_plugins(cast(ElementKind, kind), registry=registry)
+        kind: discover_plugins(cast(ElementKind, kind), registry=registry,
+                               **({} if verify_public else {"verify_public": False}))
         for kind in sorted(OUTPUTS)
     }
     imported = [plugin for values in plugins.values() for plugin in values.values()
                 if plugin.root.joinpath("component.tsx").is_file()]
     for element in registry.list(kind="effects", include_shadowed=True):
-        if element.id in plugins["effects"] and _component_is_host_importable(element):
+        if element.id in plugins["effects"] and (
+                element.component.is_file() if not verify_public
+                else _component_is_host_importable(element)):
             imported.append(_plugin_from_element(element))
 
     aliases: dict[tuple[str, str], Path] = {}
@@ -442,6 +452,17 @@ def compute_generated_registry_state(
         "hash": digest.hexdigest(),
         "content_hashes": content_hashes,
     }
+
+
+def is_generated_registry_state(state: Any) -> bool:
+    """Whether ``state`` has the full shape that ``compute_generated_registry_state`` returns."""
+    digest = re.compile(r"[0-9a-f]{64}")
+    hashes = state.get("content_hashes") if isinstance(state, dict) else None
+    return (
+        isinstance(hashes, dict) and set(hashes) == set(OUTPUTS)
+        and all(isinstance(value, str) and digest.fullmatch(value) for value in hashes.values())
+        and isinstance(state.get("hash"), str) and digest.fullmatch(state["hash"]) is not None
+    )
 
 
 def generate(*, include_local: bool = True) -> str:

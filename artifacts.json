@@ -49,7 +49,7 @@
     "astrid/packs/local/shared/clip-effects.ts": "sha256:418cb06503e0e330b27f388e7f1bcce72196e3ddd74e22a4af2ea9d2b3617025",
     "astrid/packs/local/shared/readiness-image.tsx": "sha256:353c117886d9dcc0932ae16e25ca4b85e2433919ceaebff7834a96142441dd99",
     "astrid/packs/rendering/editor/catalog.ts": "sha256:f4fa4077339b35ec91482ca7e6cd51dc79edc21969500122688b040ee500c94d",
-    "astrid/packs/rendering/elements/catalog.ts": "sha256:db1be6b6077a8d20ed2f968b46da2b94ecdc59d8e796629ea08355e346b519dd",
+    "astrid/packs/rendering/elements/catalog.ts": "sha256:59d60b402ccf6f090cd1f687c2619c0133a7c419445ebad61274aeeb6db0b657",
     "astrid/packs/rendering/pack.yaml": "sha256:6b96f3f34af72f19a9480715a4a611f3303b4f6274a785cad952e9d6f9bdd9f5",
     "astrid/packs/rendering/rendering/elements/animations/fade-up/element.yaml": "sha256:cb1d70d85ec4112b684fee0db140d7643cb6ae1a8de9a0f1d5780bfe343db553",
     "astrid/packs/rendering/rendering/elements/animations/fade/element.yaml": "sha256:4f99f4507aaa992c9d5d1ba3501c2073f8c5f6a6ad213be0fda76938742d6138",
@@ -116,5 +116,5 @@
     "schemas/public-boundary/fixtures/redaction.json": "sha256:d827821a8b1c1bd9b50fa695550deeb770175e283b9949635d1c85ee03bece46"
   },
   "producer": "astrid-agent",
-  "version": "sha256:8947a4b1ecd34952276bc5c58785be06bfc7553c7ab79e83047e8d6b158781a3"
+  "version": "sha256:7e7cafa61919f8df64a911262d6fdcc70d4915a01c4be12492c71483cda2d241"
 }
