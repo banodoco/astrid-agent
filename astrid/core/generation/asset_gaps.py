@@ -75,6 +75,10 @@ def align_argv(entry: str | None = None) -> list[str]:
 
 def attached_model_readiness(entry: str | None, placements, *, target=None) -> dict[str, Any]:
     """Readiness for an attached ComfyUI: the user places the file; Astrid installs nothing there."""
+    from .preflight import readiness_envelope
+    from .setup_repairs import manual_setup_fix
+
+    selected = {'id': entry, 'engine': 'comfyui'}
     issues, fixes = [], []
     for placement in placements:
         file, role, folder = placement['file'], placement.get('role'), placement.get('folder')
@@ -87,12 +91,14 @@ def attached_model_readiness(entry: str | None, placements, *, target=None) -> d
         else:
             action = f"Put {file} {where}, then retry."
             message = f'Missing model {label}. {action}'
+        fix_id = f"model-{len(fixes) + 1}"
         issues.append({'code': 'missing_model', 'severity': 'error',
                        'message': message,
-                       'details': {'model': file, 'role': role, 'folder': folder}})
-        fixes.append({'scope': 'attached_target', 'details': {'action': action}})
-    return {'entry': {'id': entry, 'engine': 'comfyui'}, 'target': target,
-            'status': 'blocked', 'issues': issues, 'fixes': fixes}
+                       'details': {'model': file, 'role': role, 'folder': folder},
+                       'fix_ids': [fix_id]})
+        fixes.append(manual_setup_fix(fix_id, action, entry=selected, target=target,
+                                     scope='attached_target', details={'action': action}))
+    return readiness_envelope(entry=selected, target=target, issues=issues, fixes=fixes)
 
 
 def _is_comfyui_core_repo(repo: str) -> bool:
@@ -152,10 +158,13 @@ def attached_asset_readiness(entry: str | None, *, nodes=(), models=(), lockfile
     """
     from vibecomfy.node_packs import resolve_lockfile_path, resolve_node_packs
     from .node_class_authority import core_node_classes
+    from .preflight import readiness_envelope
+    from .setup_repairs import manual_setup_fix
 
+    selected = {'id': entry, 'engine': 'comfyui'}
     lock = resolve_lockfile_path(lockfile_path)
     issues, fixes = [], []
-    fixed_packs: set[str] = set()
+    fixed_packs: dict[str, str] = {}
     nodes = tuple(nodes)
     core = core_node_classes(nodes)
     for name in nodes:
@@ -185,25 +194,33 @@ def attached_asset_readiness(entry: str | None, *, nodes=(), models=(), lockfile
                       'it on your ComfyUI; restart ComfyUI yourself, then retry.')
             message = f'Your ComfyUI does not have {name}; no known providing pack. {action}'
             details = {'node': name, 'pack': None, 'repository': None}
-        issues.append({'code': 'missing_node_pack', 'severity': 'error', 'message': message, 'details': details})
-        if commands is not None and pack.name in fixed_packs:
-            continue  # one fix per pack: its commands are listed once
-        if commands is not None:
-            fixed_packs.add(pack.name)
-            fixes.append({'scope': 'attached_target', 'details': {'action': action, 'commands': commands}})
-        else:
-            fixes.append({'scope': 'attached_target', 'details': {'action': action}})
+        # Every class links to its own repair, including subsequent classes
+        # sharing the first pack's one manual installation instruction.
+        fix_id = fixed_packs.get(pack.name) if commands is not None else None
+        if fix_id is None:
+            fix_id = f"node-{len(fixes) + 1}"
+            fix_details = {'action': action}
+            if commands is not None:
+                fixed_packs[pack.name] = fix_id
+                fix_details['commands'] = commands
+            fixes.append(manual_setup_fix(fix_id, action, entry=selected, target=target,
+                                         scope='attached_target', details=fix_details))
+        issues.append({'code': 'missing_node_pack', 'severity': 'error', 'message': message,
+                       'details': details, 'fix_ids': [fix_id]})
     for name in models:
         action = 'Put the model file in its models folder on your ComfyUI yourself, then retry.'
+        fix_id = f"model-{len(fixes) + 1}"
         issues.append({'code': 'missing_model', 'severity': 'error',
                        'message': f'Missing model {name} on your ComfyUI. {action}',
-                       'details': {'model': name}})
-        fixes.append({'scope': 'attached_target', 'details': {'action': action}})
-    return {'entry': {'id': entry, 'engine': 'comfyui'}, 'target': target,
-            'status': 'blocked', 'issues': issues, 'fixes': fixes}
+                       'details': {'model': name}, 'fix_ids': [fix_id]})
+        fixes.append(manual_setup_fix(fix_id, action, entry=selected, target=target,
+                                     scope='attached_target', details={'action': action}))
+    return readiness_envelope(entry=selected, target=target, issues=issues, fixes=fixes)
 
 
 def asset_readiness(entry: str | None, *, nodes=(), models=(), target=None, placements=None) -> dict[str, Any]:
+    from .preflight import readiness_envelope
+
     if placements is not None:
         return attached_model_readiness(entry, placements, target=target)
     argv = align_argv(entry)
@@ -218,10 +235,14 @@ def asset_readiness(entry: str | None, *, nodes=(), models=(), target=None, plac
          'details': {'model': name}}
         for name in models
     ]
-    return {'entry': {'id': entry, 'engine': 'comfyui'}, 'target': target,
-            'status': 'blocked', 'issues': issues,
-            'fixes': [{'argv': argv, 'scope': 'user_env',
-                       'details': {'action': 'Install missing locked assets on the managed target; unlocked assets require a manifest.'}}]}
+    fixes = []
+    if issues:
+        for issue in issues:
+            issue['fix_ids'] = ['align-locked-assets']
+        fixes = [{'id': 'align-locked-assets', 'who': 'human', 'argv': argv, 'scope': 'user_env',
+                  'details': {'action': 'Install missing locked assets on the managed target; unlocked assets require a manifest.'}}]
+    return readiness_envelope(entry={'id': entry, 'engine': 'comfyui'}, target=target,
+                              issues=issues, fixes=fixes)
 
 
 def workflow_asset_gaps(workflow: Any, observed: dict[str, Any]) -> tuple[list[str], list[str]]:
