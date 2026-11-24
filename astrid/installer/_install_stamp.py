@@ -32,6 +32,14 @@ def _digest(path: Path) -> str:
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
+def _regular_record(path: Path) -> dict:
+    """Do not open linked or special installer records."""
+    path = absolute(path)
+    if not stat.S_ISREG(path.lstat().st_mode):
+        raise ValueError("An install stamp record is not a regular file.")
+    return read_json(path)
+
+
 def _stamp(payload: dict) -> str:
     data = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     return hashlib.sha256(data.encode("utf-8")).hexdigest()
@@ -97,7 +105,17 @@ def _inventory(folder: Path, product_root: Path, *, seal: bool) -> tuple[dict[st
                 _private_readonly_file(path, info.st_mode, info.st_nlink)
             elif info.st_mode & _WRITE_BITS or info.st_nlink != 1:
                 raise _Modified(path, folder)
-            files[relative] = _digest(path)
+            before = facts(path)
+            try:
+                files[relative] = _digest(path)
+            except OSError as exc:
+                raise _Modified(path, folder) from exc
+            after = facts(path)
+            if (before.st_dev, before.st_ino, before.st_mode, before.st_size,
+                    before.st_mtime_ns, before.st_ctime_ns) != (
+                    after.st_dev, after.st_ino, after.st_mode, after.st_size,
+                    after.st_mtime_ns, after.st_ctime_ns):
+                raise _Modified(path, folder)
         else:
             raise _Modified(path, folder)
 
@@ -149,8 +167,8 @@ def read_install_stamp(package_root: Path | None = None) -> tuple[str | None, st
         if package.name != "astrid" or folder is None:
             return None, "not_managed_install"
         product_root = package.parent
-        marker_path = absolute(folder.parent.parent / "install.json")
-        if read_json(marker_path).get("owner") != "haus.astrid.runtime":
+        marker_path = folder.parent.parent / "install.json"
+        if not marker_path.exists() or _regular_record(marker_path).get("owner") != "haus.astrid.runtime":
             return None, "not_managed_install"
         target = folder / STAMP_NAME
         if not target.exists():
@@ -159,14 +177,14 @@ def read_install_stamp(package_root: Path | None = None) -> tuple[str | None, st
         if (linked(target) or not stat.S_ISREG(target_info.st_mode)
                 or target_info.st_mode & _WRITE_BITS or target_info.st_nlink != 1):
             return None, "stamp_manifest_mismatch"
-        record = read_json(absolute(folder / "version.json"))
-        profile = read_json(absolute(folder / "profile.json"))
+        record = _regular_record(folder / "version.json")
+        profile = _regular_record(folder / "profile.json")
         if (record.get("root") != str(folder)
                 or not isinstance(record.get("env"), dict)
                 or record["env"].get("ASTRID_HOST_EXECUTION_PROFILE") != "installed"
                 or profile.get("source_checkout") != str(product_root)):
             return None, "not_managed_install"
-        manifest = read_json(target)
+        manifest = _regular_record(target)
         stamp = manifest.pop("stamp", None)
         if (manifest.get("format") != _FORMAT or manifest.get("version") != folder.name
                 or manifest.get("product_root") != product_root.relative_to(folder).as_posix()

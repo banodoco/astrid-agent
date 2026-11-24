@@ -476,3 +476,24 @@ def test_pack_build_requires_pinned_node_archive(staged_installer):
                                     "shared_modules": {"url": "https://example.org/lock", "sha256": "b" * 64}}
     with pytest.raises(ValueError, match="SHA256-pinned"):
         state.backend.stage(state.manifest, state.root, state.data)
+
+
+def test_stage_publishes_stamp_read_by_installed_interpreter(staged_installer):
+    """The actual wheel's Backend.stage path publishes a complete stamp."""
+    state = staged_installer
+    version = state.backend.stage(state.manifest, state.root, state.data)
+    from astrid.installer.core import install_stamp
+
+    package = state.product_root / "astrid"
+    stamp, reason = install_stamp(package)
+    assert stamp and reason is None
+    observed = _installed_script(state, version, r'''
+import json
+from astrid.installer.core import install_stamp
+print(json.dumps(install_stamp()))
+''')
+    assert observed == [stamp, None]
+    doc = core.read_json(version.root / "install-stamp.json")
+    assert any(path.endswith("/astrid/core/model_catalog/models.yaml") for path in doc["files"])
+    assert any(path.endswith("/pack.yaml") for path in doc["files"])
+    assert not (package / "core/model_catalog/models.yaml").stat().st_mode & 0o222
