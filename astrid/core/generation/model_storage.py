@@ -13,7 +13,7 @@ import re
 import stat
 import subprocess
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
@@ -328,6 +328,65 @@ def model_download_notice(packs: Mapping[str, int | None],
             "details": {"packs": rows, "free_bytes": storage.free_bytes,
                         "capacity_uncertain": storage.capacity_uncertain,
                         "volume_status": storage.volume_status}}
+
+
+def selected_pack_download_hints(nodes: Sequence[Mapping[str, object]],
+                                 active_classes: set[str]) -> dict[str, int | None]:
+    """Read the one catalog for selected source repositories used by this graph.
+
+    ``nodes`` is the already selected canonical requirements manifest's extra.nodes,
+    not a lookup result. The class intersection limits the advisory to packs
+    used by the graph; names alone cannot establish a self-download fact.
+    Repository matching here is descriptive, never code approval authority.
+    """
+    from vibecomfy.node_packs import get_known_node_packs
+
+    def repo_key(url: str) -> str:
+        # Same source spelling convention as catalog lock enrichment. Keep
+        # path case; never infer identity from a basename or node class.
+        return url.rstrip("/").removesuffix(".git")
+
+    selected = {repo_key(repo) for node in nodes
+                if isinstance(repo := node.get("repo"), str) and repo}
+    if not selected or not active_classes:
+        return {}
+    return {
+        pack.name: pack.model_download_bytes_hint
+        for pack in get_known_node_packs()
+        if pack.downloads_own_models is True
+        and repo_key(pack.repo) in selected
+        and not active_classes.isdisjoint(pack.classes)
+    }
+
+
+def selected_target_download_notice(
+    nodes: Sequence[Mapping[str, object]], active_classes: set[str], *,
+    placement: str, local_models_root: Path | None = None,
+    local_volume: DeclaredVolume | None = None,
+    volume_declared: bool | None = None,
+) -> dict | None:
+    """Advisory for one admitted target, without starting or renting it.
+
+    A local root must come from the selected managed installation binding.
+    For a remote or attached target, only explicit target volume evidence may
+    set volume_declared; never interpret a missing fact as an absent volume
+    or attempt to measure the controller's filesystem.
+    """
+    hints = selected_pack_download_hints(nodes, active_classes)
+    if not hints:
+        return None
+    if placement == "local" and local_models_root is not None:
+        observation = observe_download_storage(
+            local_models_root, deadline=time.monotonic() + 2,
+            check=lambda: None, volume=local_volume,
+        )
+    else:
+        volume_status = (
+            "declared_unverified" if volume_declared is True
+            else "not_declared" if volume_declared is False else "unknown"
+        )
+        observation = DownloadStorageObservation(None, True, volume_status)
+    return model_download_notice(hints, observation)
 
 
 def _inventory_walk(root: Path, *, deadline: float, cancelled: Callable[[], bool]) -> str:

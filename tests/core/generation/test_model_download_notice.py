@@ -57,3 +57,71 @@ def test_relative_root_never_measures_controller_disk(monkeypatch):
         raise AssertionError("relative path must not be measured")
     monkeypatch.setattr(storage, "available_model_bytes", forbidden)
     assert _observe(Path("models")) == storage.DownloadStorageObservation(None, True, "not_declared")
+
+
+# The VibeComfy #204 catalog is the authority, not an Agent-local registry.
+SAM_REPO = "https://github.com/ethanfel/ComfyUI-SAM-Audio"
+SAM_PIN = "3cfbd03da3019c7252ba13efd5694b1b2ff487e5"
+SAM_CLASSES = {"SAMAudioPipelineLoader", "SAMAudioTextSeparator"}
+
+
+def test_selected_pack_download_hints_use_catalog_and_exact_source():
+    rows = [{"repo": SAM_REPO, "commit": SAM_PIN}]
+    assert storage.selected_pack_download_hints(rows, SAM_CLASSES) == {
+        "ComfyUI-SAM-Audio": 14_861_356_211,
+    }
+    assert storage.selected_pack_download_hints(rows, {"EmptyImage"}) == {}
+    assert storage.selected_pack_download_hints([], SAM_CLASSES) == {}
+    assert storage.selected_pack_download_hints(
+        [{"repo": "https://github.com/example/ComfyUI-SAM-Audio", "commit": SAM_PIN}],
+        SAM_CLASSES,
+    ) == {}
+    assert storage.selected_pack_download_hints(
+        [{"repo": SAM_REPO.lower(), "commit": SAM_PIN}], SAM_CLASSES,
+    ) == {}
+
+
+def test_selected_local_target_observes_only_its_model_root(tmp_path, monkeypatch):
+    models = tmp_path / "selected" / "models"
+    models.mkdir(parents=True)
+    seen = []
+
+    def measure(root, **kwargs):
+        seen.append(root)
+        return 123, False
+
+    monkeypatch.setattr(storage.os, "statvfs", object(), raising=False)
+    monkeypatch.setattr(storage, "available_model_bytes", measure)
+    before = set(models.iterdir())
+    notice = storage.selected_target_download_notice(
+        [{"repo": SAM_REPO, "commit": SAM_PIN}], SAM_CLASSES,
+        placement="local", local_models_root=models,
+    )
+    assert notice["code"] == "model_download_notice"
+    assert notice["severity"] == "warning"
+    assert notice["fix_ids"] == []
+    assert notice["details"]["free_bytes"] == 123
+    assert notice["details"]["volume_status"] == "not_declared"
+    assert seen == [models]
+    assert set(models.iterdir()) == before
+
+
+def test_remote_or_attached_download_notice_never_measures_controller(tmp_path, monkeypatch):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("remote notice must not inspect local capacity")
+
+    monkeypatch.setattr(storage, "available_model_bytes", forbidden)
+    monkeypatch.setattr(storage, "measure_declared_volume", forbidden)
+    for placement in ("runpod", "attached"):
+        for declared, expected in ((None, "unknown"), (False, "not_declared"),
+                                   (True, "declared_unverified")):
+            notice = storage.selected_target_download_notice(
+                [{"repo": SAM_REPO, "commit": SAM_PIN}], SAM_CLASSES,
+                placement=placement, local_models_root=tmp_path,
+                volume_declared=declared,
+            )
+            assert notice["details"]["free_bytes"] is None
+            assert notice["details"]["capacity_uncertain"] is True
+            assert notice["details"]["volume_status"] == expected
+            assert notice["severity"] == "warning"
+            assert notice["fix_ids"] == []
