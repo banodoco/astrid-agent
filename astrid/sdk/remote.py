@@ -121,7 +121,10 @@ def _vibecomfy_invocation_preflight(
         for name, path in paths.items():
             path.write_bytes(read_object(descriptors[name][0], name))
         source_video_path = None
-        run_inputs: dict[str, Any] = {}
+        from astrid.packs.vibecomfy.invocation_preflight import invocation_run_inputs
+
+        supplied_workflow_inputs = invocation_run_inputs(inputs.get("workflow_inputs"))
+        run_inputs = dict(supplied_workflow_inputs)
         managed_manifest: dict[str, Any] | None = None
         managed_members: dict[str, bytes] = {}
         if managed_descriptor is not None:
@@ -139,18 +142,6 @@ def _vibecomfy_invocation_preflight(
                 raise ValueError(str(exc)) from exc
             managed_manifest = resolved.manifest
             managed_members = resolved.members
-            supplied_workflow_inputs: dict[str, Any] = {}
-            raw_workflow_inputs = inputs.get("workflow_inputs")
-            if isinstance(raw_workflow_inputs, str):
-                try:
-                    decoded_workflow_inputs = json.loads(raw_workflow_inputs or "{}")
-                except json.JSONDecodeError as exc:
-                    raise ValueError("workflow_inputs must be valid JSON") from exc
-                if not isinstance(decoded_workflow_inputs, Mapping):
-                    raise ValueError("workflow_inputs must be a JSON object")
-                supplied_workflow_inputs = dict(decoded_workflow_inputs)
-            elif isinstance(raw_workflow_inputs, Mapping):
-                supplied_workflow_inputs = dict(raw_workflow_inputs)
             try:
                 run_inputs = resolve_inputs(managed_manifest, supplied_workflow_inputs)
             except AssetManifestError as exc:
@@ -164,12 +155,18 @@ def _vibecomfy_invocation_preflight(
             None,
         )
         if source_descriptor is not None:
-            source_video_path = root / source_descriptor[1]
+            # Match GenericPackHost._materialize_inputs exactly; the original
+            # filename is descriptor evidence, not the worker's input basename.
+            from astrid.core.execution.host_naming import _managed_input_staging_name
+
+            source_video_path = root / _managed_input_staging_name(
+                "source_video", source_descriptor[2], source_descriptor[1],
+            )
             source_video_path.write_bytes(read_object(source_descriptor[0], "source_video"))
             if managed_source_digest is not None and source_descriptor[0] != managed_source_digest:
                 raise ValueError("managed assets conflict with workflow inputs: source_video")
             if "source_video" not in run_inputs:
-                run_inputs["source_video"] = source_descriptor[1]
+                run_inputs["source_video"] = source_video_path.name
         elif "source_video" in run_inputs:
             source_member = str(run_inputs["source_video"])
             managed_member = next(
