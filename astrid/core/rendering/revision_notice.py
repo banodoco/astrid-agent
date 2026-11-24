@@ -12,7 +12,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-NOTICE_PREFIX = "Pack mismatch "
+NOTICE_PREFIX = "revision mismatch "
 NOTICE_ACK_NAME = ".astrid-render-notice-ack.json"
 MAX_PROGRESS_PHASE = 128
 
@@ -32,7 +32,7 @@ def revision_notice_phase(row: Mapping[str, Any]) -> str:
     pack = _display(row["pack_id"], 24)
     editor = " ".join(str(row["editor_revision"]).split())
     render = " ".join(str(row.get("upstream_revision", row.get("derived_from"))).split())
-    start = f"{NOTICE_PREFIX}{pack}: editor "
+    start = f"{NOTICE_PREFIX}{pack} editor "
     separator = "; render "
     budget = MAX_PROGRESS_PHASE - len(start) - len(separator)
     # Do not abbreviate either revision if both fit (including two Git SHAs).
