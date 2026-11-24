@@ -99,6 +99,7 @@ def test_render_launch_projection_uses_host_personal_collection_roots(tmp_path, 
     from astrid.core.foundation.paths import REPO_ROOT
 
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # Path.home() on Windows
     monkeypatch.setenv("ASTRID_HOST_EXECUTION_PROFILE", "source")
     personal_root = tmp_path / "Astrid" / "packs"
     personal_root.mkdir(parents=True)

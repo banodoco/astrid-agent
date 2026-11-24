@@ -58,6 +58,14 @@ def test_captured_builtin_command_matches_launch_import_context(tmp_path, monkey
     monkeypatch.setenv('ASTRID_HOST_EXECUTION_PROFILE', 'source')
     environment = {'HOME': str(tmp_path), 'PATH': os.defpath,
                    'ASTRID_HOST_EXECUTION_PROFILE': 'source'}
+    # The child environment is built from the process environment; make the
+    # safe base keys the launch environment's, so both name one context.
+    from astrid.core.subprocess_env import _SAFE_BASE_ENV
+    for name in _SAFE_BASE_ENV:
+        if name in environment:
+            monkeypatch.setenv(name, environment[name])
+        else:
+            monkeypatch.delenv(name, raising=False)
     host = g.GenericPackHost(pack_roots=[REPO_ROOT / 'astrid/packs'], credential_source=environment)
     record = next(r for r in host.discover() if r.id == 'rendering.render')
     source = Path(record.definition.metadata['pack_root'])
