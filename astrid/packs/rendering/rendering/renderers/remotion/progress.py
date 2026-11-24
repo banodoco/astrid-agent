@@ -64,11 +64,13 @@ class RemotionProgressRelay:
         *,
         progress_path: str | os.PathLike[str] | None = None,
         interval_seconds: float = 1.0,
+        notices: list[str] | None = None,
     ) -> None:
         raw = progress_path
         self.log_path = Path(log_path)
         self.progress_path = Path(raw) if raw else None
         self.interval_seconds = interval_seconds
+        self.notices = tuple(notices or ())
         self.latest: dict[str, Any] | None = None
         self._offset = 0
         self._partial = ""
@@ -79,6 +81,11 @@ class RemotionProgressRelay:
 
     def __enter__(self) -> "RemotionProgressRelay":
         if self.progress_path is not None:
+            if self.notices:
+                # Publish the mismatch before the caller launches the renderer.
+                # Preserve it on subsequent frame checkpoints so the host's
+                # independent progress sampler can observe it during rendering.
+                self._publish({"phase": "render", "percent": _RENDER_START})
             self._thread = threading.Thread(
                 target=self._run, name="astrid-remotion-progress", daemon=True
             )
@@ -124,7 +131,10 @@ class RemotionProgressRelay:
             return
         temporary = self.progress_path.with_name(f".{self.progress_path.name}.remotion.tmp")
         try:
-            temporary.write_text(json.dumps(progress, separators=(",", ":")), encoding="utf-8")
+            payload = dict(progress)
+            if self.notices:
+                payload["phase"] = f"{payload['phase']} | {' | '.join(self.notices)}"
+            temporary.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
             os.replace(temporary, self.progress_path)
         except OSError:
             # Progress is advisory; a failed write must never fail the render.
