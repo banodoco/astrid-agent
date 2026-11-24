@@ -572,6 +572,278 @@ def test_short_managed_contract_builtin_and_fade_through_command_worker(
         daemon.stop()
 
 
+def _rn11_write_named_alias_element(root: Path, pack_id: str, element_id: str) -> None:
+    """Author a minimal pack element whose implementation requires RN-4's alias."""
+    import yaml
+
+    relative = f"rendering/elements/effects/{element_id}"
+    directory = root / relative
+    directory.mkdir(parents=True)
+    (directory / "element.yaml").write_text(json.dumps({
+        "schema_version": 1, "id": element_id, "kind": "effect", "pack_id": pack_id,
+        "short_description": "RN-11 deterministic full-frame colour.",
+        "defaults": {"color": "#000000"},
+        "schema": {"type": "object", "properties": {"color": {"type": "string"}}},
+        "runtime": {"adapter": "remotion"},
+    }), encoding="utf-8")
+    (directory / "component.tsx").write_text(
+        "import React from 'react';\n"
+        "import {AbsoluteFill} from 'remotion';\n"
+        "import {narrowParams, type ElementComponentProps} "
+        "from '@astrid-rendering/shared/element_contracts';\n"
+        "export default function Colour(props: ElementComponentProps) {\n"
+        "  const {color} = narrowParams<{color?: string}>(props.params);\n"
+        "  return <AbsoluteFill style={{backgroundColor: color ?? '#000000'}} />;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    manifest_path = root / "pack.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["id"] == pack_id
+    manifest["rendering"] = {
+        f"effects/{element_id}": {
+            "type": "element", "path": f"{relative}/element.yaml",
+            "resources": [{"kind": "implementation", "path": f"{relative}/component.tsx"}],
+        },
+    }
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+
+@pytest.fixture
+def rn11_pack_launch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Qualify the same real host/worker launch with a disposable user collection.
+
+    Use the existing motion fixture's manifest conventions, not its relative
+    rendering-sibling import layout (tracked by astrid-dev#1805). Neither the
+    shared fixture nor any product installation is changed.
+    """
+    from astrid.core.element.registry import clear_default_registry_cache
+
+    collection = tmp_path / "collection"
+    pack = collection / "rn11_collection"
+    docs = pack / "docs"
+    docs.mkdir(parents=True)
+    motion_manifest = json.loads(
+        (ROOT / "tests/fixtures/packs/astrid_motion/pack.yaml").read_text(encoding="utf-8")
+    )
+    manifest = {
+        key: motion_manifest[key]
+        for key in ("schema_version", "pack_api", "version", "status", "domain",
+                    "stability", "support", "visibility", "permissions", "documentation")
+    }
+    manifest.update(id="rn11_collection", name="RN-11 collection",
+                    description="Disposable named-alias render contract.", rendering={})
+    (pack / "pack.yaml").write_text(json.dumps(manifest), encoding="utf-8")
+    (docs / "SKILL.md").write_text(
+        "---\nname: rn11-collection\ndescription: RN-11 render test.\n---\n\n"
+        "# RN-11 collection\n\nDeterministic colour element for the render contract.\n",
+        encoding="utf-8",
+    )
+    _rn11_write_named_alias_element(pack, "rn11_collection", "rn11-collection-colour")
+
+    problems = remotion_install_problems()
+    if problems:
+        pytest.fail("RN-11 requires provisioned Remotion: " + "; ".join(problems), pytrace=False)
+    node = shutil.which("node")
+    assert node, "RN-11 requires provisioned Node"
+    roots = (ROOT / "astrid/packs/rendering", collection)
+    try:
+        with monkeypatch.context() as env_patch, _execution_env():
+            env_patch.setenv("ASTRID_PACKS_PATH", str(collection.resolve()))
+            env_patch.setenv("ASTRID_NODE_EXECUTABLE", str(Path(node).resolve()))
+            env_patch.setenv("ASTRID_REMOTION_PROJECT_DIR", str(REMOTION.resolve()))
+            env_patch.setenv("ASTRID_TIMELINE_SCHEMA_PYTHONPATH", str(SCHEMA_ROOT))
+            env_patch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "runtime-data"))
+            env_patch.setenv("ASTRID_PROJECT_PACKS_ROOT", str(tmp_path / "project-packs"))
+            env_patch.setenv("ASTRID_ELEMENT_ARTIFACT_ROOT", str(tmp_path / "element-builds"))
+            for name in list(os.environ):
+                if name.startswith(("DYLD_", "LD_")) or name in _REMOTION_UNSUPPORTED_OVERRIDES:
+                    env_patch.delenv(name, raising=False)
+            clear_default_registry_cache()
+            env = dict(os.environ)
+            launch = _prepare_render_validation(
+                ROOT, env, tmp_path / "pack-launch", sys.executable, roots,
+            )
+            assert launch is not None, "RN-11 collection host/worker launch validation failed"
+            for name in (
+                ASTRID_REMOTION_VALIDATION_PATH, ASTRID_REMOTION_VALIDATION_SHA256,
+                ASTRID_REMOTION_VALIDATION_LAUNCH, ASTRID_REMOTION_VALIDATION_ROLE,
+            ):
+                env_patch.setenv(name, env[name])
+            yield roots
+    finally:
+        clear_default_registry_cache()
+
+
+def test_short_managed_contract_project_and_collection_elements_through_command_worker(
+    tmp_path: Path, real_runtime, rn11_pack_launch: tuple[Path, ...],
+) -> None:
+    """Both pack sources must paint their own pixels in one real short render."""
+    from uuid import uuid4
+
+    from astrid.core.element import catalog, project_packs
+    from astrid.sdk.timeline import Timeline
+    from astrid.sdk.timeline._clip_commands import capture_clip_add
+    from tests.editing_conformance.test_commit_runtime_m1 import open_client
+    from tests.helpers.runtime import vendored_runtime_commit
+
+    daemon = real_runtime(commit=vendored_runtime_commit(), authoring_profile="astrid")
+    host = None
+    try:
+        owner = open_client(daemon)
+        result = owner.projects.create(
+            slug="rn11-pack-contract", name="RN-11 pack contract",
+            idempotency_key="rn11-pack-project",
+        )
+        assert result.ok, result.as_dict()
+        project_id = result.data["project_id"]
+        realm = daemon.service.realm["id"]
+
+        # Real project document + compiled immutable snapshot, not a synthetic
+        # elementRef or a manually injected render snapshot.
+        location = project_packs.init_project_pack(realm, project_id, client=owner)
+        _rn11_write_named_alias_element(
+            Path(location["packRoot"]), location["packId"], "rn11-project-colour",
+        )
+        admission = project_packs.admit_project_pack(realm, project_id, client=owner)
+        record, = admission["elements"]
+        project_ref = {key: record["descriptor"][key] for key in ("packId", "kind", "id", "revision")}
+        assert project_ref["packId"] == location["packId"]
+        assert project_ref["id"] == "rn11-project-colour"
+
+        # The collection case uses ordinary discovered pack identity. It is
+        # deliberately not admitted as project source or staged by the test.
+        collection_element, = [
+            descriptor for descriptor in catalog.list_element_descriptors(
+                kind="effects", pack_id="rn11_collection",
+            ) if descriptor["id"] == "rn11-collection-colour"
+        ]
+        assert collection_element["packId"] == "rn11_collection"
+
+        listed = owner.timelines.list(project_id)
+        assert listed.ok, listed.as_dict()
+        rows, cursor = listed.data
+        assert not cursor, listed.data
+        if rows:
+            assert len(rows) == 1, rows
+            timeline_id = rows[0]["timeline_id"]
+        else:
+            timeline_id = str(uuid4())
+            created = owner.timelines.create_empty(
+                project=project_id, timeline_id=timeline_id, name="RN-11 pack render",
+                config={"theme_overrides": {"visual": {"canvas": {
+                    "width": 320, "height": 180, "fps": 10,
+                }}}},
+                idempotency_key="rn11-pack-timeline",
+            )
+            assert created.ok, created.as_dict()
+
+        timeline = Timeline.open(
+            project_id, timeline_id, client=owner, outbox_path=tmp_path / "rn11-pack-outbox.json",
+        )
+        background = tmp_path / "rn11-pack-background.png"
+        subprocess.run(
+            ["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=c=0xe8452c:s=320x180:r=1",
+             "-frames:v", "1", "-threads", "1", "-c:v", "png", str(background)],
+            check=True, capture_output=True,
+        )
+
+        def place_background(t):
+            t.track("titles", above="V1")
+            t.add(background, at=0, hold=2.6, track="V1", id="source")
+
+        imported = timeline.commit(place_background, label="RN-11 pack background", key="rn11-pack-media")
+        assert imported["receipt"]["receipt_id"]
+
+        collection_clip = {
+            "id": "collection-colour", "at": 0.4, "hold": 0.7, "track": "titles",
+            "clipType": collection_element["id"], "params": {"color": "#f1c40f"},
+        }
+        project_clip = {
+            "id": "project-colour", "at": 1.4, "hold": 0.7, "track": "titles",
+            "clipType": project_ref["id"], "elementRef": project_ref,
+            "params": {"color": "#3498db"},
+        }
+
+        def place_elements(t):
+            for row in (collection_clip, project_clip):
+                t.command(capture_clip_add(t.bundle, "parent", row), label=row["id"])
+
+        published = timeline.commit(place_elements, label="RN-11 pack elements", key="rn11-pack-elements")
+        assert published["receipt"]["receipt_id"]
+        revision = published["data"]["accepted_revision_id"]
+        parent = published["data"]["canonical_document"]["parent_revision"]["payload"]
+        tracks = [track["id"] for track in parent["config"]["tracks"]]
+        assert tracks.index("titles") < tracks.index("V1"), tracks
+        clips = {clip["id"]: clip for clip in parent["clips"]}
+        assert clips["project-colour"]["elementRef"] == project_ref
+        assert clips["collection-colour"]["clipType"] == collection_element["id"]
+        source = parent["registry"]["assets"][clips["source"]["asset"]]
+        assert source["media_id"] == "sha256:" + hashlib.sha256(background.read_bytes()).hexdigest()
+
+        host = GenericPackHost(
+            pack_roots=list(rn11_pack_launch),
+            client=RuntimeProtocolClient(daemon.endpoint, daemon.worker_token),
+            executor_id=PACK_HOST_ACTOR,
+            attempt_root=tmp_path / "pack-attempts",
+        )
+        host.discover()
+        host.preflight("rendering.render")
+        capability = host.capabilities["rendering.render"]
+        assert capability.ready and capability.preflight["remotion"]["ok"] is True
+        host.register(deliberate=True)
+        admitted = owner.tasks.create(
+            project_id=project_id, capability="rendering.render",
+            capability_digest=capability.capability_digest,
+            input_manifest=[], idempotency_key="rn11-pack-render",
+            spec={
+                "family": "rendering.render",
+                "params": {"timeline_ref": timeline_id, "selector": "rendering.remotion",
+                           "output_name": "rn11-packs.mp4"},
+                "output_policy": {"format": "mp4", "destination": "download",
+                                  "filename": "rn11-packs.mp4"},
+            },
+        )
+        assert admitted.ok, admitted.as_dict()
+        task_id = admitted.data["task_id"]
+        assert len(host.run(once=True)) == 1
+        shown = owner.tasks.show(task_id)
+        assert shown.ok, shown.as_dict()
+        task = shown.data
+        assert task["state"] == "succeeded", task
+        assert task["spec"]["spec"]["inputs"]["timeline_authority"]["parent_revision_id"] == revision
+        result = task["result"]
+        assert result["renderer_selection"]["selector"] == "rendering.remotion"
+        assert result["renderer_selection"]["remotion_ok"] is True
+        videos = [item for item in result["outputs"]
+                  if str(item.get("media_type", "")).startswith("video/")]
+        assert len(videos) == 1, result
+        digest = videos[0]["digest"]
+        generated = WorkspaceClient(daemon.endpoint, daemon.token)
+        generated.handshake("rn11-pack-output", "1", ["objects:read"])
+        content = generated.get_object(digest).data
+        assert content and digest == "sha256:" + hashlib.sha256(content).hexdigest()
+        output = tmp_path / "rn11-packs.mp4"
+        output.write_bytes(content)
+
+        # Unique colours at stable interior frames discriminate both sources
+        # from each other and from the managed background; gap and tail catch
+        # an incorrectly persistent/full-timeline element.
+        for seconds, expected in (
+            ("0.2", (232, 69, 44)), ("0.7", (241, 196, 15)),
+            ("1.2", (232, 69, 44)), ("1.7", (52, 152, 219)),
+            ("2.3", (232, 69, 44)),
+        ):
+            actual = _rn11_frame_colour(output, seconds)
+            assert all(abs(a - b) <= 16 for a, b in zip(actual, expected)), (
+                seconds, actual, expected,
+            )
+    finally:
+        if host is not None:
+            host.shutdown()
+        daemon.stop()
+
+
 def test_generic_host_normal_imported_theme_reaches_props_and_rejects_local_source(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, real_runtime
 ) -> None:
