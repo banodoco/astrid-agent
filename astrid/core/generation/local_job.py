@@ -37,6 +37,11 @@ def read_job(path: str | Path) -> dict[str, Any]:
         raise JobFileError(f"job align must be one of {', '.join(ALIGN_MODES)}")
     if not isinstance(body.get("inputs"), dict):
         raise JobFileError("job inputs must be an object")
+    from .node_approvals import _records
+    try:
+        body["code_approvals"] = _records(body.get("code_approvals", []))
+    except ValueError as exc:
+        raise JobFileError("job code approvals are invalid") from exc
     if "generation_settings" in body:
         projected = body["generation_settings"]
         if (not isinstance(projected, dict) or set(projected) != {"models"}
@@ -107,7 +112,8 @@ def _run_job(entry: str, job: dict[str, Any], out: str | Path, *, mode: str | No
         if not isinstance(bindings, dict):
             raise JobFileError("job entry bindings must be an object")
         return run_prepared_job(entry, inputs, execution, bindings, Path(out), task=task, attempt=attempt,
-                               mode=mode or job.get("mode"), align=align or job["align"], discovery=discovery)
+                               mode=mode or job.get("mode"), align=align or job["align"], discovery=discovery,
+                               code_approvals=job["code_approvals"], placement_class="runpod")
     if entry == "workflow":
         shipped = next((inputs.pop(name) for name in _WORKFLOW_INPUTS if name in inputs), None)
         if shipped is None:
@@ -124,8 +130,9 @@ def _run_job(entry: str, job: dict[str, Any], out: str | Path, *, mode: str | No
         return run_owned_action(
             workflow, Path(out), task_identity=task, attempt_identity=attempt,
             workflow_inputs=json.dumps(inputs, sort_keys=True), entry=None,
-            align=align or job["align"], **files)
+            align=align or job["align"], code_approvals=job["code_approvals"], placement_class="runpod", **files)
     if described is None:
         raise JobFileError(f"entry {entry!r} is not available on this machine")
     return run_named_entry(described, named, inputs, files, Path(out), task=task, attempt=attempt,
-                           mode=mode or job.get("mode"), align=align or job["align"], discovery=discovery)
+                           mode=mode or job.get("mode"), align=align or job["align"], discovery=discovery,
+                           code_approvals=job["code_approvals"], placement_class="runpod")

@@ -95,7 +95,7 @@ def test_bundle_pin_overrides_same_named_shipped_pin_and_unpinned_is_reported(us
         "name": "ComfyUI-HunyuanVideo_Foley", "repository": user_bundle.repo,
         "revision": user_bundle.revision, "classes": ["BundleOnlyNode"],
         "requires_code_consent": True,
-        "bundle_install_pending": True,
+        "requirements_txt": None, "pip_no_deps": [], "code_approvals": [],
     }]
     assert mode["unlocked"] == [{
         "kind": "node_pack", "name": "Unpinned", "missing": ["locked_repository_and_sha"],
@@ -113,27 +113,64 @@ def test_unfamiliar_bundle_pack_apply_refuses_before_mutation(user_bundle, monke
         alignment._align_selected(manifests, target, entry_id="bundle-align", apply=True, deadline=0)
 
 
-def test_approved_bundle_pack_is_never_installed_by_legacy_path_after_state_changes(user_bundle, monkeypatch):
+def test_approved_bundle_pack_uses_controlled_restore_after_state_changes(user_bundle, monkeypatch):
+    import contextlib
+    import io
+    import subprocess
+    from pathlib import Path
     from astrid.core.generation.node_approvals import approval_record, write_entry_approvals
+    from vibecomfy import node_packs
 
-    write_entry_approvals(user_bundle.directory, [
-        approval_record({"repo": user_bundle.repo, "commit": user_bundle.revision}, placement_class="local"),
-    ])
+    recipe = {"requirements_txt": "deps/requirements.txt", "pip_no_deps": ["one==1", "two==2"]}
+    user_bundle.workflow.requirements.custom_node_refs[0].update(recipe)
+    records = [approval_record({"repo": user_bundle.repo, "commit": user_bundle.revision, **recipe},
+                               placement_class="local")]
+    write_entry_approvals(user_bundle.directory, records)
     manifests = alignment.catalog_manifests("bundle-align")
     [pack] = manifests[0]["modes"][0]["node_packs"]
-    target = SimpleNamespace(cached_object_info=lambda: None, verify_installation=lambda **kwargs: None)
+    root = user_bundle.directory.parent
+    (root / "nodes").mkdir()
+    target = alignment.ManagedAssetTarget(root, root / "models", root / "nodes", sys.executable,
+        "http://127.0.0.1:8188", "a" * 64, root / "cache.json", vibecomfy_root=root)
+    monkeypatch.setattr(alignment.ManagedAssetTarget, "cached_object_info", lambda self: None)
+    monkeypatch.setattr(alignment.ManagedAssetTarget, "verify_installation", lambda self, **kwargs: None)
+    monkeypatch.setattr(alignment.ManagedAssetTarget, "object_info", lambda self: {})
+    monkeypatch.setattr(alignment.ManagedAssetTarget, "cache_object_info", lambda self, observed: None)
     monkeypatch.setattr(alignment, "inspect_assets", lambda *args, **kwargs: {
-        "entries": [{"modes": [{"models": [], "node_packs": [{**pack, "status": "verified"}]}]}],
-        "disk_check": {"status": "ready"},
+        "entries": [{"modes": [{"models": [], "node_packs": [{**pack, "status": "verified"}], "missing_nodes": []}]}],
+        "disk_check": {"status": "ready"}, "status": "not_ready",
     })
-    monkeypatch.setattr(alignment, "_pack_state", lambda *args: "missing")
-    def forbidden(*args, **kwargs):
-        pytest.fail("unapproved node code installer invoked")
+    states = iter(["missing", "verified"])
+    monkeypatch.setattr(alignment, "_pack_state", lambda *args: next(states))
+    restored = []
+
+    def controlled_restore(entry, **kwargs):
+        restored.append((entry, kwargs))
+        return node_packs.InstallResult(entry.name, "installed", entry.git_commit_sha, None)
+
+    monkeypatch.setattr(node_packs, "restore_pack", controlled_restore)
+
+    def target_python(argv, **kwargs):
+        # Execute the production handoff body against the controlled-restore
+        # spy, so a return to install_pack or a dropped recipe cannot pass.
+        assert argv[:2] == [sys.executable, "-c"]
+        output = io.StringIO()
+        with monkeypatch.context() as child, contextlib.redirect_stdout(output):
+            child.setattr(sys, "argv", ["-c", *argv[3:]])
+            exec(argv[2], {"__name__": "__main__"})
+        return subprocess.CompletedProcess(argv, 0, stdout=output.getvalue(), stderr="")
+
+    monkeypatch.setattr(alignment.subprocess, "run", target_python)
     assert "requires_code_consent" not in pack
-    assert pack["bundle_install_pending"]
-    with pytest.raises(alignment.AlignmentError, match="controlled node-code setup path"):
-        alignment._align_selected(manifests, target, entry_id="bundle-align", apply=True,
-                                  deadline=0, installer=forbidden)
+    assert pack["code_approvals"] == records
+    result = alignment._align_selected(manifests, target, entry_id="bundle-align", apply=True, deadline=float("inf"))
+    assert result["applied"] is True
+    [(entry, options)] = restored
+    assert (entry.url, entry.git_commit_sha) == (user_bundle.repo, user_bundle.revision)
+    assert entry.requirements_txt == recipe["requirements_txt"] and list(entry.pip_no_deps) == recipe["pip_no_deps"]
+    assert options["approvals"] == records and options["placement_class"] == "local"
+    assert options["install_root"] == target.custom_nodes_root
+    assert options["lockfile_path"] == Path(root / ".astrid-engine/aligned-custom-nodes.lock")
 
 
 @pytest.mark.parametrize("placement,recipe", [

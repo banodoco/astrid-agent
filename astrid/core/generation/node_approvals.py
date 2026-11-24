@@ -3,7 +3,7 @@
 An entry owns ``code-approvals.json`` beside ``entry.json``. A record binds one
 repository/commit, recipe hash and resolved placement class. Computing a record
 or storing a caller-supplied record is not evidence of a person's consent:
-LE-2b owns the CLI warning and target admission. Tokens are a short confirmation
+The CLI warning and target admission use the same VibeComfy contract. Tokens are a short confirmation
 of what was shown, not a secret, a signature or proof of who typed them.
 
 Classes follow the resolved ``Placement.kind``, not the command's selector:
@@ -16,110 +16,31 @@ admission maps its managed/attached/pod transport to these placement classes.
 """
 from __future__ import annotations
 
-import hashlib
-import hmac
 import json
 import os
-import re
 import tempfile
-from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Literal, TypedDict
+from typing import Any
 
-PlacementClass = Literal["local", "attached", "runpod"]
-PLACEMENT_CLASSES = frozenset({"local", "attached", "runpod"})
+from .consent import consent_scope
+
+from vibecomfy.node_approvals import (
+    NodeApproval as NodeApproval,
+    NodeIdentity as NodeIdentity,
+    PlacementClass as PlacementClass,
+    PLACEMENT_CLASSES as PLACEMENT_CLASSES,
+    approval_record as approval_record,
+    approval_matches as approval_matches,
+    consent_matches as consent_matches,
+    consent_token as consent_token,
+    require_approved_nodes as require_approved_nodes,
+    require_approved_nodes as target_approvals,
+    reviewed_approvals as reviewed_approvals,
+    validate_approval_record as validate_approval_record,
+    validate_approvals as _records,
+)
+
 APPROVALS_FILENAME = "code-approvals.json"
-_CONTEXT = b"astrid.node-code-approval.v1\0"
-_SHA256 = re.compile(r"[0-9a-f]{64}")
-
-
-class NodeIdentity(TypedDict):
-    repo: str
-    commit: str
-
-
-class NodeApproval(TypedDict):
-    identity: NodeIdentity
-    recipe_sha256: str
-    approval_sha256: str
-    placement_class: PlacementClass
-
-
-def _identity(value: Any) -> NodeIdentity:
-    if not isinstance(value, Mapping) or set(value) != {"repo", "commit"}:
-        raise ValueError("node approval identity must contain repo and commit")
-    repo, commit = value["repo"], value["commit"]
-    if (not isinstance(repo, str) or not repo.strip() or repo != repo.strip()
-            or any(ord(char) < 32 or ord(char) == 127 for char in repo)):
-        raise ValueError("node approval repo must be a nonempty source identity")
-    if not isinstance(commit, str) or re.fullmatch(r"[0-9a-f]{40}", commit) is None:
-        raise ValueError("node approval commit must be a full lowercase 40-hex commit")
-    return {"repo": repo, "commit": commit}
-
-
-def _approval_hash(identity: NodeIdentity, recipe_hash: str, placement_class: str) -> str:
-    payload = {"identity": identity, "recipe_sha256": recipe_hash, "placement_class": placement_class}
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
-    return hashlib.sha256(_CONTEXT + encoded).hexdigest()
-
-
-def approval_record(node: Mapping[str, Any], *, placement_class: PlacementClass) -> NodeApproval:
-    """Describe one manifest node; callers must obtain consent before saving it."""
-    from vibecomfy.node_recipes import RECIPE_FIELDS, recipe_sha256
-
-    if (not isinstance(node, Mapping) or not {"repo", "commit"} <= set(node)
-            or set(node) - ({"repo", "commit"} | RECIPE_FIELDS)):
-        raise ValueError("approval requires the closed extra.nodes shape")
-    identity = _identity({key: node[key] for key in ("repo", "commit")})
-    if not isinstance(placement_class, str) or placement_class not in PLACEMENT_CLASSES:
-        raise ValueError("approval needs a resolved placement class: local, attached or runpod")
-    recipe_hash = recipe_sha256({key: node[key] for key in RECIPE_FIELDS if key in node})
-    return {"identity": identity, "recipe_sha256": recipe_hash,
-            "approval_sha256": _approval_hash(identity, recipe_hash, placement_class),
-            "placement_class": placement_class}
-
-
-def validate_approval_record(record: Any) -> NodeApproval:
-    """Validate/copy stored data; this proves consistency, never authenticity."""
-    if not isinstance(record, Mapping) or set(record) != {"identity", "recipe_sha256", "approval_sha256", "placement_class"}:
-        raise ValueError("invalid node approval record shape")
-    identity = _identity(record["identity"])
-    placement = record["placement_class"]
-    if not isinstance(placement, str) or placement not in PLACEMENT_CLASSES:
-        raise ValueError("invalid approval placement class")
-    recipe_hash, approval_hash = record["recipe_sha256"], record["approval_sha256"]
-    if any(not isinstance(value, str) or _SHA256.fullmatch(value) is None for value in (recipe_hash, approval_hash)):
-        raise ValueError("approval hashes must be lowercase SHA-256 values")
-    expected = _approval_hash(identity, recipe_hash, placement)
-    if not hmac.compare_digest(approval_hash, expected):
-        raise ValueError("node approval record does not match its identity, recipe and placement")
-    return {"identity": identity, "recipe_sha256": recipe_hash, "approval_sha256": expected, "placement_class": placement}
-
-
-def consent_token(record: Mapping[str, Any]) -> str:
-    """The 12 lowercase hex characters shown with the warning."""
-    return validate_approval_record(record)["approval_sha256"][:12]
-
-
-def consent_matches(token: Any, node: Mapping[str, Any], *, placement_class: PlacementClass) -> bool:
-    if not isinstance(token, str) or re.fullmatch(r"[0-9a-f]{12}", token) is None:
-        return False
-    return hmac.compare_digest(token, consent_token(approval_record(node, placement_class=placement_class)))
-
-
-def approval_matches(record: Mapping[str, Any], node: Mapping[str, Any], *, placement_class: PlacementClass) -> bool:
-    saved = validate_approval_record(record)
-    current = approval_record(node, placement_class=placement_class)
-    return hmac.compare_digest(saved["approval_sha256"], current["approval_sha256"])
-
-
-def _records(value: Any) -> list[NodeApproval]:
-    if not isinstance(value, (list, tuple)):
-        raise ValueError("entry code approvals must be an array")
-    records = [validate_approval_record(record) for record in value]
-    if len({row["approval_sha256"] for row in records}) != len(records):
-        raise ValueError("duplicate entry code approval")
-    return records
 
 
 def read_entry_approvals(entry_directory: str | Path) -> list[NodeApproval]:
@@ -152,3 +73,111 @@ def write_entry_approvals(entry_directory: str | Path, records: list[NodeApprova
         os.replace(name, directory / APPROVALS_FILENAME)
     finally:
         Path(name).unlink(missing_ok=True)
+
+
+def entry_approval_directory(entry):
+    """Resolve the actual saved entry, never a workflow-authored sidecar path.
+
+    A contributed built-in row (it carries ``contribution``) has no saved
+    directory beside it, so it persists no approvals; per-run consent still applies.
+    """
+    if not entry or entry.get("source") != "user-entry" or entry.get("contribution"):
+        return None
+    from vibecomfy.entries import entries_dir, load_entry
+
+    directory = entries_dir() / entry["id"]
+    if directory.parent != entries_dir() or directory.is_symlink():
+        raise ValueError("code approvals require a plain saved entry directory")
+    saved = load_entry(directory)
+    if saved["id"] != entry["id"] or saved["bundle"] != entry["bundle"]:
+        raise ValueError("saved entry changed before code approval")
+    return directory
+
+
+def _consent_retry(argv, nodes):
+    """Retain the invocation but freeze every offered --add to its displayed SHA."""
+    result = []
+    pinned = {row["repo"].rstrip("/").removesuffix(".git"): row for row in nodes}
+    index = 0
+    while index < len(argv):
+        value = argv[index]
+        index += 1
+        if value == "--dry-run" or value.startswith("--dry-run="):
+            continue
+        if value.startswith("--consent="):
+            if value == "--consent=user_env":
+                result.append(value)
+            continue
+        if value == "--consent" and index < len(argv):
+            scope = argv[index]
+            index += 1
+            if scope == "user_env":
+                result.extend([value, scope])
+            continue
+        if value == "--add" or value.startswith("--add="):
+            if value == "--add":
+                if index == len(argv):
+                    raise ValueError("--add requires a pinned repository")
+                raw = argv[index]
+                index += 1
+            else:
+                raw = value.split("=", 1)[1]
+            repo = raw.rsplit("@", 1)[0] if "@" in raw else raw
+            node = pinned.get(repo.rstrip("/").removesuffix(".git"))
+            if node is None:
+                raise ValueError("consent retry --add does not identify a declared repository")
+            result.extend(["--add", f"{node['repo']}@{node['commit']}"])
+        else:
+            result.append(value)
+    return result
+
+
+def authorize_nodes(nodes, *, placement_class, consent=(), entry=None, retry_argv,
+                    persist=False):
+    """Obtain one informed yes per exact node; declarations alone approve nothing."""
+    from .preflight import GenerationReadinessError, readiness_envelope
+
+    current = [approval_record(node, placement_class=placement_class) for node in nodes]
+    # Validate the node set's URL and directory constraints without mutating it.
+    require_approved_nodes(nodes, current, placement_class=placement_class)
+    directory = entry_approval_directory(entry)
+    saved = read_entry_approvals(directory) if directory is not None else []
+    known = {row["approval_sha256"] for row in [*saved, *reviewed_approvals(nodes, placement_class=placement_class)]}
+    choices = [scope for scope in consent if consent_scope(scope) != "user_env"]
+    expected_tokens = {consent_token(record) for record in current}
+    supplied = {scope.removeprefix("code=") for scope in choices if scope.startswith("code=")}
+    invalid = any(scope == "code" for scope in choices) or not supplied <= expected_tokens
+    confirmed = {record["approval_sha256"] for node, record in zip(nodes, current)
+                 if any(consent_matches(token, node, placement_class=placement_class) for token in supplied)}
+    pending = [row for row in current if row["approval_sha256"] not in known
+               and row["approval_sha256"] not in confirmed]
+    if invalid:
+        pending = current
+    if pending or invalid:
+        then = _consent_retry(list(retry_argv), nodes)
+        for record in current:
+            if record["approval_sha256"] not in known or invalid:
+                then.extend(["--consent", "code=" + consent_token(record)])
+        shown = []
+        for node, record in zip(nodes, current):
+            shown.append(f"{node['repo']}@{node['commit']} (recipe SHA-256 {record['recipe_sha256']}, "
+                         f"requirements_txt={node.get('requirements_txt')!r}, "
+                         f"pip_no_deps={node.get('pip_no_deps', [])!r}, token {consent_token(record)})")
+        warning = ("Show this warning to the person and obtain their approval before running the command. "
+                   f"The following third-party code will run on the {placement_class} target with that target's "
+                   "access to files, credentials and network. Dependencies are resolved at install time; "
+                   "install.py is never run. Approve only these exact repositories, commits and recipes: "
+                   + "; ".join(shown))
+        raise GenerationReadinessError(readiness_envelope(
+            entry={"id": (entry or {}).get("id"), "requirements": {"nodes": nodes}},
+            target={"kind": placement_class}, attempt_count=0,
+            issues=[{"code": "needs_consent", "severity": "error",
+                     "message": "Node code requires approval of the displayed source, recipe and target.",
+                     "details": {"approvals": current}, "fix_ids": ["approve-node-code"]}],
+            fixes=[{"id": "approve-node-code", "who": "human", "scope": "managed_write",
+                    "instruction": {"step": warning, "then_argv": then}}]))
+    if persist and directory is not None and supplied:
+        records = {row["approval_sha256"]: row for row in saved}
+        records.update({row["approval_sha256"]: row for row in current})
+        write_entry_approvals(directory, list(records.values()))
+    return current
