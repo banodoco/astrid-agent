@@ -41,9 +41,13 @@ def declared_model_specs(assets: Any, *, require_complete: bool = True,
             # no custody authority, but must record the excluded fact.
             import logging
 
+            from astrid.core.contracts.errors import redact_credential_data
+
             logging.getLogger(__name__).debug(
-                "Excluded non-provisionable model declaration for entry %s: %s",
-                entry_id or "(unselected)", record.get("missing") or record.get("code"),
+                "Excluded non-provisionable model declaration for entry %s: model=%s gap=%s",
+                redact_credential_data(entry_id or "(unselected)"),
+                redact_credential_data(record.get("name")),
+                record.get("missing") or record.get("code"),
             )
 
     for asset in assets:

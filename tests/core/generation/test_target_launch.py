@@ -418,6 +418,13 @@ def test_bounded_timeout_returns_manual_start_without_false_readiness_or_retry(t
         "argv": target.facts["launch_argv"], "scope": "user_env", "details": {
             "manual_start": True, "cwd": target.root, "check_existing_process": True}}]
     assert result.readiness["issues"][0]["fix_ids"] == ["inspect-selected-launch"]
+    from astrid.core.generation.setup_contract import validate_setup_envelope
+
+    validate_setup_envelope(result.readiness)
+    # Manual human start uses the exact recorded command, not another
+    # Astrid launch call or a manufactured consent flag.
+    assert "--consent" not in result.readiness["fixes"][0]["argv"]
+    assert "manually" in result.readiness["issues"][0]["message"]
 
 
 def test_probe_count_is_bounded_even_with_a_nonadvancing_fake_clock(target):

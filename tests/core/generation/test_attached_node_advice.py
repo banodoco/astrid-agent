@@ -216,6 +216,9 @@ def test_attached_two_nodes_from_one_pack_give_one_fix(fake_pack_with_lock):
     assert len(readiness["fixes"]) == 1
     assert readiness["fixes"][0]["details"]["commands"][0][0:2] == ["git", "clone"]
     assert len(readiness["fixes"][0]["details"]["commands"]) == 2
+    assert [issue["fix_ids"] for issue in readiness["issues"]] == [
+        [readiness["fixes"][0]["id"]], [readiness["fixes"][0]["id"]],
+    ]
     _assert_no_align(readiness)
 
 

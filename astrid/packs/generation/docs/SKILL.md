@@ -331,7 +331,9 @@ Known core nodes retain their update-ComfyUI guidance. A missing unrecognized
 class does not establish that it is core; identify its actual provider. For an
 attached server, the person performs the manual installation or model placement;
 the follow-up command only re-inspects that target. Never run managed alignment
-against it. A managed missing locked asset may offer an explicit user-env action.
+against it. A managed missing locked asset may offer an explicit user-env action;
+obtain the person's user_env consent before executing that command, and keep
+unreviewed node-code approval separate.
 
 An incomplete model lock is a refusal, not permission to download without a
 hash or size. Supply verified HTTPS source, SHA-256 and exact byte size in the
