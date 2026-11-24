@@ -11,7 +11,6 @@ from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
-from PIL import Image
 
 
 def _add_workflow_classes(schema, workflow):
@@ -76,6 +75,8 @@ def ready_workflow_schema():
 
 @pytest.fixture
 def loopback_comfy(tmp_path):
+    from PIL import Image
+
     state = SimpleNamespace(schema=_target_schema(), calls=[], prompts=[], histories={})
     image = io.BytesIO()
     Image.new("RGB", (16, 16), (24, 48, 96)).save(image, format="PNG")
