@@ -12,6 +12,17 @@ on:
   pull_request:
     branches: ["release/*/main"]
   workflow_dispatch:
+    inputs:
+      tests:
+        description: Space-separated test files or node ids to run in each test job (empty runs the normal full selection). Each job keeps its marker expression and shard split, and says so when it selects nothing.
+        required: false
+        default: ""
+        type: string
+      repeat:
+        description: Run the selection this many times (1 to 100); every iteration's -rA output is kept in the job log.
+        required: false
+        default: "1"
+        type: string
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -372,12 +383,46 @@ jobs:
         run: python -m pip install -e ./vibecomfy-checkout
 
       - name: Unit tests (default lane shard)
+        if: ${{ inputs.tests == '' && (inputs.repeat == '' || inputs.repeat == '1') }}
         # Read the committed baseline for selection; write only this shard's
         # measured tests so the eight artifacts can be merged without stale entries.
         env:
           PYTHONUNBUFFERED: 1
           ASTRID_PYTEST_HARD_EXIT_ON_LEAKED_THREADS: 1
         run: python -m pytest -v -rA --durations=40 --splits 8 --group ${{ matrix.group }} --durations-path tests/.test_durations --store-durations --clean-durations
+
+      - name: Unit tests (default lane shard) (dispatch selection)
+        if: ${{ !(inputs.tests == '' && (inputs.repeat == '' || inputs.repeat == '1')) }}
+        # Read the committed baseline for selection; write only this shard's
+        # measured tests so the eight artifacts can be merged without stale entries.
+        env:
+          INPUT_TESTS: ${{ inputs.tests }}
+          INPUT_REPEAT: ${{ inputs.repeat }}
+          PYTHONUNBUFFERED: 1
+          ASTRID_PYTEST_HARD_EXIT_ON_LEAKED_THREADS: 1
+        run: |
+          set +e
+          repeat="${INPUT_REPEAT:-1}"
+          case "$repeat" in
+            ''|*[!0-9]*|0) echo "::error::repeat must be a positive integer, got '$repeat'"; exit 2 ;;
+          esac
+          if [ "$repeat" -gt 100 ]; then echo "::error::repeat is at most 100, got $repeat"; exit 2; fi
+          status=0
+          i=1
+          while [ "$i" -le "$repeat" ]; do
+            echo "===== selection ${i} of ${repeat}: tests='${INPUT_TESTS}' ====="
+            set -f
+            python -m pytest -v -rA --durations=40 --splits 8 --group ${{ matrix.group }} --durations-path tests/.test_durations --store-durations --clean-durations $INPUT_TESTS
+            rc=$?
+            set +f
+            if [ "$rc" -eq 5 ] && [ -n "$INPUT_TESTS" ]; then
+              echo "No tests were selected in this job from '${INPUT_TESTS}' under its marker expression and shard. Nothing ran here; this is not a failure."
+              rc=0
+            fi
+            if [ "$rc" -ne 0 ] && [ "$status" -eq 0 ]; then status=$rc; fi
+            i=$((i + 1))
+          done
+          exit "$status"
 
       - name: Upload measured test durations
         if: always()
@@ -512,7 +557,37 @@ jobs:
 
       # The lanes the default run deselects and only this job provides: native macOS, the Remotion install, headless Chromium, the Codex CLI.
       - name: Darwin native, Remotion and browser tests
+        if: ${{ inputs.tests == '' && (inputs.repeat == '' || inputs.repeat == '1') }}
         run: python -m pytest -q -rA -m "darwin_native or remotion or chrome or codex_cli"
+
+      - name: Darwin native, Remotion and browser tests (dispatch selection)
+        if: ${{ !(inputs.tests == '' && (inputs.repeat == '' || inputs.repeat == '1')) }}
+        env:
+          INPUT_TESTS: ${{ inputs.tests }}
+          INPUT_REPEAT: ${{ inputs.repeat }}
+        run: |
+          set +e
+          repeat="${INPUT_REPEAT:-1}"
+          case "$repeat" in
+            ''|*[!0-9]*|0) echo "::error::repeat must be a positive integer, got '$repeat'"; exit 2 ;;
+          esac
+          if [ "$repeat" -gt 100 ]; then echo "::error::repeat is at most 100, got $repeat"; exit 2; fi
+          status=0
+          i=1
+          while [ "$i" -le "$repeat" ]; do
+            echo "===== selection ${i} of ${repeat}: tests='${INPUT_TESTS}' ====="
+            set -f
+            python -m pytest -q -rA -m "darwin_native or remotion or chrome or codex_cli" $INPUT_TESTS
+            rc=$?
+            set +f
+            if [ "$rc" -eq 5 ] && [ -n "$INPUT_TESTS" ]; then
+              echo "No tests were selected in this job from '${INPUT_TESTS}' under its marker expression and shard. Nothing ran here; this is not a failure."
+              rc=0
+            fi
+            if [ "$rc" -ne 0 ] && [ "$status" -eq 0 ]; then status=$rc; fi
+            i=$((i + 1))
+          done
+          exit "$status"
 
   # Release wheel (testing plan R-1: kept from the old m8 artifact job). Hashed build tools, one wheel,
   # installed with only the hashed runtime lock, and the toolchain recorded next to it. It is also the

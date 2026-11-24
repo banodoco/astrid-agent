@@ -8,6 +8,16 @@ on:
     - cron: "17 3 * * *"
   workflow_dispatch:
     inputs:
+      tests:
+        description: Space-separated test files or node ids to run in each test job (empty runs the normal full selection). Each job keeps its marker expression and shard split, and says so when it selects nothing.
+        required: false
+        default: ""
+        type: string
+      repeat:
+        description: Run the selection this many times (1 to 100); every iteration's -rA output is kept in the job log.
+        required: false
+        default: "1"
+        type: string
       launcher_ref:
         description: Optional full 40-character astrid-pinokio commit SHA; defaults to main
         required: false
@@ -255,7 +265,37 @@ jobs:
           echo "- ComfyUI: $checked_out" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Integration tests (shard)
+        if: ${{ inputs.tests == '' && (inputs.repeat == '' || inputs.repeat == '1') }}
         run: python -m pytest -v -rA --durations=40 -m "integration and not opt_in and not app_checkout" --splits 4 --group ${{ matrix.group }}
+
+      - name: Integration tests (shard) (dispatch selection)
+        if: ${{ !(inputs.tests == '' && (inputs.repeat == '' || inputs.repeat == '1')) }}
+        env:
+          INPUT_TESTS: ${{ inputs.tests }}
+          INPUT_REPEAT: ${{ inputs.repeat }}
+        run: |
+          set +e
+          repeat="${INPUT_REPEAT:-1}"
+          case "$repeat" in
+            ''|*[!0-9]*|0) echo "::error::repeat must be a positive integer, got '$repeat'"; exit 2 ;;
+          esac
+          if [ "$repeat" -gt 100 ]; then echo "::error::repeat is at most 100, got $repeat"; exit 2; fi
+          status=0
+          i=1
+          while [ "$i" -le "$repeat" ]; do
+            echo "===== selection ${i} of ${repeat}: tests='${INPUT_TESTS}' ====="
+            set -f
+            python -m pytest -v -rA --durations=40 -m "integration and not opt_in and not app_checkout" --splits 4 --group ${{ matrix.group }} $INPUT_TESTS
+            rc=$?
+            set +f
+            if [ "$rc" -eq 5 ] && [ -n "$INPUT_TESTS" ]; then
+              echo "No tests were selected in this job from '${INPUT_TESTS}' under its marker expression and shard. Nothing ran here; this is not a failure."
+              rc=0
+            fi
+            if [ "$rc" -ne 0 ] && [ "$status" -eq 0 ]; then status=$rc; fi
+            i=$((i + 1))
+          done
+          exit "$status"
 
       - name: Save pip cache on main or int branches (C-08)
         if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/') || (startsWith(github.ref, 'refs/heads/release/') && endsWith(github.ref, '/main'))) && steps.c08-agent-lanes-2.outputs.cache-hit != 'true' }}
@@ -366,7 +406,37 @@ jobs:
         working-directory: remotion
 
       - name: Opt-in tests
+        if: ${{ inputs.tests == '' && (inputs.repeat == '' || inputs.repeat == '1') }}
         run: python -m pytest -q -rA -m opt_in
+
+      - name: Opt-in tests (dispatch selection)
+        if: ${{ !(inputs.tests == '' && (inputs.repeat == '' || inputs.repeat == '1')) }}
+        env:
+          INPUT_TESTS: ${{ inputs.tests }}
+          INPUT_REPEAT: ${{ inputs.repeat }}
+        run: |
+          set +e
+          repeat="${INPUT_REPEAT:-1}"
+          case "$repeat" in
+            ''|*[!0-9]*|0) echo "::error::repeat must be a positive integer, got '$repeat'"; exit 2 ;;
+          esac
+          if [ "$repeat" -gt 100 ]; then echo "::error::repeat is at most 100, got $repeat"; exit 2; fi
+          status=0
+          i=1
+          while [ "$i" -le "$repeat" ]; do
+            echo "===== selection ${i} of ${repeat}: tests='${INPUT_TESTS}' ====="
+            set -f
+            python -m pytest -q -rA -m opt_in $INPUT_TESTS
+            rc=$?
+            set +f
+            if [ "$rc" -eq 5 ] && [ -n "$INPUT_TESTS" ]; then
+              echo "No tests were selected in this job from '${INPUT_TESTS}' under its marker expression and shard. Nothing ran here; this is not a failure."
+              rc=0
+            fi
+            if [ "$rc" -ne 0 ] && [ "$status" -eq 0 ]; then status=$rc; fi
+            i=$((i + 1))
+          done
+          exit "$status"
 
   # The tests that need Astrid installed as a wheel (not editable, not the checkout): the wheel the release job builds,
   # installed into its own venv, with the Runtime and the Remotion project provisioned. pytest runs from that venv with
