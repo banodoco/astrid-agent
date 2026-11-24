@@ -159,6 +159,11 @@ on:
         description: Explicit JSON tuple with app/agent/runtime/pinokio SHAs and manifest_sha256 for local M4-6
         required: false
         type: string
+      update_rollback_only:
+        description: Run only the Release 14 to candidate update, forced-rollback and update-again leg on ubuntu-24.04 (requires candidate)
+        required: false
+        default: false
+        type: boolean
       row:
         description: Run one direct journey row, all five direct rows, one pinokio-* row, or all three R1.1 Pinokio rows
         required: false
@@ -205,6 +210,7 @@ jobs:
       m4_6_enabled: ${{ steps.config.outputs.m4_6_enabled }}
       m4_6_candidate: ${{ steps.config.outputs.m4_6_candidate }}
       m4_6_matrix: ${{ steps.config.outputs.m4_6_matrix }}
+      update_rollback_only: ${{ steps.config.outputs.update_rollback_only }}
       matrix: ${{ steps.config.outputs.matrix }}
       wait_timeout: ${{ steps.config.outputs.wait_timeout }}
     steps:
@@ -309,6 +315,7 @@ jobs:
           M4_4B_ENABLED: ${{ inputs.m4_4b_enabled || false }}
           M4_6_ENABLED: ${{ inputs.m4_6_enabled || false }}
           M4_6_CANDIDATE: ${{ inputs.m4_6_candidate || '' }}
+          UPDATE_ROLLBACK_ONLY: ${{ inputs.update_rollback_only || false }}
         run: |
           python3 - <<'PY'
           import json, os, re
@@ -335,10 +342,16 @@ jobs:
           old_launcher = os.environ["OLD_LAUNCHER_REF"]
           stopped_path = os.environ["STOPPED_PATH_AGENT_REF"]
           m4_5_only = os.environ["M4_5_ONLY"].lower() == "true"
+          update_rollback_only = os.environ.get("UPDATE_ROLLBACK_ONLY", "false").lower() == "true"
+          if update_rollback_only and (journey_row or m4_5_only or os.environ["M4_6_ENABLED"].lower() == "true"
+                                       or os.environ["M4_4B_ENABLED"].lower() == "true"
+                                       or os.environ["M4_5_ENABLED"].lower() == "true"
+                                       or os.environ["M4_4A_BACKEND_ONLY"].lower() == "true"):
+              raise SystemExit("update_rollback_only cannot be combined with another leg selection")
           if not pinokio_only:
-              if old_launcher != "bbba620e3d89eeff8021417f365e6ea584203105":
+              if old_launcher != "bbba620e3d89eeff8021417f365e6ea584203105" and not update_rollback_only:
                   raise SystemExit("the approved old_launcher_ref SHA is required")
-              if stopped_path != candidate["agent"]:
+              if stopped_path != candidate["agent"] and not update_rollback_only:
                   raise SystemExit("stopped_path_agent_ref must equal the frozen candidate Agent SHA")
               if not m4_5_only and stopped_path == "3cc84be5d8c565f1a4a500dcf713478498e34885":
                   raise SystemExit("the provisional Agent base lacks the integrated A/B stopped path")
@@ -456,13 +469,14 @@ jobs:
                                   ("m4_6_enabled", str(m4_6_enabled).lower()),
                                   ("m4_6_candidate", m4_6_candidate),
                                   ("m4_6_matrix", {"include": list(journey_matrix.M4_6_MATRIX)}),
+                                  ("update_rollback_only", str(update_rollback_only).lower()),
                                   ("matrix", {"include": matrix}),
                                   ("wait_timeout", wait_timeout)):
                   print(f"{key}={json.dumps(value, separators=(',', ':')) if isinstance(value, dict) else value}", file=output)
           PY
 
   journey:
-    if: needs.config.outputs.m4_5_only != 'true'
+    if: needs.config.outputs.m4_5_only != 'true' && needs.config.outputs.update_rollback_only != 'true'
     needs: config
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.job_id == 'direct-windows' && 300 || 150 }}
@@ -1380,10 +1394,81 @@ jobs:
           path: ${{ runner.temp }}/m4-6-${{ matrix.job_id }}/output
           if-no-files-found: warn
 
+  update_rollback:
+    # Real Release 14 install -> candidate update forced to fail its health step -> Release 14 restored -> update again.
+    # Design and evidence: docs/qualification/update-rollback-leg.md. Receipts are checked by journey_update_rollback.py.
+    if: needs.config.outputs.update_rollback_only == 'true'
+    needs: config
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      ASTRID_CI_EXPECTED_RUNNER: ubuntu-24.04
+      RUN_ROOT: ${{ runner.temp }}/astrid-r1-update-rollback-linux
+    steps:
+      - name: Check out reviewed Agent receipt harness
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-agent
+          ref: ${{ needs.config.outputs.driver_agent_ref }}
+          path: agent
+          persist-credentials: false
+      - name: Check out frozen candidate App
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/astrid-app
+          ref: ${{ fromJSON(needs.config.outputs.candidate).app }}
+          path: app
+          persist-credentials: false
+      - name: Check out the published Release 14 App
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/astrid-app
+          ref: e0da794ac9d26a808ab4082b29f60408b66b3a4c
+          path: r14-app
+          persist-credentials: false
+      - name: Check out frozen candidate Agent with full history
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-agent
+          ref: ${{ fromJSON(needs.config.outputs.candidate).agent }}
+          path: candidate-agent
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
+      - name: Make the Release 14 Agent commit readable (its installer is asked about --yes)
+        run: git -C candidate-agent fetch --no-tags origin c0ad6b54aadd21630d98bb5039613e37efe92a8f
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Establish isolated Linux user service manager
+        timeout-minutes: 3
+        run: bash agent/scripts/ci_linux_user_manager.sh "$RUN_ROOT"
+      - name: Run the update, forced-rollback and update-again leg
+        env:
+          CANDIDATE: ${{ needs.config.outputs.candidate }}
+        run: |
+          printf '%s' "$CANDIDATE" > "$RUNNER_TEMP/candidate.json"
+          python -u agent/scripts/journey_update_rollback.py run \
+            --candidate "$RUNNER_TEMP/candidate.json" --app-checkout "$PWD/app" --r14-app-checkout "$PWD/r14-app" \
+            --candidate-agent-checkout "$PWD/candidate-agent" \
+            --media "$PWD/agent/tests/fixtures/reshape/hype_regression/poster.png" \
+            --run-root "$RUN_ROOT" --root "$RUN_ROOT/program" --data-root "$RUN_ROOT/data"
+      - name: Fail closed on any missing or failed receipt
+        if: always()
+        run: python agent/scripts/journey_update_rollback.py check "$RUN_ROOT/evidence/update-rollback"
+      - name: Retain update-rollback receipts and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          retention-days: 30
+          name: update-rollback-receipt
+          path: ${{ runner.temp }}/astrid-r1-update-rollback-linux/evidence/update-rollback
+          if-no-files-found: warn
+
   gate:
     name: Journey evidence (exact tuple)
     if: always()
-    needs: [config, journey, release2, m4_4b_local, failure_modes]
+    needs: [config, journey, release2, m4_4b_local, failure_modes, update_rollback]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -1400,10 +1485,13 @@ jobs:
           M4_6_ENABLED: ${{ needs.config.outputs.m4_6_enabled }}
           M4_6_RESULT: ${{ needs.failure_modes.result }}
           RELEASE2_RESULT: ${{ needs.release2.result }}
+          UPDATE_ROLLBACK_ONLY: ${{ needs.config.outputs.update_rollback_only }}
+          UPDATE_ROLLBACK_RESULT: ${{ needs.update_rollback.result }}
         run: |
           test "$DIAGNOSTIC_KEEP_GOING" != true # NON-PROOF, even when artifacts are absent
           test "$CONFIG_RESULT" = success
-          if [ "$M4_5_ONLY" != true ]; then test "$JOURNEY_RESULT" = success; fi
+          if [ "$M4_5_ONLY" != true ] && [ "$UPDATE_ROLLBACK_ONLY" != true ]; then test "$JOURNEY_RESULT" = success; fi
+          if [ "$UPDATE_ROLLBACK_ONLY" = true ]; then test "$UPDATE_ROLLBACK_RESULT" = success; fi
           if [ "$M4_5_ENABLED" = true ]; then test "$RELEASE2_RESULT" = success; fi
           if [ "$M4_4B_ENABLED" = true ]; then test "$M4_4B_RESULT" = success; fi
           if [ "$M4_6_ENABLED" = true ]; then test "$M4_6_RESULT" = success; fi
@@ -1433,7 +1521,7 @@ jobs:
           path: receipts
           merge-multiple: false
       - name: Aggregate the exact Release-1 receipt matrix
-        if: needs.config.outputs.m4_5_only != 'true' && needs.config.outputs.m4_4a_backend_only != 'true' && needs.config.outputs.pinokio_only != 'true'
+        if: needs.config.outputs.m4_5_only != 'true' && needs.config.outputs.m4_4a_backend_only != 'true' && needs.config.outputs.pinokio_only != 'true' && needs.config.outputs.update_rollback_only != 'true'
         shell: bash
         env:
           CANDIDATE: ${{ needs.config.outputs.candidate }}
