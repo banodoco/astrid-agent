@@ -1345,9 +1345,30 @@ def pack_version_notices(source_provenance: Mapping[str, Any],
     return notices
 
 
+def selected_pack_version_notices(workflow: Any, *, installing: bool) -> list[dict[str, Any]]:
+    """Compare source evidence with the exact refs of the admitted graph.
+
+    The bundle owns its source provenance and selected immutable refs. An
+    ambient catalog candidate or observed node class is not an installed pin.
+    """
+    requirements = getattr(workflow, 'requirements', None)
+    refs = getattr(requirements, 'custom_node_refs', ())
+    if not refs:
+        return []
+    metadata = getattr(workflow, 'metadata', {})
+    source_report = metadata.get('source_provenance') if isinstance(metadata, Mapping) else None
+    if source_report is None:
+        provenance = getattr(getattr(workflow, 'source', None), 'provenance', {})
+        source_report = provenance.get('source_provenance') if isinstance(provenance, Mapping) else None
+    if not isinstance(source_report, Mapping):
+        return []
+    return pack_version_notices(source_report, refs, installing=installing)
+
+
 def target_schema(entry: dict[str, Any], workflow: Any, client: Any, *, engine: str | None = None,
                   pending_target: Mapping[str, Any] | None = None, align: str = 'check',
-                  initial_readiness: Mapping[str, Any] | None = None):
+                  initial_readiness: Mapping[str, Any] | None = None,
+                  version_notices: list[dict[str, Any]] | None = None):
     """Check the selected target's node and exact loader inventory.
 
     ``align='trust'`` feeds the workflow's own declared model rows as target custody,
@@ -1429,6 +1450,12 @@ def target_schema(entry: dict[str, Any], workflow: Any, client: Any, *, engine: 
                        'inputs': input_inventory(_workflow_inputs(entry, entry.get('mode', 'workflow'), workflow=workflow))}
         raise GenerationReadinessError(readiness_envelope(entry=description,
             target=target, issues=issues, fixes=fixes))
+    if version_notices is not None:
+        # Only the graph that passed target admission contributes notices.
+        # A live attached target is never described as installing a pack.
+        version_notices.extend(selected_pack_version_notices(
+            workflow, installing=client is None and align == 'align',
+        ))
     if client is None:
         return None
     custody = {}
