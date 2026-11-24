@@ -220,3 +220,21 @@ def test_write_passed_lists_only_ids_that_passed_and_did_not_fail(files, capsys)
     assert cmp.main([str(archive), "--ceiling", str(files["ceiling"]), "--expect-jobs", EXPECT, "--write-passed", str(target)]) == 0
     rows = target.read_text().splitlines()
     assert rows[0] == "job\tid" and "unit\ttests/a.py::test_one" in rows and "opt-in\ttests/o.py::test_one" in rows
+
+
+def test_a_passing_test_turned_xfail_fails(files, capsys):
+    archive = write_archive(files["tmp"] / "cand")
+    log = next(archive.glob("*_opt-in.txt"))
+    log.write_text(log.read_text().replace("PASSED tests/o.py::test_one", "XFAIL tests/o.py::test_one - hidden"))
+    code, out = run(files, archive, capsys)
+    assert code == 1, out
+    assert "tests/o.py::test_one | passed on the baseline, now XFAIL" in out
+
+
+def test_a_deselected_or_skipped_test_is_a_lost_id(files, capsys):
+    archive = write_archive(files["tmp"] / "cand")
+    log = next(archive.glob("*_opt-in.txt"))
+    log.write_text(log.read_text().replace("PASSED tests/o.py::test_one", "SKIPPED [1] tests/o.py:3: skipped"))
+    code, out = run(files, archive, capsys)
+    assert code == 1, out
+    assert "FAIL opt-in | tests/o.py::test_one" in out

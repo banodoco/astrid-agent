@@ -20,6 +20,9 @@ It exits 1 (and says why) on any of:
                   (cancelled, timed out, truncated), whose FAILED/ERROR rows do not equal its result line, or
                   that ran zero tests.
   ceiling growth  with --base-ceiling: an entry in the ceiling that the base does not have.
+  new xfail       an id that passed on the baseline and now reports XFAIL (a marker added to hide a failure).
+Always pass the BASE branch's ceiling, baseline and moving-groups files (for example `git show <base>:ci/agent-ceiling.tsv`),
+never the candidate's: a candidate that edits them would otherwise approve itself.
 Ceiling entries that now pass are "ratchet candidates": reported, written to RATCHET.tsv, and not a failure.
 Exit 2 is bad input.
 
@@ -220,13 +223,15 @@ def moving_verdict(nodeid, message, moving):
 
 def classify(families, expect, ceiling, baseline_passed, moving):
     """Compare candidate results, keyed (family, id). Returns a dict of result lists."""
-    ran_failed, ran_passed, messages = {}, set(), {}
+    ran_failed, ran_passed, ran_xfail, messages = {}, set(), set(), {}
     for family, jobs in families.items():
         for job in jobs:
             for status, nodeid, message in job["rows"]:
                 key = (family, nodeid)
                 if status in PASSING:
                     ran_passed.add(key)
+                    if status == "XFAIL":
+                        ran_xfail.add(key)
                 else:
                     ran_failed[key] = status
                     messages.setdefault(key, message)
@@ -242,8 +247,11 @@ def classify(families, expect, ceiling, baseline_passed, moving):
             result["known"] += 1
         else:
             result["new"].append(key + (messages[key][:120],))
+    for key in sorted((ran_xfail - set(ran_failed)) & baseline_passed):
+        # It passed on the baseline and is now expected to fail: an xfail marker added to hide a failure.
+        result["new"].append(key + ("passed on the baseline, now XFAIL (an xfail marker was added)",))
     for key in sorted(ceiling):
-        if key in ran_passed:
+        if key in ran_passed and key not in ran_xfail:
             result["ratchet"].append(key)
     present = {family for family in expect if families.get(family)} | {f for f in families if f not in expect}
     for key in sorted(baseline_passed - ran_passed - set(ran_failed)):
