@@ -1279,10 +1279,11 @@ def _execute_remotion_locked(
             # worktrees and must never be inherited by the render child.
             remotion_env_additions["PYTHONPATH"] = schema_pythonpath
         remotion_env_additions["ASTRID_REMOTION_PROJECT_DIR"] = str(project_dir.resolve())
-        if stage_summary.get("project_pack_roots"):
-            from astrid.core.rendering.project_elements import PACK_ROOTS_ENV, REGISTRY_ROOT_ENV
+        from astrid.core.rendering.project_elements import PACK_ROOTS_ENV, REGISTRY_ROOT_ENV
 
-            remotion_env_additions[PACK_ROOTS_ENV] = json.dumps(stage_summary["project_pack_roots"])
+        if stage_summary.get("render_pack_roots") is not None:
+            remotion_env_additions[PACK_ROOTS_ENV] = json.dumps(stage_summary["render_pack_roots"])
+        if stage_summary.get("project_pack_roots"):
             remotion_env_additions[REGISTRY_ROOT_ENV] = stage_summary["project_registry_root"]
         remotion_args = [
             str(runtime_tools.node_executable),

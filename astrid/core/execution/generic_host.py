@@ -6965,7 +6965,7 @@ class GenericPackHost:
             str(root), observed, self.execution_policy.evidence_cap_bytes)
         self._publish_evidence_status()
 
-    def _renderer_task_lease(self, environment: Mapping[str, str], attempt: Path):
+    def _renderer_task_lease(self, environment: Mapping[str, str], attempt: Path, *, source=None):
         from .remotion_host_session import HostRemotionSession
         # Never hold _process_lock across owner operations: owner callbacks
         # acquire it when retaining/draining the original child.
@@ -6981,7 +6981,7 @@ class GenericPackHost:
                     retire=lambda root: self.execution_policy.evidence_budget.release(str(root)),
                     report=self._latch_cleanup_uncertainty, holds=self.warm_holds)
             return self._remotion_host_session.lease(
-                environment, attempt=attempt, requested_idle=self._requested_idle_seconds)
+                environment, attempt=attempt, requested_idle=self._requested_idle_seconds, source=source)
 
     def _hold_session_slot(self) -> WarmLease:
         """Hold the session slot for one task, cancelling any idle expiry.
@@ -10554,7 +10554,8 @@ class GenericPackHost:
         if record.id == "rendering.timeline_visualize":
             if not argv or Path(argv[0]).resolve() != Path(sys.executable).resolve():
                 raise HostError("renderer command requires the admitted Python interpreter")
-            remotion_lease = self._renderer_task_lease(env, attempt)
+            remotion_lease = self._renderer_task_lease(
+                env, attempt, source=getattr(prepared_inputs, "timeline_source", None))
         import_receipt = None
         if record.id == "vibecomfy.validate":
             from ._child_import_receipt import ChildImportReceipt
