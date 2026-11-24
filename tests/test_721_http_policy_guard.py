@@ -211,7 +211,7 @@ LOOPBACK_HTTP_OPENINGS = {
     # Literal IPv4 loopback only; redirects and environment proxies are disabled.
     ("astrid/packs/vibecomfy/native_preparation.py", "_read_object_info", "httpx.stream"): (
         1,
-        "2c8233fd6ca8a751f928d67b935041398791fad298e503f55aea38104d934ebe",
+        "eff66c8d1106781fc03bb386cdca3adba32a1afc9d0929f79c11d3769364c7a1",
     ),
 }
 
