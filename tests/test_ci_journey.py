@@ -70,7 +70,7 @@ def test_direct_windows_failure_snapshot_prints_recursive_logs_and_matching_proc
 def test_task_reports_sdk_error_code_before_empty_task_refs(tmp_path, monkeypatch):
     evidence = tmp_path / "release1-working-task"
     evidence.mkdir()
-    monkeypatch.setattr(journey, "install_journey_packs", lambda run_cli: None)
+    monkeypatch.setattr(journey, "install_journey_packs", lambda run_cli, **kwargs: None)
     monkeypatch.setattr(
         journey, "installed_cli_with_capture",
         lambda *args, **kwargs: json.dumps({"ok": False, "error": {"code": "not_found"}}),
@@ -102,6 +102,69 @@ def test_journey_packs_install_from_the_pinned_source_through_packs_add():
     assert calls == [["packs", "list", "--json"]]
 
 
+def test_journey_packs_skip_a_release_without_a_packs_route():
+    calls = []
+    journey.install_journey_packs(lambda argv, name: calls.append(argv), routes_packs=lambda: False)
+    assert calls == []
+    journey.install_journey_packs(
+        lambda argv, name: (calls.append(argv), json.dumps({"packs": [{"id": "chiptune"}]}))[1],
+        routes_packs=lambda: True)
+    assert calls == [["packs", "list", "--json"]]
+
+
+def test_submit_task_passes_the_installed_packs_route_probe(tmp_path, monkeypatch):
+    seen, calls = [], []
+    monkeypatch.setattr(journey, "installed_cli", lambda version, argv, evidence, name, **kwargs: calls.append(argv))
+    monkeypatch.setattr(journey, "installed_routes_packs", lambda version, evidence: seen.append(evidence) or False)
+    monkeypatch.setattr(journey, "installed_cli_with_capture", lambda *args, **kwargs: json.dumps({
+        "details": {"astridTaskRefs": [{"task_id": "task-1"}]},
+    }))
+    assert journey.submit_task({}, tmp_path, "test-project", create_project=False) == "task-1"
+    # Release 0 has no packs route: `packs list` is never run, the task is still admitted.
+    assert seen == [tmp_path] and calls == []
+
+
+def test_console_routes_packs_reads_the_installed_source():
+    assert journey.console_routes_packs('if rest and rest[0] == "packs":\n    return 1')
+    assert journey.console_routes_packs("if rest[0]=='packs':")
+    assert not journey.console_routes_packs('if rest and rest[0] == "engines":')
+    assert not journey.console_routes_packs("") and not journey.console_routes_packs(None)
+
+
+def test_installed_routes_packs_probes_the_installed_entry_module_source(tmp_path, monkeypatch):
+    entry = tmp_path / "omp_agent.py"
+    runs = []
+
+    def fake_run(argv, log, *, env=None, timeout=0):
+        runs.append((argv, log.name, env))
+        return "noise\n" + (str(entry) if entry.exists() else "") + "\n"
+
+    monkeypatch.setattr(journey, "run", fake_run)
+    monkeypatch.setenv("PYTHONPATH", "/poison")
+    version = {"python": "/v/py/bin/python", "env": {"ASTRID_X": "1"}}
+    assert journey.installed_routes_packs(version, tmp_path) is False  # no entry module on this release
+    entry.write_text('if rest[0] == "engines": pass\n')
+    assert journey.installed_routes_packs(version, tmp_path) is False  # entry module without packs
+    entry.write_text('if rest and rest[0] == "packs": pass\n')
+    assert journey.installed_routes_packs(version, tmp_path) is True
+    argv, name, env = runs[-1]
+    assert argv[:3] == ["/v/py/bin/python", "-I", "-c"] and "astrid.omp_agent" in argv[3]
+    assert name == "journey-pack-entry.log" and env["ASTRID_X"] == "1" and "PYTHONPATH" not in env
+
+def test_packs_entry_probe_prints_nothing_when_the_release_lacks_the_module(monkeypatch, capsys):
+    import importlib.util
+
+    def missing(name):
+        raise ModuleNotFoundError(name)
+
+    monkeypatch.setattr(importlib.util, "find_spec", missing)
+    exec(journey.PACKS_ENTRY_ORIGIN_PROBE, {})
+    assert capsys.readouterr().out.strip() == ""
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: SimpleNamespace(origin="/v/omp_agent.py"))
+    exec(journey.PACKS_ENTRY_ORIGIN_PROBE, {})
+    assert capsys.readouterr().out.strip() == "/v/omp_agent.py"
+
+
 def test_submit_task_installs_packs_through_installed_launcher_entry(tmp_path, monkeypatch):
     calls = []
 
@@ -110,6 +173,7 @@ def test_submit_task_installs_packs_through_installed_launcher_entry(tmp_path, m
         return json.dumps({"packs": []})
 
     monkeypatch.setattr(journey, "installed_cli", fake_installed_cli)
+    monkeypatch.setattr(journey, "installed_routes_packs", lambda version, evidence: True)
     monkeypatch.setattr(journey, "installed_cli_with_capture", lambda *args, **kwargs: json.dumps({
         "details": {"astridTaskRefs": [{"task_id": "task-1"}]},
     }))

@@ -2393,17 +2393,53 @@ def _pack_rows(value):
             yield from _pack_rows(child)
 
 
-def install_journey_packs(run_cli) -> None:
+def install_journey_packs(run_cli, *, routes_packs=None) -> None:
     """Install each JOURNEY_PACKS pack from its pinned source through the public `packs add` path.
 
     ``run_cli(argv, name)`` runs the installed ``astrid`` CLI and returns its stdout.
+    ``routes_packs()`` says whether the installed release routes ``packs`` at all:
+    for older releases (e.g. Release 0) nothing is listed or added.
     """
+    if routes_packs is not None and not routes_packs():
+        return
     for pack_id, (source, revision) in JOURNEY_PACKS.items():
         listing = json.loads(run_cli(["packs", "list", "--json"], "journey-packs-list.json"))
         if any(row.get("id") == pack_id for row in _pack_rows(listing)):
             continue
         run_cli(["packs", "add", source, "--revision", revision, "--pack-id", pack_id,
                  "--subpath", pack_id, "--yes"], f"journey-pack-{pack_id}.log")
+
+
+_PACKS_ROUTE = re.compile(r"""\[0\]\s*==\s*["']packs["']""")
+# The entry module submit_task runs `packs` through; a release whose source does not route it has no packs.
+PACKS_ENTRY_MODULE = "astrid.omp_agent"
+# Prints the installed release's entry module path, or nothing when it has none.
+PACKS_ENTRY_ORIGIN_PROBE = ("import importlib.util as u\n"
+                            "try:\n"
+                            f"    s = u.find_spec({PACKS_ENTRY_MODULE!r})\n"
+                            "except (ImportError, ValueError):\n"
+                            "    s = None\n"
+                            "print(s.origin if s is not None and s.origin else '')")
+
+
+def console_routes_packs(source: str | None) -> bool:
+    """True when an installed entry module's source routes ``packs``."""
+    return bool(source) and _PACKS_ROUTE.search(source) is not None
+
+
+def installed_routes_packs(version: dict, evidence: Path) -> bool:
+    """Whether the installed release's entry module has a ``packs`` route (read from its source)."""
+    env = {key: value for key, value in os.environ.items() if key not in {"PYTHONPATH", "PYTHONHOME"}}
+    env.update(version["env"])
+    output = run([version["python"], "-I", "-c", PACKS_ENTRY_ORIGIN_PROBE], evidence / "journey-pack-entry.log",
+                 env=env, timeout=120)
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    if not lines or not lines[-1]:
+        return False
+    try:
+        return console_routes_packs(Path(lines[-1]).read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return False
 
 
 def submit_task(version: dict, evidence: Path, project: str, *, create_project: bool = True,
@@ -2429,7 +2465,8 @@ def submit_task(version: dict, evidence: Path, project: str, *, create_project: 
     # astrid.omp_agent; ``python -m astrid`` exposes the product gateway and
     # deliberately does not include the launcher-only packs command.
     install_journey_packs(lambda argv, name: installed_cli(
-        version, argv, evidence, name, module="astrid.omp_agent", timeout=600))
+        version, argv, evidence, name, module=PACKS_ENTRY_MODULE, timeout=600),
+        routes_packs=lambda: installed_routes_packs(version, evidence))
     request = {"capability_id": "chiptune.sfx", "kind": "executor", "project": project,
                "inputs": {"kind": "blip", "variant": 1, "pitch": 0, "duration_s": duration_s}}
     invocation = _sdk_result(installed_cli_with_capture(version, [json.dumps(request)], evidence,
