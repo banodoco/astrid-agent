@@ -369,7 +369,7 @@ target is not granted managed installation permission by this check.
 
 ### LE-8 — Model downloads and available space
 
-<!-- LE-8: fill this subsection in the same change as the card. -->
+Packs that download their own models on first run can consume space that is not part of the workflow's locked model manifest. Use catalog byte hints only where recorded; absent hints are unknown. Report the selected target's measured free space at its model root and persistent-volume status before the first run. Do not use the controller's disk for an attached or rented target. No declared volume is an advisory warning that downloads may repeat, not a block. The existing fetch-time capacity check remains authoritative for explicit model downloads; a pack-owned cache can use another path.
 
 ### LE-9 — Declare a missing model
 
