@@ -94,8 +94,12 @@ def write_entry_approvals(entry_directory: str | Path, records: list[NodeApprova
 
 
 def entry_approval_directory(entry):
-    """Resolve the actual saved entry, never a workflow-authored sidecar path."""
-    if not entry or entry.get("source") != "user-entry":
+    """Resolve the actual saved entry, never a workflow-authored sidecar path.
+
+    A contributed built-in row (it carries ``contribution``) has no saved
+    directory beside it, so it persists no approvals; per-run consent still applies.
+    """
+    if not entry or entry.get("source") != "user-entry" or entry.get("contribution"):
         return None
     from vibecomfy.entries import entries_dir, load_entry
 
