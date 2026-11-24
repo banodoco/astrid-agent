@@ -73,7 +73,7 @@ def test_staged_schema_damage_refused_after_permissions_restored(
 
 def test_schema_permission_scope_restores_seal_on_exception(staged_installer):  # noqa: F811
     state = staged_installer
-    state.backend.stage(state.manifest, state.root, state.data)
+    version = state.backend.stage(state.manifest, state.root, state.data)
     path = state.product_root / SCHEMA
     package = state.product_root / "astrid"
     parent_mode = stat.S_IMODE(path.parent.stat().st_mode)
@@ -89,4 +89,6 @@ def test_schema_permission_scope_restores_seal_on_exception(staged_installer):  
 
     assert stat.S_IMODE(path.parent.stat().st_mode) == parent_mode
     assert stat.S_IMODE(path.stat().st_mode) == file_mode
-    assert install_stamp(package) == before
+    relative = path.relative_to(version.root).as_posix()
+    assert install_stamp(package) == (None, f"shipped_file_modified:{relative}")
+    assert install_stamp(package, verify=True) == before

@@ -95,15 +95,18 @@ def _stamp(payload: dict) -> str:
     return hashlib.sha256(data.encode("utf-8")).hexdigest()
 
 
-def _private_readonly_file(path: Path, mode: int, links: int) -> None:
+def _private_readonly_file(path: Path, info: os.stat_result) -> None:
     # uv can hard-link its cache into a new POSIX venv. Do not chmod shared
-    # inodes: copy only the shared shipped leaves, keeping the old mode.
-    if links > 1:
+    # inodes. Preserve the source mtime when detaching: the installed
+    # interpreter has already emitted ordinary timestamp-based bytecode.
+    mode = info.st_mode
+    if info.st_nlink > 1:
         fd, name = tempfile.mkstemp(prefix=".astrid-stamp-", dir=path.parent)
         temporary = Path(name)
         try:
             with os.fdopen(fd, "wb") as target, path.open("rb") as source:
                 shutil.copyfileobj(source, target)
+            os.utime(temporary, ns=(info.st_atime_ns, info.st_mtime_ns))
             os.chmod(temporary, stat.S_IMODE(mode))
             os.replace(temporary, path)
         finally:
@@ -157,7 +160,7 @@ def _inventory(
             tokens[relative] = _stat_token(after)
         elif stat.S_ISREG(info.st_mode):
             if seal:
-                _private_readonly_file(path, info.st_mode, info.st_nlink)
+                _private_readonly_file(path, info)
                 info = facts(path)
             if info.st_mode & _WRITE_BITS or info.st_nlink != 1:
                 raise _Modified(path, folder)
@@ -240,13 +243,17 @@ def read_install_stamp(
     """Observe a stamp without changing the installation.
 
     The POSIX default checks metadata and membership, including change time;
-    any stat difference is a cache miss. Windows Python 3.11 reports creation
-    time rather than change time, so it also hashes the shipped bytes.
+    any stat difference is a cache miss. chmod, renaming entries into the
+    tree, and some backup or antivirus tools change ctime too: these fail
+    safe rather than authorizing a stale cache hit. Windows Python 3.11
+    reports creation time instead; the default returns no stamp on Windows.
 
     Explicit verify hashes every shipped file, checks readonly modes and
     membership, and may attest unchanged bytes despite metadata churn. It
     never updates the recorded tokens or re-enables a default cache hit.
     """
+    if os.name == "nt" and not verify:
+        return None, "windows_stat_tokens_unreliable"
     try:
         raw = package_root if package_root is not None else Path(__file__).absolute().parents[1]
         package = Path(os.path.abspath(Path(raw).expanduser()))
@@ -302,7 +309,7 @@ def read_install_stamp(
         expected_tokens = manifest["stats"]
         if expected_tokens.keys() != expected.keys() | expected_dirs:
             return None, "stamp_manifest_mismatch"
-        full = verify or os.name == "nt"
+        full = verify
         files, directories, tokens = _inventory(
             folder, product_root, seal=False, hash_files=full, uid=uid,
         )
