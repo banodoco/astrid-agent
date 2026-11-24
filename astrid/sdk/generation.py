@@ -1745,6 +1745,7 @@ class GenerationFacade:
         from astrid.core.generation import placement as placements
         from astrid.core.generation.backends.vibecomfy import VibeComfyBackend
         from astrid.core.generation.preflight import (
+            GenerationReadinessError,
             compare_versions,
             generation_error,
             readiness_envelope,
@@ -1979,8 +1980,20 @@ class GenerationFacade:
                         from types import SimpleNamespace
                         prerequisite = SimpleNamespace(id=identifier, modes={mode: SimpleNamespace(
                             backends={"local": SimpleNamespace(template=str(candidate["bundle"]))})})
+                        initial_readiness = None
                         if not is_remote_target:
-                            timed_call("target check", require_generation_target_readiness, prerequisite, mode, target_client)
+                            try:
+                                timed_call("target check", require_generation_target_readiness, prerequisite, mode, target_client)
+                            except GenerationReadinessError as exc:
+                                if not (is_managed_target and target_client is None
+                                        and exc.code == 'engine_not_found'
+                                        and not candidate.get('hooks_declared')
+                                        and (workflow_entry is not None or candidate.get('source') == 'user-entry')):
+                                    raise
+                                # Imported workflows can still be inspected offline.
+                                # Keep the engine refusal and collect missing pack
+                                # evidence from the same graph before returning it.
+                                initial_readiness = exc.readiness
                         if candidate["kind"] != modality or mode not in candidate["modes"]:
                             raise ValueError(f"entry {identifier!r} does not support {modality}/{mode}")
                         # The selected workflow owns preparation. Its catalog association
@@ -2037,10 +2050,11 @@ class GenerationFacade:
                                 retained = Path(built['bundle']) / 'source.json'
                                 retain_source(retained.name, retained.read_bytes())
                             schema = timed_call('target node list', workflow_entries.target_schema,candidate, workflow, target_client, engine=runpod_engine,
-                                                                    pending_target=pending_target, align=align)
+                                pending_target=pending_target,
+                                align=(requested_align or 'align') if is_remote_target else align)
                         else:
                             with _snapshot_generation_workflow(workflow_entries.bundle_path(candidate)) as frozen:
-                                if not dry_run and source_ref is None:
+                                if initial_readiness is None and not dry_run and source_ref is None:
                                     original_path = frozen
                                     retained = frozen.with_name('source.json')
                                     if retained.is_file():
@@ -2062,7 +2076,9 @@ class GenerationFacade:
                                              if need.get('ambiguity') and need not in needs)
                                 candidate = {**candidate, 'needs': _explicit_workflow_needs(needs)}
                             schema = timed_call('target node list', workflow_entries.target_schema,candidate, workflow, target_client, engine=runpod_engine,
-                                                                    pending_target=pending_target, align=align)
+                                pending_target=pending_target,
+                                align=(requested_align or 'align') if is_remote_target else align,
+                                **({'initial_readiness': initial_readiness} if initial_readiness is not None else {}))
                     from vibecomfy.workflow_bundle import load_bundle
                     if source == "workflow":
                         # Re-emit the edited canonical workflow before approval so
