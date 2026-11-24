@@ -1963,6 +1963,7 @@ class GenerationFacade:
                 try:
                     assets = {}
                     approved_files = None
+                    version_notices = []
                     transport = BuildTransport()
                     if is_remote_target:
                         template = (None if source == "workflow" else _local_template(candidate, mode))
@@ -2058,7 +2059,8 @@ class GenerationFacade:
                                 retain_source(retained.name, retained.read_bytes())
                             schema = timed_call('target node list', workflow_entries.target_schema,candidate, workflow, target_client, engine=runpod_engine,
                                 pending_target=pending_target,
-                                align=(requested_align or 'align') if is_remote_target else align)
+                                align=(requested_align or 'align') if is_remote_target else align,
+                                version_notices=version_notices)
                         else:
                             with _snapshot_generation_workflow(workflow_entries.bundle_path(candidate)) as frozen:
                                 if initial_readiness is None and not dry_run and source_ref is None:
@@ -2085,6 +2087,7 @@ class GenerationFacade:
                             schema = timed_call('target node list', workflow_entries.target_schema,candidate, workflow, target_client, engine=runpod_engine,
                                 pending_target=pending_target,
                                 align=(requested_align or 'align') if is_remote_target else align,
+                                version_notices=version_notices,
                                 **({'initial_readiness': initial_readiness} if initial_readiness is not None else {}))
                     from vibecomfy.workflow_bundle import load_bundle
                     if source == "workflow":
@@ -2182,9 +2185,14 @@ class GenerationFacade:
                        'accepted_inputs': sorted(inputs), 'rejected_inputs': []}
         if source == 'workflow' and candidate.get('license_notice'):
             description['license_notice'] = candidate['license_notice']
+        if version_notices:
+            description['pack_version_notices'] = [
+                {'message': notice['message'], 'details': notice['details']} for notice in version_notices
+            ]
         readiness = readiness_envelope(entry=description, target=(
             pending_target if is_remote_target else target_record),
-                                      issues=compare_versions(recorded, observed))
+            issues=[*compare_versions(recorded, observed),
+                    *(notice['issue'] for notice in version_notices if notice['issue'] is not None)])
         if dry_run:
             preview = dict(plan or {"model": entry_id, "mode": mode})
             preview.update(model=entry_id, mode=mode, reason=("explicitly selected workflow entry" if model is not None or workflow_entry is not None else "highest-ranked ready local entry for the requested kind and mode on the selected target"))

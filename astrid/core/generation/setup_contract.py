@@ -15,6 +15,8 @@ SETUP_ISSUE_CODES = frozenset({
     "needs_consent", "entry_exists", "pin_conflict", "pack_version_differs", "unknown_input",
     "source_unreachable", "commit_unavailable", "pip_failed", "protected_change", "node_pack_conflict",
     "partial_install", "classes_not_loaded", "fetch_404",
+    # Engine/runtime drift is distinct from a selected pack version difference.
+    "version_drift",
 })
 _SCOPES = frozenset({"read_only", "managed_write", "user_env", "paid", "attached_target"})
 _FIX_FIELDS = frozenset({"id", "who", "scope", "details", "argv", "instruction", "placeholders"})
