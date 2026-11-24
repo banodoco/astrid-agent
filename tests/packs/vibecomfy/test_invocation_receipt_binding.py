@@ -259,7 +259,28 @@ def attached_case(comfy, tmp_path, monkeypatch, real_runtime, request):
     inputs = _empty_image(tmp_path / "bundle")
     daemon = real_runtime()
     worker_token = daemon.worker_token
+    pack_roots = [Path(__file__).resolve().parents[3] / "astrid/packs/vibecomfy"]
     if getattr(request, "param", False):
+        # A coordinating parent must not reserve the child's exclusive GPU.
+        # Both shipped vibecomfy.validate and vibecomfy.run use the local
+        # generation adapter and its "gpu" resource. Use a genuine registered
+        # fixture orchestration action instead (as in the D18 parent fixture).
+        import yaml
+        from astrid.pack_api import VERSION as PACK_API_VERSION
+
+        parent_root = tmp_path / "ra6parent"
+        parent_root.mkdir()
+        (parent_root / "pack.yaml").write_text(yaml.safe_dump({
+            "schema_version": 3, "pack_api": "%d.%d" % PACK_API_VERSION,
+            "id": "ra6parent", "name": "RA6 orchestration fixture", "version": "0.1.0",
+            "actions": {"parent": {
+                "description": "Hold the parent lease while its child executes.",
+                "metadata": {"adapter_family": "orchestration"},
+                "invocation": {"kind": "command", "command": {"argv": ["{python_exec}", "-c", "pass"]}},
+                "inputs": [], "outputs": {},
+            }},
+        }, sort_keys=False), encoding="utf-8")
+        pack_roots.append(parent_root)
         # Delegated claims require credential-verified machine identity.
         # Same fixture provisioning as test_runpod_slot_path_cpu.
         worker_token, _ = daemon.credentials.provision(
@@ -273,7 +294,7 @@ def attached_case(comfy, tmp_path, monkeypatch, real_runtime, request):
         )
     raw = RawRuntimeClient(daemon.endpoint, daemon.token)
     host = GenericPackHost(
-        pack_roots=[Path(__file__).resolve().parents[3] / "astrid/packs/vibecomfy"],
+        pack_roots=pack_roots,
         client=RuntimeProtocolClient(daemon.endpoint, worker_token),
         credential_source={}, attempt_base=tmp_path / "attempts", max_concurrency=2,
     )
@@ -360,6 +381,32 @@ def test_legacy_ui_host_compatibility(attached_case, with_receipt):
         assert len(case.comfy.prompts) == 1
 
 
+@pytest.mark.parametrize("suffix", [".py", ".PY"])
+@pytest.mark.parametrize("with_receipt", [False, True], ids=["missing", "receipt"])
+def test_direct_runtime_post_standalone_python_never_imports(attached_case, tmp_path, suffix, with_receipt):
+    """A standalone Python file cannot masquerade as legacy UI JSON."""
+    case = attached_case
+    marker = tmp_path / "unexpected-workflow-import"
+    python = tmp_path / ("evil" + suffix)
+    # Use a genuine published workflow with an observable import-time marker.
+    # The separate CAS file is the legacy workflow port, never a canonical trio.
+    python.write_bytes(Path(case.inputs["python"]).read_bytes() + (
+        "\nfrom pathlib import Path as _RA6MarkerPath\n"
+        f"_RA6MarkerPath({str(marker)!r}).write_text('imported')\n"
+    ).encode("utf-8"))
+    wire = {"workflow": _wire_file(
+        python, "workflow", case.raw, case.project_id,
+        filename=python.name, media_type="text/x-python",
+    )}
+    spec = {"inputs": {**wire, "comfy_url": case.comfy.url}}
+    if with_receipt:
+        spec["invocation_preflight"] = _receipt(case.inputs)
+    task_id = _admit(case, spec, wire)
+    assert not marker.exists()
+    _assert_refused(case, task_id, "invocation_preflight", lambda: case.host.run(once=True))
+    assert not marker.exists()
+
+
 def test_direct_runtime_post_cannot_supply_delegated_parent(attached_case):
     from astrid_runtime_client.generated import ApiError
 
@@ -396,13 +443,17 @@ def test_inner_forged_delegated_parent_does_not_bypass_host(attached_case):
 @pytest.mark.parametrize("bad_receipt", [False, True], ids=["absent", "bad"])
 def test_real_delegated_child_host_compatibility(attached_case, bad_receipt):
     from astrid.core.execution.generic_host import _run_source_digest
+    from astrid_runtime_client.generated import ApiError
 
     case = attached_case
     host = case.host
     spec, wire = _canonical_spec(case)
     ids = [row["object_id"] for row in wire.values()]
     cap = host.capabilities["vibecomfy.run"]
-    parent_cap = host.capabilities["vibecomfy.validate"]
+    parent_cap = host.capabilities["ra6parent.parent"]
+    assert parent_cap.ready and not parent_cap.resource_keys
+    assert cap.ready and "gpu" in cap.resource_keys
+    assert host.max_concurrency >= 2
     child_cap = {"capability_id": cap.id, "capability_digest": cap.capability_digest}
     parent_task = case.raw.admit_task(
         capability_id=parent_cap.id, capability_digest=parent_cap.capability_digest,
@@ -435,10 +486,16 @@ def test_real_delegated_child_host_compatibility(attached_case, bad_receipt):
         assert queued.state == "queued"
         assert queued.spec["delegated_parent"]["parent_task_id"] == parent.task_id
         def run():
-            return host.run_delegated_child(
-                {"task_id": child_id, "capability_id": cap.id}, parent=fence,
-                authority_client=host.client, target={"kind": "default"}, live=lambda: None,
-            )
+            try:
+                return host.run_delegated_child(
+                    {"task_id": child_id, "capability_id": cap.id}, parent=fence,
+                    authority_client=host.client, target={"kind": "default"}, live=lambda: None,
+                )
+            except ApiError as exc:
+                # Report the exact claim preflight reason instead of obscuring
+                # the 409 with a generic fixture assertion.
+                print("delegated claim waiting_reason:", exc.details.get("waiting_reason"))
+                raise
         if bad_receipt:
             _assert_refused(case, child_id, "api_digest", run)
         else:
