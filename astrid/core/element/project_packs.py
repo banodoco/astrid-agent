@@ -9,6 +9,7 @@ import base64
 import binascii
 import copy
 import hashlib
+import importlib
 import json
 import os
 import re
@@ -453,7 +454,9 @@ def _compile_components(staging: Path, components) -> None:
                          if path.is_file() and path.suffix in _SOURCE_EXTENSIONS)
     contract = None
     if needs_contract:
-        from astrid.core.rendering import _effect_registry
+        # The selected rendering pack is owned by the rendering package, which
+        # imports this one; resolve it at call time rather than as a static edge.
+        _effect_registry = importlib.import_module('astrid.core.rendering._effect_registry')
         roots = [row for row in _effect_registry.render_pack_roots()
                  if row['scope'] == 'pack-rendering-elements']
         if len(roots) != 1:
