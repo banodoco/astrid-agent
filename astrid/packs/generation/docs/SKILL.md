@@ -286,8 +286,12 @@ A dry run checks missing node classes on every placement. A live target's
 `object_info` determines what is actually loaded there; a managed or rented
 target with deferred host readiness refuses unresolved providers before any
 machine is claimed. A `missing_node_pack` issue names the missing class;
-identify its providing pack before declaring a pinned source. A catalog or
-bundle declaration is not proof the host has installed or loaded the pack.
+identify its providing pack before declaring a pinned source. When a local
+engine is not installed, the same readiness result also retains
+`engine_not_found`; missing packs are not hidden by that engine failure.
+A cached schema does not establish installation. Only ComfyUI core evidence
+or an exact catalog/bundle pin resolves the provider requirement; actual host
+restoration, consent and loaded classes still need verification.
 
 ### WS-7a — Node recipe declarations
 
