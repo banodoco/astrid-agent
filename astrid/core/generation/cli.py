@@ -524,8 +524,31 @@ def _workflow_command(parsed: argparse.Namespace, *, output=None) -> int:
                                code='input_rejected', details={'field': 'replace'})
     if parsed.no_run and not parsed.as_entry:
         raise ValueError('--no-run requires --as-entry')
+    if parsed.as_entry and parsed.dry_run:
+        # Preview the reusable entry's input contract without demanding the
+        # media/prompt or code consent for a particular execution.
+        description, _ = entries.resolve_workflow_inputs(path, values, mode=parsed.mode,
+                                                         required=False, **_workflow_comfy_url(parsed))
+        preview = {
+            "dry_run": True,
+            "written": False,
+            "would_save_entry": parsed.as_entry,
+            "replaces_existing": bool(parsed.replace),
+            "kind": description.get("kind"),
+            "modes": description.get("modes"),
+            "inputs": description.get("inputs"),
+        }
+        print(json.dumps(preview, indent=2, sort_keys=True, default=str), file=output)
+        return 0
     saved_code_approvals = None
     if parsed.as_entry:
+        from vibecomfy.entries import import_as_entry
+        if parsed.replace:
+            from inspect import signature
+            if 'replace' not in signature(import_as_entry).parameters:
+                from astrid.core.generation.preflight import generation_error
+                raise generation_error(ValueError('The installed VibeComfy entry API does not support atomic replacement'),
+                                       code='missing_dependency', details={'field': 'replace'})
         from astrid.core.generation import placement as placements
         from astrid.core.generation.node_approvals import authorize_nodes
         resolved = placements.validate_placement(placements.resolve_placement(
@@ -549,30 +572,7 @@ def _workflow_command(parsed: argparse.Namespace, *, output=None) -> int:
             **_controls(parsed))
         from astrid.sdk.generation import _require_claimed_machine
         _require_claimed_machine(parsed.placement)
-    if parsed.as_entry and parsed.dry_run:
-        # Preview the reusable entry's input contract without demanding the
-        # media/prompt for a particular execution. Validate any supplied values.
-        description, _ = entries.resolve_workflow_inputs(path, values, mode=parsed.mode,
-                                                         required=False, **_workflow_comfy_url(parsed))
-        preview = {
-            "dry_run": True,
-            "written": False,
-            "would_save_entry": parsed.as_entry,
-            "replaces_existing": bool(parsed.replace),
-            "kind": description.get("kind"),
-            "modes": description.get("modes"),
-            "inputs": description.get("inputs"),
-        }
-        print(json.dumps(preview, indent=2, sort_keys=True, default=str), file=output)
-        return 0
     if parsed.as_entry:
-        from vibecomfy.entries import import_as_entry
-        if parsed.replace:
-            from inspect import signature
-            if 'replace' not in signature(import_as_entry).parameters:
-                from astrid.core.generation.preflight import generation_error
-                raise generation_error(ValueError('The installed VibeComfy entry API does not support atomic replacement'),
-                                       code='missing_dependency', details={'field': 'replace'})
         entries.resolve_workflow_inputs(path, values, mode=parsed.mode,
                                         required=not parsed.no_run, **_workflow_comfy_url(parsed))
         # VibeComfy owns atomic publication. Never delete the old entry here

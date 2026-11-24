@@ -350,6 +350,7 @@ def _same_artifact_identity(left: ModelSpec, right: ModelSpec) -> bool:
 
 def catalog_manifests(entry_id: str | None = None) -> list[dict[str, Any]]:
     from vibecomfy.model_assets import _referenced_model_values, _subdir_for_model_reference
+    from vibecomfy.node_approvals import reviewed_approvals
     from vibecomfy.node_packs import read_lockfile, resolve_node_packs
     from vibecomfy.node_packs._lockfile import resolve_lockfile_path
 
@@ -405,14 +406,8 @@ def catalog_manifests(entry_id: str | None = None) -> list[dict[str, Any]]:
                     recipe = {'requirements_txt': row.requirements_txt, 'pip_no_deps': row.pip_no_deps}
                     pack.update(requirements_txt=row.requirements_txt, pip_no_deps=list(row.pip_no_deps))
                     recipe_hash = recipe_sha256(recipe)
-                    shipped = node_locks.get(row.name)
-                    shipped_match = (
-                        shipped is not None and shipped.url == repo
-                        and (shipped.git_commit_sha or shipped.commit) == revision
-                        and recipe_sha256({'requirements_txt': shipped.requirements_txt,
-                                           'pip_no_deps': shipped.pip_no_deps}) == recipe_hash)
-                    if not shipped_match:
-                        node = {'repo': repo, 'commit': revision, **recipe}
+                    node = {'repo': repo, 'commit': revision, **recipe}
+                    if not reviewed_approvals([node], placement_class='local'):
                         approved = any(approval_matches(record, node, placement_class='local')
                                        for record in approvals)
                         if not approved:
@@ -461,8 +456,7 @@ def catalog_manifests(entry_id: str | None = None) -> list[dict[str, Any]]:
                     unlocked.append({'kind': 'node_pack', 'name': pack.name,
                                      'missing': ['locked_repository_and_sha']})
                 else:
-                    packs.append({'name': pack.name, 'repository': repo, 'revision': revision,
-                                  'classes': sorted(pack.classes & classes)})
+                    packs.append(_locked_node_pack(row, pack.classes & classes))
             return [{'id': entry_id, 'provider_only': False, 'modes': [
                 {'mode': mode, 'workflow': workflow, 'models': list(declared_model_specs(workflow.metadata.get('model_assets', []))),
                  'node_packs': packs, 'unlocked': unlocked} for mode in entry['modes']]}]
@@ -494,12 +488,22 @@ def catalog_manifests(entry_id: str | None = None) -> list[dict[str, Any]]:
                     unlocked.append({'kind': 'node_pack', 'name': pack.name, 'repository': pack.repo,
                                      'classes': sorted(pack.classes & classes), 'missing': ['locked_repository_and_sha']})
                 else:
-                    packs.append({'name': pack.name, 'repository': repo, 'revision': revision,
-                                  'classes': sorted(pack.classes & classes)})
+                    packs.append(_locked_node_pack(row, pack.classes & classes))
             modes.append({'mode': mode, 'workflow': wf, 'models': list(models.values()),
                           'node_packs': packs, 'unlocked': unlocked})
         manifests.append({'id': entry.id, 'modes': modes, 'provider_only': not modes})
     return manifests
+
+
+def _locked_node_pack(row, classes):
+    """Project the complete shipped recipe used by canonical code approval."""
+    pack = {'name': row.name, 'repository': row.url, 'revision': row.git_commit_sha or row.commit,
+            'classes': sorted(classes)}
+    if row.requirements_txt is not None:
+        pack['requirements_txt'] = row.requirements_txt
+    if row.pip_no_deps:
+        pack['pip_no_deps'] = list(row.pip_no_deps)
+    return pack
 
 
 def _pack_recipe_patches(target: ManagedAssetTarget, pack: dict[str, Any]):
@@ -663,7 +667,7 @@ def align(*, entry_id=None, all_entries=False, apply=False, consent=(), target=N
     packs = [pack for manifest in manifests for mode in manifest['modes'] for pack in mode['node_packs']]
     if apply and packs:
         from .entries import find_entry
-        from .node_approvals import authorize_nodes, approval_record
+        from .node_approvals import authorize_nodes, approval_record, reviewed_approvals
         manifests = [{**manifest, 'modes': [{**mode, 'node_packs': [dict(pack) for pack in mode['node_packs']]}
                                          for mode in manifest['modes']]} for manifest in manifests]
         packs = [pack for manifest in manifests for mode in manifest['modes'] for pack in mode['node_packs']]
@@ -675,11 +679,18 @@ def align(*, entry_id=None, all_entries=False, apply=False, consent=(), target=N
         approvals = authorize_nodes(nodes, placement_class='local', consent=consent,
             entry=find_entry(entry_id) if entry_id else None,
             retry_argv=align_argv(entry_id), persist=True)
+        reviewed = reviewed_approvals(nodes, placement_class='local')
         for pack in packs:
             node = {'repo': pack['repository'], 'commit': pack['revision'],
                     'requirements_txt': pack.get('requirements_txt'), 'pip_no_deps': pack.get('pip_no_deps', [])}
             current = approval_record(node, placement_class='local')
-            pack['code_approvals'] = [row for row in approvals if row == current]
+            if current in reviewed:
+                # Review already covers this exact source and recipe. Keep
+                # catalog declarations free of entry-owned consent records;
+                # _install_pack rechecks the canonical authority at the target.
+                pack.pop('code_approvals', None)
+            else:
+                pack['code_approvals'] = [row for row in approvals if row == current]
             pack.pop('requires_code_consent', None)
     target = selected_target() if target is None else target
     deadline = time.monotonic() + deadline_seconds

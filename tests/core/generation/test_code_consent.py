@@ -23,6 +23,25 @@ def test_agent_uses_the_target_approval_contract():
     assert approvals.target_approvals is target.require_approved_nodes
 
 
+@pytest.mark.parametrize("placement", ["local", "attached", "runpod"])
+def test_shipped_ref_needs_no_entry_record_but_changed_source_or_recipe_does(placement, monkeypatch):
+    from vibecomfy.node_packs import read_lockfile
+
+    shipped = next(row for row in read_lockfile() if row.name == "ComfyUI-VideoHelperSuite")
+    node = {"repo": shipped.url, "commit": shipped.git_commit_sha,
+            "requirements_txt": shipped.requirements_txt, "pip_no_deps": list(shipped.pip_no_deps)}
+    monkeypatch.setattr(approvals, "write_entry_approvals", lambda *a, **kw:
+                        pytest.fail("reviewed code wrote an entry approval"))
+    expected = approvals.reviewed_approvals([node], placement_class=placement)
+    assert expected
+    assert approvals.authorize_nodes([node], placement_class=placement, retry_argv=RETRY) == expected
+    for changed in ({**node, "commit": "b" * 40},
+                    {**node, "pip_no_deps": ["unreviewed-dependency==1"]}):
+        with pytest.raises(GenerationReadinessError) as caught:
+            approvals.authorize_nodes([changed], placement_class=placement, retry_argv=RETRY)
+        assert caught.value.readiness["issues"][0]["code"] == "needs_consent"
+
+
 @pytest.mark.parametrize("consent", [(), ("user_env",), ("code",), ("code=stale",), ("code=" + "0" * 12,)])
 def test_no_bare_or_stale_consent_shows_informed_warning(consent):
     with pytest.raises(GenerationReadinessError) as caught:
