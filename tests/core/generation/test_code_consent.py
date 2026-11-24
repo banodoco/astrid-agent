@@ -139,6 +139,41 @@ def test_sdk_and_cli_accept_code_choice_without_accepting_paid_consent():
         _generation_controls(engine=None, consent=["paid"])
 
 
+def _alignment_manifest():
+    return {"id": "mine", "provider_only": False, "modes": [{"mode": "workflow", "workflow": None,
+        "models": [], "unlocked": [], "node_packs": [{"name": "consent-pack", "repository": NODE["repo"],
+        "revision": NODE["commit"], "requirements_txt": NODE["requirements_txt"],
+        "pip_no_deps": NODE["pip_no_deps"], "requires_code_consent": True}]}]}
+
+
+def test_alignment_inspection_reports_unapproved_pack_without_requesting_consent(tmp_path, monkeypatch):
+    import sys
+    from astrid.core.generation import asset_alignment as alignment, entries
+
+    root = tmp_path / "engine"
+    target = alignment.ManagedAssetTarget(root, root / "models", root / "nodes", sys.executable,
+        "http://127.0.0.1:8188", "a" * 64, root / "cache.json")
+    monkeypatch.setattr(entries, "find_entry", lambda *args: pytest.fail("inspection asked to authorize code"))
+    report = alignment.align(entry_id="mine", target=target, manifests=[_alignment_manifest()])
+    assert report["status"] == "not_ready" and report["applied"] is False
+    assert "no matching shipped pin or local code approval" in report["next_action"]
+    assert not root.exists()
+
+
+def test_alignment_cli_keeps_human_warning_and_token_before_target_selection(monkeypatch, capsys):
+    from astrid.core.generation import asset_alignment as alignment, cli, entries
+
+    monkeypatch.setattr(alignment, "catalog_manifests", lambda *args: [_alignment_manifest()])
+    monkeypatch.setattr(entries, "find_entry", lambda *args: None)
+    monkeypatch.setattr(alignment, "selected_target", lambda: pytest.fail("unapproved code selected target"))
+    assert cli.main(["align", "--entry", "mine", "--apply", "--consent", "user_env", "--json"]) == 2
+    warning = json.loads(capsys.readouterr().out)
+    assert warning["issues"][0]["code"] == "needs_consent"
+    instruction = warning["fixes"][0]["instruction"]
+    assert all(text in instruction["step"] for text in (NODE["repo"], NODE["commit"], "credentials"))
+    assert "code=" + approvals.consent_token(approvals.approval_record(NODE, placement_class="local")) in instruction["then_argv"]
+
+
 def test_cli_save_requires_warning_then_persists_approval(tmp_path, monkeypatch, capsys):
     from vibecomfy.templates import ReadyMetadata, new_workflow, OutputSpec
     from vibecomfy.nodes.core import EmptyImage, SaveImage

@@ -26,6 +26,7 @@ from .consent import consent_scope
 
 from vibecomfy.node_approvals import (
     NodeApproval as NodeApproval,
+    NodeIdentity as NodeIdentity,
     PlacementClass as PlacementClass,
     PLACEMENT_CLASSES as PLACEMENT_CLASSES,
     approval_record as approval_record,

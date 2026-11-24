@@ -660,25 +660,27 @@ def align(*, entry_id=None, all_entries=False, apply=False, consent=(), target=N
     if entry_id is not None and all_entries:
         raise AlignmentError('Choose --entry ID or --all')
     manifests = catalog_manifests(entry_id) if manifests is None else manifests
-    from .entries import find_entry
-    from .node_approvals import authorize_nodes, approval_record
-    manifests = [{**manifest, 'modes': [{**mode, 'node_packs': [dict(pack) for pack in mode['node_packs']]}
-                                     for mode in manifest['modes']]} for manifest in manifests]
     packs = [pack for manifest in manifests for mode in manifest['modes'] for pack in mode['node_packs']]
-    nodes = list({(pack['repository'], pack['revision'], pack.get('requirements_txt'),
-                   tuple(pack.get('pip_no_deps', []))): {
-                       'repo': pack['repository'], 'commit': pack['revision'],
-                       'requirements_txt': pack.get('requirements_txt'), 'pip_no_deps': pack.get('pip_no_deps', [])}
-                  for pack in packs}.values())
-    approvals = authorize_nodes(nodes, placement_class='local', consent=consent,
-        entry=find_entry(entry_id) if entry_id else None,
-        retry_argv=align_argv(entry_id), persist=apply)
-    for pack in packs:
-        node = {'repo': pack['repository'], 'commit': pack['revision'],
-                'requirements_txt': pack.get('requirements_txt'), 'pip_no_deps': pack.get('pip_no_deps', [])}
-        current = approval_record(node, placement_class='local')
-        pack['code_approvals'] = [row for row in approvals if row == current]
-        pack.pop('requires_code_consent', None)
+    if apply and packs:
+        from .entries import find_entry
+        from .node_approvals import authorize_nodes, approval_record
+        manifests = [{**manifest, 'modes': [{**mode, 'node_packs': [dict(pack) for pack in mode['node_packs']]}
+                                         for mode in manifest['modes']]} for manifest in manifests]
+        packs = [pack for manifest in manifests for mode in manifest['modes'] for pack in mode['node_packs']]
+        nodes = list({(pack['repository'], pack['revision'], pack.get('requirements_txt'),
+                       tuple(pack.get('pip_no_deps', []))): {
+                           'repo': pack['repository'], 'commit': pack['revision'],
+                           'requirements_txt': pack.get('requirements_txt'), 'pip_no_deps': pack.get('pip_no_deps', [])}
+                      for pack in packs}.values())
+        approvals = authorize_nodes(nodes, placement_class='local', consent=consent,
+            entry=find_entry(entry_id) if entry_id else None,
+            retry_argv=align_argv(entry_id), persist=True)
+        for pack in packs:
+            node = {'repo': pack['repository'], 'commit': pack['revision'],
+                    'requirements_txt': pack.get('requirements_txt'), 'pip_no_deps': pack.get('pip_no_deps', [])}
+            current = approval_record(node, placement_class='local')
+            pack['code_approvals'] = [row for row in approvals if row == current]
+            pack.pop('requires_code_consent', None)
     target = selected_target() if target is None else target
     deadline = time.monotonic() + deadline_seconds
     if apply:
@@ -770,8 +772,12 @@ def _align_selected(manifests, target, *, entry_id, apply, deadline, client=None
 
 
 def main(args) -> int:
+    from .preflight import GenerationReadinessError
     try:
         report = align(entry_id=args.entry, all_entries=args.all, apply=args.apply, consent=args.consent)
+    except GenerationReadinessError:
+        # The CLI owns the envelope: keep the human warning and token retry.
+        raise
     except (EngineError, ValueError, OSError) as exc:
         message = str(exc)
         if 'astrid generate align' not in message:

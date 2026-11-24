@@ -584,11 +584,11 @@ def _workflow_command(parsed: argparse.Namespace, *, output=None) -> int:
         from astrid.core.generation.node_approvals import (
             entry_approval_directory, require_approved_nodes, write_entry_approvals,
         )
-        saved = dict(entry, source='user-entry')
+        entry = dict(entry, source='user-entry')
         actual_nodes = entries.engine_table()['comfyui'].workflow_requirements(
-            [entries._load_entry_workflow(saved)])['extra']['nodes']
+            [entries._load_entry_workflow(entry)])['extra']['nodes']
         require_approved_nodes(actual_nodes, saved_code_approvals, placement_class=resolved.kind)
-        directory = entry_approval_directory(saved)
+        directory = entry_approval_directory(entry)
         write_entry_approvals(directory, saved_code_approvals)
         if parsed.no_run:
             print(json.dumps({'saved': True, 'ran': False, 'entry': parsed.as_entry,
