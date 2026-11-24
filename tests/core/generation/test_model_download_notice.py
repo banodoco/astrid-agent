@@ -15,16 +15,19 @@ def test_no_volume_warns_even_when_hint_exceeds_capacity(tmp_path, monkeypatch):
     # The recorded-answer observer represents a target with statvfs support.
     monkeypatch.setattr(storage.os, "statvfs", object(), raising=False)
     monkeypatch.setattr(storage, "available_model_bytes", lambda *a, **kw: (500, False))
+    before = set(tmp_path.iterdir())
     observation = _observe(tmp_path)
     notice = storage.model_download_notice({"fixture-pack": 1000}, observation)
+    assert notice["code"] == "model_download_notice"
     assert notice["severity"] == "warning"
+    assert notice["fix_ids"] == []
     assert notice["details"] == {
         "packs": [{"pack": "fixture-pack", "size_hint_bytes": 1000}],
         "free_bytes": 500, "capacity_uncertain": False, "volume_status": "not_declared",
     }
     assert "no persistent volume declared" in notice["message"]
     assert "500 bytes reported free" in notice["message"]
-    assert not list(tmp_path.iterdir())
+    assert set(tmp_path.iterdir()) == before
 
 
 def test_measured_volume_tightens_existing_capacity(tmp_path, monkeypatch):

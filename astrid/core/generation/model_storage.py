@@ -321,7 +321,7 @@ def model_download_notice(packs: Mapping[str, int | None],
         "declared_measured": "declared volume measured at the model root",
         "unknown": "volume status unknown",
     }[storage.volume_status]
-    return {"severity": "warning",
+    return {"code": "model_download_notice", "severity": "warning", "fix_ids": [],
             "message": ("Packs that download their own models on first run: "
                         + ", ".join(descriptions) + f"; {free}; {volume_text}. "
                         "Pack-owned caches may use other paths; this notice is not a storage guarantee."),
