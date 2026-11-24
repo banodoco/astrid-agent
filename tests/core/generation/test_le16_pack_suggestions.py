@@ -76,3 +76,33 @@ def test_conflicting_authored_provenance_never_coalesces(monkeypatch):
     assert [group["classes"] for group in groups] == [["SamePrefixOne"], ["SamePrefixTwo"]]
     assert calls == [("SamePrefixOne", "class_name"), ("SamePrefixTwo", "class_name"), ("two", "capability")]
     assert all(group["candidates"] == [] for group in groups)
+
+
+def test_grouped_discovery_reuses_one_query_only_within_one_run(monkeypatch):
+    from vibecomfy.registry import pack_resolver as resolver
+
+    calls = []
+
+    def lookup(query, *, query_intent):
+        calls.append((query, query_intent))
+        return resolver.MissingNodeResolution(query, query_intent)
+
+    monkeypatch.setattr(resolver, "resolve_missing_nodes", lookup)
+    # Distinct groups can derive the same name query. Their class evidence
+    # remains separate but the repeated registry search must be reused.
+    report = {"provenance": {"source_provenance": {"records": [
+        {"class_type": "AlphaPackLoader", "cnr_id": "Alpha Pack", "execution_looking": True},
+    ]}}}
+    classes = ["AlphaPackLoader", "AlphaPackSampler"]
+    expected = [
+        ("AlphaPackLoader", "class_name"),
+        ("Alpha Pack", "capability"),
+        ("AlphaPackSampler", "class_name"),
+    ]
+    first = missing_node_pack_suggestions(classes, import_report=report)
+    assert [row["group_kind"] for row in first] == ["authored", "provisional"]
+    assert calls == expected
+    assert all(row["lookups"][-1]["query"] == "Alpha Pack" for row in first)
+    second = missing_node_pack_suggestions(classes, import_report=report)
+    assert second == first
+    assert calls == expected + expected

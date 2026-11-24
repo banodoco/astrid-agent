@@ -21,7 +21,9 @@ SAM_CLASSES = {"SAMAudioPipelineLoader", "SAMAudioTextSeparator"}
 def test_import_report_survives_without_mutating_canonical_revision(tmp_path, sam_api_path):
     loaded = load_workflow_path(sam_api_path, tmp_path / "canonical")
     graph = loaded.resolved.workflow
-    report = graph._astrid_import_report
+    report = loaded.import_report
+    assert report is not None
+    assert not hasattr(graph, "_astrid_import_report")
     reported = {row.get("class_type") for row in report["diagnostics"]
                 if row["code"] in {"unresolved_runtime_class", "unknown_class_type"}}
     assert SAM_CLASSES <= reported

@@ -351,11 +351,9 @@ def _canonicalize_ui_workflow(
         ) from exc
     # The report is observation, not a second graph authority. Return it to
     # the loader explicitly; do not change sealed metadata or revision.
-    # Retain the existing WS-0g observation until its consumers migrate.
     report = artifacts.report
     if not isinstance(report, Mapping) or not isinstance(report.get("diagnostics"), list):
         raise ProductionEngineError("VibeComfy import did not report diagnostics")
-    bundle.workflow._astrid_import_report = report
     return bundle, schema_digest, seed_controls, report
 
 

@@ -49,6 +49,7 @@ def _name_query(classes: tuple[str, ...], import_report: Mapping[str, Any] | Non
 
 def missing_node_suggestions(
     missing_classes: Iterable[str], *, import_report: Mapping[str, Any] | None,
+    lookup_cache: dict[tuple[str, str], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Look up each distinct missing class once and one evidence-derived name.
 
@@ -64,10 +65,16 @@ def missing_node_suggestions(
     if name_query:
         queries.append((name_query, "capability"))
 
+    # One cache per discovery run; never carry mutable registry observations
+    # into another dry run. A grouped caller shares this cache across groups.
+    cache = {} if lookup_cache is None else lookup_cache
     lookups = []
     candidates: dict[str, dict[str, Any]] = {}
     for query, intent in queries:
-        result = resolve_missing_nodes(query, query_intent=intent).to_dict()
+        key = (query, intent)
+        if key not in cache:
+            cache[key] = resolve_missing_nodes(query, query_intent=intent).to_dict()
+        result = cache[key]
         lookups.append(result)
         for candidate in result["candidates"]:
             url = candidate["pack"].get("url")
@@ -120,9 +127,10 @@ def missing_node_pack_suggestions(
             key = ("unresolved", name)
         groups.setdefault(key, []).append(name)
 
+    lookup_cache: dict[tuple[str, str], dict[str, Any]] = {}
     return [
         {"group_kind": kind, "group_key": key,
-         **missing_node_suggestions(classes, import_report=import_report)}
+         **missing_node_suggestions(classes, import_report=import_report, lookup_cache=lookup_cache)}
         for (kind, key), classes in groups.items()
     ]
 
