@@ -305,7 +305,8 @@ def _pack_revision_warnings(output: Path) -> list[str]:
             continue
         warnings.append(
             f"Pack {row.get('pack_id')} revision {row.get('comparison', 'unknown')}: "
-            f"editor {row.get('editor_revision')}; declared render upstream {row.get('derived_from')}; "
+            f"editor {row.get('editor_revision')}; "
+            f"render upstream {row.get('upstream_revision', row.get('derived_from'))}; "
             f"resolved {row.get('resolved_revision')}; {row.get('identity_verification', 'unverified')}"
         )
     if not rows and fragment.get("editor_revision_status") == "editor revision not supplied":

@@ -84,6 +84,7 @@ def resolved_pack_revisions(stage: Mapping[str, Any], editor: Mapping[str, str] 
         expected = (editor or {}).get(pack_id)
         row: dict[str, Any] = {"pack_id": pack_id, "editor_revision": expected,
                                "resolved_revision": None, "derived_from": None,
+                               "upstream_revision": None,
                                "identity_verification": "unavailable"}
         if len(pack_roots) == 1 and None not in pack_roots:
             root = next(iter(pack_roots))
@@ -94,20 +95,31 @@ def resolved_pack_revisions(stage: Mapping[str, Any], editor: Mapping[str, str] 
                     row["resolved_revision"] = pin["commit"]
                     row["identity_verification"] = "unknown"
                     if _matches_release_pin(pin, release_pins.get(pack_id)):
-                        provenance = json.loads((root / "render-provenance.json").read_text(encoding="utf-8"))
-                        derived = provenance.get("derived_from") if isinstance(provenance, dict) else None
-                        if isinstance(derived, str) and _COMMIT.fullmatch(derived):
-                            row["derived_from"] = derived
+                        # An independently pinned upstream Agent tree is already
+                        # the editor's revision namespace. No derivative declaration
+                        # is required or fabricated for the direct upstream source.
+                        if pin["source"] in {
+                            "https://github.com/banodoco/astrid-agent",
+                            "https://github.com/banodoco/astrid-agent.git",
+                        }:
+                            row["upstream_revision"] = pin["commit"]
                             row["identity_verification"] = "release pin and source digest verified"
+                        else:
+                            provenance = json.loads((root / "render-provenance.json").read_text(encoding="utf-8"))
+                            derived = provenance.get("derived_from") if isinstance(provenance, dict) else None
+                            if isinstance(derived, str) and _COMMIT.fullmatch(derived):
+                                row["derived_from"] = derived
+                                row["upstream_revision"] = derived
+                                row["identity_verification"] = "release pin and source digest verified"
             except (OSError, UnicodeError, ValueError):
                 pass
         if expected is None:
             row["comparison"] = "editor revision not supplied"
         elif row["identity_verification"] == "unknown":
             row["comparison"] = "unknown"
-        elif row["derived_from"] is None:
+        elif row["upstream_revision"] is None:
             row["comparison"] = "resolved upstream revision unavailable"
-        elif row["derived_from"] == expected:
+        elif row["upstream_revision"] == expected:
             row["comparison"] = "match"
         else:
             row["comparison"] = "mismatch"

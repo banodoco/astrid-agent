@@ -1261,7 +1261,8 @@ def _execute_remotion_locked(
         )
         revision_notices = [
             f"Pack {row['pack_id']} revision mismatch: editor {row['editor_revision']}; "
-            f"declared render upstream {row['derived_from']} (resolved {row['resolved_revision']})"
+            f"render upstream {row.get('upstream_revision', row.get('derived_from'))} "
+            f"(resolved {row['resolved_revision']})"
             for row in stage_summary["pack_revisions"] if row["comparison"] == "mismatch"
         ]
         for notice in revision_notices:

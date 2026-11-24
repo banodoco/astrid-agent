@@ -103,3 +103,63 @@ def test_self_declared_upstream_is_unknown_without_independent_pin(tmp_path, mon
     assert row["identity_verification"] == "unknown"
     assert row["comparison"] == "unknown"
     assert resolved_pack_revisions(stage, None)[0]["comparison"] == "editor revision not supplied"
+
+
+def test_direct_upstream_release_pin_matches_without_derivative(tmp_path, monkeypatch):
+    root = tmp_path / "astrid_motion"
+    element = root / "rendering/elements/effects/am-type"
+    element.mkdir(parents=True)
+    (root / "pack.yaml").write_text("id: astrid_motion\n")
+    (element / "component.tsx").write_text("upstream source")
+    commit = "ec0a9f5baef2c31bc5179087b83f044524575182"
+    source = "https://github.com/banodoco/astrid-agent"
+    digest = pack_digest(root)
+    write_pin(root / "PIN", {
+        "version": 1, "source": source, "commit": commit,
+        "digest_rule": "pack-tree-v1", "digest": digest, "origin": "default",
+    })
+    version = tmp_path / "program" / "versions" / "test"
+    prefix = version / "py"
+    prefix.mkdir(parents=True)
+    monkeypatch.setenv("ASTRID_INSTALL_PROGRAM_ROOT", str(tmp_path / "program"))
+    monkeypatch.setattr(sys, "prefix", str(prefix))
+    manifest = version / "manifest.json"
+    manifest.write_text(json.dumps({"packs": {"astrid_motion": {
+        "repo": source, "commit": commit, "digest_rule": "pack-tree-v1", "digest": digest,
+    }}}))
+    stage = {"effects": [{"source_pack_id": "astrid_motion", "element_root": str(element)}]}
+    row = resolved_pack_revisions(stage, {"astrid_motion": commit})[0]
+    assert row["comparison"] == "match"
+    assert row["upstream_revision"] == commit
+    assert row["resolved_revision"] == commit
+    assert row["derived_from"] is None
+    assert not (root / "render-provenance.json").exists()
+    other = "d" * 40
+    row = resolved_pack_revisions(stage, {"astrid_motion": other})[0]
+    assert row["comparison"] == "mismatch"
+    assert row["editor_revision"] == other
+    assert row["upstream_revision"] == commit
+    assert resolved_pack_revisions(stage, None)[0]["comparison"] == "editor revision not supplied"
+    manifest.unlink()
+    row = resolved_pack_revisions(stage, {"astrid_motion": commit})[0]
+    assert row["comparison"] == "unknown"
+    assert row["upstream_revision"] is None
+
+
+def test_untrusted_upstream_pin_cannot_inherit_direct_commit(tmp_path, monkeypatch):
+    monkeypatch.delenv("ASTRID_INSTALL_PROGRAM_ROOT", raising=False)
+    root = tmp_path / "astrid_motion"
+    element = root / "rendering/elements/effects/am-type"
+    element.mkdir(parents=True)
+    (root / "pack.yaml").write_text("id: astrid_motion\n")
+    commit = "ec0a9f5baef2c31bc5179087b83f044524575182"
+    write_pin(root / "PIN", {
+        "version": 1, "source": "https://github.com/banodoco/astrid-agent",
+        "commit": commit, "digest_rule": "pack-tree-v1", "digest": pack_digest(root),
+        "origin": "user",
+    })
+    stage = {"effects": [{"source_pack_id": "astrid_motion", "element_root": str(element)}]}
+    row = resolved_pack_revisions(stage, {"astrid_motion": commit})[0]
+    assert row["comparison"] == "unknown"
+    assert row["upstream_revision"] is None
+    assert row["derived_from"] is None
