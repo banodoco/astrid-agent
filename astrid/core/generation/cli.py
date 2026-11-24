@@ -302,6 +302,8 @@ def _parser(contextual: dict[str, Any] | None = None) -> _GenerationParser:
     command = sub.add_parser("workflow", help="Run an unregistered VibeComfy bundle or UI workflow.")
     command.add_argument("workflow", help="Canonical bundle directory, workflow.py, or UI JSON.")
     command.add_argument("--as-entry", action=_Once, help="Save the workflow as an entry before running it.")
+    command.add_argument("--add", action="append", default=[], metavar="URL[@REF]",
+                         help="Declare an exact HTTPS custom-node pack for --as-entry; obtain separate code consent.")
     command.add_argument('--replace', action='store_true')
     command.add_argument('--no-run', action='store_true',
                          help='With --as-entry: save the entry and queue nothing on any target.')
@@ -503,15 +505,15 @@ def _workflow_comfy_url(parsed: argparse.Namespace) -> dict[str, str]:
 
 
 def _workflow_command(parsed: argparse.Namespace, *, output=None) -> int:
-    """Route authored workflows through the same target admission as entries."""
+    """Route a saved-entry preview and run through the same target admission."""
     output = sys.stdout if output is None else output
     from astrid.core.generation import entries
+    from astrid.core.generation.preflight import generation_error
 
     try:
         from astrid.sdk.command_timing import timed_call
         values = timed_call("input reads", _values, parsed)
     except (ValueError, OSError) as exc:
-        from astrid.core.generation.preflight import generation_error
         raise generation_error(exc, code='input_rejected', details={'field': 'inputs'}) from exc
     from astrid.sdk.generation import _generation_controls
     _generation_controls(engine=parsed.engine, consent=parsed.consent)
@@ -519,115 +521,109 @@ def _workflow_command(parsed: argparse.Namespace, *, output=None) -> int:
     if path.is_dir():
         path = path / "workflow.py"
     if parsed.replace and not parsed.as_entry:
-        from astrid.core.generation.preflight import generation_error
         raise generation_error(ValueError('--replace requires --as-entry'),
                                code='input_rejected', details={'field': 'replace'})
     if parsed.no_run and not parsed.as_entry:
         raise ValueError('--no-run requires --as-entry')
-    if parsed.as_entry and parsed.dry_run:
-        # Preview the reusable entry's input contract without demanding the
-        # media/prompt or code consent for a particular execution.
-        description, _ = entries.resolve_workflow_inputs(path, values, mode=parsed.mode,
-                                                         required=False, **_workflow_comfy_url(parsed))
-        preview = {
-            "dry_run": True,
-            "written": False,
-            "would_save_entry": parsed.as_entry,
-            "replaces_existing": bool(parsed.replace),
-            "kind": description.get("kind"),
-            "modes": description.get("modes"),
-            "inputs": description.get("inputs"),
-        }
-        print(json.dumps(preview, indent=2, sort_keys=True, default=str), file=output)
-        return 0
-    saved_code_approvals = None
-    if parsed.as_entry:
-        from vibecomfy.entries import import_as_entry
-        if parsed.replace:
-            from inspect import signature
-            if 'replace' not in signature(import_as_entry).parameters:
-                from astrid.core.generation.preflight import generation_error
-                raise generation_error(ValueError('The installed VibeComfy entry API does not support atomic replacement'),
-                                       code='missing_dependency', details={'field': 'replace'})
-        from astrid.core.generation import placement as placements
-        from astrid.core.generation.node_approvals import authorize_nodes
-        resolved = placements.validate_placement(placements.resolve_placement(
-            placements.request_from_selector(parsed.placement)))
-        from astrid.packs.vibecomfy.production_engine import load_workflow_path
-        with tempfile.TemporaryDirectory(prefix='astrid-code-consent-') as scratch:
-            source_workflow = load_workflow_path(path, scratch, **_workflow_comfy_url(parsed)).resolved.workflow
-            source_nodes = entries.engine_table()['comfyui'].workflow_requirements([source_workflow])['extra']['nodes']
-        previous = entries.find_entry(parsed.as_entry) if parsed.replace else None
-        retry = ['astrid', 'generate', *getattr(parsed, '_invocation_argv', (
-            'workflow', str(path), '--as-entry', parsed.as_entry,
-            '--placement', parsed.placement or 'auto', *(['--no-run'] if parsed.no_run else [])))]
-        saved_code_approvals = authorize_nodes(source_nodes, placement_class=resolved.kind,
-            consent=parsed.consent, entry=previous, retry_argv=retry)
+    if parsed.add and not parsed.as_entry:
+        raise generation_error(ValueError('--add requires --as-entry'),
+                               code='input_rejected', details={'field': 'add'})
+
     from astrid.core.generation.placement import is_runpod_placement
-    if is_runpod_placement(parsed.placement) and not parsed.dry_run and not parsed.no_run:
-        # Same order as entries: the local dry run (with its preflight) before a claimed machine
-        # is required, and before --as-entry writes anything.
-        _generate_facade().workflow(workflow=path, placement=parsed.placement, mode=parsed.mode,
-            inputs=values, dry_run=True, client=None, project=parsed.project, out=parsed.out,
-            **_controls(parsed))
-        from astrid.sdk.generation import _require_claimed_machine
-        _require_claimed_machine(parsed.placement)
-    if parsed.as_entry:
-        entries.resolve_workflow_inputs(path, values, mode=parsed.mode,
-                                        required=not parsed.no_run, **_workflow_comfy_url(parsed))
-        # VibeComfy owns atomic publication. Never delete the old entry here
-        # or retry a failed import by removing its directory.
-        if parsed.replace:
-            entry = import_as_entry(path, parsed.as_entry, replace=True)
+    with contextlib.ExitStack() as stack:
+        entry = None
+        if parsed.as_entry:
+            from astrid.core.generation import placement as placements
+            from astrid.core.generation.workflow_entry_setup import (
+                omitted_save_preview_fields, prepare_entry_candidate, publish_entry_candidate,
+                preview_entry_authority, select_entry_mode,
+            )
+            from astrid.sdk.generation import _snapshot_generation_workflow
+
+            # _main_request records the actual invocation after parsing.
+            # A caller that bypasses that boundary must fail, not invent argv.
+            retry = ['astrid', 'generate', *parsed._invocation_argv]
+            resolved = placements.validate_placement(placements.resolve_placement(
+                placements.request_from_selector(parsed.placement)))
+            frozen = stack.enter_context(_snapshot_generation_workflow(path))
+            scratch = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix='astrid-entry-preview-')))
+            prepared = prepare_entry_candidate(
+                frozen, parsed.as_entry, replace=parsed.replace, additions=parsed.add,
+                placement_class=resolved.kind, consent=parsed.consent, retry_argv=retry,
+                scratch=scratch,
+            )
+            entry = prepared.entry
+            mode, candidate = select_entry_mode(entry, parsed.mode)
+            description, values = entries.resolve_workflow_inputs(
+                entries.bundle_path(candidate), values, mode=mode,
+                required=not (parsed.dry_run or parsed.no_run),
+            )
+            # Both a save preview and the controller preflight before a real
+            # RunPod save admit the same frozen graph and exact approved refs.
+            # This authority is scoped to a read-only preview, not a new yes.
+            if parsed.dry_run or (is_runpod_placement(parsed.placement) and not parsed.no_run):
+                from astrid.sdk.generation import _load_model_registry
+
+                omitted = omitted_save_preview_fields(candidate, mode, values) if parsed.dry_run else frozenset()
+                preview = _generate_facade()._generate_on_target(
+                    registry=_load_model_registry(), model=None, mode=mode,
+                    modality=candidate['kind'], placement=parsed.placement, execution=None,
+                    inputs=values, dry_run=True, workflow_entry=candidate, client=None,
+                    preview_authority=preview_entry_authority(candidate, prepared.approvals, resolved.kind),
+                    save_preview_omitted_fields=omitted,
+                    project=parsed.project, out=parsed.out, **_controls(parsed),
+                )
+                if parsed.dry_run:
+                    payload = dict(preview.to_dict() if hasattr(preview, 'to_dict') else preview)
+                    payload.update(dry_run=True, written=False, would_save_entry=parsed.as_entry,
+                                   replaces_existing=bool(parsed.replace), kind=description.get('kind'),
+                                   modes=description.get('modes'), inputs=description.get('inputs'))
+                    print(json.dumps(payload, indent=2, sort_keys=True, default=str), file=output)
+                    return 0
+                from astrid.sdk.generation import _require_claimed_machine
+                _require_claimed_machine(resolved.kind, resolved.machine)
+            # Publication still belongs to VibeComfy's atomic entry writer.
+            # Never delete the old entry to get replacement to work.
+            entry = publish_entry_candidate(frozen, prepared, replace=parsed.replace,
+                                            placement_class=resolved.kind, retry_argv=retry)
+            if parsed.no_run:
+                print(json.dumps({'saved': True, 'ran': False, 'entry': parsed.as_entry,
+                                  'replaced': bool(parsed.replace)}, indent=2, sort_keys=True), file=output)
+                return 0
+        elif is_runpod_placement(parsed.placement) and not parsed.dry_run:
+            # Preserve raw-workflow admission before the claimed-machine gate.
+            _generate_facade().workflow(workflow=path, placement=parsed.placement, mode=parsed.mode,
+                inputs=values, dry_run=True, client=None, project=parsed.project, out=parsed.out,
+                **_controls(parsed))
+            from astrid.sdk.generation import _require_claimed_machine
+            _require_claimed_machine(parsed.placement)
+
+        def generate(client=None):
+            facade = _generate_facade()
+            if entry is None:
+                return facade.workflow(workflow=path, placement=parsed.placement, mode=parsed.mode,
+                    inputs=values, dry_run=parsed.dry_run, client=client,
+                    project=parsed.project, out=parsed.out, **_controls(parsed))
+            from astrid.sdk.generation import _load_model_registry
+            mode, selected = select_entry_mode(entry, parsed.mode)
+            return facade._generate_on_target(registry=_load_model_registry(), model=None,
+                mode=mode, modality=selected['kind'], placement=parsed.placement, execution=None,
+                inputs=values, dry_run=False, workflow_entry=selected,
+                client=client, project=parsed.project, out=parsed.out, **_controls(parsed))
+        if parsed.dry_run:
+            result = generate()
         else:
-            entry = import_as_entry(path, parsed.as_entry)
-        from astrid.core.generation.node_approvals import (
-            entry_approval_directory,
-            require_approved_nodes,
-            write_entry_approvals,
-        )
-        entry = dict(entry, source='user-entry')
-        actual_nodes = entries.engine_table()['comfyui'].workflow_requirements(
-            [entries._load_entry_workflow(entry)])['extra']['nodes']
-        require_approved_nodes(actual_nodes, saved_code_approvals, placement_class=resolved.kind)
-        directory = entry_approval_directory(entry)
-        if directory is None:
-            raise ValueError("just-saved entry has no code approval directory")
-        write_entry_approvals(directory, saved_code_approvals)
-        if parsed.no_run:
-            print(json.dumps({'saved': True, 'ran': False, 'entry': parsed.as_entry,
-                              'replaced': bool(parsed.replace)}, indent=2, sort_keys=True), file=output)
-            return 0
-    def generate(client=None):
-        facade = _generate_facade()
-        if not parsed.as_entry:
-            return facade.workflow(workflow=path, placement=parsed.placement, mode=parsed.mode,
-                inputs=values, dry_run=parsed.dry_run, client=client,
-                project=parsed.project, out=parsed.out, **_controls(parsed))
-        from astrid.sdk.generation import _explicit_workflow_needs, _load_model_registry
-        mode = parsed.mode or (entry['modes'][0] if len(entry['modes']) == 1 else 'workflow')
-        selected = entry
-        if mode not in entry['modes']:
-            selected = dict(entry, modes=[mode], needs=_explicit_workflow_needs(entry['needs']))
-        return facade._generate_on_target(registry=_load_model_registry(), model=None,
-            mode=mode, modality=selected['kind'], placement=parsed.placement, execution=None,
-            inputs=values, dry_run=False, workflow_entry=selected,
-            client=client, project=parsed.project, out=parsed.out, **_controls(parsed))
-    if parsed.dry_run:
-        result = generate()
-    else:
-        with _open_client() as client:
-            result = generate(client)
-            if not parsed.no_wait:
-                from .delivery import deliver_generation
-                result = deliver_generation(result, client=client, out=parsed.out, project=parsed.project)
-    if getattr(result, "ok", True) is False:
-        from astrid.core.generation.preflight import generation_error
-        raise generation_error(getattr(result, 'error', None) or ValueError('Workflow generation failed.'),
-                               task_id=getattr(result, 'kernel_task_id', None))
-    payload = result.to_dict() if hasattr(result, "to_dict") else result
-    print(json.dumps(payload, indent=2, sort_keys=True), file=output)
-    return 0
+            with _open_client() as client:
+                result = generate(client)
+                if not parsed.no_wait:
+                    from .delivery import deliver_generation
+                    result = deliver_generation(result, client=client, out=parsed.out, project=parsed.project)
+        if getattr(result, "ok", True) is False:
+            raise generation_error(getattr(result, 'error', None) or ValueError('Workflow generation failed.'),
+                                   task_id=getattr(result, 'kernel_task_id', None))
+        payload = result.to_dict() if hasattr(result, "to_dict") else result
+        print(json.dumps(payload, indent=2, sort_keys=True), file=output)
+        return 0
 
 
 def _job_command(argv: list[str], *, output=None) -> int:
