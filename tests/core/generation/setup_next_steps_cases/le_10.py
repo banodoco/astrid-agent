@@ -65,7 +65,32 @@ def _mixed_version_warnings():
     return result
 
 
+def _target_unreachable_with_version_warning():
+    from astrid.core.generation.preflight import compare_versions, generation_error, readiness_envelope
+
+    error = generation_error(
+        {"code": "COMFY_TARGET_UNAVAILABLE", "message": "Selected target is unavailable"},
+        target={"endpoint": "http://127.0.0.1:8188"},
+        fixes=[{"id": "inspect-target", "who": "agent", "scope": "read_only",
+                "argv": ["astrid", "generate", "targets", "--placement", "http://127.0.0.1:8188"],
+                "details": {}}],
+    )
+    warnings = compare_versions({"python": "3.11"}, {"python": "3.12"})
+    result = readiness_envelope(target=error.readiness["target"],
+                                issues=[*warnings, *error.readiness["issues"]],
+                                fixes=error.readiness["fixes"])
+    assert result["status"] == "blocked"
+    assert result["issues"][0]["code"] == "version_drift"
+    issue = result["issues"][1]
+    assert issue["code"] == "target_unreachable"
+    assert issue["details"]["engine_code"] == "COMFY_TARGET_UNAVAILABLE"
+    assert issue["fix_ids"] == ["inspect-target"]
+    assert result["fixes"][0]["argv"][-1] == "http://127.0.0.1:8188"
+    return result
+
+
 CASES = [
+    ("typed-target-unreachable-with-version-warning", "target_unreachable", _target_unreachable_with_version_warning),
     ("live-doctor-removed-input", "unknown_input", _removed_input),
     ("different-version-label-warning", "pack_version_differs", _different_version_label),
     ("different-exact-commit-warning", "pack_version_differs", _different_exact_commit),
