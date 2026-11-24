@@ -35,16 +35,77 @@ DOCUMENTED_R1_LAUNCHER = (
 R1_SERVICE_LABELS = frozenset({'astrid-r1.service', 'haus.astrid.runtime.r1'})
 R1_VERSION_RECORD_KEYS = frozenset({'env', 'identity', 'profile', 'python', 'root'})
 OPAQUE_VERSION_ID = re.compile(r'[0-9a-f]{12}')
-R15_STANDIN_MARKERS = frozenset({'fresh-install-update-stand-in', 'M-RT UPDATE TEST STAND-IN'})
+# First release whose installer mints opaque (uuid) version directory names.
+OPAQUE_VERSION_ID_MIN_RELEASE = 14
+# pip distribution names (normalised) -> manifest pin they are installed from.
+_PIN_DISTRIBUTIONS = {'astrid': 'agent', 'astrid-runtime': 'runtime', 'astrid-runtime-client': 'runtime'}
+
+
+def _json_object(path):
+    """A regular (non-link) file's JSON object, else None (missing evidence)."""
+    try:
+        if path.is_symlink() or not path.is_file():
+            return None
+        value = json.loads(path.read_text(encoding='utf-8-sig'))
+    except (OSError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _opaque_version_evidence(root, agent, runtime):
+    """Whether the version tree's own records name exactly these Agent/Runtime SHAs.
+
+    What astrid.installer.backend._stage leaves in <version>:
+    * manifest.json: the install manifest, written before any source is
+      fetched; the only record of the Agent commit (source archives drop their
+      git metadata). It must be present and pin both SHAs. This is required.
+    * a/runtime.lock.json (and the installed copy in site-packages): the Agent's
+      Runtime source pin. Where present, source_commit must be the Runtime pin.
+    * py/**/<dist>.dist-info/direct_url.json: pip installs from local
+      directories (dir_info only), but any recorded vcs_info.commit_id must
+      agree with the pin the distribution came from.
+    Evidence that is present but unreadable, malformed or different fails.
+    """
+    staged = _json_object(root / 'manifest.json')
+    if staged is None or (_pin_sha(staged, 'agent'), _pin_sha(staged, 'runtime')) != (agent, runtime):
+        return False
+    pins = {'agent': agent, 'runtime': runtime}
+    locks = [root / 'a' / 'runtime.lock.json']
+    environment = root / 'py'
+    for site in (*environment.glob('lib/python*/site-packages'), environment / 'Lib' / 'site-packages'):
+        locks.append(site / 'runtime.lock.json')
+        for record in site.glob('*.dist-info/direct_url.json'):
+            stem = record.parent.name[:-len('.dist-info')].rsplit('-', 1)[0]
+            pin = _PIN_DISTRIBUTIONS.get(re.sub(r'[-_.]+', '-', stem).lower())
+            if pin is None:
+                continue
+            origin = _json_object(record)
+            if origin is None:
+                return False
+            vcs = origin.get('vcs_info')
+            if isinstance(vcs, dict) and vcs.get('commit_id') is not None and vcs['commit_id'] != pins[pin]:
+                return False
+    for lock_path in locks:
+        if not lock_path.is_symlink() and not lock_path.exists():
+            continue
+        lock = _json_object(lock_path)
+        if lock is None or lock.get('source_commit') != runtime:
+            return False
+    return True
 
 
 def _opaque_version_id_allowed(version, manifest):
-    """R14's installer uses an opaque directory; admit it only with pinned provenance."""
-    release = manifest.get('release')
-    if release != 14 and not (release == 15 and manifest.get('qualification_marker') in R15_STANDIN_MARKERS):
+    """Admit the installer's opaque 12-hex directory only when it is bound to the pins.
+
+    The directory name carries no SHAs, so the version's own staged records must
+    name the same Agent and Runtime SHAs as the manifest being verified.
+    """
+    release, root = manifest.get('release'), version.get('root')
+    agent, runtime = _pin_sha(manifest, 'agent'), _pin_sha(manifest, 'runtime')
+    if (type(release) is not int or release < OPAQUE_VERSION_ID_MIN_RELEASE or not agent or not runtime
+            or not isinstance(root, str) or OPAQUE_VERSION_ID.fullmatch(Path(root).name) is None):
         return False
-    return (isinstance(version.get('root'), str)
-            and OPAQUE_VERSION_ID.fullmatch(Path(version['root']).name) is not None)
+    return _opaque_version_evidence(Path(root), agent, runtime)
 
 
 def read(path):
