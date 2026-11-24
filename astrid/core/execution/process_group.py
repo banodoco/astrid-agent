@@ -444,6 +444,20 @@ def _retained_incarnation_exited(process: subprocess.Popen, pid: int, birth: str
     return bool(proof(pid, birth)) if callable(proof) else False
 
 
+def _linux_later_birth(previous: str, current: str) -> bool:
+    """A later start tick in the same boot proves the old PID was reaped.
+
+    This proves nothing about ownership of the replacement, and cannot replace
+    a retained child's wait/reap or a retained pidfd's own integrity checks.
+    """
+    if not sys.platform.startswith("linux"):
+        return False
+    old, new = previous.split(":"), current.split(":")
+    return (len(old) == len(new) == 2 and bool(old[0]) and old[0] == new[0]
+            and old[1].isascii() and old[1].isdigit()
+            and new[1].isascii() and new[1].isdigit() and int(new[1]) > int(old[1]))
+
+
 def _group_members_owned(
     process: subprocess.Popen,
     known: dict[int, str],
@@ -607,12 +621,35 @@ def _observe_tree(process: subprocess.Popen, *, deadline: float | None = None,
             # the final descendant census.  Its numeric PID may then already
             # belong to another incarnation; that replacement is not part of
             # the owned tree.  Linux pidfds provide the same positive exit
-            # proof for observed descendants. Unreaped roots and descendants
-            # without an exact retained exit proof still fail closed below.
-            if ((pid == process.pid and process.returncode is not None)
-                    or _retained_incarnation_exited(process, pid, birth)):
+            # proof for observed descendants. An unreaped root always fails
+            # closed; a census-only Linux descendant also has the later-birth
+            # proof below, without acquiring authority over its replacement.
+            custody = getattr(process, "_astrid_custody", None)
+            entry = getattr(custody, "_handles", {}).get(pid)
+            retained_exit = _retained_incarnation_exited(process, pid, birth)
+            if pid == process.pid:
+                if process.returncode is not None:
+                    continue
+            elif _linux_later_birth(birth, current.birth):
+                # A census-only child may exit before register() captures it.
+                # Do not let its stale numeric PID poison a later census or
+                # grant authority over the replacement's unrelated children.
+                # A retained handle still needs its original exit proof.
+                if entry is None or retained_exit:
+                    retired = getattr(process, "_astrid_tree_exited", None)
+                    if retired is None:
+                        retired = process._astrid_tree_exited = {}
+                    retired[(pid, birth)] = current.birth
+                    del known[pid]
+                    continue
+            elif retained_exit:
                 continue
-            raise CleanupUncertainError("owned process identity was reused")
+            raise CleanupUncertainError(
+                "owned process identity was reused "
+                f"(pid={pid}, expected_birth={birth}, observed_birth={current.birth}, "
+                f"parent_pid={current.ppid}, root={pid == process.pid}, "
+                f"handle={type(entry[1]).__name__ if entry is not None else 'none'})"
+            )
         if current is None and any(
             info.ppid == pid and info.pid not in known for info in snapshot.values()
         ):
@@ -634,7 +671,9 @@ def _observe_tree(process: subprocess.Popen, *, deadline: float | None = None,
             **({"_transaction": _transaction} if _transaction is not None else {}),
         )
         # Fresh reconciliation observations must survive subsequent reparenting.
-        known.update({pid: birth for pid, (birth, _) in custody._handles.items()})
+        retired = getattr(process, "_astrid_tree_exited", {})
+        known.update({pid: birth for pid, (birth, _) in custody._handles.items()
+                      if (pid, birth) not in retired})
         if sys.platform == "darwin" and getattr(getattr(custody, "_launch_broker", None), "role", None) == "command":
             process._astrid_cleanup_semantics = {
                 "coverage": "retained_observed_set_and_final_owned_group_checks",

@@ -3082,8 +3082,23 @@ class ProcessCustody:
                     raise self._uncertain
                 if pid in self._handles:
                     if self._handles[pid][0] != birth:
-                        raise CustodyError("registered process identity was reused")
-                    return
+                        from astrid.core.execution.process_group import _linux_later_birth
+
+                        old_birth = self._handles[pid][0]
+                        if (pid == getattr(getattr(self, "process", None), "pid", None)
+                                or not _linux_later_birth(old_birth, birth)
+                                or not self.retained_incarnation_exited(pid, old_birth)):
+                            raise CustodyError("registered process identity was reused")
+                        # Registration is reached only for freshly owned
+                        # ancestry. Retire the old kernel capability before
+                        # binding the new incarnation, never overwrite a live
+                        # or unverifiable handle at a recycled numeric PID.
+                        self.release_pidfds(only_exited=True)
+                        if self._handles[pid] != (old_birth, _PIDFD_RELEASED):
+                            raise CustodyError("reused process handle exit is unproved")
+                        del self._handles[pid]
+                    else:
+                        return
                 if sys.platform == "darwin":
                     stage = "initial-identity"
                     if _observation is None:

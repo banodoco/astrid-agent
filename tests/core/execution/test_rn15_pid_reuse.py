@@ -1,10 +1,14 @@
 """RN-15: a later Linux incarnation never inherits its predecessor's custody."""
 
+import os
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
 
 from astrid.core.execution import process_group as groups
+from astrid.core.execution import custody_broker as custody
 
 
 def _observed_process(monkeypatch, *, root_birth="boot:100", child_birth="boot:500"):
@@ -99,3 +103,78 @@ def test_missing_owned_leader_without_exit_witness_stays_uncertain(monkeypatch):
     with pytest.raises(groups.CleanupUncertainError, match="leader exited before ancestry capture"):
         groups.observe_tree(process)
     assert observations == []
+
+
+def test_later_birth_does_not_bypass_an_unproved_retained_handle(monkeypatch):
+    process, observations = _observed_process(monkeypatch)
+    process._astrid_custody._handles[200] = ("boot:500", 42)
+    process._astrid_custody.retained_incarnation_exited = lambda *_: False
+    monkeypatch.setattr(groups, "_process_snapshot", _replacement_snapshot)
+
+    with pytest.raises(groups.CleanupUncertainError, match="handle=int"):
+        groups.observe_tree(process)
+    assert observations == []
+    assert process._astrid_tree_members[200] == "boot:500"
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux pidfds")
+@pytest.mark.parametrize("released", [False, True])
+def test_registration_replaces_only_a_proven_exited_pidfd(monkeypatch, released):
+    owner = custody.ProcessCustody()
+    old = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    replacement = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        birth = groups.process_birth_identity(old.pid)
+        owner.register(old.pid, birth)
+        old_descriptor = owner._handles[old.pid][1]
+        old.kill()
+        old.wait()
+        assert owner.retained_incarnation_exited(old.pid, birth)
+        if released:
+            owner.release_pidfds(only_exited=True)
+        boot, tick = birth.split(":")
+        later_birth = f"{boot}:{int(tick) + 1}"
+        # Model reuse of the numeric selector; the retained descriptors and
+        # their exit/liveness checks still use real kernel processes.
+        real_identify = groups.process_birth_identity
+        real_open = groups.platform.pidfd_open
+        monkeypatch.setattr(groups, "process_birth_identity", lambda pid=None:
+                            later_birth if pid == old.pid else real_identify(pid))
+        monkeypatch.setattr(groups.platform, "pidfd_open", lambda pid:
+                            real_open(replacement.pid if pid == old.pid else pid))
+        owner.register(old.pid, later_birth)
+        new_descriptor = owner._handles[old.pid][1]
+        assert owner._handles[old.pid][0] == later_birth
+        assert isinstance(new_descriptor, int)
+        assert not owner.retained_incarnation_exited(old.pid, later_birth)
+        assert not owner.retained_incarnation_exited(old.pid, birth)
+        assert not os.get_inheritable(new_descriptor)
+        if old_descriptor != new_descriptor:
+            with pytest.raises(OSError):
+                os.fstat(old_descriptor)
+    finally:
+        old.kill()
+        old.wait()
+        replacement.kill()
+        replacement.wait()
+        owner.release_pidfds()
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux pidfds")
+def test_registration_keeps_a_live_old_handle_at_a_later_numeric_pid(monkeypatch):
+    owner = custody.ProcessCustody()
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        birth = groups.process_birth_identity(child.pid)
+        owner.register(child.pid, birth)
+        entry = owner._handles[child.pid]
+        boot, tick = birth.split(":")
+        monkeypatch.setattr(groups.platform, "pidfd_open", lambda *_: pytest.fail("rebound a live handle"))
+        with pytest.raises(custody.CustodyError, match="registered process identity was reused"):
+            owner.register(child.pid, f"{boot}:{int(tick) + 1}")
+        assert owner._handles[child.pid] == entry
+        assert child.poll() is None
+    finally:
+        child.kill()
+        child.wait()
+        owner.release_pidfds()
