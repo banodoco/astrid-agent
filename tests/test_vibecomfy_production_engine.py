@@ -147,7 +147,8 @@ def test_load_workflow_path_unions_ready_template_and_ui_canonicalization(
         "_load_workflow",
         Mock(return_value=ready_workflow),
     )
-    canonicalize = Mock(return_value=(ui_workflow, None, {}))
+    report = {"diagnostics": [], "provenance": {"source_provenance": {"records": []}}}
+    canonicalize = Mock(return_value=(ui_workflow, None, {}, report))
     monkeypatch.setattr(production_engine, "_canonicalize_ui_workflow", canonicalize)
     monkeypatch.setattr(
         production_engine,
@@ -163,6 +164,8 @@ def test_load_workflow_path_unions_ready_template_and_ui_canonicalization(
     assert (loaded_ui.model_id, loaded_ui.template_id) == ("vibecomfy", "ui-identity")
     assert loaded_ui.workflow_revision == "ui-revision"
     assert loaded_ui.workflow_conversion_object_info_sha256 is None
+    assert loaded_ui.import_report is report
+    assert loaded_ready.import_report is None
     canonicalize.assert_called_once_with(ui.resolve(), {"nodes": [], "links": []}, (tmp_path / "ui-scratch").resolve(),
                                          schema_url="")
 

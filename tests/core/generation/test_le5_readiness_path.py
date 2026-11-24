@@ -80,8 +80,9 @@ def test_le5_cli_deferred_sam_reports_evidence_without_install(
     observed = []
     lookup = node_suggestions.missing_node_suggestions
 
-    def record(workflow, missing_classes):
-        result = lookup(workflow, missing_classes)
+    def record(missing_classes, *, import_report):
+        assert import_report is not None, "raw JSON import must pass its producer report"
+        result = lookup(missing_classes, import_report=import_report)
         observed.append(result)
         return result
 

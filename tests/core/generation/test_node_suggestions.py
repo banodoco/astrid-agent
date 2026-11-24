@@ -1,8 +1,6 @@
 """LE-5 independent lookup witnesses; recorded HTTP, no installation."""
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import httpx
 import pytest
 
@@ -64,7 +62,7 @@ def test_sam_recorded_lookup_is_suggestion_not_install(recorded_lookup, found):
     calls = recorded_lookup(found=found)
     classes = _sam_missing_classes()
     assert tuple(classes) == SAM_CLASSES
-    result = missing_node_suggestions(SimpleNamespace(), [*classes, classes[0]])
+    result = missing_node_suggestions([*classes, classes[0]], import_report=None)
     assert calls == [(name, "class_name") for name in SAM_CLASSES] + [("SAM Audio", "capability")]
     assert result["runnable"] is False
     assert all(lookup["runnable"] is False for lookup in result["lookups"])
@@ -98,9 +96,18 @@ def test_ui_provenance_precedes_class_name_guess(monkeypatch, key):
         {"class_type": "AnotherNode", "execution_looking": True, key: "authored-pack"},
         {"class_type": "NotMissing", "execution_looking": True, key: "ignore-pack"},
     ]}}}
-    workflow = SimpleNamespace(_astrid_import_report=report)
-    result = missing_node_suggestions(workflow, ["UnrelatedNode", "AnotherNode"])
+    result = missing_node_suggestions(["UnrelatedNode", "AnotherNode"], import_report=report)
     assert calls == [("AnotherNode", "class_name"), ("UnrelatedNode", "class_name"),
                      ("authored-pack", "capability")]
     assert result["candidates"] == []
-    assert workflow._astrid_import_report is report
+    assert report["provenance"]["source_provenance"]["records"][0][key] == "authored-pack"
+
+
+def test_import_report_is_required_not_an_implicit_fallback():
+    with pytest.raises(TypeError, match="import_report"):
+        missing_node_suggestions(["ExampleNode"])
+
+
+def test_malformed_import_report_is_not_treated_as_absent():
+    with pytest.raises(KeyError, match="provenance"):
+        missing_node_suggestions(["ExampleNode"], import_report={})

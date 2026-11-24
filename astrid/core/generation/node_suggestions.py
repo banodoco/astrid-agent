@@ -12,10 +12,10 @@ from typing import Any
 _WORD = re.compile(r"[A-Z]+(?=[A-Z][a-z]|\d|$)|[A-Z]?[a-z]+|[A-Z]+|\d+")
 
 
-def _name_query(classes: tuple[str, ...], workflow: Any) -> str | None:
-    report = getattr(workflow, "_astrid_import_report", None)
-    if isinstance(report, Mapping):
-        provenance = report.get("provenance", {}).get("source_provenance", {})
+def _name_query(classes: tuple[str, ...], import_report: Mapping[str, Any] | None) -> str | None:
+    # None is an explicit observation from a loader that did not import JSON.
+    if import_report is not None:
+        provenance = import_report["provenance"]["source_provenance"]
         hints = {
             row.get("cnr_id") or row.get("aux_id")
             for row in provenance.get("records", ())
@@ -41,7 +41,9 @@ def _name_query(classes: tuple[str, ...], workflow: Any) -> str | None:
     return " ".join(shared) or None
 
 
-def missing_node_suggestions(workflow: Any, missing_classes: Iterable[str]) -> dict[str, Any]:
+def missing_node_suggestions(
+    missing_classes: Iterable[str], *, import_report: Mapping[str, Any] | None,
+) -> dict[str, Any]:
     """Look up each distinct missing class once and one evidence-derived name.
 
     Results retain the resolver's warnings and per-tier status, including
@@ -52,7 +54,7 @@ def missing_node_suggestions(workflow: Any, missing_classes: Iterable[str]) -> d
 
     classes = tuple(sorted(set(missing_classes)))
     queries = [(name, "class_name") for name in classes]
-    name_query = _name_query(classes, workflow)
+    name_query = _name_query(classes, import_report)
     if name_query:
         queries.append((name_query, "capability"))
 
