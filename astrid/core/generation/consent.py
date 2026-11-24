@@ -22,4 +22,8 @@ def consent_scope(value: str) -> str:
     """Keep bare/stale code choices for the content-bound warning boundary."""
     if isinstance(value, str) and (value in {"user_env", "code"} or value.startswith("code=")):
         return value
+    if value == "paid":
+        # Paid machines are claimed outside generation consent; keep the guidance.
+        raise ValueError("consent must contain user_env or code=<token>; rent with `astrid machines claim`")
     raise ValueError("consent must contain user_env or code=<token>")
+
