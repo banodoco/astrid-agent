@@ -651,3 +651,29 @@ def test_unrecomputable_bytes_have_receipt_code_and_cause(canonical, tmp_path):
         )
     assert caught.value.code == CODE and caught.value.field == "bytes_unrecomputable"
     assert isinstance(caught.value.__cause__, AssetManifestError)
+
+
+def test_archive_bound_source_video_is_the_staged_file_or_refused(tmp_path, monkeypatch):
+    """H3 hands the worker one prepared source as ``source_video`` and as the archive's source asset."""
+    from astrid.packs.vibecomfy.asset_manifest import resolve_inputs, write_archive
+
+    monkeypatch.setenv("VIBECOMFY_HEADLESS", "1")
+    canonical = _video_workflow(tmp_path / "admitted")
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"prepared-source-bytes")
+    archive = tmp_path / "assets.zip"
+    manifest = write_archive({"source_video": clip}, archive)
+    receipt = preflight_invocation(canonical["python"], run_inputs=resolve_inputs(manifest))
+    inputs = {**canonical, "managed_assets": str(archive), "source_video": str(clip)}
+    verify_admitted_invocation_receipt(receipt, inputs, tmp_path / "host")
+    other = tmp_path / "other.mp4"
+    other.write_bytes(b"not the archived asset")
+    with pytest.raises(InvocationReceiptMismatch, match="bytes_unrecomputable"):
+        verify_admitted_invocation_receipt(
+            receipt, {**inputs, "source_video": str(other)}, tmp_path / "other-host",
+        )
+    with pytest.raises(InvocationReceiptMismatch, match="duplicate source_video"):
+        verify_admitted_invocation_receipt(
+            receipt, {**inputs, "workflow_inputs": json.dumps({"source_video": resolve_inputs(manifest)["source_video"]})},
+            tmp_path / "dup-host",
+        )

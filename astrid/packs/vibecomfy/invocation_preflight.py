@@ -632,18 +632,39 @@ def verify_admitted_invocation_receipt(
                 raise InvocationReceiptMismatch(
                     "bytes_unrecomputable", admitted="<unrecomputable>", receipt="<provided>",
                 ) from exc
+            supplied_source_video = "source_video" in bindings
+            archive_source_digests: list[str] = []
             if inputs.get("managed_assets"):
                 # Same archive validation/merge as run.py's _stage_managed_asset_manifest,
                 # without writing engine files or contacting a target.
                 archive = read_archive(inputs["managed_assets"])
                 bindings = resolve_inputs(archive.manifest, bindings)
+                archive_source_digests = [
+                    str(record.get("sha256"))
+                    for record in archive.manifest.get("assets", ())
+                    if isinstance(record, Mapping) and record.get("binding") == "source_video"
+                ]
             if inputs.get("source_video"):
-                # Mirror run.py's _stage_source_video binding, before target custody.
-                if "source_video" in bindings:
+                if supplied_source_video:
                     raise InvocationReceiptMismatch(
                         "bytes_unrecomputable", admitted="<duplicate source_video>", receipt="<provided>",
                     )
-                bindings["source_video"] = Path(inputs["source_video"]).name
+                if archive_source_digests:
+                    # A prepared (H3) source is the worker's source_video and also the
+                    # archive's source_video graph asset. The graph is bound to the
+                    # asset's own member name (the host's own preflight does the same),
+                    # so the staged file must be exactly that asset's bytes.
+                    import hashlib
+
+                    staged_digest = hashlib.sha256(Path(inputs["source_video"]).read_bytes()).hexdigest()
+                    if any(digest != staged_digest for digest in archive_source_digests):
+                        raise InvocationReceiptMismatch(
+                            "bytes_unrecomputable", admitted="<source_video differs from managed asset>",
+                            receipt="<provided>",
+                        )
+                else:
+                    # Mirror run.py's _stage_source_video binding, before target custody.
+                    bindings["source_video"] = Path(inputs["source_video"]).name
             api = loaded.resolved.workflow.compile("api", run_inputs=bindings)
             if not isinstance(api, Mapping):
                 raise InvocationReceiptMismatch(

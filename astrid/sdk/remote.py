@@ -193,8 +193,13 @@ def _vibecomfy_invocation_preflight(
                 str(inputs["prompt"])
                 if isinstance(inputs.get("prompt"), str) and inputs["prompt"].strip()
                 else (
+                    # Only archive-resolved inputs ever supplied the expected prompt;
+                    # workflow inputs bound without an archive (so the receipt digests
+                    # match the host's recomputation) must not newly require a
+                    # prompt-bearing node, as workflows with other field names have none.
                     str(run_inputs["prompt"])
-                    if isinstance(run_inputs.get("prompt"), str) and run_inputs["prompt"].strip()
+                    if managed_descriptor is not None
+                    and isinstance(run_inputs.get("prompt"), str) and run_inputs["prompt"].strip()
                     else None
                 )
             ),
