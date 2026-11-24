@@ -110,6 +110,11 @@ def test_submit_task_installs_packs_through_installed_launcher_entry(tmp_path, m
         return json.dumps({"packs": []})
 
     monkeypatch.setattr(journey, "installed_cli", fake_installed_cli)
+    # The FIX-17 lifecycle driver gates pack installs on the installed release's
+    # console route and waits for registration; those probes need a real install.
+    monkeypatch.setattr(journey, "installed_routes_packs", lambda version, evidence: True)
+    monkeypatch.setattr(journey, "before_journey_pack_add", lambda evidence: {})
+    monkeypatch.setattr(journey, "wait_pack_registered", lambda *args, **kwargs: None)
     monkeypatch.setattr(journey, "installed_cli_with_capture", lambda *args, **kwargs: json.dumps({
         "details": {"astridTaskRefs": [{"task_id": "task-1"}]},
     }))
