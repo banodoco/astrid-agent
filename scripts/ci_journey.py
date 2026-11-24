@@ -14,6 +14,7 @@ import json
 import ntpath
 import os
 import platform
+import plistlib
 import re
 import shlex
 import shutil
@@ -37,6 +38,8 @@ if __package__:
         M4_4A_OLD_UPDATE_SHA256,
         M4_4A_PROVISIONAL_AGENT_REF,
         M4_4A_REQUIRED_AGENT_ANCESTORS,
+        FIX17_BROWSER_LEGS,
+        RELEASE13_WINDOWS_JOB_ID,
         RELEASE1_MODES,
         validate_job,
     )
@@ -48,6 +51,8 @@ else:
         M4_4A_OLD_UPDATE_SHA256,
         M4_4A_PROVISIONAL_AGENT_REF,
         M4_4A_REQUIRED_AGENT_ANCESTORS,
+        FIX17_BROWSER_LEGS,
+        RELEASE13_WINDOWS_JOB_ID,
         RELEASE1_MODES,
         validate_job,
     )
@@ -61,7 +66,9 @@ JOURNEY_PACKS = {"chiptune": ("https://github.com/banodoco/poms_packs", "2379ab5
 OWNER_FILE = "tst-b1-owner.json"
 VERSION_JUMP_LEGS = ("update-from-served", "update-from-release:pre-updater",
                      "update-over-old-declaration", "old-runtime-busy",
-                     "release9-then-install", "r0-handoff-then-update", "windows-upgrade-refusal")
+                     "release9-then-install", "r0-handoff-then-update", "release11-then-update", "release13-then-update", "release13-then-killed-update",
+                     "fresh-install-autostart-off", "windows-upgrade-refusal",
+                     *FIX17_BROWSER_LEGS)
 RUNNER_FAMILY = {"ubuntu-24.04": "linux", "ubuntu-22.04": "linux",
                  "windows-2022": "win32", "macos-14": "darwin", "macos-15": "darwin"}
 GITHUB_RUNNER_OS = {"Linux": "linux", "Windows": "win32", "macOS": "darwin"}
@@ -79,8 +86,10 @@ JOURNEY_EVIDENCE_NAMES = frozenset({
     "service-manager-prerequisite.log", "direct-service-ownership.log",
     "preflight-scheduled-task.txt", "refusal-update-bootstrap.log",
     "update-job-journal.log", "update-job-record.json", "update-transaction.json",
-    "update-button.json", "update-button.png",
-    "update-transaction-status.json", "runtime-data-runtime.log", "runtime-real-home-runtime.log", "macos-file-listing.txt",
+    "update-button.json", "update-button.png", "reload-inflight-timeout.jpg",
+    "update-transaction-status.json", "runtime-data-runtime.log", "runtime-data-service-pack-host.log",
+    "runtime-real-home-service-pack-host.log",
+    "runtime-real-home-runtime.log", "macos-file-listing.txt",
     "scheduled-task-before.xml", "scheduled-task-after.xml",
     "runtime-owner-processes.json", "runtime-owner-selection.json", "runtime-owner-selection-context.json",
     "runtime-owner-workspace.json",
@@ -96,7 +105,22 @@ JOURNEY_EVIDENCE_NAMES = frozenset({
     "windows-real-profile-pack-host-after-cleanup.json",
     "windows-pack-host-update-before.json", "windows-pack-host-update-after.json",
     "unit-file-before-cleanup.txt", "unit-file-after-cleanup.txt",
+    # install_journey_packs: `packs list` output; per-pack `packs add` logs match JOURNEY_PACK_LOG.
+    "journey-packs-list.json",
+    # assert_pack_hot_refreshed: the pack host before `packs add` and after the task completed.
+    "journey-pack-hot-refresh.json",
+    # wait_pack_registered: every Runtime-side registration poll, plus the outbox on timeout.
+    "journey-pack-registration.json",
+    # The sanitized pack-host identity beside each registration observation.
+    "journey-pack-host-identity.json",
+    "r11-home-packs.json",
+    # Linux/macOS: each expected host/service log, captured or absent.
+    "runtime-service-log-status.json",
+    # direct-windows-r13-update: `astrid doctor --json` and the dry-run generation, each as the installed
+    # candidate printed it (see journey_windows_r13_update.py).
+    "windows-r13-doctor.json", "windows-r13-dry-run.json",
 })
+JOURNEY_PACK_LOG = re.compile(r"journey-pack-[A-Za-z0-9_-]+\.log")
 EVIDENCE_LOG_LIMIT = 1024 * 1024
 WINDOWS_PROFILE_SERVICE_LOG_LIMIT = 64 * 1024
 WINDOWS_PACK_HOST_STATE_LIMIT = 64 * 1024
@@ -706,7 +730,7 @@ def _listing(root: Path) -> list[str]:
 
 def _account_home() -> Path:
     """The account's real home directory, whatever HOME this process was given."""
-    if sys.platform == "darwin":
+    if sys.platform in {"linux", "darwin"}:
         import pwd
         try:
             return Path(pwd.getpwuid(os.getuid()).pw_dir)
@@ -756,9 +780,132 @@ def capture_macos_listing(evidence: Path, run_root: Path, phase: str, home: Path
         print(f"Journey macOS listing ({phase}) failed: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
 
 
+def _write_bounded_tail(data: bytes, target: Path) -> None:
+    target.write_bytes(data[-EVIDENCE_LOG_LIMIT:])
+
+
+def capture_service_manager_output(evidence: Path, run_root: Path, phase: str) -> list[str]:
+    """Retain the installed service's own manager output: the journald user unit or launchd's streams.
+
+    Names fit the existing runtime-service-service-*.log upload pattern. Diagnostics only.
+    """
+    captured = []
+    if sys.platform == "linux":
+        for unit in ("astrid.service", "astrid-r1.service"):
+            try:
+                completed = subprocess.run(["journalctl", "--user", "-u", unit, "--no-pager", "-o", "short-iso",
+                                            "-n", "5000"], capture_output=True, timeout=60, check=False)
+            except (OSError, subprocess.SubprocessError) as exc:
+                print(f"Journey journald capture ({phase}) failed for {unit}: {type(exc).__name__}",
+                      file=sys.stderr, flush=True)
+                continue
+            def as_bytes(value) -> bytes:
+                return value if isinstance(value, bytes) else str(value or "").encode("utf-8", "replace")
+
+            stdout, stderr = as_bytes(completed.stdout), as_bytes(completed.stderr)
+            if not stdout.strip() or stdout.strip() == b"-- No entries --":
+                continue
+            output = stdout + (b"\n[stderr]\n" + stderr if stderr else b"")
+            name = f"runtime-service-service-journald-{unit}.log"
+            try:
+                _write_bounded_tail(output, evidence / name)
+                captured.append(name)
+            except OSError as exc:
+                print(f"Journey journald capture ({phase}) failed for {unit}: {type(exc).__name__}",
+                      file=sys.stderr, flush=True)
+    elif sys.platform == "darwin":
+        agents = run_root / "home" / "Library" / "LaunchAgents"
+        for label in ("haus.astrid.runtime", "haus.astrid.runtime.r1"):
+            plist = agents / f"{label}.plist"
+            if plist.is_symlink() or not plist.is_file():
+                continue
+            try:
+                definition = plistlib.loads(plist.read_bytes())
+            except Exception as exc:  # noqa: BLE001 - an unreadable plist is a diagnostic, not a failure
+                print(f"Journey launchd plist read ({phase}) failed for {label}: {type(exc).__name__}",
+                      file=sys.stderr, flush=True)
+                continue
+            for key, stream in (("StandardOutPath", "stdout"), ("StandardErrorPath", "stderr")):
+                path = definition.get(key) if isinstance(definition, dict) else None
+                if not isinstance(path, str) or not path:
+                    continue
+                source = Path(path)
+                if source.is_symlink() or not source.is_file():
+                    continue
+                name = f"runtime-service-service-launchd-{label}-{stream}.log"
+                try:
+                    with source.open("rb") as handle:
+                        handle.seek(max(0, source.stat().st_size - EVIDENCE_LOG_LIMIT))
+                        (evidence / name).write_bytes(handle.read(EVIDENCE_LOG_LIMIT))
+                    captured.append(name)
+                except OSError as exc:
+                    print(f"Journey launchd stream capture ({phase}) failed for {label}: "
+                          f"{type(exc).__name__}", file=sys.stderr, flush=True)
+    return captured
+
+
+SERVICE_LOG_STATUS_RECEIPT = "runtime-service-log-status.json"
+
+
+def posix_service_log_dir(run_root: Path) -> Path:
+    if sys.platform == "darwin":
+        return run_root / "home" / "Library" / "Logs" / "Astrid Runtime"
+    return run_root / "home" / ".local" / "state" / "astrid-runtime" / "logs"
+
+
+def write_service_log_status(evidence: Path, run_root: Path, phase: str, manager_output: list[str]) -> dict:
+    """Name every expected host/service log as captured or absent, so a missing one is explicit."""
+    log_dir = posix_service_log_dir(run_root)
+    logs = {}
+    for name in ("service-pack-host.log", "runtime.log", "runtime-service.log", "install.log"):
+        source = log_dir / name
+        logs[name] = ("captured" if source.is_file() and not source.is_symlink() else "absent")
+    if sys.platform == "linux":
+        expected = [f"runtime-service-service-journald-{unit}.log" for unit in ("astrid.service", "astrid-r1.service")]
+    else:
+        expected = [f"runtime-service-service-launchd-{label}-{stream}.log"
+                    for label in ("haus.astrid.runtime", "haus.astrid.runtime.r1") for stream in ("stdout", "stderr")]
+    for name in expected:
+        logs[name] = "captured" if name in manager_output else "absent"
+    status = {"schema_version": 1, "phase": phase, "platform": sys.platform,
+              "log_dir_present": log_dir.is_dir(), "logs": logs}
+    write_json(evidence / SERVICE_LOG_STATUS_RECEIPT, status)
+    absent = sorted(name for name, value in logs.items() if value == "absent")
+    if absent:
+        print(f"Journey service logs absent ({phase}): {', '.join(absent)}", file=sys.stderr, flush=True)
+    return status
+
+
 def capture_runtime_service_logs(evidence: Path, run_root: Path, phase: str) -> None:
     """Retain bounded tails of Runtime logs from the active journey profile."""
     capture_update_transaction_status(evidence, run_root, phase)
+    # R11's supervisor writes beside its Runtime log; the login service may inherit
+    # the account's real HOME rather than the harness's isolated HOME.
+    host_logs = [(run_root / "data" / "runtime" / "service-pack-host.log", "runtime-data-service-pack-host.log")]
+    if sys.platform == "linux":
+        host_logs.append((_account_home() / ".local" / "state" / "astrid-runtime" / "logs" /
+                          "service-pack-host.log", "runtime-real-home-service-pack-host.log"))
+    for source, name in host_logs:
+        if _regular_file_info(source) is not None:
+            try:
+                with source.open("rb") as stream:
+                    stream.seek(max(0, source.stat().st_size - EVIDENCE_LOG_LIMIT))
+                    (evidence / name).write_bytes(stream.read(EVIDENCE_LOG_LIMIT))
+            except OSError as exc:
+                print(f"Journey Runtime host log capture ({phase}) failed: {type(exc).__name__}: {exc}",
+                      file=sys.stderr, flush=True)
+    manager_output: list[str] = []
+    try:  # Diagnostics only: a capture failure never replaces the journey's own result.
+        manager_output = capture_service_manager_output(evidence, run_root, phase)
+    except Exception as exc:  # noqa: BLE001
+        print(f"Journey service-manager output capture ({phase}) failed: {type(exc).__name__}",
+              file=sys.stderr, flush=True)
+    if sys.platform in {"linux", "darwin"}:
+        try:
+            write_service_log_status(evidence, run_root, phase, manager_output)
+        except Exception as exc:  # noqa: BLE001
+            print(f"Journey service log status ({phase}) failed: {type(exc).__name__}",
+                  file=sys.stderr, flush=True)
     if sys.platform == "darwin":
         capture_macos_listing(evidence, run_root, phase)
         # The Runtime's own log lives in the data root on macOS, beside its state.
@@ -1068,6 +1215,59 @@ def _capture_windows_pack_host_update_state(evidence: Path, data: Path, phase: s
               file=sys.stderr, flush=True)
 
 
+TASK_FOLLOW_FILES = ("task-follow.jsonl", "task-follow-failure.json", "task-cancel.json",
+                     "task-cancel-follow.jsonl", "task-after-cancel.json", "task-settled.json",
+                     "task-refusal.json")
+# The pack-activation evidence a task phase writes. The top-level staging copies these only from
+# the leg's own folder, so nested task folders (candidate-working-task, release1-working-task, ...)
+# are promoted here explicitly.
+TASK_PACK_FILES = ("journey-packs-list.json", "journey-pack-hot-refresh.json", "journey-pack-registration.json",
+                   "journey-pack-host-identity.json", "journey-pack-chiptune.log", "journey-pack-capability.log",
+                   "journey-pack-outbox.log", "journey-pack-console.log", "journey-pack-refresh.log")
+# journey-task-<phase>--<file>: <phase> is the task's evidence folder ("root" for the leg's own),
+# with path separators as "-", so every task phase stages flat beside the other names.
+TASK_FOLLOW_STAGED = re.compile(r"journey-task-[A-Za-z0-9_-]+--(?:" +
+                                "|".join(re.escape(name) for name in TASK_FOLLOW_FILES + TASK_PACK_FILES) + r")")
+
+
+def stage_task_follow_diagnostics(evidence: Path, destination: Path) -> list[str]:
+    """Stage every task phase's follow/cancel/settled files and nested pack evidence (bounded)."""
+    staged = []
+    for name in TASK_FOLLOW_FILES + TASK_PACK_FILES:
+        for source in sorted(evidence.rglob(name)):
+            if source.is_symlink() or not source.is_file():
+                continue
+            try:
+                relative = source.parent.relative_to(evidence)
+            except ValueError:
+                continue
+            if any(part.is_symlink() for part in [evidence / Path(*relative.parts[:i + 1])
+                                                   for i in range(len(relative.parts))]):
+                continue
+            if not relative.parts and name in TASK_PACK_FILES:
+                continue  # The leg's own pack evidence is already staged under its plain name.
+            phase = "root" if not relative.parts else "-".join(relative.parts)
+            phase = re.sub(r"[^A-Za-z0-9_-]", "_", phase)
+            target_name = f"journey-task-{phase}--{name}"
+            if not TASK_FOLLOW_STAGED.fullmatch(target_name):
+                continue
+            try:
+                size = source.stat().st_size
+                if name.endswith((".jsonl", ".log")):
+                    with source.open("rb") as stream:  # follow streams: keep the bounded tail
+                        stream.seek(max(0, size - EVIDENCE_LOG_LIMIT))
+                        (destination / target_name).write_bytes(stream.read(EVIDENCE_LOG_LIMIT))
+                elif size <= EVIDENCE_LOG_LIMIT:
+                    shutil.copyfile(source, destination / target_name)
+                else:
+                    continue
+                staged.append(target_name)
+            except OSError as exc:
+                print(f"Journey task-follow staging failed for {target_name}: {type(exc).__name__}",
+                      file=sys.stderr, flush=True)
+    return staged
+
+
 def retain_named_evidence(evidence: Path, phase: str) -> None:
     """Copy only the allowlisted journey evidence, clipping verbose text logs."""
     destination = evidence.parent.parent / "evidence-upload" / phase
@@ -1091,7 +1291,8 @@ def retain_named_evidence(evidence: Path, phase: str) -> None:
         name = source.name
         if (name not in JOURNEY_EVIDENCE_NAMES and
                 not (name.startswith("runtime-service-service-") and name.endswith(".log")) and
-                not re.fullmatch(r"keepgoing-stage-[0-9]{2}\.log", name)):
+                not re.fullmatch(r"keepgoing-stage-[0-9]{2}\.log", name) and
+                not JOURNEY_PACK_LOG.fullmatch(name)):
             continue
         if not source.is_file() or source.is_symlink():
             continue
@@ -1138,6 +1339,8 @@ def retain_named_evidence(evidence: Path, phase: str) -> None:
                 except OSError as exc:
                     print(f"Journey readiness carry-forward failed: {type(exc).__name__}",
                           file=sys.stderr, flush=True)
+
+    stage_task_follow_diagnostics(evidence, destination)
 
     # Never upload the helper's raw stdout, traceback, request, or selection.
     for action in ("seed", "snapshot"):
@@ -1210,6 +1413,8 @@ def retain_named_evidence(evidence: Path, phase: str) -> None:
 def print_direct_windows_failure_diagnostics(run_root: Path) -> None:
     """Print the row's nested Runtime logs and matching processes before cleanup."""
     log_dir = run_root / "localappdata" / "Astrid Runtime" / "logs"
+    process_match = ("*astrid-r1-direct-windows*" if run_root.name == "astrid-r1-direct-windows"
+                     else "*" + str(run_root).replace("/", "\\") + "*")
     code = r"""
 $ErrorActionPreference = 'Continue'
 $logRoot = __LOG_ROOT__
@@ -1225,16 +1430,17 @@ if (Test-Path -LiteralPath $logRoot -PathType Container) {
 } else {
     Write-Output '(log directory is unavailable)'
 }
-Write-Output '=== Win32_Process matching *astrid-r1-direct-windows* ==='
+Write-Output '=== Win32_Process matching this journey root ==='
 $processes = @(Get-CimInstance -ClassName Win32_Process -ErrorAction Continue |
-    Where-Object { $_.CommandLine -like '*astrid-r1-direct-windows*' } |
+    Where-Object { $_.CommandLine -like __PROCESS_MATCH__ } |
     Select-Object ProcessId, ParentProcessId, CommandLine)
 if ($processes.Count -gt 0) {
     $processes | Format-List ProcessId, ParentProcessId, CommandLine | Out-String -Width 4096 | Write-Output
 } else {
     Write-Output '(no matching processes found)'
 }
-""".replace("__LOG_ROOT__", windows._powershell_quote(log_dir))
+""".replace("__LOG_ROOT__", windows._powershell_quote(log_dir)).replace(
+        "__PROCESS_MATCH__", windows._powershell_quote(process_match))
     print("Direct Windows failure diagnostics:", flush=True)
     try:
         output = windows.powershell(code, "direct-windows-failure-diagnostics.txt",
@@ -1932,6 +2138,88 @@ def assert_direct_service_ownership(root: Path, data: Path, *, release: int = 0)
     raise RuntimeError(f"Unsupported service-manager platform: {sys.platform}")
 
 
+# Prints the live (pid, birth_id) of one process through the installed Runtime's own identity API.
+PROCESS_IDENTITY_PROBE = ("import json\n"
+                          "from runtime_protocol import platform\n"
+                          "identity = platform.process_identity({pid:d})\n"
+                          "print(json.dumps(None if identity is None else "
+                          "{{'pid': identity.get('pid'), 'birth_id': identity.get('birth_id')}}))")
+
+
+def _no_sign_in_registration(data: Path) -> dict:
+    """Prove autostart off left no sign-in registration for the journey's user."""
+    if sys.platform == "linux":
+        unit = data.parent / "home" / ".config" / "systemd" / "user" / "astrid.service"
+        if unit.exists() or unit.is_symlink():
+            raise RuntimeError(f"Autostart-off install left a sign-in unit: {unit}")
+        completed = subprocess.run(["systemctl", "--user", "show", "astrid.service",
+                                    "--property=LoadState,UnitFileState,ActiveState"],
+                                   capture_output=True, text=True, timeout=30, check=False)
+        fields = dict(line.split("=", 1) for line in completed.stdout.splitlines() if "=" in line)
+        if completed.returncode or fields.get("LoadState") != "not-found":
+            raise RuntimeError("Autostart-off install left astrid.service loaded in the user manager "
+                               f"(LoadState={fields.get('LoadState', 'unknown')})")
+        return {"manager": "systemd-user", "unit": "astrid.service", "load_state": "not-found"}
+    if sys.platform == "darwin":
+        label = "haus.astrid.runtime"
+        plist = data.parent / "home" / "Library" / "LaunchAgents" / f"{label}.plist"
+        if plist.exists() or plist.is_symlink():
+            raise RuntimeError(f"Autostart-off install left a sign-in LaunchAgent: {plist}")
+        completed = subprocess.run(["launchctl", "print", f"gui/{os.getuid()}/{label}"],
+                                   capture_output=True, text=True, timeout=30, check=False)
+        if completed.returncode == 0:
+            raise RuntimeError(f"Autostart-off install left {label} loaded in launchd")
+        return {"manager": "launchd", "label": label, "loaded": False}
+    raise RuntimeError(f"Autostart-off detached Runtime is not admitted on {sys.platform}")
+
+
+def assert_detached_autostart_off_runtime(root: Path, data: Path, evidence: Path) -> dict:
+    """The autostart-off service contract: one birth-verified detached Runtime, no sign-in registration.
+
+    With autostart off the product deliberately launches a detached Runtime and records it as
+    `foreground` in the selection record (installer/service.py start_foreground). Only the
+    fresh-install-autostart-off leg admits it; every other direct row keeps the foreground ban.
+    """
+    record_path = selection_path()
+    record = read_json(record_path) if record_path.is_file() else {}
+    choices = record.get("choices") if isinstance(record.get("choices"), dict) else {}
+    if choices.get("autostart") is not False:
+        raise RuntimeError("Detached Runtime admitted only when the selection records autostart off")
+    foreground = record.get("foreground")
+    if not isinstance(foreground, dict):
+        raise RuntimeError("Autostart-off install recorded no detached Runtime")
+    pid, birth = foreground.get("pid"), foreground.get("birth_id")
+    if type(pid) is not int or pid <= 0 or not isinstance(birth, str) or not birth:
+        raise RuntimeError("Autostart-off detached Runtime identity is incomplete")
+    _, selected_data, version = installation(root, data)
+    discovery = healthy(selected_data)
+    if discovery.get("pid") != pid or discovery.get("process_birth_id", birth) != birth:
+        raise RuntimeError("The live Runtime is not the recorded detached Runtime")
+    output = _installed_probe(version, PROCESS_IDENTITY_PROBE.format(pid=pid), evidence,
+                              "detached-runtime-identity.log")
+    identity = json.loads(output) if output else None
+    if not isinstance(identity, dict) or identity.get("pid") != pid or identity.get("birth_id") != birth:
+        raise RuntimeError("The detached Runtime's live birth does not match its record")
+    owners = runtime_processes(selected_data)
+    if owners != [pid]:
+        raise RuntimeError(f"Expected exactly the detached Runtime as owner, found {len(owners)} Runtime owner(s)")
+    realm_root = workspace_root(selected_data)
+    wrong_root = "realm_root" in foreground and Path(foreground["realm_root"]) != realm_root
+    wrong_realm = ("realm_id" in foreground and "realm_id" in discovery
+                   and foreground["realm_id"] != discovery["realm_id"])
+    if wrong_root or wrong_realm:
+        raise RuntimeError("The detached Runtime does not serve the selected workspace")
+    command = subprocess.run(["ps", "-ww", "-o", "command=", "-p", str(pid)], capture_output=True,
+                             text=True, timeout=10, check=False).stdout
+    if str(Path(version["root"])) not in command or str(selected_data) not in command:
+        raise RuntimeError("The detached Runtime does not run the selected version and data root")
+    return {"manager": "detached", "autostart": False, "foreground_fallback": False,
+            "detached": {"pid": pid, "birth_verified": True, "workspace": str(realm_root),
+                         "version_root": str(version["root"]), "runtime_instance_id":
+                         discovery.get("runtime_instance_id")},
+            "sign_in_registration": _no_sign_in_registration(selected_data)}
+
+
 def assert_cleanup_service_ownership(root: Path, data: Path, *, release: int,
                                     fresh_install: bool = False) -> dict:
     """Check the service contract supported by this platform during cleanup.
@@ -2123,11 +2411,17 @@ def verify(mode: str, version_path: Path, data: Path, evidence: Path,
     return output
 
 
+# The `astrid` console entry point (pyproject: astrid.console:main). Only it routes
+# `packs`; `python -m astrid` goes to the gateway, which has no `packs` route.
+CONSOLE_ENTRY = "import sys; from astrid.console import main; sys.exit(main(sys.argv[1:]))"
+
+
 def installed_cli(version: dict, argv: list[str], evidence: Path, name: str,
-                  *, module: str = "astrid", timeout: int = 300) -> str:
+                  *, module: str = "astrid", console: bool = False, timeout: int = 300) -> str:
     env = {key: value for key, value in os.environ.items() if key not in {"PYTHONPATH", "PYTHONHOME"}}
     env.update(version["env"])
-    return run([version["python"], "-I", "-m", module, *argv], evidence / name,
+    launcher = ["-c", CONSOLE_ENTRY] if console else ["-m", module]
+    return run([version["python"], "-I", *launcher, *argv], evidence / name,
                env=env, timeout=timeout)
 
 
@@ -2271,8 +2565,9 @@ def installed_cli_with_capture(version: dict, argv: list[str], evidence: Path, n
                         value = json.loads(raw.decode("utf-8-sig", errors="replace"))
                         status["json_object"] = isinstance(value, dict)
                         if isinstance(value, dict):
-                            if type(value.get("ok")) is bool:
-                                status["ok"] = value["ok"]
+                            ok, _ = invocation_outcome(value)
+                            if type(ok) is bool:
+                                status["ok"] = ok
                             details = value.get("details")
                             refs = details.get("astridTaskRefs") if isinstance(details, dict) else None
                             if isinstance(refs, list):
@@ -2393,59 +2688,473 @@ def _pack_rows(value):
             yield from _pack_rows(child)
 
 
-def install_journey_packs(run_cli, *, routes_packs=None) -> None:
+def install_journey_packs(run_cli, *, routes_packs=None, before_add=None, wait_registered=None,
+                          existing_ready=None) -> list[str]:
     """Install each JOURNEY_PACKS pack from its pinned source through the public `packs add` path.
 
-    ``run_cli(argv, name)`` runs the installed ``astrid`` CLI and returns its stdout.
-    ``routes_packs()`` says whether the installed release routes ``packs`` at all:
-    for older releases (e.g. Release 0) nothing is listed or added.
+    ``run_cli(argv, name)`` runs the installed ``astrid`` console entry point (the
+    only route to ``packs``) and returns its stdout. ``routes_packs()`` says whether
+    the installed release has that route at all: for older releases (no console
+    module, or a console without ``packs``) nothing is added. ``before_add()`` runs once,
+    before the first add. ``wait_registered(pack_id)`` returns once a pack this call
+    added is live. Returns the ids this call added.
     """
+    added: list[str] = []
     if routes_packs is not None and not routes_packs():
-        return
+        return added
     for pack_id, (source, revision) in JOURNEY_PACKS.items():
         listing = json.loads(run_cli(["packs", "list", "--json"], "journey-packs-list.json"))
         if any(row.get("id") == pack_id for row in _pack_rows(listing)):
+            # Already listed: nothing to add, but its Runtime registration must be current
+            # for the live host before the task is submitted.
+            if existing_ready is not None:
+                existing_ready(pack_id)
             continue
+        if before_add is not None and not added:
+            before_add()
         run_cli(["packs", "add", source, "--revision", revision, "--pack-id", pack_id,
                  "--subpath", pack_id, "--yes"], f"journey-pack-{pack_id}.log")
+        added.append(pack_id)
+        if wait_registered is not None:
+            wait_registered(pack_id)
+    return added
 
 
-_PACKS_ROUTE = re.compile(r"""\[0\]\s*==\s*["']packs["']""")
-# The entry module submit_task runs `packs` through; a release whose source does not route it has no packs.
-PACKS_ENTRY_MODULE = "astrid.omp_agent"
-# Prints the installed release's entry module path, or nothing when it has none.
-PACKS_ENTRY_ORIGIN_PROBE = ("import importlib.util as u\n"
-                            "try:\n"
-                            f"    s = u.find_spec({PACKS_ENTRY_MODULE!r})\n"
-                            "except (ImportError, ValueError):\n"
-                            "    s = None\n"
-                            "print(s.origin if s is not None and s.origin else '')")
+_CONSOLE_PACKS_ROUTE = re.compile(r"""\[0\]\s*==\s*["']packs["']""")
+# Prints the installed release's astrid/console.py path, or nothing when it has none.
+CONSOLE_ORIGIN_PROBE = ("import importlib.util as u\n"
+                        "s = u.find_spec('astrid.console')\n"
+                        "print(s.origin if s is not None and s.origin else '')")
+# `packs add` commits and leaves a refresh pending; the running generic host
+# rediscovers, re-registers and only then acknowledges it (acknowledge_pack_refresh).
+PACK_REFRESH_PROBE = ("from astrid.personal_packs_root import resolve_personal_packs_root\n"
+                      "from astrid.core.pack.transaction import refresh_pending\n"
+                      "root = resolve_personal_packs_root()\n"
+                      "print('pending' if root is not None and refresh_pending(packs_root=root) else 'registered')")
+PACK_REGISTRATION_TIMEOUT = 180
+# Journey pack id -> the executor capability the journey's task admits.
+JOURNEY_PACK_CAPABILITIES = {"chiptune": "chiptune.sfx"}
+# The Runtime's OWN registration of the pack host's executor (the registry admission reads),
+# read with the selected Runtime owner, after validating its owned root and live identity.
+RUNTIME_REGISTRATION_PROBE = (
+    "import json\n"
+    "from pathlib import Path\n"
+    "from astrid.core.execution.generic_host import RuntimeProtocolClient\n"
+    "from astrid.sdk.host_bootstrap import PACK_HOST_ACTOR\n"
+    "token = Path({owner_path!r}).read_text(encoding='utf-8').strip()\n"
+    "client = RuntimeProtocolClient({endpoint!r}, token)\n"
+    "auth = client.generated.handshake('journey-probe', '1', [])\n"
+    "if auth.actor_id != 'owner' or auth.scopes:\n"
+    "    raise RuntimeError('Runtime credential is not the owner with empty negotiated scopes')\n"
+    "registration = client.generated.get_executor(PACK_HOST_ACTOR)\n"
+    "def field(value, name):\n"
+    "    return value.get(name) if isinstance(value, dict) else getattr(value, name, None)\n"
+    "rows = [{{'capability_id': field(c, 'capability_id'), 'status': field(c, 'status'),\n"
+    "          'definition_digest': field(c, 'definition_digest')}}\n"
+    "        for c in (field(registration, 'capabilities') or ())]\n"
+    "print(json.dumps({{'id': field(registration, 'executor_id'),\n"
+    "                  'readiness': field(registration, 'readiness'),\n"
+    "                  'max_concurrency': field(registration, 'max_concurrency'),\n"
+    "                  'runtime_epoch': field(registration, 'runtime_epoch'),\n"
+    "                  'source_epoch': field(registration, 'source_epoch'),\n"
+    "                  'source_digest': field(registration, 'source_digest'),\n"
+    "                  'dependency_digest': field(registration, 'dependency_digest'),\n"
+    "                  'capabilities': rows}}, default=str))")
+PACK_HOST_IDENTITY_RECEIPT = "journey-pack-host-identity.json"
+# Identity fields only: never the worker credential file, endpoint token or environment.
+PACK_HOST_IDENTITY_FIELDS = ("pid", "process_birth_id", "executor_id", "runtime_instance_id", "runtime_epoch",
+                             "source_epoch", "source_checkout_digest", "source_closure_digest",
+                             "source_inventory_identity", "capability_count", "ready_capabilities",
+                             "unready_capabilities")
+
+
+def sanitized_pack_host_identity(ready: dict) -> dict:
+    """The pack host's identity from its ready marker, without credentials or paths."""
+    identity = {key: ready.get(key) for key in PACK_HOST_IDENTITY_FIELDS}
+    result = ready.get("registration") if isinstance(ready.get("registration"), dict) else {}
+    registration = result.get("registration") if isinstance(result.get("registration"), dict) else {}
+    identity["registration"] = {key: registration.get(key) for key in (
+        "executor_id", "readiness", "runtime_epoch", "source_epoch", "source_digest", "dependency_digest")}
+    return identity
+# The personal packs-root transaction outbox: its committed revision and any pending refresh.
+PACK_OUTBOX_PROBE = (
+    "import json\n"
+    "from pathlib import Path\n"
+    "from astrid.personal_packs_root import resolve_personal_packs_root\n"
+    "root = resolve_personal_packs_root()\n"
+    "path = None if root is None else Path(root) / '.group.json'\n"
+    "state = json.loads(path.read_text(encoding='utf-8')) if path is not None and path.is_file() else {}\n"
+    "print(json.dumps({'packs_root': None if root is None else str(root),\n"
+    "                  'revision': state.get('revision'), 'transaction_id': state.get('transaction_id'),\n"
+    "                  'refresh': state.get('refresh')}, default=str))")
+PACK_REGISTRATION_RECEIPT = "journey-pack-registration.json"
+
+
+PACK_HOST_READY = "generic-host.ready.json"
+PACK_HOT_REFRESH_RECEIPT = "journey-pack-hot-refresh.json"
+# evidence dir -> the pack-host snapshot taken before this task attempt's `packs add`.
+PACK_HOT_REFRESH: dict[Path, dict] = {}
+
+
+def _process_command(pid: int) -> str:
+    if sys.platform == "win32":
+        return windows.powershell(
+            f"$p=Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}'; if ($p) {{ $p.CommandLine }}",
+            "pack-host-command.txt", show=False, timeout=30).strip()
+    return subprocess.run(["ps", "-ww", "-o", "command=", "-p", str(pid)], capture_output=True,
+                          text=True, timeout=10, check=False).stdout.strip()
+
+
+def pack_host_ready_path(*, pinokio_row: dict | None = None) -> Path:
+    """The pack host's ready marker beside the selection record's data root."""
+    record_path = selection_path()
+    record = read_json(record_path) if record_path.is_file() else {}
+    data_root = record.get("data_root")
+    if not isinstance(data_root, str) or not data_root:
+        raise RuntimeError("The selection record names no data root for the pack host")
+    selected_data = Path(data_root)
+    if pinokio_row is not None:
+        program = Path(pinokio_row["program_root"])
+        expected_data = Path(pinokio_row["data_root"])
+        home = Path(pinokio_row["home"])
+        run_root = home.parent
+        install_path = program / "install.json"
+        install = read_json(install_path)
+        if (record_path.is_symlink() or record.get("owner") != "haus.astrid.runtime"
+                or install_path.is_symlink() or install.get("owner") != "haus.astrid.runtime"
+                or install.get("managed_by") != "pinokio" or Path(install.get("data_root", "")) != expected_data
+                or not program.is_absolute() or program != program.resolve()
+                or not expected_data.is_absolute() or expected_data != expected_data.resolve()
+                or home != run_root / "home" or home != home.resolve()
+                or program != run_root / "pinokio-home" / "api" / "astrid-row" / "app" / "astrid"
+                or not expected_data.is_relative_to(home)
+                or not _same_path(record.get("program_root"), program)
+                or not _same_path(data_root, expected_data)):
+            raise RuntimeError("Pinokio selection does not match this isolated row's owned roots")
+    return selected_data / "runtime" / PACK_HOST_READY
+
+
+def pack_host_snapshot() -> dict:
+    """The live pack host's identity, read from its ready marker beside the selected data root."""
+    ready = read_json(pack_host_ready_path())
+    pid, birth = ready.get("pid"), ready.get("process_birth_id")
+    if type(pid) is not int or pid <= 0 or not isinstance(birth, str) or not birth:
+        raise RuntimeError("The pack host's ready marker has no process identity")
+    command = _process_command(pid)
+    workers = re.search(r"--max-concurrency(?:=|\s+)(\S+)", command)
+    return {"pid": pid, "process_birth_id": birth, "alive": bool(command),
+            "max_concurrency": workers.group(1) if workers else "default",
+            "single_worker": workers is None or workers.group(1) == "1",
+            "runtime_instance_id": ready.get("runtime_instance_id")}
+
+
+def before_journey_pack_add(evidence: Path) -> dict:
+    """Record the default single-worker pack host that must hot-refresh the added pack."""
+    before = pack_host_snapshot()
+    if not before["alive"] or not before["single_worker"]:
+        raise RuntimeError("The journey's pack host is not the live default single-worker host "
+                           f"(alive={before['alive']}, max_concurrency={before['max_concurrency']})")
+    PACK_HOT_REFRESH[evidence.absolute()] = before
+    write_json(evidence / PACK_HOT_REFRESH_RECEIPT,
+               {"schema_version": 1, "before": before, "after": None, "hot_refreshed": False})
+    return before
+
+
+def assert_pack_hot_refreshed(version: dict, evidence: Path) -> dict | None:
+    """After admission AND completion: the same host served the added pack, with no restart."""
+    before = PACK_HOT_REFRESH.pop(evidence.absolute(), None)
+    if before is None:
+        return None
+    receipt = {"schema_version": 1, "before": before, "after": None, "hot_refreshed": False}
+    try:
+        after = receipt["after"] = pack_host_snapshot()
+        try:  # Diagnostic only: whether the host acknowledged the `packs add` outbox.
+            receipt["refresh_pending_after"] = _installed_probe(
+                version, PACK_REFRESH_PROBE, evidence, "journey-pack-refresh.log") == "pending"
+        except (RuntimeError, OSError, subprocess.SubprocessError):
+            receipt["refresh_pending_after"] = None
+        if (after["pid"], after["process_birth_id"]) != (before["pid"], before["process_birth_id"]):
+            raise RuntimeError(f"Pack activation restarted the pack host (pid {before['pid']} -> {after['pid']}): "
+                               "the default single-worker host did not hot-refresh the added pack")
+        if not after["alive"] or not after["single_worker"]:
+            raise RuntimeError("The pack host that ran the journey task is not the live default single-worker host")
+        receipt["hot_refreshed"] = True
+        return receipt
+    finally:
+        write_json(evidence / PACK_HOT_REFRESH_RECEIPT, receipt)
 
 
 def console_routes_packs(source: str | None) -> bool:
-    """True when an installed entry module's source routes ``packs``."""
-    return bool(source) and _PACKS_ROUTE.search(source) is not None
+    """True when an installed astrid/console.py source routes ``packs``."""
+    return bool(source) and _CONSOLE_PACKS_ROUTE.search(source) is not None
+
+
+def _installed_probe(version: dict, code: str, evidence: Path, name: str) -> str:
+    env = {key: value for key, value in os.environ.items() if key not in {"PYTHONPATH", "PYTHONHOME"}}
+    env.update(version["env"])
+    try:
+        output = run([version["python"], "-I", "-c", code], evidence / name, env=env, timeout=120)
+    except RuntimeError as exc:
+        if name == "journey-pack-capability.log":
+            lines = (evidence / name).read_text(encoding="utf-8", errors="replace").splitlines()
+            if lines:
+                raise RuntimeError(f"{exc}: {lines[-1][:400]}") from exc
+        raise
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    return lines[-1] if lines else ""
 
 
 def installed_routes_packs(version: dict, evidence: Path) -> bool:
-    """Whether the installed release's entry module has a ``packs`` route (read from its source)."""
-    env = {key: value for key, value in os.environ.items() if key not in {"PYTHONPATH", "PYTHONHOME"}}
-    env.update(version["env"])
-    output = run([version["python"], "-I", "-c", PACKS_ENTRY_ORIGIN_PROBE], evidence / "journey-pack-entry.log",
-                 env=env, timeout=120)
-    lines = [line.strip() for line in output.splitlines() if line.strip()]
-    if not lines or not lines[-1]:
+    origin = _installed_probe(version, CONSOLE_ORIGIN_PROBE, evidence, "journey-pack-console.log")
+    if not origin:
         return False
     try:
-        return console_routes_packs(Path(lines[-1]).read_text(encoding="utf-8", errors="replace"))
+        return console_routes_packs(Path(origin).read_text(encoding="utf-8", errors="replace"))
     except OSError:
         return False
 
 
+def _capability_ready(registration: dict | None, capability_id: str) -> bool:
+    rows = registration.get("capabilities") if isinstance(registration, dict) else None
+    return isinstance(rows, list) and any(isinstance(row, dict) and row.get("capability_id") == capability_id
+                                          and row.get("status") == "ready" for row in rows)
+
+
+def existing_pack_registration_problems(capability_id: str, observation: dict) -> list[str]:
+    """Why the Runtime's registration is NOT current for the live host (empty when it is).
+
+    A bare status=ready can be stale, so the registration must belong to the CURRENT live
+    host: the host process is alive, the executor id matches, it was registered under the
+    current Runtime instance and epoch, its source identity matches the host's own record
+    (the pairs astrid.sdk.host_bootstrap requires to attach a resident host), and no
+    refresh is pending in the outbox (no unresolved refresh fence).
+    """
+    problems = []
+    ready = observation.get("ready") if isinstance(observation.get("ready"), dict) else {}
+    registration = observation.get("registration") if isinstance(observation.get("registration"), dict) else None
+    host_result = ready.get("registration") if isinstance(ready.get("registration"), dict) else {}
+    host_registration = host_result.get("registration") if isinstance(host_result.get("registration"), dict) else {}
+    if not observation.get("host_alive"):
+        problems.append("the pack host in the ready marker is not running")
+    if registration is None:
+        error = observation.get("registration_error")
+        problems.append(f"Runtime registration probe failed: {error}" if error
+                        else "the Runtime returned no executor registration")
+        return problems
+    expected_id = ready.get("executor_id")
+    if not expected_id or registration.get("id") != expected_id:
+        problems.append(f"executor {registration.get('id')!r} is not the live host's {expected_id!r}")
+    if registration.get("readiness") != "ready":
+        problems.append(f"executor readiness is {registration.get('readiness')!r}")
+    if not ready.get("runtime_instance_id") or ready.get("runtime_instance_id") != observation.get("runtime_instance_id"):
+        problems.append("the live host registered with a previous Runtime instance")
+    if ready.get("runtime_epoch") is None or registration.get("runtime_epoch") != ready.get("runtime_epoch"):
+        problems.append("stale registration: its runtime epoch differs from the live host's")
+    for name, expected in (("source_epoch", ready.get("source_epoch")),
+                           ("source_digest", host_registration.get("source_digest")),
+                           ("dependency_digest", host_registration.get("dependency_digest"))):
+        if expected is None or registration.get(name) != expected:
+            problems.append(f"registration {name} does not match the live host's")
+    if not _capability_ready(registration, capability_id):
+        problems.append(f"{capability_id} is not listed as ready")
+    outbox = observation.get("outbox") if isinstance(observation.get("outbox"), dict) else None
+    if outbox is None or "error" in outbox:
+        problems.append("the pack outbox state is unavailable")
+    elif outbox.get("refresh") is not None:
+        problems.append("an unresolved pack refresh is pending (refresh fence)")
+    return problems
+
+
+def _observe_pack_registration(version: dict, evidence: Path, *, pinokio_row: dict | None = None) -> dict:
+    """One Runtime-side observation: registration, outbox, live host and Runtime instance."""
+    observation = {"registration": None, "registration_error": None, "outbox": None, "ready": None,
+                   "host_alive": False, "runtime_instance_id": None}
+    try:
+        ready_path = pack_host_ready_path(pinokio_row=pinokio_row)
+        ready = read_json(ready_path)
+        observation["ready"] = ready
+        pid = ready.get("pid")
+        observation["host_alive"] = type(pid) is int and pid > 0 and bool(_process_command(pid))
+        discovery = read_json(ready_path.parent / "discovery.json")
+        observation["runtime_instance_id"] = discovery.get("runtime_instance_id")
+        data = ready_path.parent.parent
+        selection = read_json(selection_path())
+        program = Path(version["root"]).parent.parent
+        if pinokio_row is None:
+            owner_file = program.parent / OWNER_FILE
+            owner = read_json(owner_file)
+            original_data = Path(owner["data_root"])
+            if (owner_file.is_symlink() or owner.get("schema_version") != 1
+                    or not re.fullmatch(r"[0-9a-f]{32}", str(owner.get("run_id", "")))
+                    or owner.get("root") != str(program) or program.name != "program"
+                    or original_data != program.parent / "data"
+                    or data not in (original_data, Path(str(original_data) + "-r1"))
+                    or not data.is_absolute() or data != data.resolve()
+                    or selection.get("owner") != "haus.astrid.runtime"
+                    or not _same_path(selection.get("program_root"), program)
+                    or not _same_path(selection.get("data_root"), data)):
+                raise RuntimeError("Selected Runtime data root is not owned by this journey")
+        elif (program != Path(pinokio_row["program_root"]) or data != Path(pinokio_row["data_root"])
+              or selection.get("owner") != "haus.astrid.runtime"
+              or not _same_path(selection.get("program_root"), program)
+              or not _same_path(selection.get("data_root"), data)):
+            raise RuntimeError("Selected Runtime roots are not owned by this Pinokio row")
+        discovery = healthy(data)
+        endpoint = discovery.get("endpoint")
+        if (not isinstance(endpoint, str) or not re.fullmatch(r"http://127\.0\.0\.1:[0-9]{1,5}", endpoint)
+                or not 1 <= int(endpoint.rsplit(":", 1)[1]) <= 65535
+                or ready.get("endpoint") != endpoint
+                or not discovery.get("runtime_instance_id")
+                or ready.get("runtime_instance_id") != discovery["runtime_instance_id"]):
+            raise RuntimeError("Pack host endpoint or Runtime identity differs from the live selected Runtime")
+        request = urllib.request.Request(endpoint + "/v1/health")
+        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=10) as response:
+            live = json.load(response)
+        if live.get("runtime_instance_id") != discovery["runtime_instance_id"] or live.get("status") != "ok":
+            raise RuntimeError("Runtime endpoint health does not match selected discovery")
+        owner_path = data / "runtime" / "credentials" / "owner.token"
+        if owner_path != owner_path.resolve() or not owner_path.is_file():
+            raise RuntimeError("Selected Runtime owner credential is missing or aliased")
+        code = RUNTIME_REGISTRATION_PROBE.format(owner_path=str(owner_path), endpoint=endpoint)
+        observation["registration"] = json.loads(_installed_probe(version, code, evidence,
+                                                                  "journey-pack-capability.log"))
+    except (RuntimeError, ValueError, KeyError, OSError, subprocess.SubprocessError) as exc:
+        observation["registration_error"] = f"{type(exc).__name__}: {exc}"[:500]
+    try:
+        observation["outbox"] = json.loads(_installed_probe(version, PACK_OUTBOX_PROBE, evidence,
+                                                            "journey-pack-outbox.log"))
+    except (RuntimeError, ValueError, OSError, subprocess.SubprocessError) as exc:
+        observation["outbox"] = {"error": f"{type(exc).__name__}: {exc}"[:500]}
+    return observation
+
+
+def _poll_pack_registration(version: dict, evidence: Path, pack_id: str, *, mode: str,
+                            timeout: float, interval: float, pinokio_row: dict | None = None) -> None:
+    capability_id = JOURNEY_PACK_CAPABILITIES.get(pack_id)
+    if capability_id is None:
+        return
+    receipt = {"schema_version": 2, "mode": mode, "pack_id": pack_id, "capability_id": capability_id,
+               "timeout_seconds": timeout, "registered": False, "polls": 0, "last": None,
+               "last_error": None, "outbox": None, "problems": None, "host_alive": None,
+               "runtime_instance_id": None}
+    identity = None
+    deadline = time.monotonic() + timeout
+    try:
+        while True:
+            receipt["polls"] += 1
+            observation = _observe_pack_registration(version, evidence, pinokio_row=pinokio_row)
+            receipt.update(last=observation["registration"], last_error=observation["registration_error"],
+                           outbox=observation["outbox"], host_alive=observation["host_alive"],
+                           runtime_instance_id=observation["runtime_instance_id"])
+            if isinstance(observation["ready"], dict):
+                identity = sanitized_pack_host_identity(observation["ready"])
+            if mode == "existing":
+                problems = existing_pack_registration_problems(capability_id, observation)
+            else:
+                problems = ([f"Runtime registration probe failed: {observation['registration_error']}"]
+                            if observation["registration_error"] else
+                            ([] if _capability_ready(observation["registration"], capability_id)
+                             else [f"{capability_id} is not listed as ready"]))
+            receipt["problems"] = problems
+            if not problems:
+                receipt["registered"] = True
+                return
+            if time.monotonic() >= deadline:
+                # A product finding, not a harness flake.
+                if mode == "existing":
+                    raise RuntimeError(f"The Runtime's registration of {capability_id} is not current for the "
+                                       f"live host after {int(timeout)}s: " + "; ".join(problems))
+                raise RuntimeError(f"The Runtime did not register {capability_id} as ready within "
+                                   f"{int(timeout)}s of `packs add` of {pack_id}: " + "; ".join(problems))
+            time.sleep(interval)
+    finally:
+        write_json(evidence / PACK_REGISTRATION_RECEIPT, receipt)
+        write_json(evidence / PACK_HOST_IDENTITY_RECEIPT,
+                   identity if identity is not None else {"status": "unavailable"})
+
+
+def wait_pack_registered(version: dict, evidence: Path, pack_id: str, *,
+                         timeout: float = PACK_REGISTRATION_TIMEOUT, interval: float = 3.0,
+                         pinokio_row: dict | None = None) -> None:
+    """Wait for RUNTIME-SIDE readiness after `packs add`: no restart, no refresh-outbox gate.
+
+    Readiness is the Runtime's own registration of the pack host's executor listing the
+    capability with status ready, polled up to ``timeout``. A local SDK resolve would prove
+    only discovery. Admission AND completion of the journey task, then
+    assert_pack_hot_refreshed, prove the rest. Each poll's registration, outbox and the
+    sanitized host identity are uploaded; the failure staging uploads host and service logs.
+    """
+    _poll_pack_registration(version, evidence, pack_id, mode="added", timeout=timeout, interval=interval,
+                            pinokio_row=pinokio_row)
+
+
+def wait_existing_pack_current(version: dict, evidence: Path, pack_id: str, *,
+                               timeout: float = PACK_REGISTRATION_TIMEOUT, interval: float = 3.0,
+                               pinokio_row: dict | None = None) -> None:
+    """GATE for a pack that is already listed: its registration must be current for the live host.
+
+    See existing_pack_registration_problems; a bare status=ready is not enough.
+    """
+    _poll_pack_registration(version, evidence, pack_id, mode="existing", timeout=timeout, interval=interval,
+                            pinokio_row=pinokio_row)
+
+
+def invocation_outcome(invocation: dict) -> tuple[bool | None, object]:
+    """Return omp_invoke's (ok, error); they live in the JSON of content[].text."""
+    if type(invocation.get("ok")) is bool:
+        return invocation["ok"], invocation.get("error")
+    content = invocation.get("content")
+    for item in content if isinstance(content, list) else []:
+        if not isinstance(item, dict) or not isinstance(item.get("text"), str):
+            continue
+        try:
+            payload = json.loads(item["text"])
+        except ValueError:
+            return None, item["text"]
+        if isinstance(payload, dict) and type(payload.get("ok")) is bool:
+            return payload["ok"], payload.get("error")
+    return None, None
+
+
+def _invocation_failure(error: object) -> str:
+    """A bounded, path-scrubbed summary: the raw response stays in local evidence only."""
+    def safe(text: str) -> str:
+        return _WINDOWS_ABSOLUTE_PATH.sub("<path>", text)[:300]
+
+    if isinstance(error, dict):
+        code = error.get("code") or "unknown"
+        message = error.get("message")
+        return f"{code}: {safe(message)}" if isinstance(message, str) and message else str(code)
+    if isinstance(error, str) and error:
+        return safe(error)
+    return "unknown"
+
+
+def existing_pack_gate_skipped(reason: str) -> str:
+    return f"existing_pack_gate: skipped ({reason})"
+
+
+def record_existing_pack_gate_skip(evidence: Path, pack_id: str, reason: str) -> str:
+    """Make an approved skip of the existing-pack gate visible in the receipt and the job log."""
+    line = existing_pack_gate_skipped(reason)
+    path = evidence / PACK_REGISTRATION_RECEIPT
+    prior = read_json(path) if path.is_file() else {}
+    write_json(path, {
+        "schema_version": 2, "mode": "existing", "pack_id": pack_id,
+        "capability_id": JOURNEY_PACK_CAPABILITIES.get(pack_id), "registered": prior.get("registered"),
+        "existing_pack_gate": line, **({"r11_baseline_ready": prior["r11_baseline_ready"]}
+                                      if "r11_baseline_ready" in prior else {})})
+    print(f"Journey {line}", file=sys.stderr, flush=True)
+    return line
+
+
 def submit_task(version: dict, evidence: Path, project: str, *, create_project: bool = True,
-                duration_s: float = 0.1) -> str:
+                duration_s: float = 0.1, existing_pack_gate: bool | str = True,
+                diagnostic_pack_setup=None, pinokio_row: dict | None = None) -> str:
     """Admit one chiptune SFX task through the installed SDK and return its id, unfollowed."""
     SDK_CAPTURE_RECEIPTS.pop(evidence.absolute(), None)
+    if diagnostic_pack_setup is None:
+        PACK_HOT_REFRESH.pop(evidence.absolute(), None)
     for name in ("project.json", "sdk-invocation.json"):
         (evidence / name).unlink(missing_ok=True)
     for phase in ("before-cleanup", "after-cleanup"):
@@ -2461,47 +3170,150 @@ def submit_task(version: dict, evidence: Path, project: str, *, create_project: 
                                                    status_name="project-create-capture-status.json"))
         if created.get("ok") is not True:
             raise RuntimeError("Installed project creation failed")
-    # The installed Astrid launcher dispatches pack management through
-    # astrid.omp_agent; ``python -m astrid`` exposes the product gateway and
-    # deliberately does not include the launcher-only packs command.
-    install_journey_packs(lambda argv, name: installed_cli(
-        version, argv, evidence, name, module=PACKS_ENTRY_MODULE, timeout=600),
-        routes_packs=lambda: installed_routes_packs(version, evidence))
+    # Pack management runs through the installed ``astrid`` console entry (it routes
+    # ``packs``; ``python -m astrid`` is the product gateway and does not).  Release 15's
+    # launcher module, astrid.omp_agent, is named as the fallback launcher for callers
+    # that clear ``console``.
+    if diagnostic_pack_setup is not None:
+        diagnostic_pack_setup()
+    else:
+        install_journey_packs(lambda argv, name: installed_cli(version, argv, evidence, name,
+                                                               module="astrid.omp_agent",
+                                                               console=True, timeout=600),
+                              routes_packs=lambda: installed_routes_packs(version, evidence),
+                              before_add=lambda: before_journey_pack_add(evidence),
+                              wait_registered=lambda pack_id: wait_pack_registered(version, evidence, pack_id,
+                                                                                   pinokio_row=pinokio_row),
+                              existing_ready=((lambda pack_id: wait_existing_pack_current(version, evidence, pack_id,
+                                                                                           pinokio_row=pinokio_row))
+                                              if existing_pack_gate is True else
+                                              (lambda pack_id: record_existing_pack_gate_skip(
+                                                  evidence, pack_id, str(existing_pack_gate)))))
     request = {"capability_id": "chiptune.sfx", "kind": "executor", "project": project,
                "inputs": {"kind": "blip", "variant": 1, "pitch": 0, "duration_s": duration_s}}
-    invocation = _sdk_result(installed_cli_with_capture(version, [json.dumps(request)], evidence,
-                                          "sdk-invocation.json", module="astrid.omp_invoke",
-                                          status_name="sdk-capture-status.json"))
-    if invocation.get("ok") is False:
-        error = invocation.get("error") or {}
-        raise RuntimeError(f"Installed SDK invocation failed: {error.get('code', 'unknown')}")
+    try:
+        raw = installed_cli_with_capture(version, [json.dumps(request)], evidence,
+                                         "sdk-invocation.json", module="astrid.omp_invoke",
+                                         status_name="sdk-capture-status.json")
+    except RuntimeError as exc:
+        # omp_invoke exits 1 with its exception text in content[0].text.
+        try:
+            _, error = invocation_outcome(_sdk_result(
+                (evidence / "sdk-invocation.json").read_text(encoding="utf-8-sig", errors="replace")))
+        except (OSError, ValueError, AttributeError):
+            raise exc from None
+        raise RuntimeError(f"Installed SDK invocation failed: {_invocation_failure(error)}") from exc
+    invocation = _sdk_result(raw)
+    ok, error = invocation_outcome(invocation)
+    if ok is False:
+        raise RuntimeError(f"Installed SDK invocation failed: {_invocation_failure(error)}")
     refs = invocation.get("details", {}).get("astridTaskRefs", [])
     if len(refs) != 1 or not refs[0].get("task_id"):
         raise RuntimeError("Installed SDK did not admit exactly one task")
     return refs[0]["task_id"]
 
 
-def task(version: dict, evidence: Path, project: str, *, create_project: bool = True) -> str:
-    """Exercise the installed SDK through a settled, materialized SFX output."""
-    task_id = submit_task(version, evidence, project, create_project=create_project)
+def _task_error(row: dict) -> tuple[str | None, str | None]:
+    """The terminal task's error code and message, wherever the row carries them."""
+    for candidate in (row.get("error"), (row.get("result") or {}).get("error")
+                      if isinstance(row.get("result"), dict) else None, row.get("failure")):
+        if isinstance(candidate, dict):
+            code = candidate.get("code") or candidate.get("error_code")
+            message = candidate.get("message") or candidate.get("detail")
+            return (str(code) if code is not None else None,
+                    _WINDOWS_ABSOLUTE_PATH.sub("<path>", str(message))[:300] if message is not None else None)
+        if isinstance(candidate, str) and candidate:
+            return None, _WINDOWS_ABSOLUTE_PATH.sub("<path>", candidate)[:300]
+    return None, None
+
+
+def follow_error_code(exc: BaseException) -> str:
+    """`tasks follow`'s own failure: its exit code, or the timeout."""
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return f"timeout after {exc.timeout}s"
+    matched = re.search(r": exit (-?\d+);", str(exc))
+    return f"exit {matched.group(1)}" if matched else type(exc).__name__
+
+
+def task_follow_before_cancel(task_id: str, follow_error: str, observed: dict) -> str:
+    """The job-log line printed BEFORE any cancel: follow's error, and the task's state and error."""
+    first = observed.get("data") if isinstance(observed.get("data"), dict) else {}
+    code, message = _task_error(first)
+    return ("Journey task follow failure (before cancel): " + json.dumps({
+        "task_id": task_id, "follow_error": follow_error, "state": first.get("state"),
+        "error_code": code, "error_message": message}, sort_keys=True))
+
+
+def task_follow_failure_summary(task_id: str, observed: dict, final: dict, *, cancelled_by_harness: bool,
+                                follow_error: str | None = None, cancel_action: dict | None = None) -> str:
+    """One job-log line naming the follow error, the state and error before and after any cancel,
+    the cancel action, and whether the harness cancelled the task."""
+    first = observed.get("data") if isinstance(observed.get("data"), dict) else {}
+    row = final.get("data") if isinstance(final.get("data"), dict) else {}
+    before_code, before_message = _task_error(first)
+    code, message = _task_error(row)
+    if code is None and message is None:
+        code, message = before_code, before_message
+    return ("Journey task follow failure: " + json.dumps({
+        "task_id": task_id, "follow_error": follow_error,
+        "state_at_follow_failure": first.get("state"), "error_code_before_cancel": before_code,
+        "error_message_before_cancel": before_message, "cancel_action": cancel_action,
+        "terminal_state": row.get("state"), "error_code": code, "error_message": message,
+        "cancelled_by_harness": cancelled_by_harness}, sort_keys=True))
+
+
+def task(version: dict, evidence: Path, project: str, *, create_project: bool = True,
+         existing_pack_gate: bool | str = True, pinokio_row: dict | None = None) -> str:
+    """Exercise the installed SDK through a settled, materialized SFX output.
+
+    ``existing_pack_gate`` is True (the gate runs) or the approved skip reason: only for a
+    legacy baseline (R11) whose host was just restarted after the pack add. A skip is written
+    to the registration receipt and the job log; admission and completion still prove it.
+    """
+    if existing_pack_gate is not True and (not isinstance(existing_pack_gate, str) or not existing_pack_gate):
+        raise ValueError("existing_pack_gate is True or a named skip reason")
+    task_id = submit_task(version, evidence, project, create_project=create_project,
+                          existing_pack_gate=existing_pack_gate, pinokio_row=pinokio_row)
     try:
         installed_cli(version, ["tasks", "follow", task_id, "--project", project,
                                 "--poll-seconds", "2", "--timeout-seconds", "900", "--json"],
                       evidence, "task-follow.jsonl", timeout=960)
     except (RuntimeError, subprocess.TimeoutExpired) as exc:
+        follow_error = follow_error_code(exc)
         state = _sdk_result(installed_cli(version, ["tasks", "show", task_id, "--project", project,
                                                  "--json"], evidence, "task-follow-failure.json"))
+        # Before any cancel: what follow reported and what the task itself says.
+        print(task_follow_before_cancel(task_id, follow_error, state), file=sys.stderr, flush=True)
+        cancelled_by_harness = False
+        cancel_action = {"action": "none", "reason": "task already terminal"}
         if (state.get("data") or {}).get("state") not in TERMINAL:
-            installed_cli(version, ["tasks", "cancel", task_id, "--project", project, "--json"],
-                          evidence, "task-cancel.json")
+            cancelled_by_harness = True
+            cancel_action = {"action": "cancel"}
+            try:
+                cancel_output = installed_cli(version, ["tasks", "cancel", task_id, "--project", project,
+                                                        "--json"], evidence, "task-cancel.json")
+                try:  # Diagnostics only: an unparsable reply does not change the cancel's outcome.
+                    cancel_action["ok"] = _sdk_result(cancel_output).get("ok")
+                except (ValueError, AttributeError):
+                    cancel_action["ok"] = None
+            except RuntimeError as cancel_error:
+                cancel_action.update(ok=False, error=_WINDOWS_ABSOLUTE_PATH.sub("<path>", str(cancel_error))[:300])
+                print(task_follow_failure_summary(task_id, state, {}, cancelled_by_harness=True,
+                                                  follow_error=follow_error, cancel_action=cancel_action),
+                      file=sys.stderr, flush=True)
+                raise
             try:
                 installed_cli(version, ["tasks", "follow", task_id, "--project", project,
                                         "--poll-seconds", "2", "--timeout-seconds", "300", "--json"],
                               evidence, "task-cancel-follow.jsonl", timeout=360)
-            except (RuntimeError, subprocess.TimeoutExpired):
-                pass
+                cancel_action["cancel_follow"] = "exit 0"
+            except (RuntimeError, subprocess.TimeoutExpired) as cancel_follow_error:
+                cancel_action["cancel_follow"] = follow_error_code(cancel_follow_error)
         final = _sdk_result(installed_cli(version, ["tasks", "show", task_id, "--project", project,
                                                  "--json"], evidence, "task-after-cancel.json"))
+        print(task_follow_failure_summary(task_id, state, final, cancelled_by_harness=cancelled_by_harness,
+                                          follow_error=follow_error, cancel_action=cancel_action),
+              file=sys.stderr, flush=True)
         if (final.get("data") or {}).get("state") not in TERMINAL:
             raise RuntimeError("Task remained nonterminal after cancellation") from exc
         raise RuntimeError(f"Task follow failed: {exc}") from exc
@@ -2514,6 +3326,8 @@ def task(version: dict, evidence: Path, project: str, *, create_project: bool = 
                 not re.fullmatch(r"sha256:[0-9a-f]{64}", outputs[name].get("digest", "")) or
                 outputs[name].get("size", 0) <= 0 for name in ("sfx", "sfx_meta"))):
         raise RuntimeError("Task did not settle successfully with materialized outputs")
+    # A pack added for this task must have been hot-refreshed into the same single-worker host.
+    assert_pack_hot_refreshed(version, evidence)
     return task_id
 
 
@@ -2677,7 +3491,11 @@ def _execute_owned(args: argparse.Namespace, root: Path, data: Path,
             windows.EVIDENCE = evidence
             windows.wait_for("pack-host is running with its current ready file", windows.host_ready)
             windows.snapshot("processes-host-ready.json")
-            windows.task(task_project)
+            if args.leg == "fresh-install":
+                windows.create_windows_project(task_project)
+                windows.task(task_project, create_project=False)
+            else:
+                windows.task(task_project)
         else:
             try:
                 task(version, evidence, task_project)
@@ -2786,7 +3604,8 @@ def execute(args: argparse.Namespace) -> dict:
             except Exception as diagnostic_error:
                 host_availability_diagnostic = {"capture_error": type(diagnostic_error).__name__}
         if narrow_refusal:
-            prior_run = run_root.with_name("astrid-r1-direct-windows")
+            prior_run = (run_root.with_name("f17") if run_root.name == "f17r"
+                         else run_root.with_name("astrid-r1-direct-windows"))
             related_selection = (prior_run / "program", prior_run / "data")
             assert_host_available(host_leg, root, data, skip_process_check=True,
                                   related_uninstalled_selection=related_selection)
@@ -3195,6 +4014,18 @@ def main(argv: list[str] | None = None) -> int:
                         help="a checkout containing the pinned Release-9 App commit for the direct 9-to-candidate leg")
     parser.add_argument("--allow-release0-to-release1", action="store_true",
                         help="admit only the exact pinned direct journey from its starting release to the candidate")
+    parser.add_argument("--release11-app-checkout", type=Path,
+                        help="a checkout containing the pinned Release-11 App commit for the direct 11-to-candidate update leg")
+    parser.add_argument("--allow-release11-to-candidate", action="store_true",
+                        help="admit only the exact pinned direct update from the served Release 11 to the candidate")
+    parser.add_argument("--release13-app-checkout", type=Path,
+                        help="a checkout containing the pinned Release-13 App commit")
+    parser.add_argument("--allow-release13-to-candidate", action="store_true",
+                        help="admit the pinned direct update from Release 13")
+    parser.add_argument("--candidate-browser-dist", type=Path,
+                        help="exact hosted candidate App build from the frozen checkout")
+    parser.add_argument("--release13-browser-dist", type=Path,
+                        help="exact hosted Release 13 App build from its pinned checkout")
     parser.add_argument("--source-override", action="store_true", help="TEST MODE: install Agent and Runtime from local Git commits")
     parser.add_argument("--agent-checkout", type=Path)
     parser.add_argument("--runtime-checkout", type=Path)
@@ -3253,6 +4084,62 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("Windows release-0 upgrade only admits the narrowed refusal leg")
     if args.leg == "r0-handoff-then-update" and (diagnostic or args.diagnostic_keep_going or args.retain_for_next_leg):
         parser.error("r0-handoff-then-update requires a disposable direct qualification job")
+    if args.leg == "fresh-install-autostart-off":
+        if sys.platform == "win32" or diagnostic or args.diagnostic_keep_going or args.retain_for_next_leg:
+            parser.error("fresh-install-autostart-off requires a disposable direct qualification job on Linux or macOS")
+        if not (args.job_id and args.mode == "direct" and args.candidate):
+            parser.error("fresh-install-autostart-off requires a frozen direct candidate receipt")
+        if (args.release0_fixture is not None or args.release9_app_checkout is not None
+                or args.release11_app_checkout is not None or args.allow_release0_to_release1
+                or args.allow_release11_to_candidate or args.release13_app_checkout is not None
+                or args.allow_release13_to_candidate):
+            parser.error("fresh-install-autostart-off admits no release source")
+    if args.leg == "release11-then-update":
+        if sys.platform == "win32" or diagnostic or args.diagnostic_keep_going or args.retain_for_next_leg:
+            parser.error("release11-then-update requires a disposable direct qualification job on Linux or macOS")
+        if not (args.job_id and args.mode == "direct" and args.candidate):
+            parser.error("release11-then-update requires a frozen direct candidate receipt")
+        if (args.release11_app_checkout is None or not args.allow_release11_to_candidate
+                or args.release0_fixture is not None or args.release9_app_checkout is not None
+                or args.allow_release0_to_release1):
+            parser.error("release11-then-update requires --release11-app-checkout and --allow-release11-to-candidate, "
+                         "and admits no release-0 or release-9 source")
+    elif args.release11_app_checkout is not None or args.allow_release11_to_candidate:
+        parser.error("release-11 admission is only valid for the release11-then-update leg")
+    if args.leg in {"release13-then-update", "release13-then-killed-update",
+                    *FIX17_BROWSER_LEGS}:
+        if diagnostic or args.diagnostic_keep_going or args.retain_for_next_leg:
+            parser.error("release13-then-update requires a disposable direct qualification job")
+        if not (args.job_id and args.mode == "direct" and args.candidate):
+            parser.error("release13-then-update requires a frozen direct candidate receipt")
+        # Windows is admitted for exactly one job, and that job only on Windows.
+        killed = args.leg == "release13-then-killed-update"
+        if killed and (sys.platform != "win32" or args.job_id != "direct-windows-r13-killed-update"):
+            parser.error("interrupted update requires the dedicated Windows R13 killed-update job")
+        if not killed and (sys.platform == "win32") != (args.job_id == RELEASE13_WINDOWS_JOB_ID):
+            parser.error(f"release13-then-update on Windows is admitted only for the {RELEASE13_WINDOWS_JOB_ID} "
+                         "job on windows-2022; Linux and macOS use their own r13 rows")
+        if validate_job(args.job_id, args.mode)["os"] != journey_os_label():
+            parser.error(f"{args.job_id} does not run on this operating system")
+        if (args.release13_app_checkout is None or not args.allow_release13_to_candidate
+                or args.release0_fixture is not None or args.release9_app_checkout is not None
+                or args.allow_release0_to_release1):
+            parser.error("release13-then-update requires its pinned Release-13 source only")
+    elif args.release13_app_checkout is not None or args.allow_release13_to_candidate:
+        parser.error("release-13 admission is only valid for a named previous-release row")
+    required_update_browser = args.leg in FIX17_BROWSER_LEGS
+    if required_update_browser:
+        if (sys.platform != "linux" or args.shell != "sh" or args.mode != "direct"
+                or diagnostic or args.diagnostic_keep_going or args.retain_for_next_leg
+                or args.source_override or args.old_launcher_ref or args.stopped_path_agent_ref):
+            parser.error("required-update browser rows require isolated native Linux direct qualification")
+        if args.candidate_browser_dist is None or args.release13_browser_dist is None:
+            parser.error("required-update browser rows require both pinned hosted App builds")
+        if (args.candidate_browser_dist.resolve() != args.app_checkout.resolve() / "dist"
+                or args.release13_browser_dist.resolve() != args.release13_app_checkout.resolve() / "dist"):
+            parser.error("required-update App builds must be children of their exact checkouts")
+    elif args.candidate_browser_dist is not None or args.release13_browser_dist is not None:
+        parser.error("browser build arguments require a named R13 required-update or realm row")
     if args.leg in {"release9-then-install", "r0-handoff-then-update", "windows-upgrade-refusal"}:
         if args.leg == "windows-upgrade-refusal" and (sys.platform != "win32" or args.job_id != "direct-windows" or diagnostic or args.diagnostic_keep_going or args.retain_for_next_leg):
             parser.error("windows-upgrade-refusal requires the disposable direct-windows qualification job")

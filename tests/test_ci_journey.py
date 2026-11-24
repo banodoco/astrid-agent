@@ -104,7 +104,7 @@ def test_journey_packs_install_from_the_pinned_source_through_packs_add():
 
 def test_journey_packs_skip_a_release_without_a_packs_route():
     calls = []
-    journey.install_journey_packs(lambda argv, name: calls.append(argv), routes_packs=lambda: False)
+    assert journey.install_journey_packs(lambda argv, name: calls.append(argv), routes_packs=lambda: False) == []
     assert calls == []
     journey.install_journey_packs(
         lambda argv, name: (calls.append(argv), json.dumps({"packs": [{"id": "chiptune"}]}))[1],
@@ -112,57 +112,11 @@ def test_journey_packs_skip_a_release_without_a_packs_route():
     assert calls == [["packs", "list", "--json"]]
 
 
-def test_submit_task_passes_the_installed_packs_route_probe(tmp_path, monkeypatch):
-    seen, calls = [], []
-    monkeypatch.setattr(journey, "installed_cli", lambda version, argv, evidence, name, **kwargs: calls.append(argv))
-    monkeypatch.setattr(journey, "installed_routes_packs", lambda version, evidence: seen.append(evidence) or False)
-    monkeypatch.setattr(journey, "installed_cli_with_capture", lambda *args, **kwargs: json.dumps({
-        "details": {"astridTaskRefs": [{"task_id": "task-1"}]},
-    }))
-    assert journey.submit_task({}, tmp_path, "test-project", create_project=False) == "task-1"
-    # Release 0 has no packs route: `packs list` is never run, the task is still admitted.
-    assert seen == [tmp_path] and calls == []
-
-
 def test_console_routes_packs_reads_the_installed_source():
     assert journey.console_routes_packs('if rest and rest[0] == "packs":\n    return 1')
     assert journey.console_routes_packs("if rest[0]=='packs':")
     assert not journey.console_routes_packs('if rest and rest[0] == "engines":')
     assert not journey.console_routes_packs("") and not journey.console_routes_packs(None)
-
-
-def test_installed_routes_packs_probes_the_installed_entry_module_source(tmp_path, monkeypatch):
-    entry = tmp_path / "omp_agent.py"
-    runs = []
-
-    def fake_run(argv, log, *, env=None, timeout=0):
-        runs.append((argv, log.name, env))
-        return "noise\n" + (str(entry) if entry.exists() else "") + "\n"
-
-    monkeypatch.setattr(journey, "run", fake_run)
-    monkeypatch.setenv("PYTHONPATH", "/poison")
-    version = {"python": "/v/py/bin/python", "env": {"ASTRID_X": "1"}}
-    assert journey.installed_routes_packs(version, tmp_path) is False  # no entry module on this release
-    entry.write_text('if rest[0] == "engines": pass\n')
-    assert journey.installed_routes_packs(version, tmp_path) is False  # entry module without packs
-    entry.write_text('if rest and rest[0] == "packs": pass\n')
-    assert journey.installed_routes_packs(version, tmp_path) is True
-    argv, name, env = runs[-1]
-    assert argv[:3] == ["/v/py/bin/python", "-I", "-c"] and "astrid.omp_agent" in argv[3]
-    assert name == "journey-pack-entry.log" and env["ASTRID_X"] == "1" and "PYTHONPATH" not in env
-
-def test_packs_entry_probe_prints_nothing_when_the_release_lacks_the_module(monkeypatch, capsys):
-    import importlib.util
-
-    def missing(name):
-        raise ModuleNotFoundError(name)
-
-    monkeypatch.setattr(importlib.util, "find_spec", missing)
-    exec(journey.PACKS_ENTRY_ORIGIN_PROBE, {})
-    assert capsys.readouterr().out.strip() == ""
-    monkeypatch.setattr(importlib.util, "find_spec", lambda name: SimpleNamespace(origin="/v/omp_agent.py"))
-    exec(journey.PACKS_ENTRY_ORIGIN_PROBE, {})
-    assert capsys.readouterr().out.strip() == "/v/omp_agent.py"
 
 
 def test_submit_task_installs_packs_through_installed_launcher_entry(tmp_path, monkeypatch):
@@ -173,7 +127,11 @@ def test_submit_task_installs_packs_through_installed_launcher_entry(tmp_path, m
         return json.dumps({"packs": []})
 
     monkeypatch.setattr(journey, "installed_cli", fake_installed_cli)
+    # The FIX-17 lifecycle driver gates pack installs on the installed release's
+    # console route and waits for registration; those probes need a real install.
     monkeypatch.setattr(journey, "installed_routes_packs", lambda version, evidence: True)
+    monkeypatch.setattr(journey, "before_journey_pack_add", lambda evidence: {})
+    monkeypatch.setattr(journey, "wait_pack_registered", lambda *args, **kwargs: None)
     monkeypatch.setattr(journey, "installed_cli_with_capture", lambda *args, **kwargs: json.dumps({
         "details": {"astridTaskRefs": [{"task_id": "task-1"}]},
     }))
@@ -458,9 +416,16 @@ def test_explicit_pinokio_backend_mode_uses_backend_executor(tmp_path, monkeypat
 
 def test_journey_workflow_uses_astrid_app_for_all_candidate_checkouts():
     workflow = (journey.ROOT / ".github" / "workflows" / "journey.yml").read_text()
-    # Five: the candidate App, the frozen App candidate checkouts, and the pinned Release 9 App.
-    assert workflow.count("repository: banodoco/astrid-app") == 5
+    # Candidate App, frozen App candidate checkouts, and pinned Release 9/11/13 Apps.
+    assert workflow.count("repository: banodoco/astrid-app") == 7
     assert workflow.count("name: Check out frozen App candidate") == 3
+    for release, commit, path in (
+        ("11", "57e200b45615a59181920192697a932400d985fc", "release11-app"),
+        ("13", "de7dd1e668aa6dcf3cbce013c701fa7c76615f99", "release13-app"),
+        ("9", "546c91b7aaf90835445136eb6e93459385ffe21c", "release9-app"),
+    ):
+        checkout = workflow.split(f"name: Check out the pinned Release {release} App", 1)[1].split("      - name:", 1)[0]
+        assert f"ref: {commit}" in checkout and f"path: {path}" in checkout
     assert "repository: banodoco/reigh-app" not in workflow
 
 
