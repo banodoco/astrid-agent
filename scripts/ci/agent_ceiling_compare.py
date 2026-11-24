@@ -75,16 +75,53 @@ SELECTION = re.compile(r"^===== selection \d+ of \d+: ")
 CANCELLED = re.compile(r"^##\[error\]The operation was cancell?ed\.")
 
 
+SECTION = re.compile(r"^=+ (FAILURES|ERRORS|PASSES|warnings summary) =+$")
+
+
+def plain_runs(lines, offset=0):
+    """Top-level pytest runs of a plain log (no GitHub step lines) as [(start, summary_start or None, end)], plus
+    problems. One scan keeps a frame per open session: a "test session starts" line opens a frame and a final result
+    line closes it, and a frame is inside a report section (FAILURES, ERRORS, PASSES, warnings) from that heading to
+    its own "short test summary info" heading. Output printed in a report section is a test's captured output, so a
+    session or result line there is an inner run and is skipped. A result line outside every report section with no
+    open session ends a header-less (pytest -q) run. So sequential runs, with headers or not, are each read, and an
+    inner run never is. A session that is still open at the end is truncated."""
+    runs, problems = [], []
+    root = {"start": offset, "summary": None, "section": False}
+    stack = []
+    for i, line in enumerate(lines, offset):
+        top = stack[-1] if stack else root
+        if HEADER.match(line):
+            stack.append({"start": i, "summary": None, "section": False, "inner": top["section"] or bool(stack)})
+        elif SECTION.match(line):
+            top["section"] = True
+        elif SUMMARY_START.match(line):
+            top["section"], top["summary"] = False, i
+        elif FINAL.match(line):
+            if top["section"]:
+                continue  # a header-less inner run printed in a report section
+            if stack:
+                frame = stack.pop()
+                if not frame["inner"]:
+                    runs.append((frame["start"], frame["summary"], i))
+                    root = {"start": i + 1, "summary": None, "section": False}
+            else:
+                runs.append((root["start"], root["summary"], i))
+                root = {"start": i + 1, "summary": None, "section": False}
+    if stack:
+        problems.append(f"a pytest session from line {stack[0]['start'] + 1} has no final result line (truncated)")
+    elif root["summary"] is not None:
+        problems.append(f"a short test summary from line {root['summary'] + 1} has no final result line (truncated)")
+    return runs, problems
+
+
 def top_level_runs(lines):
     """The job's own pytest runs as [(start, summary_start or None, end)], plus problems found.
 
     A job log can hold several sequential runs (several pytest steps, or a dispatch `repeat` loop), and a test can
-    print an inner run's output inside the outer one. In a GitHub job log the log is cut at each step's
-    "##[group]Run" line and at each repeat's "===== selection i of n" line, and each piece's run is its last final
-    result line, with the last summary section before it: inner runs come before the outer summary. In a plain log
-    each "test session starts" line is paired with a final result line like a bracket; a top-level pair is a run and a
-    pair inside another is an inner run. A plain log with no session header is one run (pytest -q). A run that starts
-    and never ends, or a GitHub "operation was canceled" line, is a problem.
+    print an inner run's output inside the outer one. A GitHub job log is first cut at each step's "##[group]Run"
+    line and each repeat's "===== selection i of n" line; each piece, or a plain log as a whole, is then read by
+    plain_runs. A GitHub "operation was canceled" line is a problem.
     """
     runs, problems = [], []
     if any(CANCELLED.match(line) for line in lines):
@@ -93,33 +130,12 @@ def top_level_runs(lines):
         bounds = [i for i, line in enumerate(lines) if STEP.match(line) or SELECTION.match(line)]
         pieces = list(zip([0] + bounds, bounds + [len(lines)]))
         for a, b in pieces:
-            finals = [i for i in range(a, b) if FINAL.match(lines[i])]
-            if not finals:
-                if any(HEADER.match(lines[i]) or SUMMARY_START.match(lines[i]) for i in range(a, b)):
-                    problems.append(f"a pytest run from line {a + 1} has no final result line (truncated)")
-                continue
-            last = finals[-1]
-            starts = [i for i in range(a, last) if SUMMARY_START.match(lines[i])]
-            runs.append((a, starts[-1] if starts else None, last))
+            found, more = plain_runs(lines[a:b], offset=a)
+            runs += found
+            problems += more
         return runs, problems
-    if not any(HEADER.match(line) for line in lines):
-        finals = [i for i, line in enumerate(lines) if FINAL.match(line)]
-        if finals:
-            starts = [i for i in range(finals[-1]) if SUMMARY_START.match(lines[i])]
-            runs.append((0, starts[-1] if starts else None, finals[-1]))
-        return runs, problems
-    stack = []
-    for i, line in enumerate(lines):
-        if HEADER.match(line):
-            stack.append(i)
-        elif FINAL.match(line) and stack:
-            begin = stack.pop()
-            if not stack:
-                starts = [k for k in range(begin, i) if SUMMARY_START.match(lines[k])]
-                runs.append((begin, starts[-1] if starts else None, i))
-    if stack:
-        problems.append(f"a pytest session from line {stack[0] + 1} has no final result line (truncated)")
-    return runs, problems
+    found, more = plain_runs(lines)
+    return found, problems + more
 
 
 def parse_job_log(lines):

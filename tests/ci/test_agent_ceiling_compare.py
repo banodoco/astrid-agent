@@ -26,7 +26,11 @@ BASE_FAILED = {
     "unit shard 2 _ 2 (ubuntu-latest)": [("tests/b.py::test_red", "ValueError: red")],
     "opt-in": [],
 }
+# An inner run as real logs show it: a test's captured output, in the outer run's PASSES section, with its own header.
 INNER = (
+    "=========== PASSES ===========\n"
+    "____ test_runs_pytest ____\n"
+    "=========== test session starts ===========\n"
     "=========== short test summary info ===========\n"
     "FAILED test_case.py::test_printed_by_a_test - inner run\n"
     "= 1 failed in 0.1s =\n"
@@ -328,3 +332,38 @@ def test_a_session_that_never_ends_or_a_github_cancel_fails(files, capsys):
         code, out = run(files, archive, capsys, "--expect-jobs", "opt-in")
         assert code == 1, (name, out)
         assert "truncated" in out or "cancelled" in out, out
+
+
+def test_two_headerless_runs_are_each_read_and_an_inner_one_in_a_report_section_is_not(files, capsys):
+    # The Release 16 Lead's follow-up: two concatenated pytest -q runs (no session headers) are both read.
+    run1, final1 = _two_run_files(files, first_run_failure=True)
+    sumh = "=========================== short test summary info ============================\n"
+    two = sumh + "PASSED tests/a.py::test_one\nFAILED tests/a.py::test_two - boom\n" + final1 + "\n" \
+        + sumh + "PASSED tests/b.py::test_three\n= 1 passed in 0.10s =\n"
+    inner_q = ("=================================== PASSES ===================================\n"
+               "____ test_x ____\n" + "FAILED tests/inner.py::test_printed - x\n= 1 failed in 0.01s =\n"
+               + sumh + "PASSED tests/a.py::test_one\nPASSED tests/a.py::test_two\nPASSED tests/b.py::test_three\n"
+               "= 3 passed in 0.30s =\n")
+    for name, log, want in (("two", two, 1), ("inner", inner_q, 0)):
+        archive = files["tmp"] / name
+        archive.mkdir()
+        (archive / "0_opt-in.txt").write_text(_stamp(log))
+        code, out = run(files, archive, capsys, "--expect-jobs", "opt-in")
+        assert code == want, (name, out)
+        if name == "two":
+            assert "FAIL opt-in | tests/a.py::test_two | boom" in out
+        else:
+            assert "test_printed" not in out
+
+
+def test_an_inner_run_printed_outside_report_sections_fails_closed(files, capsys):
+    # Without a session header or a report section, an inner -q run looks like a run of its own: its failure is
+    # counted (a false red), never hidden.
+    archive = files["tmp"] / "cand"
+    archive.mkdir()
+    sumh = "=========================== short test summary info ============================\n"
+    log = (sumh + "FAILED tests/inner.py::test_printed - x\n= 1 failed in 0.01s =\n" + sumh
+           + "PASSED tests/o.py::test_one\n= 1 passed in 0.10s =\n")
+    (archive / "0_opt-in.txt").write_text(_stamp(log))
+    code, out = run(files, archive, capsys, "--expect-jobs", "opt-in")
+    assert code == 1 and "tests/inner.py::test_printed" in out, out
