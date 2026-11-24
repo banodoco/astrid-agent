@@ -207,7 +207,7 @@ def test_managed_asset_manifest_bindings_are_recomputed(tmp_path, monkeypatch):
         image = LoadImage(_id="1", image="initial.png")
         save = SaveImage(_id="2", images=image.out("IMAGE"), filename_prefix="astrid")
         workflow.finalize({
-            "image": InputSpec(node="1", field="image", default="initial.png", type="COMBO", media_semantics="image", infer_type=False),
+            "image": InputSpec(node="1", field="image", default="initial.png", type="IMAGE", media_semantics="image", infer_type=False),
             "save_name": InputSpec(node="2", field="filename_prefix", default="astrid", type="STRING"),
         }, outputs=[OutputSpec(node=save)])
     canonical = _publish(workflow, tmp_path / "admitted")
@@ -227,7 +227,7 @@ def test_managed_asset_manifest_bindings_are_recomputed(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def attached_case(comfy, tmp_path, monkeypatch, real_runtime):
+def attached_case(comfy, tmp_path, monkeypatch, real_runtime, request):
     """Real registered pack host and Runtime, with only Comfy HTTP faked."""
     from types import SimpleNamespace
 
@@ -258,16 +258,19 @@ def attached_case(comfy, tmp_path, monkeypatch, real_runtime):
     index_path.write_text(json.dumps(index))
     inputs = _empty_image(tmp_path / "bundle")
     daemon = real_runtime()
-    # Same credential-verified machine fixture as test_runpod_slot_path_cpu.
-    worker_token, _ = daemon.credentials.provision(
-        "astrid-pack-host", list(WORKER_SCOPES), rotate=True,
-        metadata={"execution_binding": {
-            "actual": {"kind": "machine", "id": "ra6-fixture-machine"},
-            "executor_incarnation": "ra6-fixture",
-            "verification": {"method": "credential_claim", "verified": True,
-                             "evidence_digest": _digest(b"ra6-fixture-machine")},
-        }},
-    )
+    worker_token = daemon.worker_token
+    if getattr(request, "param", False):
+        # Delegated claims require credential-verified machine identity.
+        # Same fixture provisioning as test_runpod_slot_path_cpu.
+        worker_token, _ = daemon.credentials.provision(
+            "astrid-pack-host", list(WORKER_SCOPES), rotate=True,
+            metadata={"execution_binding": {
+                "actual": {"kind": "machine", "id": "ra6-fixture-machine"},
+                "executor_incarnation": "ra6-fixture",
+                "verification": {"method": "credential_claim", "verified": True,
+                                 "evidence_digest": _digest(b"ra6-fixture-machine")},
+            }},
+        )
     raw = RawRuntimeClient(daemon.endpoint, daemon.token)
     host = GenericPackHost(
         pack_roots=[Path(__file__).resolve().parents[3] / "astrid/packs/vibecomfy"],
@@ -389,6 +392,7 @@ def test_inner_forged_delegated_parent_does_not_bypass_host(attached_case):
                     lambda: case.host._execute_claimed_task(forged))
 
 
+@pytest.mark.parametrize("attached_case", [True], indirect=True, ids=["verified-machine"])
 @pytest.mark.parametrize("bad_receipt", [False, True], ids=["absent", "bad"])
 def test_real_delegated_child_host_compatibility(attached_case, bad_receipt):
     from astrid.core.execution.generic_host import _run_source_digest
@@ -575,3 +579,18 @@ def test_sdk_standalone_source_video_host_round_trip(attached_case, tmp_path, mo
     stale_id = _admit(case, stale, wire, key="ra6-video-stale")
     _assert_refused(case, stale_id, "api_digest", lambda: case.host.run(once=True))
     assert reached == []
+
+
+def test_unrecomputable_bytes_have_receipt_code_and_cause(canonical, tmp_path):
+    from astrid.packs.vibecomfy.asset_manifest import AssetManifestError
+
+    # An admitted non-ZIP archive must refuse under the same receipt code,
+    # retaining the specific cause, without reporting any raw bytes.
+    archive = tmp_path / "invalid.zip"
+    archive.write_bytes(b"not a managed-assets archive")
+    with pytest.raises(InvocationReceiptMismatch, match="bytes_unrecomputable") as caught:
+        verify_admitted_invocation_receipt(
+            _receipt(canonical), {**canonical, "managed_assets": str(archive)}, tmp_path / "host",
+        )
+    assert caught.value.code == CODE and caught.value.field == "bytes_unrecomputable"
+    assert isinstance(caught.value.__cause__, AssetManifestError)
