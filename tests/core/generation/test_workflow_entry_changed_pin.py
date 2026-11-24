@@ -55,9 +55,25 @@ def test_replace_changed_add_commit_needs_fresh_consent_and_retains_previous_rec
     old_manifest = (destination / "entry.json").read_bytes()
     old_bundle = Path(entry["bundle"], "workflow.py").read_bytes()
 
+    # Implicit replacement is a typed refusal even in preview, with the
+    # exact repair asking for explicit replacement instead of deletion.
+    assert cli.main([*command, "--add", URL + "@" + NEW, "--dry-run"]) == 2
+    collision = json.loads(capsys.readouterr().out)
+    assert collision["issues"][0]["code"] == "entry_exists"
+    collision_retry = collision["fixes"][0]["instruction"]["then_argv"]
+    assert "--replace" in collision_retry and "--dry-run" not in collision_retry
+    assert (destination / approvals.APPROVALS_FILENAME).read_bytes() == old_bytes
+    assert (destination / "entry.json").read_bytes() == old_manifest
+
+    preview_retry = refuse([*command, "--replace", "--add", URL + "@" + NEW, "--dry-run"])
+    assert "--dry-run" not in preview_retry
+    assert (destination / approvals.APPROVALS_FILENAME).read_bytes() == old_bytes
+    assert (destination / "entry.json").read_bytes() == old_manifest
+
     new_retry = refuse([*command, "--replace", "--add", URL + "@" + NEW])
     assert new_retry[:2] == ["astrid", "generate"]
     assert URL + "@" + NEW in new_retry
+    assert preview_retry == new_retry
     assert (destination / approvals.APPROVALS_FILENAME).read_bytes() == old_bytes
     assert (destination / "entry.json").read_bytes() == old_manifest
 

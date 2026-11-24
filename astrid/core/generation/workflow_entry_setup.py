@@ -139,7 +139,9 @@ def prepare_entry_candidate(source, entry_id, *, replace, additions, placement_c
 def publish_entry_candidate(source, prepared, *, replace, placement_class, retry_argv):
     from vibecomfy.entries import import_as_entry
 
-    from .node_approvals import entry_approval_directory, read_entry_approvals, require_approved_nodes, write_entry_approvals
+    from .node_approvals import (
+        entry_approval_directory, read_entry_approvals, require_approved_nodes, write_entry_approvals,
+    )
 
     # The saved entry may have changed during preview. Refuse rather than
     # silently replacing a different manifest or dropping newly saved records.
@@ -162,7 +164,16 @@ def publish_entry_candidate(source, prepared, *, replace, placement_class, retry
         raise exc
     entry = dict(entry, source="user-entry")
     actual_nodes = _source_nodes(entry)
-    require_approved_nodes(actual_nodes, prepared.approvals, placement_class=placement_class)
+    actual = require_approved_nodes(actual_nodes, prepared.approvals, placement_class=placement_class)
+    # Do not silently grant a new reviewed/approved record for an import
+    # that differs from the frozen preview. The canonical writer owns
+    # publication, and the final node set must match what was authorized.
+    if {row["approval_sha256"] for row in actual} != {row["approval_sha256"] for row in prepared.approvals}:
+        raise generation_error(ValueError("published node declarations differ from the authorized candidate"),
+            code="pin_conflict", details={"field": "add"},
+            fixes=[{"id": "review-published-entry", "who": "human", "scope": "read_only",
+                    "instruction": {"step": "Inspect the saved entry and resolve its changed pins before running it.",
+                                    "then_argv": ["astrid", "generate", "describe", "--entry", entry_id, "--json"]}}])
     merged = retained_entry_approvals(prepared.previous_records, prepared.approvals)
     directory = entry_approval_directory(entry)
     if prepared.previous is None or merged != prepared.previous_records:
