@@ -123,57 +123,60 @@ def _identity(asset: Any) -> Any:
     return (asset.get("media_id") or asset.get("content_sha256")) if isinstance(asset, Mapping) else None
 
 
-def resolve_asset_id(bundle: Mapping[str, Any], media: str) -> str | None:
-    """The project-registry asset id whose media identity is ``media``, or None when there is none.
+def resolve_asset_ids(bundle: Mapping[str, Any], media: str) -> list[str]:
+    """Every project-registry key whose media identity is ``media``: parent keys first, then each shot's
+    keys, each group sorted (a media imported under two names, or placed in a shot under its own key,
+    has several keys; the editor looks a clip's transcript up by that clip's own key).
 
-    Raises ``AssetResolutionError`` when two registry keys carry the media (ambiguous), or when the key
-    is also used for a different media in the parent or another shot (the editor's parent registry wins
-    on a key clash, so the key would point at the wrong asset)."""
+    Raises ``AssetResolutionError`` when one of those keys is also used for a different media in the
+    parent or another shot (the editor's parent registry wins on a key clash, so the key would point at
+    the wrong asset). An empty list means the media is not in the registry."""
     holders = [(label, W._registry_assets(holder)) for label, holder in _holders(bundle, None)]
-    keys = sorted({str(key) for _label, assets in holders for key, asset in assets.items()
-                   if _identity(asset) == media})
-    if not keys:
-        return None
-    if len(keys) > 1:
-        raise AssetResolutionError(f"media {media} is carried by more than one registry asset "
-                                   f"({', '.join(repr(k) for k in keys)}): the asset is ambiguous")
-    key = keys[0]
-    for label, assets in holders:
-        if key in assets and _identity(assets[key]) != media:
-            raise AssetResolutionError(f"asset key {key!r} for media {media} is also used in {label!r} for a "
-                                       "different media: the editor would resolve it to the wrong asset")
-    return key
+    keys: list[str] = []
+    for _label, assets in holders:
+        for key in sorted(str(k) for k, asset in assets.items() if _identity(asset) == media):
+            if key not in keys:
+                keys.append(key)
+    for key in keys:
+        for label, assets in holders:
+            if key in assets and _identity(assets[key]) != media:
+                raise AssetResolutionError(f"asset key {key!r} for media {media} is also used in {label!r} for a "
+                                           "different media: the editor would resolve it to the wrong asset")
+    return keys
 
 
 def with_reference(bundle: Mapping[str, Any], media: str, media_document_ids: set[str],
-                   document_id: str, source: str, asset_id: str | None = None) -> list[dict[str, Any]]:
+                   document_id: str, source: str, asset_ids: Sequence[str] = ()) -> list[dict[str, Any]]:
     """Associations after recording one media's explicit choice: that media's earlier pins are
-    replaced; every other media's pin is kept. The row names its media and source so it can be
-    loaded again (see ``words.load_timeline_transcripts``), and its ``assetId`` (the editor's key)
-    when given."""
+    replaced; every other media's pin is kept. The rows name their media and source so they can be
+    loaded again (see ``words.load_timeline_transcripts``); one row per registry key (``assetId``) of
+    the media, all with the same document, since the editor looks each clip up by its own key."""
     kept = [row for row in W.reference_rows(bundle)
             if row.get("mediaId") != media and row["documentId"] not in media_document_ids]
-    row: dict[str, Any] = {"documentId": document_id, "mediaId": media, "sourceId": source}
-    if asset_id is not None:
-        row = {"assetId": asset_id, **row}
-    kept.append(row)
+    base = {"documentId": document_id, "mediaId": media, "sourceId": source}
+    if asset_ids:
+        kept.extend({"assetId": key, **base} for key in asset_ids)
+    else:
+        kept.append(base)
     return kept
 
 
 def backfill_asset_ids(bundle: Mapping[str, Any], rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Rows written before ``assetId`` existed get it from the registry when their media resolves.
-    A row whose media is gone from the registry fails closed, naming the row."""
+    """Rows written before ``assetId`` existed get it from the registry: one row per key carrying their
+    media (``mediaId``/``sourceId`` kept). A row whose media is gone from the registry fails closed,
+    naming the row."""
     out = []
     for row in rows:
-        if "assetId" not in row:
-            found = resolve_asset_id(bundle, row["mediaId"]) if isinstance(row.get("mediaId"), str) else None
-            if found is None:
-                raise AssetResolutionError(
-                    f"existing transcript reference (documentId {row.get('documentId')!r}, mediaId "
-                    f"{row.get('mediaId')!r}) has no assetId and its media is not in the project registry: "
-                    "remove the row or restore its media, then run refresh again")
-            row = {"assetId": found, **row}
-        out.append(row)
+        if "assetId" in row:
+            out.append(row)
+            continue
+        keys = resolve_asset_ids(bundle, row["mediaId"]) if isinstance(row.get("mediaId"), str) else []
+        if not keys:
+            raise AssetResolutionError(
+                f"existing transcript reference (documentId {row.get('documentId')!r}, mediaId "
+                f"{row.get('mediaId')!r}) has no assetId and its media is not in the project registry: "
+                "remove the row or restore its media, then run refresh again")
+        out.extend({"assetId": key, **row} for key in keys)
     return out
 
 
@@ -185,11 +188,11 @@ def complete_envelope(envelope: dict[str, Any]) -> dict[str, Any]:
 
 
 def record_choice(bundle: dict[str, Any], media: str, media_document_ids: set[str], document_id: str,
-                  source: str, asset_id: str) -> dict[str, Any]:
+                  source: str, asset_ids: Sequence[str]) -> dict[str, Any]:
     """Record one media's explicit choice in ``bundle`` (in place) and return its completed ``config.bundle`` envelope."""
     envelope = bundle.setdefault("parent", {}).setdefault("config", {}).setdefault("bundle", {})
     refs = envelope.setdefault("transcriptReferences", {"schema": REFERENCES_SCHEMA})
     refs["schema"] = REFERENCES_SCHEMA
-    rows = with_reference(bundle, media, media_document_ids, document_id, source, asset_id)
+    rows = with_reference(bundle, media, media_document_ids, document_id, source, asset_ids)
     refs["associations"] = backfill_asset_ids(bundle, rows)
     return complete_envelope(envelope)

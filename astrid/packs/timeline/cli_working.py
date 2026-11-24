@@ -499,7 +499,7 @@ def _cmd_transcripts_refresh(parsed: argparse.Namespace) -> int:
         cut_words,
         inventory,
         record_choice,
-        resolve_asset_id,
+        resolve_asset_ids,
         stale_anchors,
     )
     from astrid.core.timeline.bundle import TimelineBundleValidationError, validate_timeline_bundle
@@ -599,8 +599,8 @@ def _cmd_transcripts_refresh(parsed: argparse.Namespace) -> int:
     assets = {}
     try:
         for media, _docs, _target in planned:
-            assets[media] = resolve_asset_id(tl.bundle, media)
-            if assets[media] is None:
+            assets[media] = resolve_asset_ids(tl.bundle, media)
+            if not assets[media]:
                 raise AssetResolutionError(f"no asset in the project registry has media {media_id_text(media)}; "
                                            "the editor needs an assetId to open the project")
         record_all(copy.deepcopy(tl.bundle))

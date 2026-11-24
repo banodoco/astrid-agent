@@ -93,6 +93,7 @@ def _transcript_references(value: Any, pointer: str) -> None:
     rows = value.get("associations")
     if not isinstance(rows, list):
         raise TimelineBundleValidationError(f"{pointer}/associations", "must be an array")
+    seen: set[str] = set()
     for index, row in enumerate(rows):
         at = f"{pointer}/associations/{index}"
         if not isinstance(row, Mapping):
@@ -100,7 +101,10 @@ def _transcript_references(value: Any, pointer: str) -> None:
         unknown = sorted(set(row).difference({"assetId", "documentId", "mediaId", "sourceId"}))
         if unknown:
             raise TimelineBundleValidationError(at, f"contains unsupported field(s): {', '.join(unknown)}")
-        _string(row.get("assetId"), f"{at}/assetId")
+        asset_id = _string(row.get("assetId"), f"{at}/assetId")
+        if asset_id in seen:
+            raise TimelineBundleValidationError(f"{at}/assetId", f"duplicate assetId {asset_id!r}")
+        seen.add(asset_id)
         _string(row.get("documentId"), f"{at}/documentId")
         for optional in ("mediaId", "sourceId"):
             if optional in row:

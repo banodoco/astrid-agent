@@ -71,7 +71,7 @@ def test_unresolvable_asset_refuses_and_saves_nothing(monkeypatch, capsys):
     stored = _stored_a(whisper)
     working = _FakeWorking(_bundle({"s1": (MEDIA_A, [_clip("c1", to=4.0)])}))
     # clips resolve their media through the registry, so an unresolvable id needs the resolver itself to fail
-    monkeypatch.setattr("astrid.sdk.timeline_transcript_refresh.resolve_asset_id", lambda bundle, media: None)
+    monkeypatch.setattr("astrid.sdk.timeline_transcript_refresh.resolve_asset_ids", lambda bundle, media: [])
     assert _run(monkeypatch, working, stored=stored) == 2  # the verb guard turns VerbError into exit 2
     assert "needs an assetId" in capsys.readouterr().err
     assert not working.saved
@@ -81,7 +81,7 @@ def test_unresolvable_asset_refuses_and_saves_nothing(monkeypatch, capsys):
 def test_validator_accepts_optional_ids_and_rejects_missing_asset_id():
     base = {"schema_version": 1, "itemsBySchemaRef": {}}
     ok = {"schema": REFS, "associations": [{"assetId": "a", "documentId": "d"},
-                                            {"assetId": "a", "documentId": "d", "mediaId": "m", "sourceId": "s"}]}
+                                            {"assetId": "b", "documentId": "d", "mediaId": "m", "sourceId": "s"}]}
     validate_timeline_bundle({**base, "transcriptReferences": ok})
     bad = {"schema": REFS, "associations": [{"documentId": "d", "mediaId": "m", "sourceId": "s"}]}
     with pytest.raises(TimelineBundleValidationError, match="non-empty string"):
@@ -114,11 +114,11 @@ def _refuses(monkeypatch, capsys, timeline_bundle):
 
 
 def test_identity_is_media_id_or_content_sha_not_either(monkeypatch):
-    from astrid.sdk.timeline_transcript_refresh import resolve_asset_id
+    from astrid.sdk.timeline_transcript_refresh import resolve_asset_ids
 
     bundle = _timeline({"a": {"media_id": "X", "content_sha256": MEDIA_A}, "b": {"content_sha256": MEDIA_A}})
-    assert resolve_asset_id(bundle, MEDIA_A) == "b"
-    assert resolve_asset_id(bundle, "X") == "a"
+    assert resolve_asset_ids(bundle, MEDIA_A) == ["b"]
+    assert resolve_asset_ids(bundle, "X") == ["a"]
 
 
 def test_shot_key_clash_with_parent_registry_refuses(monkeypatch, capsys):
@@ -135,10 +135,45 @@ def test_shot_key_without_clash_resolves(monkeypatch):
     assert working.bundle["parent"]["config"]["bundle"]["transcriptReferences"]["associations"][0]["assetId"] == "a"
 
 
-def test_two_assets_with_same_media_are_ambiguous(monkeypatch, capsys):
-    bundle = _timeline({"a": {"media_id": MEDIA_A}, "b": {"content_sha256": MEDIA_A}})
-    err = _refuses(monkeypatch, capsys, bundle)
-    assert "'a'" in err and "'b'" in err and "ambiguous" in err
+def test_same_media_under_two_keys_writes_one_row_per_key_and_is_idempotent(monkeypatch, capsys):
+    whisper = W.default_source_order()[0]
+    stored = _stored_a(whisper)
+    spec = {"s1": {"media_id": MEDIA_A}, "a": {"media_id": MEDIA_A}, "media-0123": {"content_sha256": MEDIA_A}}
+    bundle = _timeline({"a": spec["a"], "n": {"media_id": MEDIA_A}}, {"a": spec["a"], "media-0123": spec["media-0123"]})
+    working = _FakeWorking(copy.deepcopy(bundle))
+    assert _run(monkeypatch, working, stored=stored, timeline_bundle=bundle) == 0
+    envelope = working.bundle["parent"]["config"]["bundle"]
+    rows = envelope["transcriptReferences"]["associations"]
+    doc = stored[MEDIA_A][whisper]["document_id"]
+    assert [r["assetId"] for r in rows] == ["a", "n", "media-0123"]  # parent keys, then shot keys, sorted
+    assert all(r["documentId"] == doc and r["mediaId"] == MEDIA_A and r["sourceId"] == whisper for r in rows)
+    validate_timeline_bundle(envelope)
+    # second run on the saved result: nothing to record
+    capsys.readouterr()
+    again = _FakeWorking(working.bundle)
+    assert _run(monkeypatch, again, stored=stored, timeline_bundle=working.bundle) == 0
+    assert "nothing to record" in capsys.readouterr().out and not again.saved
+
+
+def test_legacy_row_matching_two_keys_expands_to_two_rows(monkeypatch):
+    whisper = W.default_source_order()[0]
+    bundle = _timeline({"a": {"media_id": MEDIA_A}, "m": {"media_id": MEDIA_B}, "m2": {"content_sha256": MEDIA_B}})
+    bundle["parent"]["config"] = {"bundle": {"transcriptReferences": {"schema": REFS, "associations": [
+        {"documentId": "doc-b", "mediaId": MEDIA_B, "sourceId": "src-b"}]}}}
+    working = _FakeWorking(copy.deepcopy(bundle))
+    assert _run(monkeypatch, working, stored=_stored_a(whisper), timeline_bundle=bundle) == 0
+    rows = working.bundle["parent"]["config"]["bundle"]["transcriptReferences"]["associations"]
+    assert rows[:2] == [{"assetId": k, "documentId": "doc-b", "mediaId": MEDIA_B, "sourceId": "src-b"} for k in ("m", "m2")]
+    validate_timeline_bundle(working.bundle["parent"]["config"]["bundle"])
+
+
+def test_validator_rejects_duplicate_asset_id_but_allows_shared_document():
+    base = {"schema_version": 1, "itemsBySchemaRef": {}}
+    ok = {"schema": REFS, "associations": [{"assetId": "a", "documentId": "d"}, {"assetId": "b", "documentId": "d"}]}
+    validate_timeline_bundle({**base, "transcriptReferences": ok})
+    dup = {"schema": REFS, "associations": [{"assetId": "a", "documentId": "d"}, {"assetId": "a", "documentId": "e"}]}
+    with pytest.raises(TimelineBundleValidationError, match="duplicate assetId"):
+        validate_timeline_bundle({**base, "transcriptReferences": dup})
 
 
 def test_legacy_row_is_backfilled_keeping_media_and_source(monkeypatch):
