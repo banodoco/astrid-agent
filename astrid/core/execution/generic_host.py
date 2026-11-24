@@ -10722,11 +10722,20 @@ class GenericPackHost:
                         # The finally block signals the still-live group.
                         raise HostCancelled(f"capability {record.id!r} cancelled")
                 time.sleep(0.05)
+            render_manifest_present = False
             if render_scope:
                 uncertainty = getattr(process, "_astrid_tree_uncertain", None)
                 if uncertainty is not None:
                     raise CleanupUncertainError(uncertainty)
-            else:
+                try:
+                    (output_root / "manifest.json").lstat()
+                except FileNotFoundError:
+                    pass
+                else:
+                    render_manifest_present = True
+            if not render_manifest_present:
+                # Legacy declared-file renders keep the original cleanup,
+                # capture and harvest order, including every failure path.
                 cleanup_once()
                 output_capture.finish()
                 output_finished = True
@@ -10764,7 +10773,7 @@ class GenericPackHost:
                 output_root = attempt_output_root
                 values = {**values, "out": str(output_root)}
             producer_output_root = output_root
-            if render_scope:
+            if render_manifest_present:
                 output_root = _snapshot_verified_render_outputs(output_root, attempt_output_root)
                 values = {**values, "out": str(output_root)}
             try:
@@ -10779,7 +10788,7 @@ class GenericPackHost:
                 raise HostError(f"capability {record.id!r}: {exc}") from exc
             cleanup_error = None
             cleanup_warnings = []
-            if render_scope:
+            if render_manifest_present:
                 try:
                     cleanup_once()
                 except CommandCleanupUnresolved as exc:
