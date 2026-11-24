@@ -633,3 +633,57 @@ def test_generic_host_normal_imported_theme_reaches_props_and_rejects_local_sour
             )
     finally:
         daemon.stop()
+
+
+def test_worker_validation_reports_changed_pack_root_without_other_values(
+    tmp_path: Path, remotion_launch: Path,
+) -> None:
+    from astrid.core.execution.generic_host import _launch_worker_probe_environments
+    from astrid.core.rendering import remotion_runtime
+
+    launch_environment = dict(os.environ)
+    candidates = _launch_worker_probe_environments(
+        (ROOT / 'astrid' / 'packs' / 'rendering',), launch_environment,
+        remotion_only=True, dispatch_only=True,
+    )
+    worker = candidates[0]
+    worker[ASTRID_REMOTION_VALIDATION_ROLE] = 'worker'
+    remotion_runtime._validated_runtime(remotion_launch, environment=worker)
+    changed_root = tmp_path / 'changed-packs'
+    changed_root.mkdir()
+    worker['ASTRID_PACKS_PATH'] = str(changed_root)
+    worker['PRIVATE_SENTINEL'] = 'unrelated-value-must-not-appear'
+    with pytest.raises(remotion_runtime.RemotionValidationError, match='ASTRID_PACKS_PATH') as error:
+        remotion_runtime._validated_runtime(remotion_launch, environment=worker)
+    assert str(changed_root) in str(error.value)
+    assert 'unrelated-value-must-not-appear' not in str(error.value)
+
+
+@pytest.mark.installed
+def test_installed_captured_command_render_through_host(tmp_path: Path, monkeypatch, real_runtime) -> None:
+    import astrid
+    from astrid.core.execution import generic_host
+
+    site = Path(astrid.__file__).resolve().parent.parent
+    assert sys.flags.isolated
+    assert os.environ.get('ASTRID_HOST_EXECUTION_PROFILE') == 'installed'
+    assert site != ROOT
+    remotion = Path(os.environ['ASTRID_REMOTION_PROJECT_DIR']).resolve(strict=True)
+    node = Path(shutil.which('node')).resolve(strict=True)
+    monkeypatch.setenv('ASTRID_NODE_EXECUTABLE', str(node))
+    monkeypatch.setenv('ASTRID_TIMELINE_SCHEMA_PYTHONPATH',
+                       str(site / 'astrid/core/timeline/schema/timeline-config.schema.json'))
+    monkeypatch.setenv('ASTRID_RUNTIME_DATA_ROOT', str(tmp_path / 'runtime-data'))
+    monkeypatch.setattr(sys.modules[__name__], 'ROOT', site)
+    monkeypatch.setattr(generic_host, '_select_pack_capture', lambda: generic_host._portable_pack_capture)
+    with _execution_env():
+        environment = dict(os.environ)
+        launch = _prepare_render_validation(
+            site, environment, tmp_path / 'support', sys.executable,
+            (site / 'astrid/packs/rendering',),
+        )
+        assert launch is not None
+        for name in (ASTRID_REMOTION_VALIDATION_PATH, ASTRID_REMOTION_VALIDATION_SHA256,
+                     ASTRID_REMOTION_VALIDATION_LAUNCH, ASTRID_REMOTION_VALIDATION_ROLE):
+            monkeypatch.setenv(name, environment[name])
+        test_generic_host_remotion_register_claim_execute_settle_and_cas(tmp_path, real_runtime, remotion)

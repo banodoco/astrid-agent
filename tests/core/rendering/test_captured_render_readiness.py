@@ -1,10 +1,43 @@
 from pathlib import Path
+import json
 import os
+import subprocess
+import sys
 import pytest
 from astrid.core.execution import generic_host as g
 from astrid.core.foundation.paths import REPO_ROOT
 from astrid.core.rendering import remotion_runtime as runtime
 from tests.test_generic_host import _write_manifest
+
+
+def test_launch_validation_selects_command_route_without_native_collection_roots(tmp_path):
+    manifest = _write_manifest(tmp_path / 'render', capability_id='rendering.render')
+    data = json.loads(manifest.read_text())
+    data['metadata']['requires_remotion'] = True
+    manifest.write_text(json.dumps(data))
+    environment = {'HOME': str(tmp_path), 'PATH': os.defpath,
+                   'ASTRID_HOST_EXECUTION_PROFILE': 'source'}
+    all_routes = g._launch_worker_probe_environments((tmp_path,), environment, remotion_only=True)
+    dispatch_routes = g._launch_worker_probe_environments(
+        (tmp_path,), environment, remotion_only=True, dispatch_only=True)
+    assert len(all_routes) == 3
+    assert all_routes[1].get('ASTRID_PACKS_PATH') == str(tmp_path)
+    assert dispatch_routes == [all_routes[0], all_routes[2]]
+
+
+def test_builtin_command_launch_avoids_nested_rendering_pack_collision():
+    root = REPO_ROOT / 'astrid' / 'packs' / 'rendering'
+    environment = {'HOME': os.environ['HOME'], 'PATH': os.environ['PATH'],
+                   'ASTRID_HOST_EXECUTION_PROFILE': 'source'}
+    candidates = g._launch_worker_probe_environments(
+        (root,), environment, remotion_only=True, dispatch_only=True)
+    assert candidates
+    for candidate in candidates:
+        result = subprocess.run(
+            [sys.executable, '-c', 'import astrid.packs.rendering.rendering'],
+            env=candidate, cwd=REPO_ROOT, capture_output=True, text=True, check=False,
+        )
+        assert result.returncode == 0, result.stderr
 
 
 def test_command_dispatch_uses_command_readiness(tmp_path, monkeypatch):

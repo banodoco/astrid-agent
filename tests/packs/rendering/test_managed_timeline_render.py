@@ -558,6 +558,51 @@ def test_editor_object_route_for_the_entrys_own_media_is_dropped() -> None:
     }
 
 
+def test_editor_object_route_for_digestless_object_id_is_dropped() -> None:
+    runtime = _Runtime(media=[{"media_id": "sha256:" + _ROUTE_HEX, "digest": _ROUTE_HEX}])
+    runtime.timeline["registry"] = {"assets": {"still": {
+        "file": "/v1/objects/sha256%3A" + _ROUTE_HEX,
+        "object_id": "sha256:" + _ROUTE_HEX,
+        "type": "image/png",
+    }}}
+    snapshot = _snapshot(runtime)
+    assert snapshot.registry["assets"]["still"] == {
+        "media_id": "sha256:" + _ROUTE_HEX,
+        "content_sha256": _ROUTE_HEX,
+        "type": "image/png",
+    }
+
+
+@pytest.mark.parametrize(
+    ("clips", "usage"),
+    [
+        ([], "not used by any clip"),
+        ([{"id": "clip-alias", "asset": "still"}], "used by clip(s) clip-alias"),
+    ],
+)
+def test_route_matching_legacy_media_alias_is_refused_for_different_object(
+    clips, usage,
+) -> None:
+    # The object_id is the identity checked against Runtime admission. A route
+    # that only matches the legacy media_id alias must remain visible to the
+    # managed locator refusal, even when both ids share the admitted digest.
+    object_id = "runtime-object-b"
+    runtime = _Runtime(media=[{"media_id": object_id, "digest": _ROUTE_HEX}])
+    runtime.timeline["config"] = {"tracks": [], "clips": clips}
+    runtime.timeline["registry"] = {"assets": {"still": {
+        "file": "/v1/objects/sha256%3A" + _ROUTE_HEX,
+        "media_id": "sha256:" + _ROUTE_HEX,
+        "object_id": object_id,
+        "content_sha256": _ROUTE_HEX,
+        "thumbnail_url": "/api/runtime/v1/objects/thumbnail",
+    }}}
+    with pytest.raises(ManagedRenderValidationError) as caught:
+        _snapshot(runtime)
+    assert "canonical registry asset 'still'" in str(caught.value)
+    assert "file" in str(caught.value)
+    assert usage in str(caught.value)
+
+
 @pytest.mark.parametrize("thumbnail_field", ["thumbnailUrl", "thumbnail_url"])
 def test_render_projection_drops_thumbnail_presentation_metadata(thumbnail_field) -> None:
     runtime = _Runtime(media=[{"media_id": "sha256:" + _ROUTE_HEX, "digest": _ROUTE_HEX}])
