@@ -19,7 +19,9 @@ HOSTED = {"route": "hosted-button", "request": {"method": "POST", "path": "/api/
 BUTTON = {**HOSTED, "driver": "app-button",
           "request": {**HOSTED["request"], "headers": ["accept", "content-length", "host", "origin", "user-agent"]},
           "page": {"entry": "/tools/video-editor?settings=updates", "offered": True, "clicked": True,
-                   "progress_shown": True, "build_sha256": "b" * 64, "served_manifest": 1}}
+                   "progress_shown": True, "build_sha256": "b" * 64, "served_manifest": 1,
+                   "live_result": {"text": "Astrid updated: Release 1 → Release 2", "seconds_after_terminal": 1,
+                                   "journey_reloads": 0, "page_navigations": 1}}}
 
 
 def candidate():

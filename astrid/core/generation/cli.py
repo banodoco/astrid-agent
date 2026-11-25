@@ -1011,7 +1011,13 @@ def main(argv: list[str] | None = None, *, dispatch_marks: tuple[float, float] |
         finally:
             _generation_output.reset(token)
     from astrid.console import startup_marks
-    from astrid.sdk.command_timing import TimingCollector, TimingOutput, print_timings, timing_scope
+    from astrid.sdk.command_timing import (
+        TimingCollector,
+        TimingOutput,
+        print_cache_events,
+        print_timings,
+        timing_scope,
+    )
     marks = startup_marks()
     if marks is None:
         marks = (entry, "command entry", None, None)
@@ -1026,6 +1032,7 @@ def main(argv: list[str] | None = None, *, dispatch_marks: tuple[float, float] |
         _generation_output.reset(token)
         if '--timings' in argv:
             print_timings(collector.snapshot())
+            print_cache_events(collector.cache_event_snapshot())
 
 
 def _main_with_errors(argv: list[str] | None = None) -> int:
