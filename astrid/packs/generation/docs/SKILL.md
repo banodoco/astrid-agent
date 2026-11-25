@@ -328,6 +328,9 @@ invalid, not a cue to invent a fix.
 
 Every blocked or warning readiness envelope uses the same validated issue and
 fix contract. Read the linked fixes, not the old engine's diagnostic spelling.
+`missing_node_pack`, `missing_model` and `engine_not_found` retain their distinct
+meanings; the deferred lookup instruction identifies a pack but grants no install
+permission. Follow only the repair IDs linked to the reported issue.
 Known core nodes retain their update-ComfyUI guidance. A missing unrecognized
 class does not establish that it is core; identify its actual provider. For an
 attached server, the person performs the manual installation or model placement;
