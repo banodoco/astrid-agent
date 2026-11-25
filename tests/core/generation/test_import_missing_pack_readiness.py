@@ -54,6 +54,24 @@ def test_sam_deferred_target_dry_run_blocks_both_missing_classes(
     engine_issues = [issue for issue in result["issues"] if issue["code"] == "engine_not_found"]
     assert len(engine_issues) == (1 if placement == "local" else 0)
     assert result["fixes"], "blocked readiness must retain actionable guidance"
+    from astrid.core.generation.setup_contract import validate_setup_envelope
+
+    validate_setup_envelope(result)
+    fixes = {fix["id"]: fix for fix in result["fixes"]}
+    for index, name in enumerate(sorted(SAM_CLASSES), 1):
+        issue = next(issue for issue in result["issues"] if issue["details"].get("node") == name)
+        fix_id = f"target-schema-lookup-{index}"
+        assert issue["fix_ids"] == [fix_id]
+        assert fixes[fix_id] == {
+            "id": fix_id, "who": "agent", "scope": "read_only",
+            "details": {"action": "Identify the providing pack before declaring its pinned source."},
+            "instruction": {
+                "step": "Identify the providing pack before declaring its pinned source.",
+                "then_argv": ["vibecomfy", "nodes", "lookup", "--", name],
+            },
+        }
+    for issue in engine_issues:
+        assert issue["fix_ids"] and all(fix_id in fixes for fix_id in issue["fix_ids"])
     assert sam_api_path.read_bytes() == original
     assert not (tmp_path / "entries").exists()
 
