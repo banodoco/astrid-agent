@@ -212,6 +212,61 @@ def test_media_timeline_selects_ffmpeg_without_remotion_configuration(
     }
 
 
+def test_editor_pack_revisions_reach_executor_and_invalid_maps_fail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "render-project").mkdir(parents=True, exist_ok=True)
+    task = _task(root=tmp_path)
+    revisions = {"astrid_motion": "editor-revision"}
+    task.spec["params"]["editor_pack_revisions"] = revisions
+    captured: dict[str, Any] = {}
+
+    def fake_run_executor(request: Any, _registry: Any) -> Any:
+        captured.update(request.inputs)
+        output = Path(request.out) / request.inputs["output_name"]
+        output.write_bytes(b"\x00\x00\x00\x18ftyp")
+        return SimpleNamespace(ok=True, error=None, payload={}, outputs={"video": output})
+
+    monkeypatch.setattr(task_adapter_module, "run_executor", fake_run_executor)
+    monkeypatch.setattr(task_adapter_module, "load_default_registry", lambda: object())
+    execute_render_export_task(task=task, staging_dir=tmp_path / "staging")
+    assert captured["editor_pack_revisions"] == revisions
+
+    task.spec["params"]["editor_pack_revisions"] = {"astrid_motion": 123}
+    with pytest.raises(RenderExportRefused, match="editor_pack_revisions must be a string map"):
+        execute_render_export_task(task=task, staging_dir=tmp_path / "invalid")
+
+
+def test_pack_revision_mismatch_is_reported_in_task_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "render-project").mkdir(parents=True, exist_ok=True)
+    task = _task(root=tmp_path)
+    editor_revision = "a" * 40
+    resolved_revision = "b" * 40
+    task.spec["params"]["editor_pack_revisions"] = {"astrid_motion": editor_revision}
+
+    def fake_run_executor(request: Any, _registry: Any) -> Any:
+        output = Path(request.out) / request.inputs["output_name"]
+        output.write_bytes(b"\x00\x00\x00\x18ftyp")
+        Path(f"{output}.provenance.json").write_text(json.dumps({
+            "backend_fragments": {"rendering.remotion": {"pack_revisions": [{
+                "pack_id": "astrid_motion", "editor_revision": editor_revision,
+                "derived_from": "c" * 40, "resolved_revision": resolved_revision,
+                "comparison": "mismatch",
+            }]}}
+        }))
+        return SimpleNamespace(ok=True, error=None, payload={}, outputs={"video": output})
+
+    monkeypatch.setattr(task_adapter_module, "run_executor", fake_run_executor)
+    monkeypatch.setattr(task_adapter_module, "load_default_registry", lambda: object())
+    receipt = execute_render_export_task(task=task, staging_dir=tmp_path / "staging")
+    assert len(receipt["warnings"]) == 1
+    assert editor_revision in receipt["warnings"][0]
+    assert resolved_revision in receipt["warnings"][0]
+    assert "astrid_motion" in receipt["warnings"][0]
+
+
 def test_admitted_theme_reaches_executor_without_changing_materialized_handoff(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

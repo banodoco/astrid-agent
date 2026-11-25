@@ -11,6 +11,7 @@ It never force-kills a process; a stuck process is left for the runner to reap.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -24,10 +25,13 @@ from pathlib import Path
 
 try:
     from . import ci_journey
+    from . import verify_installed
 except ImportError:  # executed as scripts/pinokio_row_driver.py
     import ci_journey
+    import verify_installed
 
 SCHEMA = "pinokio-row-v1"
+FRESH_SCHEMA = "pinokio-row-v2"
 STEP_NAMES = ("install", "start_task", "stop_start", "busy_stop_data", "update_ready_task", "uninstall_data")
 JOB_OS = {"pinokio-linux": "linux", "pinokio-macos": "macos", "pinokio-windows": "windows"}
 PLATFORM_OS = {"linux": "linux", "darwin": "macos", "win32": "windows"}
@@ -75,6 +79,10 @@ def read_json(path: Path) -> dict:
 
 
 def _tail(text: str, limit: int = 8000) -> str:
+    text = re.sub(r"(?i)(token|password|secret|authorization)(\s*[=:]\s*)([^\s,;]+(?:\s+[^\s,;]+)?)",
+                  r"\1\2<redacted>", text)
+    text = re.sub(r"(?i)\bBearer\s+[^\s,;]+", "Bearer <redacted>", text)
+    text = re.sub(r"\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{20,})\b", "<redacted>", text)
     return text[-limit:]
 
 
@@ -94,6 +102,7 @@ class Row:
         self.agent = agent
         self.app_checkout = app_checkout
         self.candidate_sha = candidate_sha
+        self.candidate_path: Path | None = None
         self.pinokio_home = run_root / "pinokio-home"
         self.app_dir = self.pinokio_home / "api" / APP_NAME
         self.root = self.app_dir / "app" / "astrid"
@@ -118,10 +127,13 @@ class Row:
     def command(self, argv: list[str], *, timeout: float = 900) -> str:
         """Run one launcher command with its output bounded to a file under the run root."""
         self.log_count += 1
-        with tempfile.NamedTemporaryFile(mode="w+", encoding="utf-8", dir=self.scratch,
-                                         prefix=f"command-{self.log_count}-", delete=False) as output:
+        with (
+            tempfile.NamedTemporaryFile(mode="w+", encoding="utf-8", dir=self.scratch,
+                                        prefix=f"command-{self.log_count}-", delete=False) as output,
+            tempfile.TemporaryFile(mode="w+", encoding="utf-8", dir=self.scratch) as stderr,
+        ):
             proc = subprocess.Popen([str(part) for part in argv], env=self.env, cwd=str(self.home),
-                                    stdout=output, stderr=subprocess.STDOUT, text=True)
+                                    stdout=output, stderr=stderr, text=True)
             try:
                 proc.wait(timeout=timeout)
             except subprocess.TimeoutExpired as exc:
@@ -129,8 +141,13 @@ class Row:
             output.flush()
             output.seek(0)
             text = output.read()
+            stderr.seek(0)
+            errors = stderr.read()
         if proc.returncode:
-            raise RowError(f"command failed (exit {proc.returncode}): {argv[0]}: {_tail(text)}")
+            error = RowError(f"command failed (exit {proc.returncode}): {argv[0]}: {_tail(text + errors)}")
+            error.child_exit_code = proc.returncode
+            error.stderr_tail = _tail(errors, limit=2000)
+            raise error
         return text
 
     def installed(self, argv: list[str], name: str, *, timeout: int = 300) -> str:
@@ -172,11 +189,14 @@ class Row:
                 or identity.get("managed_by") != "pinokio" or health.get("identity") != identity
                 or discovery.get("identity") != identity):
             raise RowError("Runtime health, release identity and selected discovery do not match")
+        if self.candidate_path is not None:
+            self.verify_candidate_install()
         realm = Path(discovery["realm_root"])
         if not realm.is_absolute() or not realm.is_relative_to(self.data.parent):
             raise RowError("Runtime realm is outside the selected data root")
         self.realm = str(realm)
-        return {"instance": instance, "realm": str(realm), "identity": identity}
+        return {"instance": instance, "realm": str(realm), "identity": identity,
+                "schema_digest": health.get("schema_digest")}
 
     def assert_same_runtime(self) -> None:
         live = self.health()
@@ -285,6 +305,17 @@ class Row:
             for key in ("USERPROFILE", "LOCALAPPDATA", "APPDATA"):
                 self.env[key] = str({"USERPROFILE": self.home, "LOCALAPPDATA": self.home / "AppData" / "Local",
                                      "APPDATA": self.home / "AppData" / "Roaming"}[key])
+        # Shared journey selection probes run in-process and must use the same
+        # isolated account as Pinokio's installer and Runtime children.
+        for key in ("HOME", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "XDG_DATA_HOME"):
+            if key in self.env:
+                os.environ[key] = self.env[key]
+            else:
+                os.environ.pop(key, None)
+        if self.candidate_path is not None:
+            if "PLAYWRIGHT_BROWSERS_PATH" in os.environ:
+                self.env["PLAYWRIGHT_BROWSERS_PATH"] = os.environ["PLAYWRIGHT_BROWSERS_PATH"]
+            return
         # The stand-in for release N+1 is generated from the App's own shipped manifest.
         standin = self.standin
         standin.parent.mkdir(parents=True, exist_ok=True)
@@ -297,6 +328,71 @@ class Row:
     def install_initial(self) -> None:
         self.install(self.manifest, expected=read_json(self.manifest))
 
+    def install_fresh(self) -> dict:
+        if self.candidate_path is None:
+            raise RowError("fresh lifecycle requires its frozen candidate")
+        candidate = read_json(self.candidate_path)
+        manifest_bytes = self.manifest.read_bytes()
+        if hashlib.sha256(manifest_bytes).hexdigest() != candidate.get("manifest_sha256"):
+            raise RowError("App manifest SHA differs from the frozen candidate")
+        manifest = json.loads(manifest_bytes)
+        app_head = subprocess.check_output(["git", "-C", str(self.app_checkout), "rev-parse", "HEAD"], text=True).strip()
+        if app_head != candidate.get("app"):
+            raise RowError("App checkout differs from the frozen candidate SHA")
+        pins = {"agent": candidate.get("agent"), "runtime": candidate.get("runtime")}
+        for key, value in pins.items():
+            if not isinstance(value, str) or not value or manifest.get(key, {}).get("sha") != value:
+                raise RowError(f"candidate {key} pin does not match the App manifest")
+        self.launcher_install_action(candidate["app"])
+        self.data, _version, _record = self.record()
+        self.published = self.manifest
+        installed = self.verify_candidate_install()
+        selection = ci_journey.pack_host_ready_path(pinokio_row={"home": str(self.home),
+            "program_root": str(self.root), "data_root": str(self.data)})
+        if selection != self.data / "runtime" / ci_journey.PACK_HOST_READY:
+            raise RowError("Pinokio-owned selection resolved outside its selected data root")
+        return installed
+
+    def launcher_install_action(self, app_sha: str) -> None:
+        """Execute the pinned launcher's install.js action array, including its own custom steps."""
+        if not re.fullmatch(r"[0-9a-f]{40}", app_sha):
+            raise RowError("launcher install requires a full immutable App SHA")
+        self.env["ASTRID_APP_REF"] = app_sha
+        code = ("const {spawnSync}=require('node:child_process'); const action=require(process.argv[1]);"
+                "(async()=>{const result=await action(); const steps=Array.isArray(result)?result:result?.run;"
+                "if(!Array.isArray(steps))throw Error('Pinokio install action must return a run array');"
+                "for(const step of steps){if(typeof step.method==='function'){await step.method();continue;}"
+                "if(step.method!=='shell.run')throw Error('unsupported Pinokio install action step '+step.method);"
+                "const p=step.params, win=process.platform==='win32'; const args=win?['-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-Command',p.message]:['--noprofile','--norc','-c',p.message];"
+                "const env={...process.env,...(p.env||{})}; const r=spawnSync(p.shell,args,{cwd:p.path,env,encoding:'utf8',stdio:['ignore','pipe','pipe']});"
+                "if(r.stdout)process.stdout.write(r.stdout);if(r.stderr)process.stderr.write(r.stderr);"
+                "if(r.error||r.status!==0)throw Error('Pinokio install shell action failed: '+(r.error?.message||r.status));}})().catch(e=>{console.error(e.stack||e);process.exit(1)});")
+        self.command(["node", "-e", code, self.launcher / "pinokio" / "install.js"], timeout=3600)
+
+    def verify_candidate_install(self) -> dict:
+        if self.candidate_path is None:
+            raise RowError("frozen candidate is unavailable")
+        candidate = read_json(self.candidate_path)
+        data, version, record = self.record()
+        manifest_path = version / "manifest.json"
+        if manifest_path.is_symlink():
+            raise RowError("selected manifest is a symlink")
+        manifest_bytes = manifest_path.read_bytes()
+        manifest = json.loads(manifest_bytes)
+        expected = read_json(self.manifest)
+        if manifest != expected or manifest_bytes != verify_installed.installer_manifest_bytes(expected):
+            raise RowError("selected installed manifest differs from the frozen candidate and installer provenance")
+        if any(manifest.get(key, {}).get("sha") != candidate.get(key) for key in ("agent", "runtime")):
+            raise RowError("selected installed Agent/Runtime pins differ from the frozen candidate")
+        if record.get("identity") != {"release": 14, "managed_by": "pinokio"}:
+            raise RowError("selected install provenance is not Pinokio")
+        problems = verify_installed._version_provenance_problems(record, manifest, version / "version.json")
+        if problems:
+            raise RowError("selected installed provenance failed: " + "; ".join(problems))
+        return {"manifest_sha256": candidate["manifest_sha256"],
+                "installed_manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(), "manifest": manifest,
+                "selected_program_root": str(self.root), "selected_data_root": str(data)}
+
     def update_install(self) -> None:
         self.install(self.standin, expected=read_json(self.standin))
 
@@ -307,7 +403,9 @@ class Row:
 
     # Session and stop --------------------------------------------------------
 
-    def start(self) -> None:
+    def start(self) -> dict:
+        if self.candidate_path is not None:
+            self.verify_candidate_install()
         self.data, version, record = self.record()
         self.version = record
         node = Path(record["env"]["ASTRID_NODE_EXECUTABLE"])
@@ -334,7 +432,15 @@ class Row:
                 if control.get("pid") != self.child.pid or not control.get("token") or not control.get("port"):
                     raise RowError("controller does not identify the session child")
                 self.instance = live["instance"]
-                return
+                receipt = {"readySentinel": True, "runtimeInstanceId": self.instance,
+                        "runtimeIdentity": live["identity"], "realmRoot": live["realm"],
+                        "selectedProgramRoot": str(self.root), "selectedDataRoot": str(self.data)}
+                if self.candidate_path is not None:
+                    manifest = read_json(self.manifest)
+                    if live.get("schema_digest") != manifest["runtime"]["schema_digest"]:
+                        raise RowError("live Runtime schema digest differs from the frozen candidate")
+                    receipt["schemaDigest"] = live["schema_digest"]
+                return receipt
             except (OSError, ValueError, KeyError, RowError) as exc:
                 last = exc
             time.sleep(0.5)
@@ -386,15 +492,63 @@ class Row:
         if discovery.exists() and read_json(discovery).get("runtime_instance_id") not in (None, self.instance):
             raise RowError("a different Runtime appeared at the selected root during stop")
 
-    def stop(self) -> None:
+    def stop(self) -> dict:
         self.assert_same_runtime()
+        runtime_pid = None
+        if self.candidate_path is not None:
+            runtime_pid = read_json(self.data / "runtime" / "discovery.json").get("pid")
         self.stop_request()
         self.finish_stop()
+        if self.candidate_path is not None:
+            if type(runtime_pid) is not int or _pid_alive(runtime_pid):
+                raise RowError("the starting Runtime process survived Pinokio Stop")
+            if self.child is None or self.child.returncode != 0:
+                raise RowError("the owned Pinokio session did not exit cleanly")
+        return {"stopped": True, "runtimeInstanceId": self.instance,
+                "selectedProgramRoot": str(self.root), "selectedDataRoot": str(self.data),
+                "sessionExitCode": self.child.returncode if self.child else None}
+
+    def open_app(self) -> dict:
+        """Use the launcher's resolved Open Astrid URL with the frozen App build."""
+        code = ("const launcher=require(process.argv[1]); const app=require(process.argv[3]);"
+                "const mode=app.readInstallMode();"
+                "const target=app.modeOpenTarget(mode); const info={running:(s)=>s==='pinokio/start.js',"
+                "exists:(p)=>require('node:fs').existsSync(require('node:path').join(process.argv[2],p)),"
+                "local:()=>({url:target.href,mode})};"
+                "launcher.menu({},info).then(items=>{const item=items.find(x=>x.text==='Open Astrid');"
+                "if(!item)throw Error('Pinokio menu has no Open Astrid action');"
+                "process.stdout.write(JSON.stringify({href:item.href,target_full:item.target_full,popout:item.popout,menu:item.text}))})")
+        target = json.loads(self.command(["node", "-e", code,
+            self.launcher / "pinokio.js", self.app_dir, self.launcher / "pinokio" / "lib.js"], timeout=30))
+        if (target.get("menu") != "Open Astrid" or target.get("href") != "/"
+                or target.get("target_full") != "https://astrid.haus/?connect=1" or target.get("popout") is not True):
+            raise RowError("Pinokio Open Astrid target differs from the hosted connection URL")
+        if self.data is None:
+            raise RowError("Open Astrid requires the selected installed data root")
+        identity = self.health()
+        result_path = self.evidence / "open-app.json"
+        script = Path(__file__).with_name("journey_pinokio_open.mjs")
+        candidate = read_json(self.candidate_path)
+        self.command(["node", script, str(self.app_checkout / "dist"), target["target_full"], str(result_path),
+                      candidate["app"], candidate["manifest_sha256"],
+                      str(self.app_checkout)], timeout=180)
+        result = read_json(result_path)
+        if (result.get("target") != target["target_full"] or result.get("connected") is not True
+                or result.get("runtimeInstanceId") != identity["instance"]
+                or result.get("runtimeIdentity") != identity["identity"]
+                or result.get("appBuild") != candidate["app"]
+                or result.get("manifestSha256") != candidate["manifest_sha256"]
+                or result.get("schemaDigest") != identity.get("schema_digest")):
+            raise RowError("Open Astrid browser proof does not match the selected live Runtime and App build")
+        return result
 
     # Busy stop, marker and task ---------------------------------------------
 
     def task_once(self, *, create_project: bool) -> None:
-        self.task_id = ci_journey.task(self.version, self.evidence, PROJECT, create_project=create_project)
+        data, _version, _record = self.record()
+        pinokio_row = {"home": str(self.home), "program_root": str(self.root), "data_root": str(data)}
+        self.task_id = ci_journey.task(self.version, self.evidence, PROJECT, create_project=create_project,
+                                      pinokio_row=pinokio_row)
 
     def write_marker(self) -> None:
         self.marker = Path(self.realm) / MARKER_NAME
@@ -477,6 +631,38 @@ def stages(row: Row) -> list[tuple[str, list]]:
     ]
 
 
+def fresh_stages(row: Row) -> list[tuple[str, list]]:
+    """R14 scope: a fresh Pinokio installation, hosted Open target, and clean stop."""
+    return [
+        ("install", [row.prepare, row.install_fresh]),
+        ("start", [row.start]),
+        ("open_app", [row.open_app]),
+        ("stop", [row.stop]),
+    ]
+
+
+def run_fresh_row(row: Row) -> list[dict]:
+    observations = []
+    failed = None
+    for name, operations in fresh_stages(row):
+        if failed and not (name == "stop" and failed == "open_app"):
+            observations.append({"name": name, "status": "fail", "detail": f"not run: {failed} failed"})
+            continue
+        result = None
+        try:
+            for operation in operations:
+                result = operation()
+            detail = result if isinstance(result, dict) else {}
+            observations.append({"name": name, "status": "pass", "detail": "verified",
+                                 **({"observation": detail} if detail else {})})
+        except Exception as exc:  # noqa: BLE001
+            failed = name
+            observations.append({"name": name, "status": "fail", "detail": _step(name, "fail", exc)["detail"],
+                                 "child_exit_code": getattr(exc, "child_exit_code", None),
+                                 "stderr_tail": getattr(exc, "stderr_tail", "")})
+    return observations
+
+
 def _step(name: str, status: str, detail: str) -> dict:
     text = re.sub(r"\s+", " ", str(detail)).strip()
     if len(text) > 500:
@@ -531,6 +717,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--app-checkout", required=True, type=Path)
     parser.add_argument("--run-root", required=True, type=Path)
     parser.add_argument("--receipt", required=True, type=Path)
+    parser.add_argument("--schema", choices=(SCHEMA, FRESH_SCHEMA), default=SCHEMA)
     args = parser.parse_args(argv)
     for path in (args.pinokio_checkout, args.agent_checkout, args.app_checkout, args.run_root):
         if not path.is_absolute():
@@ -540,13 +727,24 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("candidate pinokio must be a full commit SHA")
     row = Row(job_id=args.job_id, os_name=args.os, run_root=args.run_root, pinokio=args.pinokio_checkout,
               agent=args.agent_checkout, app_checkout=args.app_checkout, candidate_sha=sha)
+    if args.schema == FRESH_SCHEMA:
+        row.candidate_path = args.candidate
     try:
-        value = receipt(args.job_id, args.os, sha, run_row(row))
+        steps = run_fresh_row(row) if args.schema == FRESH_SCHEMA else run_row(row)
+        value = ({"schema": FRESH_SCHEMA, "job_id": args.job_id, "os": args.os, "pinokio_sha": sha,
+                  "candidate": read_json(args.candidate), "stages": steps}
+                 if args.schema == FRESH_SCHEMA else receipt(args.job_id, args.os, sha, steps))
     except Exception as exc:  # noqa: BLE001 - an unexpected driver error still yields a failing receipt
-        value = _failed_receipt(args.job_id, args.os, sha, f"driver error: {type(exc).__name__}: {exc}")
+        if args.schema == FRESH_SCHEMA:
+            value = {"schema": FRESH_SCHEMA, "job_id": args.job_id, "os": args.os, "pinokio_sha": sha,
+                     "candidate": read_json(args.candidate), "stages": [
+                         {"name": name, "status": "fail", "detail": f"driver error: {type(exc).__name__}: {exc}"}
+                         for name in ("install", "start", "open_app", "stop")]}
+        else:
+            value = _failed_receipt(args.job_id, args.os, sha, f"driver error: {type(exc).__name__}: {exc}")
     args.receipt.parent.mkdir(parents=True, exist_ok=True)
     args.receipt.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    failed = [step["name"] for step in value["steps"] if step["status"] != "pass"]
+    failed = [step["name"] for step in value.get("stages", value.get("steps", [])) if step["status"] != "pass"]
     print(json.dumps({"job_id": args.job_id, "failed_steps": failed}), flush=True)
     return 1 if failed else 0
 

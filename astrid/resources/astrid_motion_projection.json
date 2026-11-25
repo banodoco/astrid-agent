@@ -1,0 +1,13 @@
+{
+  "schema": "astrid-motion-projection/v1",
+  "pack_id": "astrid_motion",
+  "repo": "https://github.com/banodoco/astrid-agent",
+  "upstream_commit": "ec0a9f5baef2c31bc5179087b83f044524575182",
+  "upstream_subpath": "astrid/packs/astrid_motion",
+  "upstream_tree": "346d66125414e5d57aa278ed0940893ab23021bd",
+  "digest_rule": "pack-tree-v1",
+  "upstream_digest": "598b1c3d1beaac08a5e07415037624ecd58608487b65003d615a4e489794dcdd",
+  "alias_only_digest": "44b55800e7725686b202767723de5db2aed0dcda2c4585cbfaca1a1a6065c96c",
+  "tree_digest": "414a6fd1241111a7efbc11f443ad80adcb1a4963f96b4575d6de4205745d67c4",
+  "file_count": 64
+}

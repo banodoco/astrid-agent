@@ -191,6 +191,154 @@ def seed(client, project, generation, task_id=None, create_project=False):
             "object_digest": hashlib.sha256(payload).hexdigest(), "generation": generation}
 
 
+def seed_authored_timeline(client, project, generation, track_label=None):
+    """Prepare a real canonical editor document using public Runtime endpoints.
+
+    The installed Runtime must accept the same timeline.init envelope used by
+    the App's native direct-journey fixture; no direct SQLite, fixture injection,
+    source-overlay or fake client can stand in for this cross-version test.
+    """
+    keys = seed(client, project, generation, task_id=None, create_project=True)
+    timeline_path = path("projects", keys["project"], "timelines", keys["timeline"])
+    current = client.request("GET", timeline_path)
+    base_revision = current.get("head_revision_id") if isinstance(current, dict) else None
+    base_publication = current.get("head_publication_id") if isinstance(current, dict) else None
+    if not (isinstance(base_revision, str) and base_revision
+            and isinstance(base_publication, str) and base_publication):
+        raise RuntimeError("Installed Runtime did not publish a canonical timeline bootstrap head")
+
+    label = "Initialize Release 13 creative timeline"
+    command = {
+        "schema_version": 1, "op": "timeline.init", "version": "1", "select": "parent",
+        "args": {"name": "Main", "slug": "main",
+                 "output": {"resolution": "1280x720", "fps": 30, "file": "output.mp4",
+                            "background": None, "background_scale": None}},
+    }
+    reads = [{"kind": "scope", "ref": "timeline", "path": []}]
+    body = {
+        "api_version": 1, "project_id": keys["project"], "timeline_id": keys["timeline"],
+        "base_revision_id": base_revision, "base_publication_id": base_publication,
+        "commands": [command], "label": label,
+        "steps": [{"id": "fix17-init", "label": "timeline.init", "intent": label,
+                   "tags": [], "command_ordinals": [0], "patch": [], "reads": reads}],
+        "merge": "atomic", "reads": reads, "dry_run": False, "source": {"via": "python"},
+    }
+    accepted = client.request("POST", timeline_path + "/commit", body,
+                              key="fix17-init-" + generation)
+    data = accepted.get("data") if isinstance(accepted, dict) else None
+    receipt = accepted.get("receipt") if isinstance(accepted, dict) else None
+    if (not isinstance(data, dict) or data.get("status") != "accepted"
+            or not isinstance(receipt, dict)
+            or not isinstance(data.get("accepted_revision_id"), str)
+            or not isinstance(receipt.get("receipt_id"), str)):
+        raise RuntimeError("Installed Runtime refused or failed to acknowledge canonical initialization")
+    canonical = data.get("canonical_document")
+    parent = canonical.get("parent_revision") if isinstance(canonical, dict) else None
+    payload = parent.get("payload") if isinstance(parent, dict) else None
+    config = payload.get("config") if isinstance(payload, dict) else None
+    tracks = config.get("tracks") if isinstance(config, dict) else None
+    if not isinstance(tracks, list) or not any(
+            isinstance(track, dict) and track.get("id") == "V1" and track.get("label") == "V1"
+            for track in tracks):
+        raise RuntimeError("The accepted canonical document lacks the visible original V1 track")
+
+    reopened = client.request("GET", timeline_path)
+    if (reopened.get("head_revision_id") != data["accepted_revision_id"]
+            or reopened.get("head_publication_id") != receipt["receipt_id"]):
+        raise RuntimeError("Canonical initializer did not persist the accepted head and publication")
+    composition = read_composition_head(client, keys["project"], keys["timeline"],
+                                        data["accepted_revision_id"], receipt["receipt_id"])
+    seeded = {
+        **keys,
+        "project_name": "Release-0 user project " + generation,
+        "timeline_name": reopened["name"], "track_id": "V1", "initial_label": "V1",
+        "head": data["accepted_revision_id"],
+        "revision_id": data["accepted_revision_id"],
+        "publication_id": receipt["receipt_id"], "authored": True,
+        "composition": {"project_id": keys["project"], "timeline_id": keys["timeline"],
+                        "accepted_revision_id": data["accepted_revision_id"],
+                        "publication_id": receipt["receipt_id"],
+                        "document_sha256": composition_digest(composition), "track_id": "V1", "edit": "V1"},
+    }
+    if track_label is not None:
+        edited = _save_composition_label(client, seeded, track_label, legacy=True)
+        seeded.update(initial_label=track_label, head=edited["accepted_revision_id"],
+                      revision_id=edited["accepted_revision_id"], publication_id=edited["publication_id"],
+                      composition=edited)
+    return seeded
+
+
+def _inventory_pages(client, route):
+    cursor = None
+    seen = set()
+    while True:
+        query = "?limit=50" + ("&cursor=" + quote(cursor, safe="") if cursor else "")
+        page = client.request("GET", route + query)
+        items, next_cursor = page["items"], page["next_cursor"]
+        if not isinstance(items, list) or (next_cursor is not None and (
+                not isinstance(next_cursor, str) or not next_cursor or next_cursor in seen)):
+            raise RuntimeError("Realm inventory has an invalid or repeated page cursor")
+        yield page
+        if next_cursor is None:
+            break
+        seen.add(next_cursor)
+        cursor = next_cursor
+
+
+def realm_inventory(client):
+    """Reopen the installed realm's projects, each timeline and every published revision."""
+    realm_id = client.request("GET", path("realm"))["realm_id"]
+    projects = {}
+    for page in _inventory_pages(client, path("projects")):
+        for project in page["items"]:
+            project_id = project["project_id"]
+            if project["realm_id"] != realm_id or project_id in projects:
+                raise RuntimeError("Realm project inventory contains a foreign or duplicate project")
+            timelines = {}
+            for listing in _inventory_pages(client, path("projects", project_id, "timelines")):
+                for item in listing["items"]:
+                    timeline_id = item["timeline_id"]
+                    if timeline_id in timelines:
+                        raise RuntimeError("Realm timeline inventory contains a duplicate timeline")
+                    timeline_path = path("projects", project_id, "timelines", timeline_id)
+                    timeline = client.request("GET", timeline_path)
+                    revision = timeline["head_revision_id"]
+                    publication = timeline.get("head_publication_id")
+                    history = []
+                    if revision is not None:
+                        for commits in _inventory_pages(client, timeline_path + "/commits"):
+                            if commits["head"] != {"revision_id": revision, "publication_id": publication}:
+                                raise RuntimeError("Timeline head changed while reading its history")
+                            for entry in commits["items"]:
+                                revision_id = entry["revision_id"]
+                                revision_route = timeline_path + "/composition-revisions/" + quote(revision_id, safe="")
+                                doc = client.request("GET", revision_route)
+                                if (not isinstance(doc, dict) or doc.get("revision_id") != revision_id
+                                        or doc.get("project_id") != project_id or doc.get("timeline_id") != timeline_id
+                                        or not isinstance(doc.get("payload"), dict)):
+                                    raise RuntimeError("Could not reopen a published timeline revision")
+                                history.append({
+                                    "revision_id": revision_id, "publication_id": entry["publication_id"],
+                                    "intent": entry["intent"], "label": entry.get("label"),
+                                    "previous": entry["previous"],
+                                    "revision_sha256": hashlib.sha256(
+                                        json.dumps(doc, sort_keys=True, separators=(",", ":")).encode()
+                                    ).hexdigest(),
+                                })
+                        if not any(e["revision_id"] == revision and e["publication_id"] == publication
+                                   for e in history):
+                            raise RuntimeError("Published timeline head is missing from its history")
+                    timelines[timeline_id] = {
+                        "name": timeline["name"], "revision_id": revision,
+                        "publication_id": publication, "history": history,
+                    }
+            projects[project_id] = {"name": project["name"], "timelines": timelines}
+    return {"realm_id": realm_id, "projects": projects}
+
+
+R11_PACK_REFUSAL = "stable selected pack capture requires Linux file lease support"
+
+
 def snapshot(client, keys):
     project = client.request("GET", path("projects", keys["project"]))
     base = path("projects", keys["project"], "timelines", keys["timeline"])
@@ -200,7 +348,7 @@ def snapshot(client, keys):
     # The public timeline resource is the only timeline identity a user's HTTP client sees.
     # Its name and head must be the ones the seed recorded from that same resource.
     try:
-        if timeline["name"] != "User edit " + generation:
+        if timeline["name"] != keys.get("timeline_name", "User edit " + generation):
             raise ValueError("Seeded timeline identity differs from the requested data")
         if timeline["head_revision_id"] != keys["head"]:
             raise ValueError("Seeded timeline head differs from the seeded head")
@@ -215,7 +363,11 @@ def snapshot(client, keys):
     if hashlib.sha256(payload).hexdigest() != keys["object_digest"]:
         raise ValueError("Seeded object bytes do not match their digest")
     task = client.request("GET", path("tasks", keys["task_id"]))
-    if task["state"] != "succeeded" or "result" not in task:
+    if keys.get("r11_selected_pack_refusal") is True and keys.get("generation") == "release11":
+        error = (task.get("result") or {}).get("error") or {}
+        if task.get("state") != "failed" or error.get("code") != "executor_failed" or error.get("message") != R11_PACK_REFUSAL:
+            raise ValueError("Seeded R11 task no longer has the expected selected-pack refusal")
+    elif task["state"] != "succeeded" or "result" not in task:
         raise ValueError("Seeded task is no longer settled successfully with a result")
     health = client.request("GET", path("health"))
     expected_schema_digest = keys.get("expected_schema_digest")
@@ -231,6 +383,136 @@ def snapshot(client, keys):
             "task": {k: task[k] for k in ("task_id", "state", "spec", "result")},
             "cas_sha256": hashlib.sha256(payload).hexdigest(),
             "schema_digest": health["schema_digest"], "target_schema_digest": expected_schema_digest}
+
+
+
+def save_timeline_after_update(client, keys):
+    """Edit the seeded timeline through its public mutation endpoint and verify the saved result.
+
+    This is a real HTTP PATCH against the selected installed Runtime;
+    an in-memory edit or checkout mutation is not journey evidence.
+    """
+    base = path("projects", keys["project"], "timelines", keys["timeline"])
+    before = client.request("GET", base)
+    expected = "User edit " + keys["generation"]
+    if not isinstance(before, dict) or before.get("name") != expected or before.get("head_revision_id") != keys["head"]:
+        raise ValueError("Selected timeline is not the seeded timeline before the save")
+    saved_name = "Saved after update " + keys["generation"]
+    client.request("PATCH", base, {"name": saved_name},
+                   key="fix17-save-" + keys["generation"])
+    saved = client.request("GET", base)
+    if not isinstance(saved, dict) or saved.get("name") != saved_name:
+        raise ValueError("Timeline edit did not persist to the installed Runtime")
+    if saved.get("head_revision_id") != keys["head"]:
+        raise ValueError("Timeline metadata save unexpectedly changed its document head")
+    return {"project": keys["project"], "timeline": keys["timeline"],
+            "saved_name": saved_name, "head": keys["head"], "saved": True}
+
+
+def save_composition_after_update(client, keys):
+    """Commit a track label through R14's document edit endpoint."""
+    return _save_composition_label(client, keys, "Saved after update " + keys["generation"])
+
+
+def _track_label(revision, track_id):
+    tracks = revision["payload"]["config"]["tracks"]
+    return next((track.get("label") for track in tracks if track["id"] == track_id), None)
+
+
+def _save_composition_label(client, keys, label, *, legacy=False):
+    base = path("projects", keys["project"], "timelines", keys["timeline"])
+    timeline = client.request("GET", base)
+    revision_id, publication_id = timeline.get("head_revision_id"), timeline.get("head_publication_id")
+    if (not all(isinstance(value, str) and value for value in (revision_id, publication_id))
+            or revision_id != keys.get("revision_id") or publication_id != keys.get("publication_id")):
+        raise ValueError("Selected composition is not the seeded timeline and publication before the save")
+    revision = read_composition_head(client, keys["project"], keys["timeline"], revision_id, publication_id)
+    track_id = keys["track_id"]
+    before = _track_label(revision, track_id)
+    if not isinstance(before, str) or before != keys["initial_label"] or before == label:
+        raise RuntimeError("Seeded composition does not have the original editable track label")
+    if legacy:
+        target = "parent/track:" + track_id
+        command = {"schema_version": 1, "op": "track.set", "version": "1", "select": target,
+                   "args": {"values": {"label": label}, "clear": []},
+                   "expect": {target + "::label": {"state": "present", "value": before}}}
+        patch = []
+    else:
+        patch = [{"op": "set", "ref": "parent", "path": ["config", "tracks", "id:" + track_id, "label"],
+                  "before": {"state": "present", "value": before}, "value": label}]
+        command = {"schema_version": 1, "op": "doc.patch", "version": "1", "select": None, "created": [],
+                   "args": {"changes": patch}}
+    reads = [{"kind": "scope", "ref": "timeline", "path": []}]
+    accepted = client.request("POST", base + "/commit", {
+        "api_version": 1, "project_id": keys["project"], "timeline_id": keys["timeline"],
+        "base_revision_id": revision_id, "base_publication_id": publication_id,
+        "commands": [command], "label": label,
+        "steps": [{"id": "fix17-composition-save", "label": label, "intent": label,
+                   "tags": [], "command_ordinals": [0], "patch": patch, "reads": reads}],
+        "merge": "atomic", "reads": reads, "dry_run": False, "source": {"via": "python"},
+    }, key=("fix17-r13-edit-" if legacy else "fix17-composition-save-") + keys["generation"])
+    data, receipt = accepted.get("data"), accepted.get("receipt")
+    accepted_id = data.get("accepted_revision_id") if isinstance(data, dict) else None
+    publication = receipt.get("receipt_id") if isinstance(receipt, dict) else None
+    if (not isinstance(data, dict) or data.get("status") != "accepted"
+            or not isinstance(accepted_id, str) or not accepted_id or accepted_id == revision_id
+            or not isinstance(publication, str) or not publication or publication == publication_id):
+        raise RuntimeError("Runtime did not accept and publish the composition edit")
+    fresh = read_composition_head(client, keys["project"], keys["timeline"], accepted_id, publication)
+    if _track_label(fresh, track_id) != label:
+        raise RuntimeError("Fresh composition revision read did not contain the accepted edit")
+    return {"project_id": keys["project"], "timeline_id": keys["timeline"],
+            "base_revision_id": revision_id, "accepted_revision_id": accepted_id,
+            "publication_id": publication, "document_sha256": composition_digest(fresh),
+            "track_id": track_id, "edit": label, "saved": True}
+
+
+def read_composition_head(client, project, timeline_id, revision_id, publication_id):
+    base = path("projects", project, "timelines", timeline_id)
+    timeline = client.request("GET", base)
+    revision = client.request("GET", base + "/composition-revisions/" + quote(revision_id, safe=""))
+    if (timeline.get("head_revision_id") != revision_id or timeline.get("head_publication_id") != publication_id
+            or revision.get("revision_id") != revision_id or revision.get("project_id") != project
+            or revision.get("timeline_id") != timeline_id or not isinstance(revision.get("payload"), dict)):
+        raise ValueError("Fresh Runtime client did not reopen the accepted composition revision")
+    return revision
+
+
+def composition_digest(revision):
+    return hashlib.sha256(json.dumps(revision["payload"], sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def reopen_saved_composition(client, saved):
+    """Fresh client read of the exact accepted composition revision and edited value."""
+    revision = read_composition_head(client, saved["project_id"], saved["timeline_id"],
+                                     saved["accepted_revision_id"], saved["publication_id"])
+    if (composition_digest(revision) != saved["document_sha256"]
+            or _track_label(revision, saved["track_id"]) != saved["edit"]):
+        raise ValueError("Fresh Runtime client did not reopen the accepted composition edit")
+    return {key: saved[key] for key in ("project_id", "timeline_id", "accepted_revision_id",
+                                       "publication_id", "document_sha256", "track_id", "edit")} | {"reopened": True}
+
+
+def reopen_browser_composition(client, saved):
+    """Independently read the published revision accepted by the editor's Retry."""
+    revision = read_composition_head(client, saved["project_id"], saved["timeline_id"],
+                                     saved["revision_id"], saved["publication_id"])
+    tracks = revision["payload"]["config"]["tracks"]
+    if not any(track["id"] == "V1" and track.get("label") == saved["label"] for track in tracks):
+        raise ValueError("Accepted composition revision is missing the browser's original track edit")
+    return {**saved, "document_sha256": composition_digest(revision), "reopened": True}
+
+
+def reopen_saved_timeline(client, saved):
+    """A fresh script process/client reopens the saved timeline by its original ID."""
+    base = path("projects", saved["project"], "timelines", saved["timeline"])
+    current = client.request("GET", base)
+    if not isinstance(current, dict) or current.get("name") != saved["saved_name"]:
+        raise ValueError("Reopened timeline lost the saved edit")
+    if current.get("head_revision_id") != saved["head"]:
+        raise ValueError("Reopened timeline changed its saved document head")
+    return {"project": saved["project"], "timeline": saved["timeline"],
+            "saved_name": saved["saved_name"], "head": saved["head"], "reopened": True}
 
 
 # These fields bind discovery to the owner selected by the parent. Do not pass
@@ -287,7 +569,10 @@ def check_selection(data, root, expected):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("seed", "snapshot"))
+    parser.add_argument("action", choices=("seed", "snapshot", "seed_authored_timeline", "realm_inventory",
+                                           "save_timeline_after_update", "reopen_saved_timeline",
+                                           "save_composition_after_update", "reopen_saved_composition",
+                                           "reopen_browser_composition"))
     parser.add_argument("--data", type=Path, required=True)
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--selection", type=Path, required=True)
@@ -325,7 +610,24 @@ def execute(args):
     client = LiveWorkspace(selection["endpoint"], credential_token(credential),
                            guard=lambda: check_selection(data, root, selection))
     request = json.loads(args.request.read_text(encoding="utf-8"))
-    result = seed(client, **request) if args.action == "seed" else snapshot(client, request)
+    if args.action == "seed":
+        result = seed(client, **request)
+    elif args.action == "snapshot":
+        result = snapshot(client, request)
+    elif args.action == "seed_authored_timeline":
+        result = seed_authored_timeline(client, **request)
+    elif args.action == "realm_inventory":
+        result = realm_inventory(client)
+    elif args.action == "save_timeline_after_update":
+        result = save_timeline_after_update(client, request)
+    elif args.action == "reopen_saved_timeline":
+        result = reopen_saved_timeline(client, request)
+    elif args.action == "save_composition_after_update":
+        result = save_composition_after_update(client, request)
+    elif args.action == "reopen_saved_composition":
+        result = reopen_saved_composition(client, request)
+    else:
+        result = reopen_browser_composition(client, request)
     check_selection(data, root, selection)
     print(json.dumps(result, sort_keys=True))
 
