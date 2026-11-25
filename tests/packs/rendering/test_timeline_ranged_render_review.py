@@ -57,6 +57,32 @@ def test_ranged_render_maps_timeline_times_and_limits_half_open_extent():
     assert overview["coverage"]["window_seconds"] == [6.0, 14.0]
 
 
+def test_at_uses_file_offset_for_a_six_to_fourteen_second_render(tmp_path, monkeypatch):
+    from astrid.packs.rendering.actions.timeline_visualize import filmstrip_cards
+
+    snap = _snapshot(
+        duration_frames=192,
+        timeline_range={
+            "start_frame": 144,
+            "end_frame": 336,
+            "fps_rational": [24, 1],
+        },
+    )
+    card = plan_filmstrip(snap, {"at": 6.5})["cards"][0]
+    assert card["frame"] == 156
+    assert card["time_label"] == "6.500s"
+
+    def fake_run(args, **kwargs):
+        (tmp_path / "frames" / "sample-000001.jpg").write_bytes(b"frame")
+        return type("Result", (), {"returncode": 0, "stderr": ""})()
+
+    monkeypatch.setattr(filmstrip_cards.subprocess, "run", fake_run)
+    _extract("render.mp4", [card], tmp_path, clock=RenderClock(snap))
+    assert "select='eq(n,12)'" in (tmp_path / "frame-selection.txt").read_text()
+    with pytest.raises(ValueError, match=r"outside the rendered range.*6.*14"):
+        plan_filmstrip(snap, {"at": 2})
+
+
 def test_ranged_render_uses_recorded_fractional_fps_for_absolute_frame_and_label():
     fps = Fraction(30000, 1001)
     snap = _snapshot(

@@ -47,7 +47,7 @@ def test_queued_task_reports_what_it_waits_for(monkeypatch, capsys, tmp_path):
     assert "registered_host=astrid-pack-host active_tasks=1" in captured.err
 
 
-def test_queued_follow_uses_task_waiting_details_without_listing(monkeypatch, capsys):
+def test_queued_follow_reports_waiting_reason_without_listing(monkeypatch, capsys):
     now = [0.0]
     list_calls = []
 
@@ -58,7 +58,7 @@ def test_queued_follow_uses_task_waiting_details_without_listing(monkeypatch, ca
     task = {
         "task_id": "queued-1",
         "state": "queued",
-        "waiting_details": {"holder_task_id": "runtime-holder"},
+        "waiting_reason": "waiting_for_worker",
     }
     shows = iter([_result(task), _result(task), _result(task), _result({**task, "state": "succeeded"})])
     client = SimpleNamespace(tasks=SimpleNamespace(show=lambda _: next(shows), list=list_tasks))
@@ -69,7 +69,8 @@ def test_queued_follow_uses_task_waiting_details_without_listing(monkeypatch, ca
         client, task_id="queued-1", run_id="run-1", timeout_seconds=30, poll_seconds=1
     )
 
-    assert "current executor occupancy: waiting_details.holder_task_id=runtime-holder" in capsys.readouterr().err
+    output = capsys.readouterr().err
+    assert "waiting=waiting_for_worker" in output
     assert list_calls == []
 
 
@@ -82,7 +83,20 @@ def test_queued_follow_reports_why_runtime_occupancy_is_unavailable(monkeypatch,
     assert unavailable and "unavailable" in unavailable
 
 
-def test_waiting_holder_occurs_once_per_line(monkeypatch, capsys):
+def test_waiting_reason_occurs_once_per_line(monkeypatch, capsys):
+    now = [0.0]
+    task = {"task_id": "queued-1", "state": "queued", "waiting_reason": "waiting_for_worker"}
+    shows = iter([_result(task), _result(task), _result(task), _result({**task, "state": "succeeded"})])
+    client = SimpleNamespace(tasks=SimpleNamespace(show=lambda _: next(shows)))
+    monkeypatch.setattr(invocation.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(invocation.time, "sleep", lambda _: now.__setitem__(0, now[0] + 5))
+    invocation._wait_for_kernel_task_loop(client, task_id="queued-1", run_id="run-1",
+                                          timeout_seconds=30, poll_seconds=1)
+    lines = [line for line in capsys.readouterr().err.splitlines() if "waiting_for_worker" in line]
+    assert lines and all(line.count("waiting_for_worker") == 1 for line in lines)
+
+
+def test_stray_waiting_details_are_not_reported(monkeypatch, capsys):
     now = [0.0]
     task = {"task_id": "queued-1", "state": "queued", "waiting_reason": "waiting_for_worker",
             "waiting_details": {"holder_task_id": "runtime-holder"}}
@@ -92,9 +106,7 @@ def test_waiting_holder_occurs_once_per_line(monkeypatch, capsys):
     monkeypatch.setattr(invocation.time, "sleep", lambda _: now.__setitem__(0, now[0] + 5))
     invocation._wait_for_kernel_task_loop(client, task_id="queued-1", run_id="run-1",
                                           timeout_seconds=30, poll_seconds=1)
-    lines = [line for line in capsys.readouterr().err.splitlines() if "runtime-holder" in line]
-    assert lines and all(line.count("holder_task_id=runtime-holder") == 1 for line in lines)
-    assert all("inspect running tasks" not in line for line in lines)
+    assert "waiting_details." not in capsys.readouterr().err
 
 
 def test_idle_and_follow_share_the_occupancy_reader(tmp_path, monkeypatch):

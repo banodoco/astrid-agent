@@ -183,8 +183,8 @@ has multiple different new selections, update each mirror explicitly rather
 than relying on an ambiguous replacement.
 
 Preflight rejects missing/non-media/undecodable files and files over the existing
-64 MiB Runtime limit before importing anything. Files are checked again before
-the first import. Repeated references share an import; retries have stable
+1 GiB Agent interim limit for local files before importing anything. Files are
+checked again before the first import. Repeated references share an import; retries have stable
 import keys and reuse matching imported catalog entries. A different imported
 filename retains its distinct import provenance even when bytes match.
 

@@ -17,7 +17,8 @@ Core media verbs include:
   child key); video/audio containers are strictly probed with ``ffprobe``
   before any media/event/receipt write, and an undecodable container is a
   typed validation failure; any other path is a usage error before any SDK call;
-- ``list`` — ``client.media.list`` (project-scoped, created_at then id);
+- ``list`` — ``client.media.list`` (project-scoped, created_at then id), with
+  ``--cursor`` to continue a page or ``--all`` to collect every page;
 - ``show <ref>`` — ``client.media.show`` by exact project-scoped media id
   (aliases resolve through the repository; cross-project ids are
   indistinguishable from missing);
@@ -45,12 +46,15 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Sequence
 
-from astrid.core.cli.domain_output import print_result
+from astrid.core.cli.domain_output import print_result, render_human
 from astrid.core.cli.registration import CommandSpec, register_product_commands
 from astrid.core.media_crop import DEFAULT_BAR_THRESHOLD
+from astrid.sdk.contracts import DomainResult, ErrorObject
+from astrid.sdk.pagination import page_pair
 
 __all__ = ["COMMANDS", "build_parser"]
 
@@ -160,20 +164,66 @@ def _cmd_import(parsed: argparse.Namespace) -> int:
 
 
 def _cmd_list(parsed: argparse.Namespace) -> int:
+    filters = {
+        name: value
+        for name, value in (
+            ("kind", parsed.kind),
+            ("model", parsed.model),
+            ("target", parsed.target),
+            ("tag", parsed.tag),
+        )
+        if value is not None
+    }
+    cursor = parsed.cursor
     result = parsed.client.media.list(
-        parsed.project,
-        **{
-            name: value
-            for name, value in (
-                ("kind", parsed.kind),
-                ("model", parsed.model),
-                ("target", parsed.target),
-                ("tag", parsed.tag),
-            )
-            if value is not None
-        },
+        parsed.project, **filters, **({"cursor": cursor} if cursor is not None else {})
     )
-    return print_result(result, as_json=parsed.json)
+    if not parsed.all or not getattr(result, "ok", False):
+        pair = page_pair(getattr(result, "data", None))
+        if not parsed.json and pair is not None and pair[1] is not None:
+            return print_result(
+                result,
+                human_renderer=lambda value: render_human(value) + f"\nnext cursor: {pair[1]}",
+            )
+        return print_result(result, as_json=parsed.json)
+
+    first_data = result.data
+    first_page = page_pair(first_data)
+    if first_page is None:
+        # Legacy adapters and test doubles return an already-flat row list.
+        return print_result(result, as_json=parsed.json)
+    rows, next_cursor = first_page
+    seen: set[str] = set()
+    while next_cursor is not None:
+        if next_cursor == cursor or next_cursor in seen:
+            result = DomainResult.failure(
+                ErrorObject("validation", "media list returned a repeated cursor", {})
+            )
+            return print_result(result, as_json=parsed.json)
+        seen.add(next_cursor)
+        cursor = next_cursor
+        page_result = parsed.client.media.list(
+            parsed.project, **filters, cursor=cursor
+        )
+        if not getattr(page_result, "ok", False):
+            return print_result(page_result, as_json=parsed.json)
+        page_data = page_result.data
+        page = page_pair(page_data)
+        if page is None:
+            if isinstance(page_data, list):
+                rows.extend(page_data)
+                next_cursor = None
+                break
+            return print_result(
+                DomainResult.failure(
+                    ErrorObject("validation", "media list returned an invalid page", {})
+                ),
+                as_json=parsed.json,
+            )
+        page_rows, following = page
+        rows.extend(page_rows)
+        next_cursor = following
+    return print_result(replace(result, data=[rows, None]), as_json=parsed.json)
 
 
 def _cmd_show(parsed: argparse.Namespace) -> int:
@@ -345,6 +395,9 @@ def _configure_list(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("--model", default=None, help="Exact generation model filter.")
     subparser.add_argument("--placement", dest="target", default=None, help="Exact generation placement filter.")
     subparser.add_argument("--tag", default=None, help="Exact generation tag filter.")
+    paging = subparser.add_mutually_exclusive_group()
+    paging.add_argument("--cursor", default=None, help="Fetch the page after this cursor.")
+    paging.add_argument("--all", action="store_true", help="Fetch every page of media results.")
     _add_json_flag(subparser)
     subparser.set_defaults(handler=_cmd_list)
 

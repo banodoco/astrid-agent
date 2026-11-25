@@ -3449,9 +3449,6 @@ def _queued_task_holders(task: Mapping[str, Any], *, include_registered: bool = 
     for key, value in task.items():
         if "holder" in key and value:
             holders.append(f"{key}={value}")
-    details = task.get("waiting_details") or task.get("waiting_reason_details")
-    if isinstance(details, Mapping):
-        holders.extend(f"waiting_details.{key}={value}" for key, value in details.items() if value)
     if holders or not include_registered:
         return holders, None
 

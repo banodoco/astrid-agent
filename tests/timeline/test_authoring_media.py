@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
+from astrid.sdk import authoring_media
 from astrid.sdk.authoring_bundle import (
     diff_authoring_candidate,
     import_authoring_media,
@@ -52,6 +53,23 @@ def edit(work, path):
     shot = next(iter(work["shots"].values()))
     shot["internal_timeline"]["registry"]["assets"]["old-picture"]["local_path"] = path
     return shot
+
+
+def test_local_media_limit_refuses_over_limit_and_accepts_exact_limit(monkeypatch, tmp_path):
+    path = picture(tmp_path)
+    monkeypatch.setattr(authoring_media, "_MAX_BYTES", path.stat().st_size - 1)
+    with pytest.raises(ValueError) as error:
+        authoring_media._metadata(path)
+    assert "Runtime" not in str(error.value)
+    assert "64 MiB" not in str(error.value)
+    assert str(path) in str(error.value)
+
+    monkeypatch.setattr(authoring_media, "_MAX_BYTES", path.stat().st_size)
+    assert authoring_media._metadata(path)["size"] == path.stat().st_size
+
+
+def test_local_media_limit_is_one_gibibyte():
+    assert authoring_media._MAX_BYTES == 1024 * 1024 * 1024
 
 
 class Catalog:

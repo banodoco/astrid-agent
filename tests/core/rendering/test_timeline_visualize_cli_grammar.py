@@ -3,12 +3,105 @@
 from __future__ import annotations
 
 import json
+import shlex
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from astrid.packs.timeline.cli import build_parser
+
+
+# Captured from the untouched base commit cd4f4642b112f2de7e9a4295143f47018e069b43.
+# Each row is options, dest, repr(default), type, choices, required.
+BASELINE_VISUALIZE_ACTIONS = """\
+-h,--help|help|'==SUPPRESS=='|-|-|False
+--project|project|None|-|-|False
+--timeline-slug|timeline_slug|None|-|-|False
+--shot|shot|None|-|-|False
+--range|range|None|-|-|False
+--at|at|None|-|-|False
+--frame|frame|None|builtins.int|-|False
+--revision-id|revision_id|None|-|-|False
+--clip|clip|None|-|-|False
+--occurrence|occurrence|None|-|-|False
+--asset|asset|None|-|-|False
+--show|show|None|-|-|False
+--hide|hide|None|-|-|False
+--track|track|None|-|-|False
+--detail|detail|None|-|-|False
+--context|context|None|builtins.float|-|False
+--neighbors|neighbors|None|builtins.int|-|False
+--format|formats|None|builtins.function|-|False
+--mode|mode|'auto'|-|auto,inputs,composed|False
+--view|view|None|-|filmstrip,contact,overview,motion,diff|False
+--preset|preset|None|-|overview,scan,motion,beat,frame,cut,compare|False
+--before-revision-id|before_revision_id|None|-|-|False
+--after-revision-id|after_revision_id|None|-|-|False
+--cut|cut|None|-|-|False
+--layer|layers|None|-|-|False
+--labels|labels|False|-|-|False
+--beats|beats|None|builtins.function|-|False
+--frame-budget|frame_budget|None|builtins.int|-|False
+--window|window_s|None|builtins.float|-|False
+--rules|rules|None|builtins.function|-|False
+--cuts|cuts|None|-|-|False
+--preview|preview|None|-|-|False
+--sample|sample|None|-|interval,clips,cuts,shots|False
+--every|every|None|builtins.float|-|False
+--every-frames|every_frames|None|builtins.int|-|False
+--include-cuts|include_cuts|None|-|-|False
+--render-run|render_run|None|-|-|False
+--columns|columns|None|builtins.int|-|False
+--page-size|page_size|None|builtins.int|-|False
+--resolution|resolution|None|-|-|False
+--include-media|include_media|None|-|-|False
+--out|out|None|-|-|False
+--published|published|False|-|-|False
+--draft|draft|None|-|-|False
+--every-cut|all_cuts|False|-|-|False
+--compare|compare_with|None|-|published|False
+--highlight|highlight|None|-|-|False
+--overlay|overlay|None|-|-|False
+--size|size|None|-|-|False
+--plan|plan|False|-|-|False
+--list-layers|list_layers|False|-|-|False
+--shot-plans|shot_plans|False|-|-|False
+--region|region|None|-|-|False
+--zoom|zoom|None|-|-|False
+--mask|mask|None|-|-|False
+--compare-media|compare_media|None|-|-|False
+--against|against|None|-|-|False
+--no-rules|no_rules|False|-|-|False
+--render-every|render_every|None|builtins.float|-|False
+--edited|edited|None|-|-|False
+--no-capture|no_capture|False|-|-|False
+--from|from_revision|None|-|-|False
+--to|to_revision|None|-|-|False
+--json|json|False|-|-|False
+"""
+
+
+def _visualize_parser(parser):
+    return parser._subparsers._group_actions[0].choices["visualize"]
+
+
+def _action_type(action):
+    value = action.type
+    if value is None:
+        return "-"
+    if isinstance(value, type):
+        return f"{value.__module__}.{value.__qualname__}"
+    return f"{type(value).__module__}.{type(value).__qualname__}"
+
+
+def _action_snapshot(parser):
+    rows = {}
+    for action in _visualize_parser(parser)._actions:
+        for option in action.option_strings:
+            choices = ",".join(map(str, action.choices)) if action.choices is not None else "-"
+            rows[option] = (action.dest, repr(action.default), _action_type(action), choices, action.required)
+    return rows
 
 
 @pytest.fixture()
@@ -66,6 +159,46 @@ def test_visualize_help_exposes_managed_render_provenance(parser):
     # --preset names intents (overview/scan/motion/beat/frame/cut/compare), not the removed structural presets
     assert "--preset {overview,scan,motion,beat,frame,cut,compare}" in help_text
     assert "--resolution" in help_text
+
+
+def test_visualize_argument_contract_matches_untouched_snapshot(parser):
+    expected = {}
+    for line in BASELINE_VISUALIZE_ACTIONS.splitlines():
+        options, dest, default, value_type, choices, required = line.split("|")
+        for option in options.split(","):
+            expected[option] = (dest, default, value_type, choices, required == "True")
+    actual = _action_snapshot(parser)
+    assert set(actual) == set(expected)
+    assert actual == expected
+
+
+VISUALIZE_EXAMPLES = (
+    "One clean composed frame",
+    "Review a range or shot",
+    "Inspect inputs without rendering",
+    "Compare before and after",
+)
+
+
+def test_visualize_worked_examples_parse(parser):
+    help_text = _visualize_parser(parser).format_help()
+    lines = help_text.splitlines()
+    for heading in VISUALIZE_EXAMPLES:
+        index = next(i for i, line in enumerate(lines) if line.strip() == f"{heading}:")
+        command = shlex.split(lines[index + 1].strip())
+        assert command[:3] == ["astrid", "timelines", "visualize"]
+        parsed = parser.parse_args(command[2:])
+        assert parsed.handler.__name__ == "_cmd_visualize"
+
+
+def test_visualize_help_groups_flags_and_names_examples(parser):
+    help_text = _visualize_parser(parser).format_help()
+    for title in ("Selection", "Mode and view", "Layers and overlays", "Sampling", "Comparison", "Output"):
+        assert f"{title}:" in help_text
+    for heading in VISUALIZE_EXAMPLES:
+        assert f"{heading}:" in help_text
+    assert "Hide panels, not page chrome" in help_text
+    assert "--preset frame --at TIME --show output" in help_text
 
 
 def test_visualize_default_view_follows_the_window(parser):
