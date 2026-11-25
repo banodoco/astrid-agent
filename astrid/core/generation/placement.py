@@ -258,6 +258,11 @@ def _runpod_leases(kind: str) -> list[Mapping[str, Any]]:
     return [{"machine": row["id"], **row} for row in journal_leases()]
 
 
+def machine_leases(kind: str) -> list[Mapping[str, Any]]:
+    """Read known local lease custody without querying a provider."""
+    return _runpod_leases(kind)
+
+
 def validate_placement(placement: Placement, *, machine_kinds: tuple[str, ...] | None = None,
                        live_leases: LiveLeases | None = None) -> Placement:
     """Refuse a placement that names nothing real; return it unchanged otherwise."""
@@ -277,7 +282,7 @@ def validate_placement(placement: Placement, *, machine_kinds: tuple[str, ...] |
     if placement.device is not None or placement.endpoint:
         raise _refuse(f"a {placement.kind} placement takes a machine and policy, not a device or endpoint")
     if placement.machine:
-        leases = (live_leases or _runpod_leases)(placement.kind)
+        leases = (live_leases or machine_leases)(placement.kind)
         live = [str(item.get("machine")) for item in leases if item.get("live", True)]
         if placement.machine not in live:
             ended = next((item.get("ended") for item in leases
@@ -290,4 +295,4 @@ def validate_placement(placement: Placement, *, machine_kinds: tuple[str, ...] |
 
 
 __all__ = ["BUILTIN_KINDS", "Placement", "PlacementPolicy", "comfy_selector", "is_runpod_placement", "registered_machine_kinds", "request_from_selector", "resolve_placement",
-           "validate_placement"]
+           "validate_placement", "machine_leases"]

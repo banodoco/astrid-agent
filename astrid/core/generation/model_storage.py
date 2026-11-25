@@ -54,14 +54,15 @@ class VolumeSpace:
 
 
 def measure_declared_volume(volume: DeclaredVolume, directory: Path, *, deadline: float,
-                            check: Callable[[], None]) -> VolumeSpace | None:
+                            check: Callable[[], None] | None = None) -> VolumeSpace | None:
     """Measure a whole declared mount, or return unknown without partial credit.
 
     The walk gets at most one quarter of the remaining preparation time (60s
     maximum). Directory descriptors prevent following a replaced symlink.
     Files are never opened; metadata and hardlink identities suffice.
     """
-    check()
+    if check is not None:
+        check()
     root = volume.mount_path
     if (not root.is_absolute() or ".." in root.parts or volume.size_gb <= 0
             or (directory != root and root not in directory.parents)):
@@ -73,7 +74,8 @@ def measure_declared_volume(volume: DeclaredVolume, directory: Path, *, deadline
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 
     def bound() -> None:
-        check()
+        if check is not None:
+            check()
         if time.monotonic() >= end:
             raise ValueError("volume walk budget exhausted")
 
@@ -222,9 +224,10 @@ def _capacity_directory(parent: Path) -> Path | None:
 
 
 def available_model_bytes(parent: Path, *, deadline: float,
-                          check: Callable[[], None]) -> tuple[int | None, bool]:
+                          check: Callable[[], None] | None = None) -> tuple[int | None, bool]:
     """Tightest measured budget for one directory; never infer a shared scope."""
-    check()
+    if check is not None:
+        check()
     probe = _capacity_directory(parent)
     if probe is None:
         return None, True
@@ -245,7 +248,11 @@ def available_model_bytes(parent: Path, *, deadline: float,
         for ancestor in (probe, *probe.parents):
             if ancestor != mount and mount not in ancestor.parents:
                 break
-            check()
+            if check is not None:
+                check()
+            if time.monotonic() >= deadline:
+                unknown = True
+                break
             try:
                 rows = _quota(ancestor, deadline=deadline)
             except (OSError, ValueError, subprocess.SubprocessError):
@@ -274,8 +281,8 @@ class DownloadStorageObservation:
 
 
 def observe_download_storage(models_root: Path, *, deadline: float,
-                             check: Callable[[], None],
-                             volume: DeclaredVolume | None) -> DownloadStorageObservation:
+                             volume: DeclaredVolume | None,
+                             check: Callable[[], None] | None = None) -> DownloadStorageObservation:
     """Read target-local storage without fetching, writing, or making a claim.
 
     Only call on the selected target, with its model root and its declared
@@ -283,7 +290,8 @@ def observe_download_storage(models_root: Path, *, deadline: float,
     facts, never the controller's filesystem. The advisory uses the existing
     quota and volume observers; the later fetch still owns admission.
     """
-    check()
+    if check is not None:
+        check()
     volume_status = "not_declared" if volume is None else "declared_unverified"
     # A dry-run notice is not a full model-volume accounting pass.
     end = min(deadline, time.monotonic() + 2)
@@ -392,7 +400,7 @@ def selected_target_download_notice(
         try:
             observation = observe_download_storage(
                 local_models_root, deadline=time.monotonic() + 2,
-                check=lambda: None, volume=local_volume,
+                volume=local_volume,
             )
         except UnsafePathError as exc:
             from .preflight import generation_error
