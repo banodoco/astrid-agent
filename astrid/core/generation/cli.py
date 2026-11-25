@@ -575,7 +575,10 @@ def _workflow_command(parsed: argparse.Namespace, *, output=None) -> int:
     if parsed.as_entry:
         entries.resolve_workflow_inputs(path, values, mode=parsed.mode,
                                         required=not parsed.no_run, **_workflow_comfy_url(parsed))
-        from astrid.core.generation.node_approvals import require_approved_nodes, write_entry_approvals
+        from astrid.core.generation.node_approvals import (
+            require_approved_nodes,
+            write_entry_approvals,
+        )
 
         def approve_staged_entry(staged, revision):
             # Retained additions and the canonical import can change the actual
