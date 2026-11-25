@@ -1,5 +1,6 @@
 import path from 'node:path';
 import fs from 'node:fs';
+import os from 'node:os';
 import {fileURLToPath} from 'node:url';
 import {createRequire} from 'node:module';
 const MANIFEST_NAMES = ['pack.yaml', 'pack.yml', 'pack.json'];
@@ -594,6 +595,41 @@ export const selectedHostResource = ({remotionRoot, issuer, request, env = proce
   return undefined;
 };
 
+// Installed packs (for example the manifest-pinned astrid_motion pack under
+// ~/Astrid/packs) import the built-in contracts by a relative path which only
+// resolves inside the Agent tree. Redirect exactly that request, from issuers
+// inside an installed pack tree, to the built-in rendering pack. Nothing else.
+const ELEMENT_CONTRACTS_REQUEST = /^(?:\.\.\/)+rendering\/shared\/element_contracts(?:\.(?:tsx?|jsx?|mjs))?$/;
+const RESOLVABLE_SUFFIXES = ['', '.ts', '.tsx', '.js', '.jsx', '.mjs', '.json'];
+const isFileWithSuffix = (base) => RESOLVABLE_SUFFIXES.some(
+  (suffix) => fs.existsSync(base + suffix) && fs.statSync(base + suffix).isFile());
+const installedPackRoots = (env) => {
+  const roots = [];
+  if (env.ASTRID_PACKS_PATH) {
+    for (const raw of env.ASTRID_PACKS_PATH.split(path.delimiter)) if (raw) roots.push(path.resolve(raw));
+  }
+  if (env.ASTRID_RENDER_PACK_ROOTS) {
+    const entries = JSON.parse(env.ASTRID_RENDER_PACK_ROOTS);
+    if (Array.isArray(entries)) {
+      for (const entry of entries) if (entry && typeof entry.root === 'string') roots.push(path.resolve(entry.root));
+    }
+  }
+  roots.push(path.join(os.homedir(), 'Astrid', 'packs'));
+  return roots;
+};
+export const installedPackElementContracts = ({remotionRoot, issuer, request, env = process.env}) => {
+  if (typeof issuer !== 'string' || typeof request !== 'string') return undefined;
+  if (!ELEMENT_CONTRACTS_REQUEST.test(request) || !path.isAbsolute(issuer)) return undefined;
+  const owner = path.resolve(issuer);
+  const builtIn = path.resolve(projectDirOf(remotionRoot), 'astrid/packs/rendering');
+  if (isWithin(builtIn, owner)) return undefined;
+  if (!installedPackRoots(env).some((root) => isWithin(root, owner))) return undefined;
+  if (isFileWithSuffix(path.resolve(path.dirname(owner), request))) return undefined;
+  const target = path.join(builtIn, 'shared', 'element_contracts');
+  if (!isFileWithSuffix(target)) throw new Error(`built-in element_contracts module is missing: ${target}`);
+  return target;
+};
+
 const primitiveAliases = (projectDir) => {
   const activeThemeDir = path.resolve(projectDir, '_active_theme');
   const aliases = {
@@ -620,7 +656,8 @@ const hostResourcePlugin = (remotionRoot) => {
         factory.hooks.beforeResolve.tap('AstridHostResources', (data) => {
           if (!data) return;
           const issuer = data.contextInfo?.issuer;
-          const selected = selectedHostResource({remotionRoot, issuer, request: data.request});
+          const selected = selectedHostResource({remotionRoot, issuer, request: data.request}) ??
+            installedPackElementContracts({remotionRoot, issuer, request: data.request});
           if (selected) data.request = selected;
           else if (process.env.ASTRID_RENDER_REGISTRY_ROOT && usesLegacyCarrier(process.env.ASTRID_RENDER_PACK_ROOTS) &&
                    /^\.\/(effects|animations|transitions)\.generated$/.test(data.request)) {
