@@ -36,6 +36,11 @@ _NATIVE_STEPS = frozenset({"runtime_inspect", "nodes_restore", "pip_bootstrap", 
 _UNRESOLVED_CUSTODY: dict[int, "ManagedEnginePreparation"] = {}
 
 
+def _engine_consent_kwargs(intent: dict[str, Any] | None) -> dict[str, Any]:
+    return {"code_approvals": ((intent or {}).get("metadata") or {}).get("code_approvals", []),
+            "placement_class": "local"}
+
+
 def _preparation_engine(name: str | None) -> Any:
     from astrid.core.contracts.errors import AstridValueError
 
