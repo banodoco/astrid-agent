@@ -575,25 +575,19 @@ def _workflow_command(parsed: argparse.Namespace, *, output=None) -> int:
     if parsed.as_entry:
         entries.resolve_workflow_inputs(path, values, mode=parsed.mode,
                                         required=not parsed.no_run, **_workflow_comfy_url(parsed))
-        # VibeComfy owns atomic publication. Never delete the old entry here
-        # or retry a failed import by removing its directory.
-        if parsed.replace:
-            entry = import_as_entry(path, parsed.as_entry, replace=True)
-        else:
-            entry = import_as_entry(path, parsed.as_entry)
-        from astrid.core.generation.node_approvals import (
-            entry_approval_directory,
-            require_approved_nodes,
-            write_entry_approvals,
-        )
-        entry = dict(entry, source='user-entry')
-        actual_nodes = entries.engine_table()['comfyui'].workflow_requirements(
-            [entries._load_entry_workflow(entry)])['extra']['nodes']
-        require_approved_nodes(actual_nodes, saved_code_approvals, placement_class=resolved.kind)
-        directory = entry_approval_directory(entry)
-        if directory is None:
-            raise ValueError("just-saved entry has no code approval directory")
-        write_entry_approvals(directory, saved_code_approvals)
+        from astrid.core.generation.node_approvals import require_approved_nodes, write_entry_approvals
+
+        def approve_staged_entry(staged, revision):
+            # Retained additions and the canonical import can change the actual
+            # node set. Validate that exact bundle, then attach its records to
+            # the same unpublished revision before VibeComfy commits it.
+            actual_nodes = entries.engine_table()['comfyui'].workflow_requirements(
+                [entries._load_entry_workflow(staged)])['extra']['nodes']
+            approved = require_approved_nodes(actual_nodes, saved_code_approvals, placement_class=resolved.kind)
+            write_entry_approvals(revision, approved)
+
+        entry = dict(import_as_entry(path, parsed.as_entry, replace=parsed.replace,
+                                     before_publish=approve_staged_entry), source='user-entry')
         if parsed.no_run:
             print(json.dumps({'saved': True, 'ran': False, 'entry': parsed.as_entry,
                               'replaced': bool(parsed.replace)}, indent=2, sort_keys=True), file=output)
