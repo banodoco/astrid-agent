@@ -168,7 +168,8 @@ def test_quantization_once_with_rational_fps_and_ms_codec():
     target['at_ms'] = target.pop('at') * 1000
     original['parent']['config']['clips'] = copy.deepcopy(original['parent']['clips'])
     plan = execute(original, [capture_move(original, 'parent/clip:direct', 1001 / 60000)])
-    assert clip(plan.bundle)['at_ms'] == pytest.approx(1001 / 30)
+    assert clip(plan.bundle)['at_ms'] == 33
+    assert type(clip(plan.bundle)['at_ms']) is int
     pin = next(d['pin'] for d in plan.records[0]['dependencies'] if d['key'] == 'move.quantization')
     assert pin['numerator'] == 30000 and pin['denominator'] == 1001
     assert inverse(plan.bundle, plan.records).bundle == original
