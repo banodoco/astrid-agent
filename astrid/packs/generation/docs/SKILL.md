@@ -401,7 +401,11 @@ Candidates are not runnable; lookup does not install code.
 
 ### LE-5 — Candidates and manual lookup
 
-<!-- LE-5: fill this subsection in the same change as the card. -->
+<!-- LE-5 helper staged; production readiness wiring pending. -->
+The lookup helper can project class and derived pack-name evidence. It is not
+yet called by generation readiness, so do not expect the CLI or SDK to emit
+these candidate suggestions. The existing read-only lookup and manual
+identification path remains in use.
 
 ### LE-6 — Check the target after setup
 
