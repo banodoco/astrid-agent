@@ -274,7 +274,9 @@ def composed_model_root_binding(receipt: Any, root: str, *, engine: str,
     for entry in ready_entries():
         if entry.get('ambiguity') == 'ready workflow metadata could not be loaded':
             continue
-        for model in declared_model_specs(entry.get('model_assets', []), require_complete=False):
+        excluded = []
+        for model in declared_model_specs(entry.get('model_assets', []), require_complete=False,
+                                          incomplete=excluded, entry_id=entry.get('id')):
             relative, _url = _validate_model(model)
             _, path = _root_and_destination(str(binding.path), relative)
             if not path.exists():
@@ -288,6 +290,9 @@ def composed_model_root_binding(receipt: Any, root: str, *, engine: str,
             if not _matches(path, model, deadline=deadline):
                 raise IntegrityError(f'declared entry asset failed size/SHA verification: {model.destination}', reason='declared entry asset failed size/SHA verification')
             inventory[key] = row
+        # Only verified rows enter the binding; excluded declarations have
+        # already been recorded by declared_model_specs. Never treat those
+        # declarations as positive inventory or silently synthesize bytes.
     if entry_id is not None:
         from astrid.core.model_catalog.registry import ModelRegistry
 
@@ -299,8 +304,13 @@ def composed_model_root_binding(receipt: Any, root: str, *, engine: str,
             # Selection can use receipt custody even when a ready workflow's
             # declarations cannot provision bytes. User entries never supply
             # inventory authority, including when their IDs shadow pinned IDs.
-            required_models = (declared_model_specs(entry.get('model_assets', []), require_complete=False)
+            selected_gaps = []
+            required_models = (declared_model_specs(entry.get('model_assets', []), require_complete=False,
+                                                    incomplete=selected_gaps, entry_id=entry_id)
                                if entry.get('source') == 'ready-template' else ())
+            # This is a receipt-custody read, not provisioning. The helper
+            # records excluded rows; the selected workflow's readiness and
+            # declaration checks still own its missing facts and model gaps.
         else:
             try:
                 ModelRegistry.load_default().get(entry_id)

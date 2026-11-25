@@ -42,10 +42,12 @@ def known_packs(monkeypatch):
 def _assert_no_align(readiness):
     text = json.dumps(readiness)
     assert "align" not in text
-    assert "argv" not in text
-    assert "astrid generate" not in text
+    assert all("argv" not in fix for fix in readiness["fixes"])
+    assert all(fix["instruction"]["then_argv"][:3] == ["astrid", "generate", "targets"]
+               for fix in readiness["fixes"])
     assert readiness["fixes"], "attached readiness must still carry a fix"
-    assert all(fix["scope"] == "attached_target" for fix in readiness["fixes"])
+    assert all(fix["scope"] == "attached_target" and fix["who"] == "human"
+               for fix in readiness["fixes"])
 
 
 def test_attached_core_node_says_update_comfyui(known_packs):
@@ -129,7 +131,7 @@ def test_attached_live_preflight_missing_node_names_no_align(comfy, tmp_path):
     message = str(caught.value)
     assert "align" not in message
     assert "astrid generate" not in message
-    assert "update ComfyUI" in message
+    assert "Identify the providing custom node pack" in message
     assert not comfy.prompts
 
 
@@ -214,13 +216,22 @@ def test_attached_two_nodes_from_one_pack_give_one_fix(fake_pack_with_lock):
     assert len(readiness["fixes"]) == 1
     assert readiness["fixes"][0]["details"]["commands"][0][0:2] == ["git", "clone"]
     assert len(readiness["fixes"][0]["details"]["commands"]) == 2
+    assert [issue["fix_ids"] for issue in readiness["issues"]] == [
+        [readiness["fixes"][0]["id"]], [readiness["fixes"][0]["id"]],
+    ]
     _assert_no_align(readiness)
 
 
 def test_attached_core_node_has_no_commands(known_packs):
     readiness = asset_gaps.attached_asset_readiness("z-image", nodes=["CLIPLoader"])
     assert "commands" not in readiness["issues"][0]["details"]
-    assert readiness["fixes"] == [{"scope": "attached_target", "details": {"action": "Update ComfyUI, then retry."}}]
+    assert readiness["fixes"] == [{
+        "id": "node-1", "who": "human", "scope": "attached_target",
+        "details": {"action": "Update ComfyUI, then retry."},
+        "instruction": {"step": "Update ComfyUI, then retry.",
+                        "then_argv": ["astrid", "generate", "targets", "--placement", "<PLACEMENT>", "--json"]},
+        "placeholders": {"PLACEMENT": "The originally selected target or its explicit ComfyUI URL"},
+    }]
 
 
 def test_attached_pack_without_url_is_unchanged(monkeypatch, tmp_path):

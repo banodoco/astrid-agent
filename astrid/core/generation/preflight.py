@@ -75,34 +75,24 @@ from astrid.core.contracts.errors import AstridError
 from astrid.core.generation.interfaces import ReadinessEnvelope, ReadinessFix, ReadinessIssue
 
 
-_CORE_CODES = {
-    'COMFY_TARGET_UNAVAILABLE': 'target_unreachable',
-    'COMFY_TARGET_INVALID': 'input_rejected',
-    'COMFY_TARGET_UNSUPPORTED': 'missing_dependency',
-    'COMFY_TARGET_NOT_READY': 'engine_not_found',
-    'COMFY_TARGET_NO_MODEL': 'missing_dependency',
-    'engine_not_installed': 'engine_not_found',
-    'comfyui.missing_node': 'missing_dependency',
-    'comfyui.models_missing': 'missing_dependency',
-}
-
-
 def readiness_envelope(*, entry=None, target=None, issues=(), fixes=(), attempt_count=None) -> ReadinessEnvelope:
     """Project observations once; unknown version facts do not become issues."""
     from copy import deepcopy
 
-    from .setup_contract import uses_setup_contract, validate_setup_envelope
+    from .setup_contract import validate_setup_envelope
+    from .setup_repairs import project_target_record
     issues = [deepcopy({**issue, 'details': issue.get('details', {})}) for issue in issues]
     # An attached target's fix names what the person does on their own ComfyUI; it has no argv to run.
     fixes = [deepcopy({**fix, **({'argv': list(fix['argv'])} if isinstance(fix.get('argv'), tuple) else {}),
               'details': fix.get('details', {})})
              for fix in fixes]
+    target = deepcopy(project_target_record(target))
     status = ('blocked' if any(issue['severity'] == 'error' for issue in issues) else
               'ready_with_warnings' if issues else 'ready')
     envelope = {'entry': deepcopy(entry),
-            'target': deepcopy(target.as_dict() if hasattr(target, 'as_dict') else target),
+            'target': target,
             'status': status, 'issues': issues, 'fixes': fixes}
-    if attempt_count is not None or uses_setup_contract(envelope):
+    if issues or fixes or attempt_count is not None:
         # The caller counts actual attempts; constructing/serializing is not one.
         envelope['attempt_count'] = 0 if attempt_count is None else attempt_count
         validate_setup_envelope(envelope)
@@ -116,10 +106,13 @@ class GenerationReadinessError(AstridError, ValueError):
         from astrid.core.contracts.errors import _redact_credential_data
         self.readiness = readiness_envelope(**{key: envelope[key] for key in
             ('entry', 'target', 'issues', 'fixes', 'attempt_count') if key in envelope})
-        self.readiness = _redact_credential_data(self.readiness)
-        self.task_id = task_id
-        if 'attempt_count' in self.readiness and self.readiness['status'] != 'blocked':
+        from .setup_repairs import declare_redacted_action_values
+        self.readiness = declare_redacted_action_values(_redact_credential_data(self.readiness))
+        from .setup_contract import validate_setup_envelope
+        if self.readiness['status'] != 'blocked':
             raise ValueError('a setup readiness error requires a blocking issue')
+        validate_setup_envelope(self.readiness)
+        self.task_id = task_id
         if not self.readiness['issues']:
             raise ValueError('a readiness error needs an issue')
         issue = next((item for item in self.readiness['issues'] if item['severity'] == 'error'), self.readiness['issues'][0])
@@ -137,13 +130,19 @@ class GenerationReadinessError(AstridError, ValueError):
 
     def to_envelope(self) -> dict[str, Any]:
         from copy import deepcopy
-        return {**deepcopy(self.readiness), 'status': 'blocked', 'task_id': self.task_id}
+        from .setup_contract import validate_setup_envelope
+
+        result = {**deepcopy(self.readiness), 'status': 'blocked', 'task_id': self.task_id}
+        validate_setup_envelope(result)
+        return result
 
 
 def generation_error(error: Any, *, entry=None, target=None, code=None,
                      details=None, fixes=(), task_id=None, attempt_count=None) -> GenerationReadinessError:
     """Normalize old engine/ExecError spellings at the generation boundary."""
     if isinstance(error, GenerationReadinessError):
+        from .setup_contract import validate_setup_envelope
+        validate_setup_envelope(error.readiness)
         return error
     from collections.abc import Mapping
     if isinstance(error, Mapping) and {'entry', 'target', 'status', 'issues', 'fixes'} <= error.keys():
@@ -164,8 +163,25 @@ def generation_error(error: Any, *, entry=None, target=None, code=None,
         'validation': 'input_rejected', 'missing_input': 'input_rejected',
         'precondition': 'missing_dependency', 'runtime': 'generation_failed',
     }.get(category, 'generation_failed')
-    normalized = _CORE_CODES.get(native, native)
+    from .setup_contract import SETUP_ISSUE_CODES, canonical_issue_code, native_issue_code
+    normalized = native_issue_code(native)
     detail = {**(get('details') or {}), **(details or {})}
+    if canonical_issue_code(native) not in SETUP_ISSUE_CODES:
+        detail['native_code'] = native
+    # The managed/attached model paths retain the exact typed cause when
+    # adding transfer or alignment context. Recover only known typed causes,
+    # never infer a license or hash failure from free-form stderr.
+    if code is None and native in {'download_failed', 'asset_alignment_failed'}:
+        from .engine_contracts import IntegrityError, ModelFetchHTTPError
+        cause = getattr(error, '__cause__', None)
+        seen = set()
+        while cause is not None and id(cause) not in seen:
+            seen.add(id(cause))
+            if isinstance(cause, (ModelFetchHTTPError, IntegrityError)):
+                normalized = native_issue_code(cause.code)
+                detail.update(getattr(cause, 'details', {}))
+                break
+            cause = cause.__cause__
     diagnostic = get('engine_diagnostic')
     if isinstance(diagnostic, Mapping):
         detail['engine_diagnostic'] = {key: diagnostic[key] for key in
@@ -194,10 +210,14 @@ def generation_error(error: Any, *, entry=None, target=None, code=None,
                     detail.setdefault('fields', names)
         detail.setdefault('constraint', message)
     issue = {'code': normalized, 'severity': 'error', 'message': message, 'details': detail}
-    from .setup_contract import uses_setup_contract
     fixes = list(fixes)
-    if uses_setup_contract({'issues': [issue], 'fixes': fixes}):
-        issue['fix_ids'] = [fix['id'] for fix in fixes if 'id' in fix]
+    if not fixes:
+        setup_fix = get('setup_fix')
+        if setup_fix is None:
+            from .setup_repairs import native_setup_fix
+            setup_fix = native_setup_fix(issue, entry=entry, target=target, task_id=task_id)
+        fixes = [setup_fix]
+    issue['fix_ids'] = [fix.get('id') for fix in fixes]
     return GenerationReadinessError(readiness_envelope(entry=entry, target=target,
         issues=[issue], fixes=fixes, attempt_count=attempt_count), task_id=task_id)
 
@@ -242,12 +262,18 @@ class LocalGenerationReadiness:
     fixes: tuple[ReadinessFix, ...] = ()
 
     def to_envelope(self) -> ReadinessEnvelope:
-        issues = self.issues
+        issues, fixes = self.issues, self.fixes
         if not self.ready and not issues:
-            issues = ({'code': 'engine_not_found', 'severity': 'error',
-                       'message': self.reason, 'details': {}},)
+            issue = {'code': 'engine_not_found', 'severity': 'error',
+                     'message': self.reason, 'details': {}}
+            if not fixes:
+                from .setup_repairs import native_setup_fix
+                fix = native_setup_fix(issue, entry=self.entry, target=self.target)
+                fixes = (fix,)
+            issue['fix_ids'] = [fix.get('id') for fix in fixes]
+            issues = (issue,)
         return readiness_envelope(entry=self.entry, target=self.target,
-                                  issues=issues, fixes=self.fixes)
+                                  issues=issues, fixes=fixes)
 
 
 def _gpu_guidance(mode: str | None = None) -> str:
@@ -404,7 +430,8 @@ def _managed_install_fix() -> ReadinessFix | None:
     scope = f'installs Astrid-managed ComfyUI under {root}; user scope; no system changes'
     size = (f'at least {model_bytes} bytes of locked models; additional runtime download size unknown'
             if model_bytes is not None else 'size unknown')
-    return {'argv': ['astrid', 'engines', 'install', recipe.engine,
+    return {'id': 'install-managed-engine', 'who': 'agent',
+            'argv': ['astrid', 'engines', 'install', recipe.engine,
                      '--platform', recipe.platform, '--placement', 'local'],
             'scope': 'managed_write',
             'details': {'bytes': model_bytes, 'size_scope': 'locked_models',
@@ -503,7 +530,7 @@ def check_local_generation_readiness(
             recovery_command=guidance,
             fixes=(
                 *((install,) if install else ()),
-                {'argv': attach, 'scope': 'read_only',
+                {'id': 'attach-existing-comfyui', 'who': 'human', 'argv': attach, 'scope': 'read_only',
                  'details': {'guidance': 'Attach after starting your existing ComfyUI'}},
             ),
         )
@@ -573,11 +600,24 @@ def _installed_managed_target(entry_id=None):
                 raise GenerationReadinessError(asset_readiness(None, models=missing,
                     target={'root': str(selected.root), 'endpoint': selected.url, 'owner': 'astrid'})) from exc
         fix = _managed_install_fix()
+        if fix is None:
+            from .setup_repairs import manual_setup_fix
+
+            # A platform without an indexed installer still has a concrete,
+            # safe next step. Never recommend an unsupported installation or
+            # adopt an unrelated listener just to make the request runnable.
+            step = ("Verify ownership of the selected installed ComfyUI. Do not adopt or restart an unrelated service."
+                    if exc.code == 'endpoint_ownership' else
+                    "Inspect and repair the selected installed ComfyUI on its supported platform.")
+            fix = manual_setup_fix(
+                'inspect-managed-engine', step, target={'placement': 'managed'},
+                scope='read_only', code='engine_not_found',
+            )
         raise generation_error(
             ValueError('The installed managed ComfyUI engine is not ready; repair its installation. '
                        + _gpu_guidance()),
             code='engine_not_found', details={'field': 'target', 'engine_code': exc.code},
-            fixes=(() if fix is None else (fix,)),
+            fixes=(fix,),
         ) from exc
     endpoint = installed.endpoint
     facts = {'object_info_sha256': endpoint.health.object_info_sha256}
@@ -694,7 +734,8 @@ def select_generation_target(target: str, *, repo=None, runpod_owner: RunPodGene
         selector = (snapshot or {}).get('endpoint') or target
         argv = ['astrid', 'generate', 'targets', '--placement', selector]
         raise generation_error(exc, target=snapshot,
-            fixes=[{'argv': argv, 'scope': 'read_only', 'details': {'guidance': exc.fix}}]) from exc
+            fixes=[{'id': 'inspect-selected-target', 'who': 'agent', 'argv': argv,
+                    'scope': 'read_only', 'details': {'guidance': exc.fix}}]) from exc
 
 
 def require_generation_target_readiness(entry: Any, mode: str, client: Any) -> None:
@@ -712,5 +753,6 @@ def require_generation_target_readiness(entry: Any, mode: str, client: Any) -> N
         )
         raise generation_error(error, entry={'id': entry.id, 'engine': 'comfyui', 'mode': mode},
             fixes=readiness.fixes or [
-                {'argv': ['astrid', 'generate', 'targets', '--placement', 'http://127.0.0.1:8188'],
+                {'id': 'inspect-existing-comfyui', 'who': 'agent',
+                 'argv': ['astrid', 'generate', 'targets', '--placement', 'http://127.0.0.1:8188'],
                  'scope': 'read_only', 'details': {'guidance': readiness.recovery_command}}])

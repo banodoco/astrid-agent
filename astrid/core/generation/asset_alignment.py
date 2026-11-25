@@ -29,6 +29,7 @@ from .engine_contracts import (
     EngineError,
     EngineRecipe,
     IntegrityError,
+    ModelFetchHTTPError,
     ModelSpec,
     UnsafePathError,
     effective_models_root,
@@ -154,6 +155,7 @@ class _ResumingClient:
     def __init__(self, inner, part: Path, deadline: float | None, progress=None):
         self.inner, self.part, self.deadline, self.progress = inner, part, deadline, progress
         self.resumed_from = 0
+        self.response_status: int | None = None
 
     @contextlib.contextmanager
     def stream(self, method, url, **kwargs):
@@ -179,7 +181,9 @@ class _SplicedResponse:
 
     @property
     def status_code(self) -> int:
-        return 200 if 200 <= self._response.status_code < 300 else self._response.status_code
+        status = self._response.status_code
+        self._client.response_status = status
+        return 200 if 200 <= status < 300 else status
 
     def iter_bytes(self):
         client = self._client
@@ -246,6 +250,10 @@ def fetch_verified(entry: dict[str, Any], path: Path, *, root: Path, part: Path,
         kept = '; prefix retained for resume' if part.exists() else ''
         if isinstance(error, DownloadError):
             raise error
+        if error is not None and resuming.response_status in {401, 403, 404}:
+            raise ModelFetchHTTPError(
+                resuming.response_status, f'{label}: download failed ({error}){kept}',
+            ) from error
         raise DownloadError(f'{label}: download failed ({error}){kept}') from error
     part.unlink(missing_ok=True)
     return resuming.resumed_from
@@ -783,19 +791,43 @@ def _align_selected(manifests, target, *, entry_id, apply, deadline, client=None
 
 
 def main(args) -> int:
-    from .preflight import GenerationReadinessError
+    from .preflight import GenerationReadinessError, generation_error
     try:
         report = align(entry_id=args.entry, all_entries=args.all, apply=args.apply, consent=args.consent)
     except GenerationReadinessError:
         # The CLI owns the envelope: keep the human warning and token retry.
         raise
     except (EngineError, ValueError, OSError) as exc:
+        from .setup_repairs import manual_setup_fix
+        from .setup_contract import repair_step
+        from .preflight import readiness_envelope
+
+        selected = {'id': args.entry, 'engine': 'comfyui'}
+        error = generation_error(exc, entry=selected)
         message = str(exc)
         if 'astrid generate align' not in message:
             message += '; retry ' + shlex.join(align_argv(args.entry))
-        payload = {'error': {'code': getattr(exc, 'code', 'asset_alignment_failed'), 'message': message}}
-        print(json.dumps(payload, sort_keys=True), file=sys.stderr)
-        return 1
+        issue = dict(error.readiness['issues'][0], message=message)
+        if getattr(exc, 'setup_fix', None) is not None:
+            fixes = error.readiness['fixes']
+        else:
+            # A fresh read-only inspection of this same selection precedes
+            # any new confirmation or write. Keep typed native failure facts.
+            fix = manual_setup_fix('inspect-managed-alignment', repair_step(issue['code']),
+                                   entry=selected, target=error.readiness['target'],
+                                   code=issue['code'])
+            fix['instruction']['then_argv'] = [
+                'astrid', 'generate', 'align', *(['--entry', args.entry] if args.entry else ['--all']), '--json',
+            ]
+            fix['placeholders'] = {}
+            issue['fix_ids'] = [fix['id']]
+            fixes = [fix]
+        error = GenerationReadinessError(readiness_envelope(
+            entry=selected, target=error.readiness['target'], issues=[issue], fixes=fixes))
+        if args.json:
+            print(json.dumps(error.to_envelope(), sort_keys=True))
+            return 2
+        raise error from exc
     if args.json:
         print(json.dumps(report, sort_keys=True))
     else:

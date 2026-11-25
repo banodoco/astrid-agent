@@ -162,8 +162,12 @@ def test_readiness_missing_drift_unknown_and_details():
     error = preflight.generation_error({'code': 'COMFY_TARGET_UNAVAILABLE', 'message': 'down'})
     assert error.to_envelope()['issues'][0]['code'] == 'target_unreachable'
     assert error.to_envelope()['issues'][0]['details']['engine_code'] == 'COMFY_TARGET_UNAVAILABLE'
-    blocked = preflight.readiness_envelope(issues=[*warnings, *error.readiness['issues']])
-    assert blocked['status'] == 'blocked' and blocked['fixes'] == []
+    blocked = preflight.readiness_envelope(issues=[*warnings, *error.readiness['issues']],
+                                           fixes=error.readiness['fixes'])
+    assert blocked['status'] == 'blocked' and blocked['fixes'] == error.readiness['fixes']
+    assert blocked['issues'] == [*warnings, *error.readiness['issues']]
+    assert blocked['issues'][-1]['fix_ids'] == [fix['id'] for fix in blocked['fixes']]
+    assert all(not warning.get('fix_ids') for warning in warnings)
 
 
 def test_read_only_commands_do_not_write_config_sources_or_locks(authored, monkeypatch, tmp_path, capsys):
@@ -334,6 +338,44 @@ def test_missing_target_nodes_and_models_are_all_reported(authored):
     assert all(issue['details']['bytes'] is None for issue in payload['issues'])
     assert payload['fixes'][0]['scope'] == 'read_only'
 
+
+def test_target_schema_links_observed_missing_class_and_model_to_one_named_repair(authored):
+    from astrid.core.generation.setup_contract import validate_setup_envelope
+
+    workflow, entry = authored
+    entry = dict(entry, needs=[{
+        "class_type": "Texture", "field": "model_name", "value": "missing.safetensors",
+        "role": "model", "bytes": 2048,
+    }])
+    info = {"Texture": {"input": {"required": {"model_name": [["installed.safetensors"]]}}}}
+    client = SimpleNamespace(object_info=lambda: info, generation_target=targets.TargetRecord(
+        owner="astrid", endpoint="http://127.0.0.1:18888"))
+    with pytest.raises(preflight.GenerationReadinessError) as raised:
+        entries.target_schema(entry, workflow, client)
+    payload = raised.value.to_envelope()
+    validate_setup_envelope(payload)
+    assert payload["status"] == "blocked"
+    assert payload["issues"] == [
+        {"code": "missing_node_pack", "severity": "error",
+         "message": "target is missing node 'SaveImage'; install it on the requested ComfyUI target, "
+                    "or choose a target that provides it.",
+         "details": {"engine_code": "comfyui.missing_node", "node": "SaveImage", "bytes": None},
+         "fix_ids": ["target-schema-align"]},
+        {"code": "missing_model", "severity": "error",
+         "message": "target is missing model 'missing.safetensors' for Texture.model_name",
+         "details": {"engine_code": "comfyui.models_missing", "model": "missing.safetensors",
+                     "node": "Texture", "field": "model_name", "bytes": 2048},
+         "fix_ids": ["target-schema-align"]},
+    ]
+    assert payload["fixes"] == [{
+        "id": "target-schema-align", "who": "human", "scope": "user_env",
+        "details": {"action": "Install missing locked assets; unlocked assets require a manifest."},
+        "instruction": {
+            "step": "Install missing locked assets only after explicit user_env consent; unlocked assets require a manifest.",
+            "then_argv": ["astrid", "generate", "align", "--apply", "--consent", "user_env", "--entry", "f04"],
+        },
+    }]
+    assert raised.value.recovery_command == ""
 
 def test_dry_run_is_the_readiness_envelope_without_source_or_config_writes(monkeypatch, tmp_path):
     from vibecomfy.schema.provider import TargetSchemaProvider

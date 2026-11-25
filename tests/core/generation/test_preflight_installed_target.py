@@ -72,12 +72,36 @@ def test_unowned_installed_engine_blocks_without_falling_back(monkeypatch):
                 preflight.select_generation_target('managed')
             envelope = caught.value.to_envelope()
             assert envelope['status'] == 'blocked'
-            assert envelope['issues'][0]['details']['engine_code'] == 'endpoint_ownership'
+            issue = envelope['issues'][0]
+            assert issue['details']['engine_code'] == 'endpoint_ownership'
+            assert issue['code'] == 'engine_not_found'
+            assert issue['severity'] == 'error'
+            assert issue['message'] == (
+                'The installed managed ComfyUI engine is not ready; repair its installation. '
+                'Generation needs a local GPU or --placement runpod.'
+            )
+            from astrid.core.generation.setup_contract import validate_setup_envelope
+            validate_setup_envelope(envelope)
             if offers_install:
                 assert envelope['fixes'][0]['argv'][:4] == [
                     'astrid', 'engines', 'install', 'comfyui']
+                assert issue['fix_ids'] == [envelope['fixes'][0]['id']]
             else:
-                assert envelope['fixes'] == []
+                # No installer for this platform: the linked human repair
+                # must inspect only the selected managed target, not install
+                # or adopt an attached listener. Keep every no-fallback seam.
+                assert envelope['fixes'] == [{
+                    'id': 'inspect-managed-engine', 'who': 'human', 'scope': 'read_only',
+                    'details': {},
+                    'instruction': {
+                        'step': 'Verify ownership of the selected installed ComfyUI. '
+                                'Do not adopt or restart an unrelated service.',
+                        'then_argv': ['astrid', 'generate', 'targets', '--placement', 'managed', '--json'],
+                    },
+                    'placeholders': {},
+                }]
+                assert issue['fix_ids'] == ['inspect-managed-engine']
+                assert all('argv' not in fix for fix in envelope['fixes'])
 
 
 def test_explicit_attached_url_never_adopts_registered_engine(monkeypatch):

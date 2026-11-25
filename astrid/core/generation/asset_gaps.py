@@ -16,7 +16,8 @@ from typing import Any
 
 
 def declared_model_specs(assets: Any, *, require_complete: bool = True,
-                         incomplete: list[dict[str, Any]] | None = None):
+                         incomplete: list[dict[str, Any]] | None = None,
+                         entry_id: str | None = None):
     """Project canonical workflow declarations into the existing downloader type.
 
     Incomplete declarations grant no custody authority. Inventory composition
@@ -27,23 +28,38 @@ def declared_model_specs(assets: Any, *, require_complete: bool = True,
     """
     from .engine_contracts import EngineError, IntegrityError, ModelLockValidationError, ModelSpec
     from .model_downloader import _safe_relative, _validate_model
+    from .model_declarations import IncompleteModelDeclaration
 
     if not isinstance(assets, (list, tuple)):
         raise ModelLockValidationError('entry model_assets must be a list')
     models = {}
+    def record_gap(record):
+        if incomplete is not None:
+            incomplete.append(record)
+        if not require_complete:
+            # An inventory-only read may exclude a declaration that grants
+            # no custody authority, but must record the excluded fact.
+            import logging
+
+            from astrid.core.contracts.errors import redact_credential_data
+
+            logging.getLogger(__name__).debug(
+                "Excluded non-provisionable model declaration for entry %s: model=%s gap=%s",
+                redact_credential_data(entry_id or "(unselected)"),
+                redact_credential_data(record.get("name")),
+                record.get("missing") or record.get("code"),
+            )
+
     for asset in assets:
         if not isinstance(asset, dict):
             raise ModelLockValidationError('entry model_assets must contain objects')
         missing = [key for key in ('name', 'url', 'sha256', 'size_bytes')
                    if asset.get(key) is None or asset.get(key) == '']
         if missing:
-            if incomplete is not None:
-                incomplete.append({'name': asset.get('name'), 'subdir': asset.get('subdir'),
-                                   'missing': missing})
-                continue
-            if require_complete:
-                raise ModelLockValidationError(
-                    f"Declared model {asset.get('name', '?')} is unavailable: missing {', '.join(missing)}")
+            record = {'name': asset.get('name'), 'subdir': asset.get('subdir'), 'missing': missing}
+            if require_complete and incomplete is None:
+                raise IncompleteModelDeclaration(record, entry_id=entry_id)
+            record_gap(record)
             continue
         try:
             name = _safe_relative(asset['name'])
@@ -54,11 +70,13 @@ def declared_model_specs(assets: Any, *, require_complete: bool = True,
             model = ModelSpec(asset['name'], None, None, None, asset['url'], destination,
                               asset['size_bytes'], asset['sha256'])
             _validate_model(model)
-        except EngineError:
+        except EngineError as exc:
             if require_complete:
                 raise
             # A non-provisionable, unselected declaration grants no authority.
             # The exact-root verifier will still reject any unlisted file.
+            record_gap({'name': asset.get('name'), 'subdir': asset.get('subdir'),
+                        'missing': [], 'code': exc.code})
             continue
         previous = models.get(destination)
         if previous is not None and previous != model:
@@ -74,6 +92,10 @@ def align_argv(entry: str | None = None) -> list[str]:
 
 def attached_model_readiness(entry: str | None, placements, *, target=None) -> dict[str, Any]:
     """Readiness for an attached ComfyUI: the user places the file; Astrid installs nothing there."""
+    from .preflight import readiness_envelope
+    from .setup_repairs import manual_setup_fix
+
+    selected = {'id': entry, 'engine': 'comfyui'}
     issues, fixes = [], []
     for placement in placements:
         file, role, folder = placement['file'], placement.get('role'), placement.get('folder')
@@ -86,18 +108,14 @@ def attached_model_readiness(entry: str | None, placements, *, target=None) -> d
         else:
             action = f"Put {file} {where}, then retry."
             message = f'Missing model {label}. {action}'
+        fix_id = f"model-{len(fixes) + 1}"
         issues.append({'code': 'missing_model', 'severity': 'error',
                        'message': message,
-                       'details': {'model': file, 'role': role, 'folder': folder}})
-        fixes.append({'scope': 'attached_target', 'details': {'action': action}})
-    return {'entry': {'id': entry, 'engine': 'comfyui'}, 'target': target,
-            'status': 'blocked', 'issues': issues, 'fixes': fixes}
-
-
-def _is_comfyui_core_repo(repo: str) -> bool:
-    """A pack whose repository is ComfyUI itself ships with ComfyUI, not as a custom node."""
-    lowered = repo.lower().rstrip('/')
-    return 'github.com/' in lowered and lowered.endswith(('/comfyui', '/comfyui.git'))
+                       'details': {'model': file, 'role': role, 'folder': folder},
+                       'fix_ids': [fix_id]})
+        fixes.append(manual_setup_fix(fix_id, action, entry=selected, target=target,
+                                     scope='attached_target', details={'action': action}))
+    return readiness_envelope(entry=selected, target=target, issues=issues, fixes=fixes)
 
 
 def _locked_commit(lock: Any, pack: Any) -> str | None:
@@ -138,18 +156,25 @@ def attached_asset_readiness(entry: str | None, *, nodes=(), models=(), lockfile
                              custom_nodes: str | None = None) -> dict[str, Any]:
     """Readiness for an attached ComfyUI: the person fixes it on their ComfyUI; Astrid installs and restarts nothing there.
 
-    A node no locked pack provides is part of ComfyUI itself. A node a locked custom pack provides
-    names that pack, and its repository when the lock declares a URL. For such a pack Astrid only
-    shows the commands; the person or their coding agent runs them.
+    Core nodes use the shipped core-class evidence, never absence of a pack.
+    Known custom packs retain their manual installation guidance; unknown
+    classes name the missing provider and require identification, not an
+    unrelated ComfyUI update. Astrid installs and restarts nothing there.
     """
-    from vibecomfy.node_packs import resolve_lockfile_path, resolve_node_packs
+    from vibecomfy.node_packs import is_comfyui_core_repo, resolve_lockfile_path, resolve_node_packs
+    from .node_class_authority import core_node_classes
+    from .preflight import readiness_envelope
+    from .setup_repairs import manual_setup_fix
 
+    selected = {'id': entry, 'engine': 'comfyui'}
     lock = resolve_lockfile_path(lockfile_path)
     issues, fixes = [], []
-    fixed_packs: set[str] = set()
+    fixed_packs: dict[str, str] = {}
+    nodes = tuple(nodes)
+    core = core_node_classes(nodes)
     for name in nodes:
-        packs = [pack for pack in resolve_node_packs({name}, lockfile_path=lock)
-                 if not _is_comfyui_core_repo(pack.repo)]
+        providers = resolve_node_packs({name}, lockfile_path=lock)
+        packs = [pack for pack in providers if not is_comfyui_core_repo(pack.repo)]
         commands = None
         if packs:
             pack = packs[0]
@@ -164,30 +189,43 @@ def attached_asset_readiness(entry: str | None, *, nodes=(), models=(), lockfile
                 details.update(commands=argv, after=PACK_AFTER)
                 commands = argv
             message = f'Your ComfyUI does not have {name}, which comes from the custom node pack {pack.name}. {action}'
-        else:
+        elif name in core or any(is_comfyui_core_repo(pack.repo) for pack in providers):
             action = 'Update ComfyUI, then retry.'
             message = (f'Your ComfyUI does not have {name}, which is part of ComfyUI itself; '
                        'update ComfyUI, then retry.')
             details = {'node': name, 'pack': None, 'repository': None}
-        issues.append({'code': 'missing_node_pack', 'severity': 'error', 'message': message, 'details': details})
-        if commands is not None and pack.name in fixed_packs:
-            continue  # one fix per pack: its commands are listed once
-        if commands is not None:
-            fixed_packs.add(pack.name)
-            fixes.append({'scope': 'attached_target', 'details': {'action': action, 'commands': commands}})
         else:
-            fixes.append({'scope': 'attached_target', 'details': {'action': action}})
+            action = ('Identify the providing custom node pack and its exact source before installing '
+                      'it on your ComfyUI; restart ComfyUI yourself, then retry.')
+            message = f'Your ComfyUI does not have {name}; no known providing pack. {action}'
+            details = {'node': name, 'pack': None, 'repository': None}
+        # Every class links to its own repair, including subsequent classes
+        # sharing the first pack's one manual installation instruction.
+        fix_id = fixed_packs.get(pack.name) if commands is not None else None
+        if fix_id is None:
+            fix_id = f"node-{len(fixes) + 1}"
+            fix_details = {'action': action}
+            if commands is not None:
+                fixed_packs[pack.name] = fix_id
+                fix_details['commands'] = commands
+            fixes.append(manual_setup_fix(fix_id, action, entry=selected, target=target,
+                                         scope='attached_target', details=fix_details))
+        issues.append({'code': 'missing_node_pack', 'severity': 'error', 'message': message,
+                       'details': details, 'fix_ids': [fix_id]})
     for name in models:
         action = 'Put the model file in its models folder on your ComfyUI yourself, then retry.'
+        fix_id = f"model-{len(fixes) + 1}"
         issues.append({'code': 'missing_model', 'severity': 'error',
                        'message': f'Missing model {name} on your ComfyUI. {action}',
-                       'details': {'model': name}})
-        fixes.append({'scope': 'attached_target', 'details': {'action': action}})
-    return {'entry': {'id': entry, 'engine': 'comfyui'}, 'target': target,
-            'status': 'blocked', 'issues': issues, 'fixes': fixes}
+                       'details': {'model': name}, 'fix_ids': [fix_id]})
+        fixes.append(manual_setup_fix(fix_id, action, entry=selected, target=target,
+                                     scope='attached_target', details={'action': action}))
+    return readiness_envelope(entry=selected, target=target, issues=issues, fixes=fixes)
 
 
 def asset_readiness(entry: str | None, *, nodes=(), models=(), target=None, placements=None) -> dict[str, Any]:
+    from .preflight import readiness_envelope
+
     if placements is not None:
         return attached_model_readiness(entry, placements, target=target)
     argv = align_argv(entry)
@@ -202,10 +240,17 @@ def asset_readiness(entry: str | None, *, nodes=(), models=(), target=None, plac
          'details': {'model': name}}
         for name in models
     ]
-    return {'entry': {'id': entry, 'engine': 'comfyui'}, 'target': target,
-            'status': 'blocked', 'issues': issues,
-            'fixes': [{'argv': argv, 'scope': 'user_env',
-                       'details': {'action': 'Install missing locked assets on the managed target; unlocked assets require a manifest.'}}]}
+    fixes = []
+    if issues:
+        for issue in issues:
+            issue['fix_ids'] = ['align-locked-assets']
+        # Preserve the concrete recovery command for managed gaps. The
+        # caller still needs explicit user_env consent; the command is not
+        # a grant of approval for unreviewed node code.
+        fixes = [{'id': 'align-locked-assets', 'who': 'agent', 'argv': argv, 'scope': 'user_env',
+                  'details': {'action': 'Install missing locked assets on the managed target; unlocked assets require a manifest.'}}]
+    return readiness_envelope(entry={'id': entry, 'engine': 'comfyui'}, target=target,
+                              issues=issues, fixes=fixes)
 
 
 def workflow_asset_gaps(workflow: Any, observed: dict[str, Any]) -> tuple[list[str], list[str]]:
@@ -677,8 +722,31 @@ def main(args) -> int:
             result = plan_attached_model_download(client, args.entry, args.mode)
             text = render_attached_download_plan(result)
     except (AttachedDownloadRefused, ValueError, OSError, KeyError, RuntimeError) as exc:
-        print(json.dumps({'error': {'code': getattr(exc, 'code', 'download_failed'), 'message': str(exc)}},
-                         sort_keys=True), file=sys.stderr)
-        return 1
+        from .preflight import GenerationReadinessError, generation_error
+        from .setup_repairs import manual_setup_fix
+        from .setup_contract import repair_step
+
+        if isinstance(exc, GenerationReadinessError):
+            raise
+        selected = {'id': args.entry, 'mode': args.mode, 'engine': 'comfyui'}
+        target = {'endpoint': args.comfy_url, 'owner': 'human'}
+        error = generation_error(exc, entry=selected, target=target)
+        # Plan confirmation remains an explicit later human decision. The
+        # repair re-inspects the exact attached target, never auto-applies.
+        code = error.code
+        step = repair_step(code)
+        fix = manual_setup_fix('inspect-attached-model-plan', step, entry=selected,
+                               target=target, scope='attached_target', code=code)
+        if code not in {'placement_invalid', 'target_unreachable'}:
+            fix['instruction']['then_argv'] = [
+                'astrid', 'generate', 'fetch-models', args.entry, args.mode,
+                '--comfy-url', args.comfy_url, '--json',
+            ]
+            fix['placeholders'] = {}
+        issue = {**error.readiness['issues'][0], 'fix_ids': [fix['id']]}
+        from .preflight import readiness_envelope
+
+        raise GenerationReadinessError(readiness_envelope(
+            entry=selected, target=target, issues=[issue], fixes=[fix])) from exc
     print(json.dumps(result, sort_keys=True) if args.json else text)
     return 0

@@ -320,12 +320,37 @@ never treat it as an automatic command or skip it to run a later fix.
 
 Replace every `<NAME>` in a command using that fix's `placeholders` explanation
 before running it. Keep `attempt_count` with the result; it counts actual setup
-attempts, not reads or displays. A warning does not authorize a repair. Legacy
-issues without these fields retain their existing guidance; do not invent a fix.
+attempts, not reads or displays. A warning does not authorize a repair. Every
+blocking issue has explicit repair links; an unlinked or undeclared issue is
+invalid, not a cue to invent a fix.
 
 ### LE-1b — Missing assets and failed checks
 
-<!-- LE-1b: fill this subsection in the same change as the card. -->
+Every blocked or warning readiness envelope uses the same validated issue and
+fix contract. Read the linked fixes, not the old engine's diagnostic spelling.
+`missing_node_pack`, `missing_model` and `engine_not_found` retain their distinct
+meanings; the deferred lookup instruction identifies a pack but grants no install
+permission. Follow only the repair IDs linked to the reported issue.
+Known core nodes retain their update-ComfyUI guidance. A missing unrecognized
+class does not establish that it is core; identify its actual provider. For an
+attached server, the person performs the manual installation or model placement;
+the follow-up command only re-inspects that target. Never run managed alignment
+against it. A managed missing locked asset may offer an explicit user-env action;
+obtain the person's user_env consent before executing that command, and keep
+unreviewed node-code approval separate.
+
+An incomplete model lock is a refusal, not permission to download without a
+hash or size. Supply verified HTTPS source, SHA-256 and exact byte size in the
+saved declaration and inspect again. Source HTTP 401/403, missing source (404),
+integrity failure and insufficient target disk have distinct issue codes and
+human repairs. Re-inspect a changed attached download plan before confirming it;
+never overwrite a model or repeat a completed task just to recover delivery.
+
+A known engine/runtime or installed-recipe source difference uses
+`version_drift`; a pack's recorded/selected version difference uses
+`pack_version_differs`. Both can appear together and advisory warnings carry
+no repair links. No recorded or observed version means unknown, not a
+fabricated difference.
 
 ### LE-2a — Approval identity and consent tokens
 

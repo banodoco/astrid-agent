@@ -271,8 +271,12 @@ def _sparse_model_inventory(provider, installed, monkeypatch):
                 for engine in dict.fromkeys(('comfyui', *entries.runpod_engines()))
                 for row in provider._receipt_for(engine)['models']]
     for entry in entries.ready_entries():
+        excluded = []
         declared += [(model.destination, model.bytes, model.sha256)
-                     for model in declared_model_specs(entry.get('model_assets', []), require_complete=False)]
+                     for model in declared_model_specs(entry.get('model_assets', []), require_complete=False,
+                                                       incomplete=excluded, entry_id=entry.get('id'))]
+        # The helper records all excluded declarations; the CPU fixture only
+        # creates sparse bytes for actual complete lock authority.
     sizes = {}
     for destination, size, sha in declared:
         path = models_root / destination.removeprefix('models/')

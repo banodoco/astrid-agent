@@ -936,6 +936,7 @@ def _main_request(argv: list[str], stack, *, output=None) -> int:
         error: Exception = sdk_exc
         selector = ['--entry', parsed.entry or parsed.model] if parsed.entry or parsed.model else []
         raise generation_error(error, fixes=[{
+            'id': 'inspect-generation-selection', 'who': 'agent',
             'argv': ['astrid', 'generate', 'describe', *selector] if selector else
                     ['astrid', 'generate', 'targets', '--placement', parsed.placement],
             'scope': 'read_only', 'details': {'guidance': getattr(error, 'fix', None)}}]) from error
