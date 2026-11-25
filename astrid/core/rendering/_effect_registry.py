@@ -13,7 +13,9 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from collections.abc import Iterator
+from contextlib import contextmanager
+from typing import Any, Literal, cast
 
 from astrid.core.element.registry import ElementRegistry, load_default_registry
 from astrid.core.element.schema import ELEMENT_MANIFEST_NAMES, ElementDefinition
@@ -97,6 +99,7 @@ def discover_plugins(
     *,
     include_local: bool = True,
     registry: ElementRegistry | None = None,
+    verify_public: bool = True,
 ) -> dict[str, PluginRecord]:
     _validate_kind(kind)
     registry = registry if registry is not None else _element_registry()
@@ -118,7 +121,12 @@ def discover_plugins(
         # registry so authored defaults, metadata and validation stay
         # discoverable, but a source-less public descriptor must not produce a
         # host import for a file that was retired.
-        if _component_is_host_importable(element):
+        if not verify_public:
+            # The caller already generated this registry, which verified
+            # every source-less component; only file-backed ones are roots.
+            if element.component.is_file():
+                plugins[element.id] = _plugin_from_element(element)
+        elif _component_is_host_importable(element):
             plugins[element.id] = _plugin_from_element(element)
         elif element.id in _public_registry_ids()[element.kind]:
             plugins[element.id] = _plugin_from_element(element)
@@ -259,7 +267,23 @@ def _plugin_from_element(element: ElementDefinition) -> PluginRecord:
     )
 
 
+_FINGERPRINTS_ENABLED = True
+
+
+@contextmanager
+def without_fingerprints() -> Iterator[None]:
+    """Skip element content fingerprints for callers that only need roots and scopes."""
+    global _FINGERPRINTS_ENABLED
+    previous, _FINGERPRINTS_ENABLED = _FINGERPRINTS_ENABLED, False
+    try:
+        yield
+    finally:
+        _FINGERPRINTS_ENABLED = previous
+
+
 def _fingerprint_element(element: ElementDefinition) -> str:
+    if not _FINGERPRINTS_ENABLED:
+        return ""
     root = element.root.resolve()
     files: dict[str, Path] = {}
 
@@ -321,6 +345,77 @@ def _import_scope_for_element(element: ElementDefinition) -> str:
     return "managed-elements"
 
 
+def render_pack_roots(*, registry: ElementRegistry | None = None,
+                      include_aliases: bool = False,
+                      verify_public: bool = True) -> list[dict[str, Any]]:
+    """Return the pack roots and scopes for the actual host imports.
+
+    Use the same registry snapshot and selection rules as generation, including
+    effect owner imports and retained project revisions. A directory alias can
+    name only one kind directory, so refuse a mapping that would resolve any
+    generated import to a different element.
+    """
+    registry = registry if registry is not None else _element_registry()
+    plugins = {
+        kind: discover_plugins(cast(ElementKind, kind), registry=registry,
+                               **({} if verify_public else {"verify_public": False}))
+        for kind in sorted(OUTPUTS)
+    }
+    imported = [plugin for values in plugins.values() for plugin in values.values()
+                if plugin.root.joinpath("component.tsx").is_file()]
+    for element in registry.list(kind="effects", include_shadowed=True):
+        if element.id in plugins["effects"] and (
+                element.component.is_file() if not verify_public
+                else _component_is_host_importable(element)):
+            imported.append(_plugin_from_element(element))
+
+    aliases: dict[tuple[str, str], Path] = {}
+    roots: set[tuple[str, str]] = set()
+    kind_roots: dict[tuple[str, str], dict[str, str]] = {}
+    for plugin in imported:
+        element_root = plugin.root.resolve()
+        kind_root = element_root.parent
+        if element_root.name != plugin.plugin_id or kind_root.name != plugin.kind:
+            raise ValueError(f"render import does not match element path: {element_root}")
+        scope = plugin.import_scope or plugin.scope
+        key = (scope, plugin.kind)
+        if key in aliases and aliases[key] != kind_root:
+            raise ValueError(f"conflicting render import scope {scope!r} for {plugin.kind}")
+        aliases[key] = kind_root
+        pack_root = next((parent for parent in element_root.parents
+                          if any((parent / name).is_file()
+                                 for name in ("pack.yaml", "pack.yml", "pack.json"))), None)
+        if pack_root is None:
+            raise ValueError(f"render element has no owning pack manifest: {element_root}")
+        roots.add((str(pack_root), scope))
+        kind_roots.setdefault((str(pack_root), scope), {})[plugin.kind] = str(kind_root)
+    # Shared renderer contracts are needed even when Composition provides all
+    # of the rendering pack's component implementations itself.
+    for kind in sorted(OUTPUTS):
+        for element in registry.list(kind=kind, include_shadowed=True):
+            if (getattr(element, "source", None) != "pack:rendering"
+                    or element.metadata.get("render_key")):
+                continue
+            root = Path(element.root).resolve()
+            pack_root = next((parent for parent in root.parents
+                              if any((parent / name).is_file()
+                                     for name in ("pack.yaml", "pack.yml", "pack.json"))), None)
+            if pack_root is None:
+                raise ValueError(f"rendering element has no owning pack manifest: {root}")
+            roots.add((str(pack_root), "pack-rendering-elements"))
+    result: list[dict[str, Any]] = [{"root": root, "scope": scope} for root, scope in sorted(roots)]
+    for entry in result:
+        if include_aliases:
+            entry["kind_roots"] = dict(sorted(kind_roots.get((entry["root"], entry["scope"]), {}).items()))
+        if entry["scope"] == "pack-rendering-elements":
+            from astrid.core.timeline import legacy_elements
+            schema = Path(legacy_elements.__file__).resolve().parent / "schema" / "r13-legacy-elements.json"
+            if not schema.is_file():
+                raise ValueError("installed legacy element schema is unavailable")
+            entry["legacy_schema"] = str(schema)
+    return result
+
+
 def _clip_type_aliases(effects: dict[str, EffectRecord]) -> dict[str, str]:
     from astrid.core.element.clip_types import clip_type_aliases
 
@@ -375,6 +470,17 @@ def compute_generated_registry_state(
         "hash": digest.hexdigest(),
         "content_hashes": content_hashes,
     }
+
+
+def is_generated_registry_state(state: Any) -> bool:
+    """Whether ``state`` has the full shape that ``compute_generated_registry_state`` returns."""
+    digest = re.compile(r"[0-9a-f]{64}")
+    hashes = state.get("content_hashes") if isinstance(state, dict) else None
+    return (
+        isinstance(hashes, dict) and set(hashes) == set(OUTPUTS)
+        and all(isinstance(value, str) and digest.fullmatch(value) for value in hashes.values())
+        and isinstance(state.get("hash"), str) and digest.fullmatch(state["hash"]) is not None
+    )
 
 
 def generate(*, include_local: bool = True) -> str:

@@ -309,7 +309,16 @@ function frameDiagnostics(request, props, bounds = {}) {
   };
 }
 
-export const _test = { framesOptions, frameDiagnostics, boundsCollector };
+// Keep this worker self-contained: supported host fixtures may copy the
+// worker without its optional sibling modules.
+const applyFrameRequestEnvironment = (target, environment) => {
+  delete target.ASTRID_RENDER_PACK_ROOTS;
+  delete target.ASTRID_RENDER_REGISTRY_ROOT;
+  delete target.ASTRID_PACKS_PATH;
+  Object.assign(target, environment ?? {});
+};
+
+export const _test = { framesOptions, frameDiagnostics, boundsCollector, applyFrameRequestEnvironment };
 
 async function renderRequest(request) {
   if (sessionCleanupError) throw sessionCleanupError;
@@ -317,7 +326,7 @@ async function renderRequest(request) {
   // Apply this invocation's admitted environment before cold Chrome chooses
   // its profile/temp paths, and before either cold or warm bundle work.
   // The long-lived host-owned child must not use its inherited context here.
-  Object.assign(process.env, request.environment ?? {});
+  applyFrameRequestEnvironment(process.env, request.environment);
   if (!browser || projectDir !== resolve(request.projectDir)) {
     await startSession(request);
   } else {

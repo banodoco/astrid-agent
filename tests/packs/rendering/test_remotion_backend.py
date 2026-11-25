@@ -842,6 +842,30 @@ def test_audio_ownership_enum_remains_protocol_value() -> None:
     assert AudioOwnership.NONE.value == "none"
 
 
+def test_facade_passes_editor_pack_revisions_in_request_metadata(tmp_path: Path) -> None:
+    timeline_path, assets_path = _write_inputs(tmp_path)
+    fake_service = mock.Mock()
+    fake_service.render.return_value = tmp_path / "delegated.mp4"
+    with mock.patch.object(facade, "_default_service", return_value=fake_service):
+        facade.render(timeline_path, assets_path, tmp_path / "hype.mp4",
+                      editor_pack_revisions={"astrid_motion": "editor-revision"})
+    request = fake_service.render.call_args.args[0]
+    assert json.loads(request.metadata["editor_pack_revisions"]) == {"astrid_motion": "editor-revision"}
+    with pytest.raises(ValueError, match="editor_pack_revisions must be a string map"):
+        facade.render(timeline_path, assets_path, tmp_path / "hype.mp4",
+                      editor_pack_revisions={"astrid_motion": 123})
+
+
+def test_facade_cli_decodes_editor_pack_revisions(tmp_path: Path) -> None:
+    timeline_path, assets_path = _write_inputs(tmp_path)
+    output = tmp_path / "hype.mp4"
+    with mock.patch.object(facade, "render", return_value=output) as render_mock:
+        assert facade.main(["--timeline", str(timeline_path), "--assets", str(assets_path),
+                            "--out", str(output), "--editor-pack-revisions",
+                            '{"astrid_motion":"editor-revision"}']) == 0
+    assert render_mock.call_args.kwargs["editor_pack_revisions"] == {"astrid_motion": "editor-revision"}
+
+
 class RemotionBackendRegistryGenerationTest(unittest.TestCase):
     def setUp(self) -> None:
         patch = mock.patch.object(

@@ -1350,7 +1350,7 @@ def _prepare_render_validation(source_path: Path, env: dict[str, str],
         matrix = _capability_matrix_path(source_path)
         workers = _launch_worker_probe_environments(
             pack_roots, env, matrix if matrix.is_file() else None,
-            remotion_only=True,
+            remotion_only=True, dispatch_only=True,
             **({"installed_root": source_path} if installed_source else {}),
         )
     else:

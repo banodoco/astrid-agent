@@ -56,6 +56,90 @@ def test_installed_launch_proof_survives_worker_and_render_environment_filters(t
     assert entry["context"]["schema_profile"] == "installed"
 
 
+def test_render_launch_projection_matches_runtime_selected_worker_pythonpath(tmp_path, monkeypatch):
+    import runtime_protocol
+
+    from astrid.core.execution import generic_host
+    from astrid.core.foundation.paths import REPO_ROOT
+
+    monkeypatch.setenv("ASTRID_HOST_EXECUTION_PROFILE", "source")
+    runtime_root = tmp_path / "selected-runtime"
+    monkeypatch.setattr(runtime_protocol, "__file__", str(runtime_root / "runtime_protocol" / "__init__.py"))
+    environment = {
+        "ASTRID_HOST_EXECUTION_PROFILE": "source",
+        "HOME": str(tmp_path),
+        "PATH": os.defpath,
+    }
+    pack_roots = (REPO_ROOT / "astrid" / "packs",)
+    host = generic_host.GenericPackHost(pack_roots=list(pack_roots), credential_source=environment)
+    record = next(record for record in host.discover() if record.id == "rendering.render")
+    assert generic_host._record_may_render(record)
+
+    package_parent = str(Path(generic_host.__file__).resolve().parents[3])
+    expected_path = os.pathsep.join(dict.fromkeys((
+        package_parent,
+        *generic_host._dependency_pythonpath(environment),
+        *generic_host._admitted_python_roots(record.source_root, record.definition),
+    )))
+    expected_roots = os.pathsep.join(str(root) for root in host.pack_roots)
+    assert str(runtime_root) in expected_path
+
+    candidates = generic_host._launch_worker_probe_environments(
+        host.pack_roots, environment, remotion_only=True,
+    )
+    assert any(
+        candidate.get("ASTRID_PACKS_PATH") == expected_roots
+        and candidate.get("PYTHONPATH") == expected_path
+        for candidate in candidates
+    )
+
+
+def test_render_launch_projection_uses_host_personal_collection_roots(tmp_path, monkeypatch):
+    from astrid.core.execution import generic_host
+    from astrid.core.foundation.paths import REPO_ROOT
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # Path.home() on Windows
+    monkeypatch.setenv("ASTRID_HOST_EXECUTION_PROFILE", "source")
+    personal_root = tmp_path / "Astrid" / "packs"
+    personal_root.mkdir(parents=True)
+    source_root = REPO_ROOT / "astrid" / "packs"
+    environment = {
+        "ASTRID_HOST_EXECUTION_PROFILE": "source",
+        "HOME": str(tmp_path),
+        "PATH": os.defpath,
+    }
+    host = generic_host.GenericPackHost(
+        pack_roots=[source_root], personal_collection=True, credential_source=environment,
+    )
+    assert host.pack_roots == (source_root.resolve(), personal_root.resolve())
+    record = next(record for record in host.discover() if record.id == "rendering.render")
+
+    expected_roots = os.pathsep.join(str(root) for root in host.pack_roots)
+    expected_path = os.pathsep.join(dict.fromkeys((
+        str(Path(generic_host.__file__).resolve().parents[3]),
+        *generic_host._dependency_pythonpath(environment),
+        *generic_host._admitted_python_roots(record.source_root, record.definition),
+    )))
+    stale_candidates = generic_host._launch_worker_probe_environments(
+        (source_root,), environment, remotion_only=True,
+    )
+    assert not any(
+        candidate.get("ASTRID_PACKS_PATH") == expected_roots
+        and candidate.get("PYTHONPATH") == expected_path
+        for candidate in stale_candidates
+    )
+
+    launch_candidates = generic_host._launch_worker_probe_environments(
+        host.pack_roots, environment, remotion_only=True,
+    )
+    assert any(
+        candidate.get("ASTRID_PACKS_PATH") == expected_roots
+        and candidate.get("PYTHONPATH") == expected_path
+        for candidate in launch_candidates
+    )
+
+
 @pytest.mark.parametrize("failure", [
     FileNotFoundError("missing Node"),
     runtime.RemotionValidationError("partial npm installation"),

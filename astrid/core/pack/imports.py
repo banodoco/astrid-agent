@@ -102,6 +102,13 @@ def pack_module_path(relative: Path) -> tuple[str, dict[str, str]]:
     return ".".join(names), aliases
 
 
+def _product_packs_root() -> Path:
+    """The product pack collection the host was launched with (the loader's, as tests and installs select it)."""
+    from astrid.core.pack import loader
+
+    return loader.packs_root()
+
+
 def validate_selected_pack_map(selected: Mapping[str, Mapping[str, str]], *, verify_digests: bool = True,
                                verified_relocations: Mapping[str, Mapping[str, str]] | None = None) -> dict[str, dict[str, str]]:
     """Validate exact roots and run digests without scanning other collections.
@@ -126,7 +133,7 @@ def validate_selected_pack_map(selected: Mapping[str, Mapping[str, str]], *, ver
         root = Path(entry["root"]).resolve(strict=True)
         if not root.is_dir() or root.name != pack_id or str(root) != entry["root"]:
             raise ValueError("selected pack id must match its canonical directory name")
-        builtin = Path(__file__).resolve().parents[2] / "packs" / pack_id
+        builtin = _product_packs_root() / pack_id
         original = root
         if pack_id in relocations:
             relocation = relocations[pack_id]
@@ -172,7 +179,7 @@ def selected_pack_environment(selected: Mapping[str, Mapping[str, str]], *,
     """Descendant namespace inputs; never add pack collections to PYTHONPATH."""
     import json
 
-    builtin = Path(__file__).resolve().parents[2] / "packs"
+    builtin = _product_packs_root()
     core = Path(__file__).resolve().parents[2] / "core"
     relocations = verified_relocations if verified_relocations is not None else {}
     if relocations:

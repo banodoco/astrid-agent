@@ -645,6 +645,22 @@ def test_the_open_page_shows_the_finished_update_within_30_seconds_without_a_rel
     assert 0 < result["seconds_after_terminal"] <= hosted.LIVE_RESULT_SECONDS
 
 
+def test_release14_static_completion_message_is_valid_for_browser_and_python_gate(tmp_path, monkeypatch):
+    message = "Astrid updated. Reload to continue."
+    js = subprocess.run(
+        ["node", "--input-type=module", "-e",
+         "import { UPDATED_LINE } from './scripts/journey_update_button.mjs'; "
+         "console.log(JSON.stringify([UPDATED_LINE.test('Astrid updated: Release 1 → Release 2'), "
+         "UPDATED_LINE.test('Astrid updated. Reload to continue.')]));"],
+        cwd=hosted.ROOT, capture_output=True, text=True, timeout=20, check=True)
+    assert json.loads(js.stdout) == [True, True]
+
+    live = FakeLive(lambda: {"live": {"text": message, "seen_at": time.time() * 1000 + 12_000,
+                                      "navigations": 1}})
+    record = _live_row(tmp_path, monkeypatch, live)()
+    assert record["page"]["live_result"]["text"] == message
+
+
 @pytest.mark.parametrize("final, message", [
     (lambda: {"live": {"text": "Astrid updated: Release 1 → Release 2", "seen_at": time.time() * 1000 + 45_000}}, "45s after"),
     (lambda: {"live_error": "TimeoutError: waiting for Astrid updated"}, "never showed"),
@@ -652,6 +668,13 @@ def test_the_open_page_shows_the_finished_update_within_30_seconds_without_a_rel
 def test_the_row_fails_when_the_open_page_is_late_or_silent(tmp_path, monkeypatch, final, message):
     with pytest.raises(RuntimeError, match=message):
         _live_row(tmp_path, monkeypatch, FakeLive(final))()
+
+
+def test_the_row_rejects_an_unrecognized_completion_message(tmp_path, monkeypatch):
+    live = FakeLive(lambda: {"live": {"text": "Update complete", "seen_at": time.time() * 1000 + 1_000,
+                                      "navigations": 0}})
+    with pytest.raises(RuntimeError, match="unrecognized update completion message"):
+        _live_row(tmp_path, monkeypatch, live)()
 
 
 def test_the_open_browser_is_closed_when_the_update_fails(tmp_path, monkeypatch):

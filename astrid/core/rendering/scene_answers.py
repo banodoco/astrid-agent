@@ -51,7 +51,9 @@ def frames_at(scene: Mapping[str, Any], frames: Iterable[int]) -> list[dict[str,
     return _query({"scene": dict(scene)}, frames)
 
 
-def _query(payload: dict[str, Any], frames: Iterable[int]) -> list[dict[str, Any]]:
+def _query(payload: dict[str, Any], frames: Iterable[int], *,
+           render_roots: list[dict[str, str]] | None = None,
+           registry_root: str | None = None) -> list[dict[str, Any]]:
     requested = list(frames)
     payload = {**payload, "frames": requested}
     if "NODE_OPTIONS" in os.environ or "NODE_PATH" in os.environ:
@@ -80,6 +82,27 @@ def _query(payload: dict[str, Any], frames: Iterable[int]) -> list[dict[str, Any
         # context. The alias resolver must see that same admitted pack set.
         if ASTRID_PACKS_PATH in os.environ:
             environment[ASTRID_PACKS_PATH] = os.environ[ASTRID_PACKS_PATH]
+        if "props" in payload:
+            from astrid.core.rendering.project_elements import PACK_ROOTS_ENV, REGISTRY_ROOT_ENV
+            from astrid.core.rendering.remotion_runtime import ASTRID_REMOTION_VALIDATION_PATH
+            if render_roots is None and os.environ.get(ASTRID_REMOTION_VALIDATION_PATH):
+                from astrid.core.rendering.remotion_runtime import _validated_runtime
+                binding = _validated_runtime(runtime.project_dir).get("registry", {})
+                if binding.get("mode") == "source_settled":
+                    render_roots = binding.get("renderer", {}).get("observation", {}).get("render_pack_roots")
+                elif binding.get("mode") == "provisioned_only" and binding.get("outputs"):
+                    # This binding has no Python generator or selected carrier.
+                    # Use the validated project and pack search context, as the
+                    # provisioned renderer does, rather than ambient selectors.
+                    pass
+                else:
+                    raise SceneQueryUnavailable("validated scene registry roots are unavailable")
+                if binding.get("mode") == "source_settled" and not isinstance(render_roots, list):
+                    raise SceneQueryUnavailable("validated scene registry roots are unavailable")
+            if render_roots is not None:
+                environment[PACK_ROOTS_ENV] = json.dumps(render_roots)
+            if registry_root is not None:
+                environment[REGISTRY_ROOT_ENV] = registry_root
         result = subprocess.run(
             [str(runtime.node_executable), str(helper), str(runtime.project_dir)],
             input=json.dumps(payload, allow_nan=False),
@@ -99,7 +122,9 @@ def _query(payload: dict[str, Any], frames: Iterable[int]) -> list[dict[str, Any
 
 
 def host_frames_at(props: Mapping[str, Any], basis: Mapping[str, Any],
-                   frames: Iterable[int]) -> list[dict[str, Any]]:
+                   frames: Iterable[int], *,
+                   _render_roots: list[dict[str, str]] | None = None,
+                   _registry_root: str | None = None) -> list[dict[str, Any]]:
     """Evaluate supplied Root props with the selected host's complete element maps.
 
     Shape checks do not certify a revision, candidate, assets or theme. The source
@@ -123,7 +148,8 @@ def host_frames_at(props: Mapping[str, Any], basis: Mapping[str, Any],
     # Reuse current role declarations only; no private visibility math.
     declarations = element_coverage({c.get("clipType", "") for c in clips})
     roles = {c["id"]: role_of(c, c.get("track"), declarations) for c in clips}
-    return _query({"props": dict(props), "basis": dict(basis), "roles": roles}, frames)
+    return _query({"props": dict(props), "basis": dict(basis), "roles": roles}, frames,
+                  render_roots=_render_roots, registry_root=_registry_root)
 
 
 def _prepared_host_frames_at(
@@ -194,7 +220,14 @@ def _prepared_host_frames_at(
                 "fps": profile.fps_rational[0] / profile.fps_rational[1],
             }
             source.validate(timeline_path, assets_path)
-            answers = host_frames_at(props, basis, requested)
+            stage_summary = prepared[5] if len(prepared) > 5 else {}
+            selectors = {
+                key: stage_summary[source_key]
+                for key, source_key in (("_render_roots", "render_pack_roots"),
+                                        ("_registry_root", "project_registry_root"))
+                if stage_summary.get(source_key) is not None
+            }
+            answers = host_frames_at(props, basis, requested, **selectors)
             source.validate(timeline_path, assets_path)
             if any(answer.get("width") != profile.width or answer.get("height") != profile.height
                    for answer in answers):

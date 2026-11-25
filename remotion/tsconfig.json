@@ -7,6 +7,7 @@
     "strict": true,
     "baseUrl": ".",
     "paths": {
+      "@astrid-rendering/*": ["../astrid/packs/rendering/*"],
       "@theme-elements-effects/*": ["_active_theme/elements/effects/*"],
       "@theme-effects/*": ["_active_theme/effects/*"],
       "@pack-local-elements-effects/*": ["../astrid/packs/local/rendering/elements/effects/*"],

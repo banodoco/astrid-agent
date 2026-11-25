@@ -22,6 +22,7 @@ class TimingCollector:
         self.changed = threading.Condition(self.lock)
         self.monitor = None
         self.closed = False
+        self.cache_events = []
         self.last_change = time.monotonic()
         self.start_provenance = None
         if startup is not None:
@@ -89,6 +90,11 @@ class TimingCollector:
     def snapshot(self):
         return self.snapshot_with_span()[0]
 
+    def cache_event_snapshot(self):
+        """Return recorded cache events, in order, independent of timing rows."""
+        with self.lock:
+            return [dict(event) for event in self.cache_events]
+
     def snapshot_with_span(self):
         """Return rows and collector span at one monotonic snapshot instant."""
         with self.lock:
@@ -129,6 +135,38 @@ def current_timings():
     return collector.snapshot() if collector is not None else []
 
 
+_CACHE_OUTCOMES = ('hit', 'miss', 'recompute')
+
+
+def cache_event(cache, outcome, reason=None):
+    """Record a cache hit/miss/recompute on the current collector, if any."""
+    if not isinstance(cache, str) or not cache:
+        raise ValueError("cache must be a non-empty string")
+    if outcome not in _CACHE_OUTCOMES:
+        raise ValueError(f"outcome must be one of {_CACHE_OUTCOMES!r}, got {outcome!r}")
+    collector = _current.get()
+    if collector is None:
+        return
+    event = {'cache': cache, 'outcome': outcome}
+    if reason is not None:
+        event['reason'] = reason
+    with collector.lock:
+        collector.cache_events.append(event)
+
+
+def current_cache_events():
+    collector = _current.get()
+    return collector.cache_event_snapshot() if collector is not None else []
+
+
+def print_cache_events(events, *, file=None):
+    """Print one `cache <name>: <outcome>` line per event."""
+    file = sys.stderr if file is None else file
+    for event in events:
+        reason = event.get('reason')
+        print(f"cache {event['cache']}: {event['outcome']}" + (f" ({reason})" if reason else ''), file=file)
+
+
 class TimingOutput:
     """Enrich complete JSON objects, optionally deferring successful output."""
     def __init__(self, stream, collector, *, defer_success=False, include_collector_span=False):
@@ -148,6 +186,9 @@ class TimingOutput:
     def _attach_timings(self, value):
         rows, span = self.collector.snapshot_with_span()
         value['timings'] = rows
+        events = self.collector.cache_event_snapshot()
+        if events:
+            value['cache_events'] = events
         if self.include_collector_span:
             value['collector_span_seconds'] = span
 

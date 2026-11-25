@@ -557,7 +557,7 @@ def test_host_command_runs_local_server_on_dynamic_port(comfy, tmp_path, monkeyp
     # Exercise this checkout in the real child, as in the parent test process.
     monkeypatch.setattr(
         "astrid.core.execution.generic_host._dependency_pythonpath",
-        lambda: (str(Path(vibecomfy.__file__).resolve().parents[1]),),
+        lambda *_environment: (str(Path(vibecomfy.__file__).resolve().parents[1]),),
     )
 
     pack_root = Path(__file__).resolve().parents[3] / "astrid" / "packs" / "vibecomfy"

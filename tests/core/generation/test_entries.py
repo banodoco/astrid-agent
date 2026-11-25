@@ -249,7 +249,7 @@ def test_import_list_and_generate_entry(loopback_comfy, tmp_path, monkeypatch, c
     project = client.projects.create(slug='g30', name='G30', idempotency_key='g30-project')
     assert project.ok
     dependency_root = str(Path(vibecomfy.__file__).resolve().parents[1])
-    monkeypatch.setattr(host_module, '_dependency_pythonpath', lambda: (dependency_root,))
+    monkeypatch.setattr(host_module, '_dependency_pythonpath', lambda *_environment: (dependency_root,))
     monkeypatch.setattr(cli, '_open_client', lambda: nullcontext(client))
     invoke_result = client.invoke_result
     def bounded(*args, **kwargs):
