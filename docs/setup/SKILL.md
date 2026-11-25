@@ -2,8 +2,7 @@
 name: astrid-setup
 description: Install or repair Astrid, check that it is connected, and make a first image with the user's own ComfyUI.
 ---
-<!-- Generated from astrid/packs/setup/docs/SKILL.md; regenerate with python scripts/generate_setup_skill_mirror.py. -->
-
+<!-- GENERATED from astrid/packs/setup/docs/SKILL.md by scripts/generate_setup_skill_mirror.py. Do not edit: edit the source and regenerate. -->
 
 # Set up Astrid
 

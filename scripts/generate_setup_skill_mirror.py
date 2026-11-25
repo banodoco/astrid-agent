@@ -9,8 +9,8 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "astrid/packs/setup/docs/SKILL.md"
 MIRROR = ROOT / "docs/setup/SKILL.md"
-HEADER = (b"<!-- Generated from astrid/packs/setup/docs/SKILL.md; "
-          b"regenerate with python scripts/generate_setup_skill_mirror.py. -->\n\n")
+HEADER = (b"<!-- GENERATED from astrid/packs/setup/docs/SKILL.md by "
+          b"scripts/generate_setup_skill_mirror.py. Do not edit: edit the source and regenerate. -->\n")
 
 
 def render(source: bytes) -> bytes:
