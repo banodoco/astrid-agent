@@ -28,6 +28,7 @@ from .exceptions import (
 from .results import _reconstruct_generation_result
 
 if TYPE_CHECKING:
+    from astrid.core.generation.model_storage import DeclaredVolume
     from astrid.core.generation.node_approvals import PreviewApprovalAuthority
     from astrid.core.generation.placement import Placement
 
@@ -1695,7 +1696,7 @@ class GenerationFacade:
             python_exec=python_exec, verbose=verbose, argv=argv,
         )
 
-    def _generate_on_target(self, **kwargs: Any) -> Any:
+    def _generate_on_target(self, *, local_volume: DeclaredVolume | None = None, **kwargs: Any) -> Any:
         """Run target generation and remove its controller job directories on exit."""
         import shutil
 
@@ -1719,8 +1720,9 @@ class GenerationFacade:
                 if resolved.kind not in placements.BUILTIN_KINDS:
                     # A remote request is refused locally, with the same dry-run preflight,
                     # before the claimed-machine requirement below can apply.
-                    self._generate_on_target_impl(_job_dirs=job_dirs, **{**kwargs, "dry_run": True})
-            return self._generate_on_target_impl(_job_dirs=job_dirs, **kwargs)
+                    self._generate_on_target_impl(_job_dirs=job_dirs, local_volume=local_volume,
+                                                  **{**kwargs, "dry_run": True})
+            return self._generate_on_target_impl(_job_dirs=job_dirs, local_volume=local_volume, **kwargs)
         finally:
             for directory in job_dirs:
                 shutil.rmtree(directory, ignore_errors=True)
@@ -1741,6 +1743,7 @@ class GenerationFacade:
         retained_source: dict[str, Any] | None = None,
         _admission_state: _WorkflowAdmissionState | None = None,
         _discovery: Any = None,
+        local_volume: DeclaredVolume | None = None,
         preview_authority: PreviewApprovalAuthority | None = None,
         save_preview_omitted_fields: frozenset[tuple[str, str]] = frozenset(),
         **controls: Any,
@@ -2247,6 +2250,54 @@ class GenerationFacade:
                 comfy_url=(target_client.target.url if placement.kind == 'attached' and target_client is not None else None),
                 lineage=transport.lineage, source_video=transport.preflight_source_video,
                 approved_files=approved_files, save_preview_omitted_fields=save_preview_omitted_fields)
+            # Only the admitted graph's selected manifest may supply the advisory.
+            # This stays on the dry-run path, after admission and before the response.
+            from astrid.core.generation.model_storage import selected_target_download_notice
+
+            local_root = None
+            if placement.kind == 'local':
+                entry_facts = readiness.get('entry')
+                requirements = entry_facts.get('requirements') if isinstance(entry_facts, Mapping) else None
+                raw_root = requirements.get('models_root') if isinstance(requirements, Mapping) else None
+                if (not isinstance(raw_root, str) or not raw_root.strip() or '\0' in raw_root
+                        or not Path(raw_root).is_absolute() or '..' in Path(raw_root).parts):
+                    raise generation_error(
+                        ValueError("selected managed model root is missing or unsafe"),
+                        entry=description, target=readiness['target'], code="unsafe_path",
+                        details={"field": "models_root"},
+                    )
+                local_root = Path(raw_root)
+            def pending_volume_declared():
+                if placement.kind != 'runpod' or placement.machine is not None:
+                    return None
+                # Saved policy describes a future claim, not retained custody.
+                # An unnamed run can reuse a lease whose volume is not exposed
+                # by the journal projection. Keep that fact unknown.
+                raw_policy = settings_snapshot.content.get('machines', {}).get('runpod')
+                if raw_policy is None or any(row.get('live') for row in placements.machine_leases('runpod')):
+                    return None
+                from astrid.packs.runpod.target_selection import PaidSelectionError, RunPodPreferences
+                try:
+                    return RunPodPreferences.from_mapping(raw_policy).volume_id is not None
+                except PaidSelectionError:
+                    # Incomplete policy is not evidence of an ephemeral claim.
+                    return None
+
+            nodes = node_manifest['extra']['nodes']
+            download_notice = selected_target_download_notice(
+                nodes, {node.class_type for node in workflow.runtime_nodes().values()} if nodes else set(),
+                placement=placement.kind, local_models_root=local_root,
+                local_volume=local_volume if local_root is not None else None,
+                volume_declared=pending_volume_declared,
+            )
+            if download_notice is not None:
+                # Project the complete envelope, preserving any existing warning
+                # and its severity rather than mutating the derived status.
+                readiness = readiness_envelope(
+                    entry=readiness['entry'], target=readiness['target'],
+                    issues=[*readiness['issues'], download_notice], fixes=readiness['fixes'],
+                    attempt_count=readiness.get('attempt_count'),
+                )
             readiness['entry'].update(preview)
             if align == 'trust':
                 readiness['alignment'] = {'mode': 'trust', 'verified': False}

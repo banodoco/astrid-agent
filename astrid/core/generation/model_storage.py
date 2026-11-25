@@ -13,7 +13,7 @@ import re
 import stat
 import subprocess
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
@@ -54,14 +54,15 @@ class VolumeSpace:
 
 
 def measure_declared_volume(volume: DeclaredVolume, directory: Path, *, deadline: float,
-                            check: Callable[[], None]) -> VolumeSpace | None:
+                            check: Callable[[], None] | None = None) -> VolumeSpace | None:
     """Measure a whole declared mount, or return unknown without partial credit.
 
     The walk gets at most one quarter of the remaining preparation time (60s
     maximum). Directory descriptors prevent following a replaced symlink.
     Files are never opened; metadata and hardlink identities suffice.
     """
-    check()
+    if check is not None:
+        check()
     root = volume.mount_path
     if (not root.is_absolute() or ".." in root.parts or volume.size_gb <= 0
             or (directory != root and root not in directory.parents)):
@@ -73,7 +74,8 @@ def measure_declared_volume(volume: DeclaredVolume, directory: Path, *, deadline
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 
     def bound() -> None:
-        check()
+        if check is not None:
+            check()
         if time.monotonic() >= end:
             raise ValueError("volume walk budget exhausted")
 
@@ -208,10 +210,8 @@ def _quota(path: Path, *, deadline: float) -> dict[str, _QuotaRow]:
     return _quota_rows(result.stdout)
 
 
-def available_model_bytes(parent: Path, *, deadline: float,
-                          check: Callable[[], None]) -> tuple[int | None, bool]:
-    """Tightest measured budget for one directory; never infer a shared scope."""
-    check()
+def _capacity_directory(parent: Path) -> Path | None:
+    """Resolve the existing directory to measure without following a symlink."""
     probe = parent
     try:
         while not probe.exists():
@@ -219,6 +219,17 @@ def available_model_bytes(parent: Path, *, deadline: float,
         if not probe.is_dir() or any(path.is_symlink() for path in (parent, *parent.parents)):
             raise UnsafePathError("unsafe target path")
     except OSError:
+        return None
+    return probe
+
+
+def available_model_bytes(parent: Path, *, deadline: float,
+                          check: Callable[[], None] | None = None) -> tuple[int | None, bool]:
+    """Tightest measured budget for one directory; never infer a shared scope."""
+    if check is not None:
+        check()
+    probe = _capacity_directory(parent)
+    if probe is None:
         return None, True
     available = []
     try:
@@ -237,7 +248,11 @@ def available_model_bytes(parent: Path, *, deadline: float,
         for ancestor in (probe, *probe.parents):
             if ancestor != mount and mount not in ancestor.parents:
                 break
-            check()
+            if check is not None:
+                check()
+            if time.monotonic() >= deadline:
+                unknown = True
+                break
             try:
                 rows = _quota(ancestor, deadline=deadline)
             except (OSError, ValueError, subprocess.SubprocessError):
@@ -254,6 +269,156 @@ def available_model_bytes(parent: Path, *, deadline: float,
         unknown = True
     return (min(available) if available else None), unknown or not available
 
+
+
+@dataclass(frozen=True)
+class DownloadStorageObservation:
+    """Advisory facts for the selected target's model root, not an admission."""
+
+    free_bytes: int | None
+    capacity_uncertain: bool
+    volume_status: str
+
+
+def observe_download_storage(models_root: Path, *, deadline: float,
+                             volume: DeclaredVolume | None,
+                             check: Callable[[], None] | None = None) -> DownloadStorageObservation:
+    """Read target-local storage without fetching, writing, or making a claim.
+
+    Only call on the selected target, with its model root and its declared
+    volume. Attached/remote targets without such evidence must use unknown
+    facts, never the controller's filesystem. The advisory uses the existing
+    quota and volume observers; the later fetch still owns admission.
+    """
+    if check is not None:
+        check()
+    volume_status = "not_declared" if volume is None else "declared_unverified"
+    # A dry-run notice is not a full model-volume accounting pass.
+    end = min(deadline, time.monotonic() + 2)
+    if not models_root.is_absolute() or ".." in models_root.parts:
+        raise UnsafePathError("unsafe target path")
+    if time.monotonic() >= end:
+        return DownloadStorageObservation(None, True, volume_status)
+    if not hasattr(os, "statvfs"):
+        # The platform cannot measure capacity, but the existing directory
+        # safety check still distinguishes a known unsafe root from unknown.
+        _capacity_directory(models_root)
+        return DownloadStorageObservation(None, True, volume_status)
+    free, uncertain = available_model_bytes(models_root, deadline=end, check=check)
+    if volume is not None and time.monotonic() < end:
+        measured = measure_declared_volume(volume, models_root, deadline=end, check=check)
+        if measured is not None and measured.covers(models_root):
+            volume_status = "declared_measured"
+            free = measured.free_bytes if free is None else min(free, measured.free_bytes)
+    return DownloadStorageObservation(free, uncertain or free is None or volume_status == "declared_unverified",
+                                      volume_status)
+
+
+def model_download_notice(packs: Mapping[str, int | None],
+                          storage: DownloadStorageObservation) -> dict | None:
+    """Render known self-downloading packs and optional catalog byte hints.
+
+    No inference from a node name: the caller supplies packs identified by
+    catalog evidence. Missing size or storage facts stay unknown. This is
+    always advisory; an install-time fetch retains its own capacity gate.
+    """
+    if not packs:
+        return None
+    rows = []
+    descriptions = []
+    for name, size in sorted(packs.items()):
+        size = size if type(size) is int and size > 0 else None
+        rows.append({"pack": name, "size_hint_bytes": size})
+        descriptions.append(f"{name} ({size} bytes, catalog hint)" if size is not None
+                            else f"{name} (download size unknown)")
+    free = (f"{storage.free_bytes} bytes reported free at the model root"
+            if storage.free_bytes is not None else "target free space unknown")
+    if storage.free_bytes is not None and storage.capacity_uncertain:
+        free += " (capacity may be constrained)"
+    volume_text = {
+        "not_declared": "no persistent volume declared; downloads may need repeating",
+        "declared_unverified": "persistent volume declared but model-root capacity unverified",
+        "declared_measured": "declared volume measured at the model root",
+        "unknown": "volume status unknown",
+    }[storage.volume_status]
+    return {"code": "model_download_notice", "severity": "warning", "fix_ids": [],
+            "message": ("Packs that download their own models on first run: "
+                        + ", ".join(descriptions) + f"; {free}; {volume_text}. "
+                        "Pack-owned caches may use other paths; this notice is not a storage guarantee."),
+            "details": {"packs": rows, "free_bytes": storage.free_bytes,
+                        "capacity_uncertain": storage.capacity_uncertain,
+                        "volume_status": storage.volume_status}}
+
+
+def selected_pack_download_hints(nodes: Sequence[Mapping[str, object]],
+                                 active_classes: set[str]) -> dict[str, int | None]:
+    """Read the one catalog for selected source repositories used by this graph.
+
+    ``nodes`` is the already selected canonical requirements manifest's extra.nodes,
+    not a lookup result. The class intersection limits the advisory to packs
+    used by the graph; names alone cannot establish a self-download fact.
+    Repository matching here is descriptive, never code approval authority.
+    """
+    from vibecomfy.node_packs import get_known_node_packs
+
+    def repo_key(url: str) -> str:
+        # Same source spelling convention as catalog lock enrichment. Keep
+        # path case; never infer identity from a basename or node class.
+        return url.rstrip("/").removesuffix(".git")
+
+    selected = {repo_key(repo) for node in nodes
+                if isinstance(repo := node.get("repo"), str) and repo}
+    if not selected or not active_classes:
+        return {}
+    return {
+        pack.name: pack.model_download_bytes_hint
+        for pack in get_known_node_packs()
+        if pack.downloads_own_models is True
+        and repo_key(pack.repo) in selected
+        and not active_classes.isdisjoint(pack.classes)
+    }
+
+
+def selected_target_download_notice(
+    nodes: Sequence[Mapping[str, object]], active_classes: set[str], *,
+    placement: str, local_models_root: Path | None = None,
+    local_volume: DeclaredVolume | None = None,
+    volume_declared: bool | None | Callable[[], bool | None] = None,
+) -> dict | None:
+    """Advisory for one admitted target, without starting or renting it.
+
+    A local root must come from the selected managed installation binding.
+    For a remote or attached target, only explicit target volume evidence may
+    set volume_declared; never interpret a missing fact as an absent volume
+    or attempt to measure the controller's filesystem. A lazy volume fact is
+    evaluated only for a selected self-downloading pack without a local root.
+    """
+    hints = selected_pack_download_hints(nodes, active_classes)
+    if not hints:
+        return None
+    if placement == "local" and local_models_root is not None:
+        try:
+            observation = observe_download_storage(
+                local_models_root, deadline=time.monotonic() + 2,
+                volume=local_volume,
+            )
+        except UnsafePathError as exc:
+            from .preflight import generation_error
+
+            # Unsafe storage identity is not an unavailable measurement.
+            # Preserve the existing typed path refusal instead of emitting
+            # a nonblocking, unknown-capacity advisory for that target.
+            raise generation_error(exc, code="unsafe_path",
+                                   details={"field": "models_root"}) from exc
+    else:
+        if callable(volume_declared):
+            volume_declared = volume_declared()
+        volume_status = (
+            "declared_unverified" if volume_declared is True
+            else "not_declared" if volume_declared is False else "unknown"
+        )
+        observation = DownloadStorageObservation(None, True, volume_status)
+    return model_download_notice(hints, observation)
 
 
 def _inventory_walk(root: Path, *, deadline: float, cancelled: Callable[[], bool]) -> str:

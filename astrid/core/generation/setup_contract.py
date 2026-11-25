@@ -19,7 +19,7 @@ _LEGACY_COMPANION_CODES = frozenset({"version_drift", "target_unreachable"})
 SETUP_ISSUE_CODES = frozenset({
     "needs_consent", "entry_exists", "pin_conflict", "pack_version_differs", "unknown_input",
     "source_unreachable", "commit_unavailable", "pip_failed", "protected_change", "node_pack_conflict",
-    "partial_install", "classes_not_loaded", "fetch_404",
+    "partial_install", "classes_not_loaded", "fetch_404", "model_download_notice",
 }) | _LEGACY_COMPANION_CODES
 _SCOPES = frozenset({"read_only", "managed_write", "user_env", "paid", "attached_target"})
 _FIX_FIELDS = frozenset({"id", "who", "scope", "details", "argv", "instruction", "placeholders"})

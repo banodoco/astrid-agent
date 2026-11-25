@@ -416,7 +416,9 @@ target is not granted managed installation permission by this check.
 
 ### LE-8 — Model downloads and available space
 
-<!-- LE-8: fill this subsection in the same change as the card. -->
+Packs may download their own weights on first use; these are separate from explicit locked model assets. VibeComfy's catalog carries source-backed download facts and optional byte hints (currently SAM-Audio); unknown quantities are not a storage guarantee. The existing explicit model fetch capacity checks remain authoritative.
+
+A successful `astrid generate … --dry-run --json` with an admitted graph that uses a catalog-identified self-downloading pack emits the nonblocking `model_download_notice` warning (no repair command). It includes the selected pack's catalog size hint, if known, and the configured local managed model root's reported capacity, if measurable. A pending RunPod claim can report declared or absent persistent volume from valid saved policy; retained leases and attached targets without volume facts report unknown, and neither is measured using the controller disk. A missing or unsafe local root is a typed refusal, not unknown capacity. Local volume evidence is supplied explicitly by the selected target's caller, not inferred from ambient job state. Explicit model-fetch capacity admission is unchanged.
 
 ### LE-9 — Declare a missing model
 
