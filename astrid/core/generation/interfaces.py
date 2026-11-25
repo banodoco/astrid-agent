@@ -39,9 +39,9 @@ class ReadinessInstruction(TypedDict):
 
 
 class ReadinessFix(TypedDict):
-    # Every projected non-success fix carries an id, actor and exactly one action.
-    id: NotRequired[str]
-    who: NotRequired[Literal["agent", "human"]]
+    # Every non-success fix carries an id, actor and exactly one action.
+    id: str
+    who: Literal["agent", "human"]
     argv: NotRequired[list[str]]
     instruction: NotRequired[ReadinessInstruction]
     placeholders: NotRequired[dict[str, str]]
