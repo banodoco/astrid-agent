@@ -41,11 +41,10 @@ def placement_move(ctx, command):
             ctx.read('parent', ['config', 'registry', 'assets', str(asset)])
         else:
             ctx.read(owner + '/source', ['registry', 'assets', str(asset)])
-    move(ctx, command)
+    start = move(ctx, command)
     if owner != 'parent':
         extent = number(ctx.read(owner, ['duration_ms']), 'occurrence.duration_ms', positive=True) / 1000
         moved = ctx.state.entity(ref)
-        start = moved['at'] if 'at' in moved else moved['at_ms'] / 1000
         if start + _duration(moved) > extent + 1e-9:
             raise CommandError('placed interval exceeds occurrence duration',
                                kind='occurrence_boundary', ref=owner)
