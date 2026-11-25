@@ -32,7 +32,7 @@ def _fixture():
 def test_trust_overlays_only_exact_declared_loader_choices_and_survives_refresh():
     workflow, info, client, entry = _fixture()
     original = deepcopy(info)
-    provider = entries.target_schema(entry, workflow, client, align='trust')
+    provider = entries.target_schema(entry, workflow, client, align='trust').provider
     assert provider.target_model_reference('CheckpointLoaderSimple', 'ckpt_name', 'declared.safetensors')
     assert not provider.target_model_reference('CheckpointLoaderSimple', 'ckpt_name', 'unrelated.safetensors')
     provider.refresh()

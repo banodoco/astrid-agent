@@ -4,7 +4,10 @@ from __future__ import annotations
 import posixpath
 import random
 from dataclasses import dataclass
-from typing import Any, Callable, ClassVar, ContextManager, Literal, Mapping, Protocol, TypeAlias
+from typing import TYPE_CHECKING, Any, Callable, ClassVar, ContextManager, Literal, Mapping, Protocol, TypeAlias
+
+if TYPE_CHECKING:
+    from .interfaces import ReadinessEnvelope
 
 MANAGED_ENGINE_PREPARATION_ENV = "ASTRID_MANAGED_ENGINE_PREPARATION_JSON"
 
@@ -411,6 +414,13 @@ class ModelLockValidationError(RecipeValidationError):
 
 class IntegrityError(RecipeError):
     code = "integrity_failed"
+
+    def __init__(self, message: str, *, step_id: str | None = None,
+                 retryable: bool = False, recovery_handle: str | None = None,
+                 reason: str | None = None, readiness: ReadinessEnvelope | None = None):
+        super().__init__(message, step_id=step_id, retryable=retryable,
+                         recovery_handle=recovery_handle, reason=reason)
+        self.readiness: ReadinessEnvelope | None = readiness
 
 
 class UnsafePathError(RecipeValidationError):

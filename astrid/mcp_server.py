@@ -72,7 +72,11 @@ def _schema(action: argparse.Action) -> dict[str, Any]:
     if kind == "file":
         return {"type": "string"}
     item: dict[str, Any] = {"type": "string"}
-    if action.type is int:
+    declared = getattr(action.type, "json_schema", None)
+    if isinstance(declared, dict):
+        # The argument type states its own contract (for example consent's token pattern).
+        item = dict(declared)
+    elif action.type is int:
         item = {"type": "integer"}
     elif action.type is float:
         item = {"type": "number"}

@@ -28,6 +28,7 @@ from .exceptions import (
 from .results import _reconstruct_generation_result
 
 if TYPE_CHECKING:
+    from astrid.core.generation.node_approvals import PreviewApprovalAuthority
     from astrid.core.generation.placement import Placement
 
     from .execution_request import ExecutionRequest
@@ -272,7 +273,7 @@ def _generation_controls(*, engine, consent):
             raise GenerationInputError('Phase 1 target generation supports only comfyui')
     from astrid.core.generation.consent import consent_scope
     if not isinstance(consent, (tuple, list)):
-        raise GenerationInputError('consent must be a sequence of user_env or code=<token> choices')
+        raise GenerationInputError('consent must be a sequence of user_env or code=<token> choices; rent with `astrid machines claim`')
     try:
         for scope in consent:
             consent_scope(scope)
@@ -324,7 +325,8 @@ LOCAL_REFUSAL_SCOPE = ('refused locally before submission; nothing was sent to a
 def _offline_invocation_preflight(workflow: Any, *, plan: Mapping[str, Any] | None,
                                   assets: Mapping[str, Any], comfy_url: str | None,
                                   lineage: Any, source_video: bool,
-                                  approved_files: tuple[bytes, bytes] | None = None) -> None:
+                                  approved_files: tuple[bytes, bytes] | None = None,
+                                  save_preview_omitted_fields: frozenset[tuple[str, str]] = frozenset()) -> None:
     """Run the same invocation preflight a live submission runs, offline, on the emitted bundle.
 
     Every dry run calls this so a request the live path would refuse is refused before a
@@ -369,7 +371,9 @@ def _offline_invocation_preflight(workflow: Any, *, plan: Mapping[str, Any] | No
             preflight_invocation(
                 capsule, run_inputs=run_inputs, comfy_url=comfy_url or '',
                 expected_prompt=expected_prompt, source_video_path=source_path,
-                expected_source_digest=source_digest, phase='dry-run')
+                expected_source_digest=source_digest, phase='dry-run',
+                **({'save_preview_omitted_fields': save_preview_omitted_fields}
+                   if save_preview_omitted_fields else {}))
         except ValueError as exc:
             from astrid.core.generation.preflight import generation_error
             raise generation_error(ValueError(f'{exc}. {LOCAL_REFUSAL_SCOPE}.'),
@@ -1737,6 +1741,8 @@ class GenerationFacade:
         retained_source: dict[str, Any] | None = None,
         _admission_state: _WorkflowAdmissionState | None = None,
         _discovery: Any = None,
+        preview_authority: PreviewApprovalAuthority | None = None,
+        save_preview_omitted_fields: frozenset[tuple[str, str]] = frozenset(),
         **controls: Any,
     ) -> Any:
         """Bind a catalog template and admit it through the workflow facade.
@@ -1758,6 +1764,12 @@ class GenerationFacade:
             require_generation_target_readiness,
             select_generation_target,
         )
+
+        if preview_authority is not None or save_preview_omitted_fields:
+            if not dry_run or workflow_entry is None or model is not None:
+                raise GenerationInputError("save-entry preview authority is only valid on an explicit dry run")
+            if save_preview_omitted_fields and preview_authority is None:
+                raise GenerationInputError("save-entry input scope requires explicit preview authority")
 
         requested_align = controls.pop('align', None)  # None: not asked for; RunPod then aligns, local checks
         align = _align_mode(requested_align or 'check')
@@ -1963,6 +1975,7 @@ class GenerationFacade:
                 try:
                     assets = {}
                     approved_files = None
+                    version_notices = ()
                     transport = BuildTransport()
                     if is_remote_target:
                         template = (None if source == "workflow" else _local_template(candidate, mode))
@@ -2056,9 +2069,11 @@ class GenerationFacade:
                             if not dry_run and source_ref is None:
                                 retained = Path(built['bundle']) / 'source.json'
                                 retain_source(retained.name, retained.read_bytes())
-                            schema = timed_call('target node list', workflow_entries.target_schema,candidate, workflow, target_client, engine=runpod_engine,
+                            target_schema_result = timed_call('target node list', workflow_entries.target_schema,candidate, workflow, target_client, engine=runpod_engine,
                                 pending_target=pending_target,
                                 align=(requested_align or 'align') if is_remote_target else align)
+                            schema = target_schema_result.provider
+                            version_notices = target_schema_result.version_notices
                         else:
                             with _snapshot_generation_workflow(workflow_entries.bundle_path(candidate)) as frozen:
                                 if initial_readiness is None and not dry_run and source_ref is None:
@@ -2082,10 +2097,12 @@ class GenerationFacade:
                                 needs.extend(need for need in candidate.get('needs', [])
                                              if need.get('ambiguity') and need not in needs)
                                 candidate = {**candidate, 'needs': _explicit_workflow_needs(needs)}
-                            schema = timed_call('target node list', workflow_entries.target_schema,candidate, workflow, target_client, engine=runpod_engine,
+                            target_schema_result = timed_call('target node list', workflow_entries.target_schema,candidate, workflow, target_client, engine=runpod_engine,
                                 pending_target=pending_target,
                                 align=(requested_align or 'align') if is_remote_target else align,
                                 **({'initial_readiness': initial_readiness} if initial_readiness is not None else {}))
+                            schema = target_schema_result.provider
+                            version_notices = target_schema_result.version_notices
                     from vibecomfy.workflow_bundle import load_bundle
                     if source == "workflow":
                         # Re-emit the edited canonical workflow before approval so
@@ -2150,7 +2167,7 @@ class GenerationFacade:
         code_approvals = authorize_nodes(node_manifest['extra']['nodes'],
             placement_class=placement.kind, consent=code_consent,
             entry=candidate if source == 'workflow' else None,
-            retry_argv=retry, persist=not dry_run)
+            retry_argv=retry, persist=not dry_run, preview_authority=preview_authority)
         if is_remote_target and placement_policy is not None:
             placement_policy["engine"] = runpod_engine
         target_record = getattr(target_client, 'generation_target', None)
@@ -2182,9 +2199,14 @@ class GenerationFacade:
                        'accepted_inputs': sorted(inputs), 'rejected_inputs': []}
         if source == 'workflow' and candidate.get('license_notice'):
             description['license_notice'] = candidate['license_notice']
+        if version_notices:
+            description['pack_version_notices'] = [
+                {'message': notice['message'], 'details': notice['details']} for notice in version_notices
+            ]
         readiness = readiness_envelope(entry=description, target=(
             pending_target if is_remote_target else target_record),
-                                      issues=compare_versions(recorded, observed))
+            issues=[*compare_versions(recorded, observed),
+                    *(notice['issue'] for notice in version_notices if notice['issue'] is not None)])
         if dry_run:
             preview = dict(plan or {"model": entry_id, "mode": mode})
             preview.update(model=entry_id, mode=mode, reason=("explicitly selected workflow entry" if model is not None or workflow_entry is not None else "highest-ranked ready local entry for the requested kind and mode on the selected target"))
@@ -2224,7 +2246,7 @@ class GenerationFacade:
                 workflow, plan=plan, assets=assets or {},
                 comfy_url=(target_client.target.url if placement.kind == 'attached' and target_client is not None else None),
                 lineage=transport.lineage, source_video=transport.preflight_source_video,
-                approved_files=approved_files)
+                approved_files=approved_files, save_preview_omitted_fields=save_preview_omitted_fields)
             readiness['entry'].update(preview)
             if align == 'trust':
                 readiness['alignment'] = {'mode': 'trust', 'verified': False}

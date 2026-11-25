@@ -363,3 +363,88 @@ def test_invocation_preflight_rejects_unsafe_and_disconnected_prompt_bindings(
         preflight.preflight_invocation(
             workflow, run_inputs={"source_video": "clip.mp4"}
         )
+
+
+def test_saved_entry_preview_omits_only_declared_unsupplied_blank_run_fields(monkeypatch, tmp_path):
+    workflow = tmp_path / "workflow.py"
+    workflow.write_text("workflow = 'fixture'", encoding="utf-8")
+    loaded = _fake_loaded_workflow(prompt="")
+    graph = loaded.resolved.workflow
+    graph.inputs = {**graph.inputs, "prompt": SimpleNamespace(node_id="2", field="prompt")}
+    original_compile = graph.compile
+
+    def compile_blank(_kind, *, run_inputs):
+        api = original_compile(_kind, run_inputs=run_inputs)
+        api["7"]["inputs"]["video"] = ""
+        return api
+
+    graph.compile = compile_blank
+    monkeypatch.setattr("astrid.packs.vibecomfy.production_engine.load_workflow_path",
+                        lambda *_args, **_kwargs: loaded)
+    with pytest.raises(preflight.InvocationPreflightError, match="PROMPT_EMPTY"):
+        preflight.preflight_invocation(workflow, phase="dry-run")
+    omitted = frozenset({("2", "prompt"), ("7", "video")})
+    result = preflight.preflight_invocation(workflow, phase="dry-run", save_preview_omitted_fields=omitted)
+    assert result["run_inputs"] == {}  # no fabricated values
+    with pytest.raises(preflight.InvocationPreflightError, match="PROMPT_EMPTY"):
+        preflight.preflight_invocation(workflow, phase="submission", save_preview_omitted_fields=omitted)
+    # A supplied value, even on a preview, must actually bind and pass.
+    with pytest.raises(preflight.InvocationPreflightError, match="PROMPT_EMPTY"):
+        preflight.preflight_invocation(workflow, run_inputs={"prompt": ""}, phase="dry-run",
+                                       save_preview_omitted_fields=omitted)
+    with pytest.raises(preflight.InvocationPreflightError, match="PROMPT_EMPTY"):
+        preflight.preflight_invocation(workflow, phase="dry-run")
+    # An unrelated omitted field must not waive a blank reachable prompt.
+    with pytest.raises(preflight.InvocationPreflightError, match="PROMPT_EMPTY"):
+        preflight.preflight_invocation(workflow, phase="dry-run",
+                                       save_preview_omitted_fields=frozenset({("7", "video")}))
+
+
+def test_save_preview_preserves_nonblank_positive_default_beside_empty_negative_prompt(monkeypatch, tmp_path):
+    """The setup-walk Z-Image shape: positive/negative CLIP fields share the output."""
+    workflow = tmp_path / "workflow.py"
+    workflow.write_text("workflow = 'fixture'", encoding="utf-8")
+    loaded = _fake_loaded_workflow(prompt="unused")
+    graph = loaded.resolved.workflow
+    graph.inputs = {
+        **graph.inputs,
+        "prompt": SimpleNamespace(node_id="2", field="text"),
+        "negative_prompt": SimpleNamespace(node_id="8", field="text"),
+    }
+    graph.edges = [*graph.edges, SimpleNamespace(from_node="8", to_node="3")]
+    original_compile = graph.compile
+    authored_prompt = "A compact red cube on a clean white tabletop."
+
+    def compile_prompts(_kind, *, run_inputs):
+        api = original_compile(_kind, run_inputs=run_inputs)
+        api["2"] = {"class_type": "CLIPTextEncode",
+                    "inputs": {"text": run_inputs.get("prompt", authored_prompt)}}
+        api["8"] = {"class_type": "CLIPTextEncode", "inputs": {"text": ""}}
+        return api
+
+    graph.compile = compile_prompts
+    monkeypatch.setattr("astrid.packs.vibecomfy.production_engine.load_workflow_path",
+                        lambda *_args, **_kwargs: loaded)
+    scope = frozenset({("2", "text")})
+    # This was falsely refused when the omitted positive default was
+    # filtered out before the empty-prompt check.
+    assert preflight.preflight_invocation(workflow, phase="dry-run",
+                                        save_preview_omitted_fields=scope)["run_inputs"] == {}
+    assert preflight.preflight_invocation(workflow, phase="submission")["run_inputs"] == {}
+
+    # Supplying an explicitly blank positive prompt must not inherit the
+    # omission exemption, including on a read-only preview.
+    with pytest.raises(preflight.InvocationPreflightError, match="PROMPT_EMPTY"):
+        preflight.preflight_invocation(workflow, run_inputs={"prompt": ""},
+                                       phase="dry-run", save_preview_omitted_fields=scope)
+
+    # A reusable entry can omit its truly blank required run prompt; a
+    # concrete invocation of that very graph still refuses.
+    authored_prompt = ""
+    assert preflight.preflight_invocation(workflow, phase="dry-run",
+                                        save_preview_omitted_fields=scope)["run_inputs"] == {}
+    with pytest.raises(preflight.InvocationPreflightError, match="PROMPT_EMPTY"):
+        preflight.preflight_invocation(workflow, phase="submission",
+                                       save_preview_omitted_fields=scope)
+    with pytest.raises(preflight.InvocationPreflightError, match="PROMPT_EMPTY"):
+        preflight.preflight_invocation(workflow, phase="dry-run")

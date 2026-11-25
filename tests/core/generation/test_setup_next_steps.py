@@ -303,3 +303,17 @@ def test_target_record_projection_is_shared_by_envelope_and_repair():
     assert fix["instruction"]["then_argv"] == [
         "astrid", "generate", "targets", "--placement", record.endpoint, "--json",
     ]
+
+
+def test_legacy_target_and_drift_do_not_bypass_explicit_setup_validation():
+    from astrid.core.generation.preflight import compare_versions
+
+    error = generation_error({"code": "COMFY_TARGET_UNAVAILABLE", "message": "down"})
+    warning = compare_versions({"comfyui": "1"}, {"comfyui": "2"})
+    result = readiness_envelope(issues=[*warning, *error.readiness["issues"]])
+    assert result["status"] == "blocked"
+    assert result["fixes"] == []
+    assert "attempt_count" not in result
+    # Opting into the typed contract still demands a linked repair.
+    with pytest.raises(ValueError, match="every setup error needs a linked next step"):
+        readiness_envelope(issues=[*warning, *error.readiness["issues"]], attempt_count=0)

@@ -237,16 +237,27 @@ def test_terminal_exec_error_preserves_task_and_shared_envelope():
     assert preflight.generation_error(payload).to_envelope() == payload
 
 
-def test_replacement_without_the_atomic_vibe_api_blocks_before_write(monkeypatch, capsys):
+def test_replacement_without_the_atomic_vibe_api_blocks_before_write(monkeypatch, capsys, tmp_path):
     import vibecomfy.entries as vibe_entries
+    root = tmp_path / 'entries'
+    monkeypatch.setenv('VIBECOMFY_ENTRIES_DIR', str(root))
+    source = tmp_path / 'workflow.json'
+    source.write_text('{}')
+    before = source.read_bytes()
+
     def import_entry(source, entry_id, directory=None):
         pytest.fail('unsupported replacement wrote an entry')
+
     monkeypatch.setattr(vibe_entries, 'import_as_entry', import_entry)
     monkeypatch.setattr(cli, '_open_client', lambda: pytest.fail('unsupported replacement opened Runtime'))
-    assert cli.main(['workflow', 'unused.py', '--as-entry', 'mine', '--replace', '--json']) == 2
-    payload = json.loads(capsys.readouterr().out)
-    assert payload['issues'][0]['code'] == 'missing_dependency'
-    assert payload['issues'][0]['details']['field'] == 'replace'
+    # The dependency is pinned; the actual keyword call now fails loudly
+    # instead of a second signature-compatibility admission path.
+    with pytest.raises(TypeError, match="unexpected keyword argument 'replace'"):
+        cli.main(['workflow', str(source), '--as-entry', 'mine', '--replace',
+                  '--placement', 'managed', '--json'])
+    assert not root.exists()
+    assert source.read_bytes() == before
+    assert capsys.readouterr().out == ''
 
 
 def test_raw_target_workflow_never_discards_a_prepared_execution_binding(monkeypatch):

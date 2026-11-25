@@ -19,28 +19,76 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
-
-from .consent import consent_scope
 
 from vibecomfy.node_approvals import (
-    NodeApproval as NodeApproval,
-    NodeIdentity as NodeIdentity,
-    PlacementClass as PlacementClass,
     PLACEMENT_CLASSES as PLACEMENT_CLASSES,
-    approval_record as approval_record,
+)
+from vibecomfy.node_approvals import (
+    NodeApproval as NodeApproval,
+)
+from vibecomfy.node_approvals import (
+    NodeIdentity as NodeIdentity,
+)
+from vibecomfy.node_approvals import (
+    PlacementClass as PlacementClass,
+)
+from vibecomfy.node_approvals import (
     approval_matches as approval_matches,
+)
+from vibecomfy.node_approvals import (
+    approval_record as approval_record,
+)
+from vibecomfy.node_approvals import (
     consent_matches as consent_matches,
+)
+from vibecomfy.node_approvals import (
     consent_token as consent_token,
+)
+from vibecomfy.node_approvals import (
     require_approved_nodes as require_approved_nodes,
-    require_approved_nodes as target_approvals,
+)
+from vibecomfy.node_approvals import (
     reviewed_approvals as reviewed_approvals,
+)
+from vibecomfy.node_approvals import (
     validate_approval_record as validate_approval_record,
+)
+from vibecomfy.node_approvals import (
     validate_approvals as _records,
 )
 
+from .consent import consent_scope
+
+# Explicit alias for callers that import the approval gate under its target name.
+target_approvals = require_approved_nodes
+
 APPROVALS_FILENAME = "code-approvals.json"
+
+@dataclass(frozen=True, slots=True)
+class PreviewApprovalAuthority:
+    """Already-authorized hashes bound to one private read-only candidate.
+
+    Constructed by the CLI after authorization, never deserialized from a
+    workflow or supplied by ambient process state. These hashes are not
+    persistent approval records.
+    """
+    entry_id: str
+    bundle: str
+    placement_class: PlacementClass
+    approval_hashes: frozenset[str]
+
+
+def preview_entry_authority(entry, records, placement_class) -> PreviewApprovalAuthority:
+    """Carry exact prior authorization, never manufacture a consent token."""
+    checked = _records(records)
+    if any(record["placement_class"] != placement_class for record in checked):
+        raise ValueError("preview approval placement differs from its candidate")
+    return PreviewApprovalAuthority(
+        entry["id"], str(Path(entry["bundle"]).resolve()), placement_class,
+        frozenset(record["approval_sha256"] for record in checked),
+    )
 
 
 def read_entry_approvals(entry_directory: str | Path) -> list[NodeApproval]:
@@ -76,10 +124,14 @@ def write_entry_approvals(entry_directory: str | Path, records: list[NodeApprova
 
 
 def entry_approval_directory(entry):
-    """Resolve the actual saved entry, never a workflow-authored sidecar path.
+    """Resolve the saved entry directory that owns this row's approvals, or None.
 
-    A contributed built-in row (it carries ``contribution``) has no saved
-    directory beside it, so it persists no approvals; per-run consent still applies.
+    Rule: only a ``user-entry`` row without ``contribution`` can own approvals,
+    and its directory is ``entries_dir()/<id>``. ``load_entry`` records no
+    directory on the row (it resolves only ``bundle``), so the directory counts
+    only when it holds an ``entry.json``. A row with no saved directory (a
+    contributed built-in, or an unsaved row) persists no approvals and returns
+    None; per-run consent still applies. Never a workflow-authored sidecar path.
     """
     if not entry or entry.get("source") != "user-entry" or entry.get("contribution"):
         return None
@@ -88,6 +140,8 @@ def entry_approval_directory(entry):
     directory = entries_dir() / entry["id"]
     if directory.parent != entries_dir() or directory.is_symlink():
         raise ValueError("code approvals require a plain saved entry directory")
+    if not (directory / "entry.json").is_file():
+        return None
     saved = load_entry(directory)
     if saved["id"] != entry["id"] or saved["bundle"] != entry["bundle"]:
         raise ValueError("saved entry changed before code approval")
@@ -133,9 +187,20 @@ def _consent_retry(argv, nodes):
 
 
 def authorize_nodes(nodes, *, placement_class, consent=(), entry=None, retry_argv,
-                    persist=False):
+                    persist=False, preview_authority: PreviewApprovalAuthority | None = None):
     """Obtain one informed yes per exact node; declarations alone approve nothing."""
-    from .preflight import GenerationReadinessError, readiness_envelope
+    from .preflight import GenerationReadinessError, generation_error, readiness_envelope
+
+    if preview_authority is not None:
+        if persist:
+            raise generation_error(ValueError("Preview approval authority cannot persist approvals"),
+                                   code="input_rejected", details={"field": "preview_authority"})
+        if (not isinstance(preview_authority, PreviewApprovalAuthority) or entry is None
+                or not entry.get("bundle") or
+                (entry.get("id"), str(Path(entry["bundle"]).resolve()), placement_class)
+                != (preview_authority.entry_id, preview_authority.bundle, preview_authority.placement_class)):
+            raise generation_error(ValueError("Preview approval authority differs from the selected candidate"),
+                                   code="input_rejected", details={"field": "preview_authority"})
 
     current = [approval_record(node, placement_class=placement_class) for node in nodes]
     # Validate the node set's URL and directory constraints without mutating it.
@@ -143,6 +208,10 @@ def authorize_nodes(nodes, *, placement_class, consent=(), entry=None, retry_arg
     directory = entry_approval_directory(entry)
     saved = read_entry_approvals(directory) if directory is not None else []
     known = {row["approval_sha256"] for row in [*saved, *reviewed_approvals(nodes, placement_class=placement_class)]}
+    if preview_authority is not None:
+        # Only the read-only admission decision sees these hashes. The
+        # persisted-record collection never includes preview authority.
+        known.update(preview_authority.approval_hashes)
     choices = [scope for scope in consent if consent_scope(scope) != "user_env"]
     expected_tokens = {consent_token(record) for record in current}
     supplied = {scope.removeprefix("code=") for scope in choices if scope.startswith("code=")}

@@ -12,7 +12,7 @@ from concurrent.futures import CancelledError
 from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 from .engine_contracts import (
@@ -24,8 +24,10 @@ from .engine_contracts import (
     SourcePatch,
 )
 from .engine_local_endpoint import DEFAULT_ENGINE
-
 from .node_approvals import NodeApproval as NodeApproval
+
+if TYPE_CHECKING:
+    from .interfaces import ReadinessEnvelope
 
 SCHEMA = "astrid.managed-engine-preparation.v1"
 _ENGINE_STOP_TIMEOUT_SECONDS = 30.0
@@ -195,6 +197,38 @@ def native_failure_inputs(stdout: str, reason: str, labels: tuple[tuple[str, str
         if len(matches) == 16:
             break
     return tuple(matches)
+
+
+def native_unknown_input_readiness(inputs: tuple[dict[str, str], ...]) -> ReadinessEnvelope:
+    """Project graph-verified doctor findings into a single repair step.
+
+    ``inputs`` comes from native_failure_inputs, not remote prose or an
+    arbitrary target-provided label. Preserve the graph's original input
+    name; only the person can decide the compatible replacement.
+    """
+    from .preflight import readiness_envelope
+
+    if not inputs:
+        raise ValueError("unknown input readiness requires verified graph labels")
+    fix = {
+        "id": "review_workflow_inputs", "who": "human", "scope": "read_only",
+        "details": {},
+        "instruction": {
+            "step": ("The selected target does not accept the reported workflow input(s). "
+                     "Review the target schema and edit the original workflow to use the supported inputs, "
+                     "then inspect the revised workflow before retrying."),
+            "then_argv": ["astrid", "generate", "describe", "<WORKFLOW>", "--json"],
+        },
+        "placeholders": {"WORKFLOW": "The path to the original workflow file, not the managed scratch copy"},
+    }
+    issues = [
+        {"code": "unknown_input", "severity": "error",
+         "message": (f"Node {row['node_id']} ({row['class_type']}) does not accept "
+                     f"input {row['input']!r} on the selected target."),
+         "details": {**row, "field": row["input"]}, "fix_ids": [fix["id"]]}
+        for row in inputs
+    ]
+    return readiness_envelope(issues=issues, fixes=[fix], attempt_count=1)
 
 
 @contextmanager
@@ -892,13 +926,17 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
                 hashlib.sha256(result.stdout.encode()).hexdigest(),
                 hashlib.sha256(result.stderr.encode()).hexdigest())
             detail = f", missing_classes={json.dumps(classes)}" if classes else ""
+            unknown_inputs = ()
             if reason == "workflow_validation_failed":
                 unknown_inputs = native_failure_inputs(result.stdout, reason, self._workflow_input_labels)
                 if unknown_inputs:
                     detail += f", unknown_inputs={json.dumps(unknown_inputs)}"
             where = ("its whole output is the run logs preparation.{0}.stdout and preparation.{0}.stderr"
                      .format(step) if self._keep_step_output(step, result) else "inspect the host log for this attempt")
-            error = IntegrityError(f"managed alignment command failed (step={step}, reason={reason}{detail}); {where}")
+            error = IntegrityError(
+                f"managed alignment command failed (step={step}, reason={reason}{detail}); {where}",
+                readiness=native_unknown_input_readiness(unknown_inputs) if unknown_inputs else None,
+            )
             if step == "fetch" and any(re.search(
                     r"\[Errno (?:28|122)\]|\b(?:EDQUOT|ENOSPC)\b|Disk quota exceeded|No space left on device",
                     text, re.IGNORECASE) for text in (result.stdout, result.stderr)):
