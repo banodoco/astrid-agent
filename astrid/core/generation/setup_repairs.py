@@ -1,9 +1,8 @@
-"""Map producer repair facts into the single closed setup contract.
+"""Construct explicit, named repairs for the single closed setup contract.
 
-This is a projection, never a validation exemption. Older callers still
-supply scope/action/argv facts while their owning functions land. Explicit
-links and modern fixes are not guessed or repaired; the validator must
-reject malformed ones. No proposed action grants installation authority.
+Producers choose their own issue links. The envelope validator rejects
+unlinked issues or malformed fixes; no compatibility projection supplies them.
+No proposed action grants installation authority.
 """
 from __future__ import annotations
 
@@ -11,7 +10,7 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
-from .setup_contract import canonical_issue_code, repair_step
+from .setup_contract import repair_step
 
 
 def project_target_record(target: Any) -> Any:
@@ -85,75 +84,6 @@ def native_setup_fix(issue, *, entry=None, target=None, task_id=None, fix_id="in
             fix["instruction"]["then_argv"] = ["astrid", "tasks", "logs", task_id]
             fix["placeholders"] = {}
     return fix
-
-
-def _project_legacy_fix(fix, fix_id, *, entry, target):
-    """Convert only the previous closed scope/details/argv shape."""
-    if set(fix) - {"scope", "details", "argv"} or "scope" not in fix:
-        raise ValueError("setup fix must use the declared contract")
-    details, scope = fix.get("details", {}), fix["scope"]
-    if not isinstance(details, dict):
-        raise ValueError("setup fix details must be an object")
-    if "argv" in fix and scope != "attached_target":
-        # Preserve old concrete commands and scope. A user-environment or
-        # paid action is a person's decision, never an automatic recovery.
-        argv = fix["argv"]
-        if not isinstance(argv, list):
-            raise ValueError("setup fix argv must be an array")
-        return {"id": fix_id, "who": "agent" if scope == "read_only" else "human",
-                "scope": scope, "details": details, "argv": argv}
-    action = details.get("action") or details.get("guidance")
-    if not isinstance(action, str) or not action.strip():
-        raise ValueError("legacy manual setup fix requires explicit guidance")
-    return manual_setup_fix(fix_id, action, entry=entry, target=target,
-                            scope=scope, details=details)
-
-
-def project_setup_facts(issues, fixes, *, entry=None, target=None):
-    """Normalize old producer facts, then let the one validator check all links.
-
-    Already linked issues and declared modern fixes are kept verbatim apart
-    from native code aliases. The remaining old fixes may serve one issue,
-    a shared repair, or a one-to-one ordered set. Ambiguous relationships are
-    refused rather than guessed. Modern producers must supply explicit links.
-    """
-    for issue in issues:
-        native = issue.get("code")
-        if isinstance(native, str):
-            normalized = canonical_issue_code(native)
-            if normalized != native:
-                issue["code"] = normalized
-                issue.setdefault("details", {}).setdefault("engine_code", native)
-    used = {fix.get("id") for fix in fixes if isinstance(fix.get("id"), str)}
-
-    def fresh_id(index):
-        key = f"setup-{index}"
-        while key in used:
-            key += "-next"
-        used.add(key)
-        return key
-
-    legacy_ids = []
-    for index, fix in enumerate(fixes):
-        if not set(fix) & {"id", "who", "instruction", "placeholders"}:
-            fix_id = fresh_id(index + 1)
-            fixes[index] = _project_legacy_fix(fix, fix_id, entry=entry, target=target)
-            legacy_ids.append(fix_id)
-
-    unlinked = [issue for issue in issues if issue.get("severity") == "error" and "fix_ids" not in issue]
-    if legacy_ids:
-        if len(unlinked) == 1 or len(legacy_ids) == 1:
-            for issue in unlinked:
-                issue["fix_ids"] = list(legacy_ids)
-        elif len(unlinked) == len(legacy_ids):
-            for issue, fix_id in zip(unlinked, legacy_ids):
-                issue["fix_ids"] = [fix_id]
-        else:
-            raise ValueError("legacy setup fixes have ambiguous issue ownership")
-    # Missing or explicitly dangling modern links are never repaired here.
-    # The native exception adapter selects its own named repair before
-    # calling readiness_envelope; the validator rejects missing links.
-    return issues, fixes
 
 
 def declare_redacted_action_values(envelope):
