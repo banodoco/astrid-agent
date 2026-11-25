@@ -219,10 +219,22 @@ def move(ctx, command):
         raise CommandError("moved interval precedes its occurrence", kind='occurrence_boundary', ref=owner)
     _provenance(ctx, owner)
     ctx.bind('move.target', ref, dependencies=['move.images', 'move.quantization', *source_dependencies])
-    ctx.write(ref, ['at_ms'] if 'at_ms' in clip and 'at' not in clip else ['at'],
-              local * 1000 if 'at_ms' in clip and 'at' not in clip else local)
-    if 'at' in clip and 'at_ms' in clip:
-        ctx.write(ref, ['at_ms'], local * 1000)
+    if 'at_ms' in clip:
+        # Import locally: occurrence creation shares number/rate from this module.
+        from .native_occurrence_create import frame_snapped_start_ms
+
+        start_ms = frame_snapped_start_ms(on, 1, fps)
+        if owner != 'parent':
+            origin_ms = (row.get('placement') or {}).get('start_ms')
+            if origin_ms is None:
+                origin_ms = row.get('at_ms')
+            # Preserve exact half-even ties in a legacy fractional occurrence start.
+            start_ms = round(Fraction(start_ms) - Fraction(str(origin_ms or 0)))
+        if 'at' in clip:
+            ctx.write(ref, ['at'], start_ms / 1000)
+        ctx.write(ref, ['at_ms'], start_ms)
+    else:
+        ctx.write(ref, ['at'], local)
     ctx.object(ref, ['app'])
     ctx.object(ref, ['app', 'astrid'])
     for prefix in (['app'], ['app', 'astrid']):
@@ -230,6 +242,8 @@ def move(ctx, command):
             ctx.clear(ref, prefix + [key])
     ctx.write(ref, ['app', 'astrid', 'fixed_start'], True)
     ctx.write(ref, ['app', 'astrid', 'for'], duration)
+    # Placement's extent check must use the exact frame time, before ms rounding.
+    return local
 
 
 def track_create(ctx, command):
