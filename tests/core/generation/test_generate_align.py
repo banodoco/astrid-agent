@@ -668,7 +668,7 @@ def test_real_node_installer_checks_out_locked_commit_on_cpu_without_network(fak
         '            # The redirected local clone already supplies the locked object.\n'
         '            replacement = original(["git", "-C", argv[2], "rev-parse", "refs/replace/" + locked_sha], check=True, capture_output=True, text=True)\n'
         '            assert replacement.stdout.strip() == fixture_sha\n'
-        '            original(["git", "-C", argv[2], "cat-file", "-e", locked_sha + "^{commit}"], check=True, capture_output=True)\n'
+        '            original(["git", "-C", argv[2], "cat-file", "-e", fixture_sha + "^{commit}"], check=True, capture_output=True)\n'
         '            Path(fetch_seen).write_text(locked_sha)\n'
         '            return subprocess.CompletedProcess(argv, 0, "", "")\n'
         '        raise AssertionError("network fetch in CPU fixture")\n'
