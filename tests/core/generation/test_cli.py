@@ -514,9 +514,13 @@ def test_public_launch_forwards_per_call_controls_without_runtime(
 ):
     from astrid.core.generation.preflight import readiness_envelope
     calls = []
+    fix = {'id': 'inspect-launch', 'who': 'human', 'scope': 'read_only',
+           'instruction': {'step': 'Start manually and inspect the selected target.',
+                           'then_argv': ['astrid', 'generate', 'targets', '--placement', 'auto', '--json']}}
     payload = readiness_envelope(issues=[] if status == 'ready' else [{
         'code': 'target_unreachable', 'severity': 'error', 'message': 'start manually',
-        'details': {'manual_start': True, 'reason': 'launch_timeout'}}])
+        'details': {'manual_start': True, 'reason': 'launch_timeout'}, 'fix_ids': [fix['id']]}],
+        fixes=[] if status == 'ready' else [fix])
     monkeypatch.setattr(cli, '_generate_facade', lambda: SimpleNamespace(
         launch=lambda **kwargs: calls.append(kwargs) or payload))
     monkeypatch.setattr(cli, '_open_client', lambda: pytest.fail('launch opened Runtime'))
