@@ -260,3 +260,58 @@ def _prove_birth(tmp_path, monkeypatch, grouped):
         assert latest['head_revision_id'] == expected_head['parent_revision']['revision_id']
     finally:
         service.close()
+
+
+def test_birth_stores_frame_snapped_integer_ms_at_default_fps():
+    """`on=4.25` at 30 fps is frame 128 (half-up), stored as integer ms, not 4266.67."""
+    from astrid.sdk.timeline._command_state import State
+    from tests.editing_conformance.test_recipe_occurrence_create import birth, empty_bundle
+
+    original = empty_bundle()
+    born = execute(original, [birth(original, on=4.25, duration=4)]).bundle
+    occurrence = State(born).occurrence(OWNER)
+    start, duration = occurrence['placement']['start_ms'], occurrence['duration_ms']
+    assert type(start) is int and start == 4267
+    assert type(duration) is int and duration == 4000
+    assert round(start / 1000 * 30) == 128
+
+
+def test_shared_placement_start_ms_helper_is_frame_snapped_integer():
+    """Both occurrence.place-shared sites store parent_start_ms(); drive it on parent output."""
+    from astrid.sdk.timeline._command_state import ABSENT
+    from astrid.sdk.timeline.native_occurrence_create import parent_start_ms
+
+    class Ctx:
+        def __init__(self, output):
+            self.output = output
+            self.state = self
+
+        def read(self, ref, path):
+            return {} if self.output is ABSENT else self.output
+
+        def get(self, ref, path):
+            return self.output
+
+    start = parent_start_ms(Ctx(ABSENT), 4.25, 4)
+    assert type(start) is int and start == 4267
+    assert parent_start_ms(Ctx({'fps': {'numerator': 30000, 'denominator': 1001}}), 1, 4) == 1001
+
+
+@pytest.mark.parametrize('fps', [None, 24, 25, 60, {'numerator': 30000, 'denominator': 1001}])
+def test_adjacent_whole_second_births_are_integer_and_within_one_ms(fps):
+    """start_ms is half-even frame-snapped; duration_ms is not, so a chain of whole-second
+    occurrences may differ from the next start_ms by at most 1 ms."""
+    from astrid.sdk.timeline._command_state import State
+    from tests.editing_conformance.test_recipe_occurrence_create import birth, empty_bundle
+
+    bundle = empty_bundle(fps=fps)
+    rows = []
+    for index in range(6):
+        command = birth(bundle, on=index * 3, duration=3, occurrence_id=f'o{index}', shot_id=f's{index}')
+        bundle = execute(bundle, [command]).bundle
+        rows.append(State(bundle).occurrence(f'occurrence:o{index}'))
+    for row in rows:
+        for value in (row['placement']['start_ms'], row['duration_ms']):
+            assert isinstance(value, int) and not isinstance(value, bool)
+    for a, b in zip(rows, rows[1:]):
+        assert abs(a['placement']['start_ms'] + a['duration_ms'] - b['placement']['start_ms']) <= (17 if isinstance(fps, dict) else 1)

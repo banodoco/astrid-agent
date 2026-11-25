@@ -47,7 +47,7 @@ import time
 import zipfile
 from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import asdict, dataclass, field, is_dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from functools import partial
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType, SimpleNamespace
@@ -75,6 +75,11 @@ from astrid.core.execution.platform_helpers import (
     process_control_support,
 )
 from astrid.core.execution.stall_diagnostics import process_stall_diagnostics
+from astrid.core.rendering.revision_notice import (
+    NOTICE_ACK_NAME,
+    pending_notice_phase,
+    verified_revision_warnings,
+)
 from astrid.core.source_identity import (
     _source_digest,
     source_checkout_closure,
@@ -1263,6 +1268,34 @@ def _completed_process_evidence(
     }
 
 
+def _snapshot_verified_render_outputs(output_root: Path, attempt_output_root: Path) -> Path:
+    """Copy a validated render receipt and its exact bytes before cleanup.
+
+    Descendant custody may remain uncertain after the original command exits.
+    Its mutable output paths cannot then supply the successful publication.
+    """
+    manifest_path = output_root / "manifest.json"
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        raise HostError("render result manifest receipt is unavailable")
+    try:
+        encoded = manifest_path.read_bytes()
+        manifest = json.loads(encoded)
+        if not isinstance(manifest, dict):
+            raise HostError("render result manifest must be an object")
+        validated = validate_result_manifest(manifest, staging_root=output_root)
+        snapshot = Path(tempfile.mkdtemp(prefix=".verified-render-", dir=attempt_output_root))
+        for output in validated.outputs:
+            destination = snapshot / output.path
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(output_root / output.path, destination)
+        (snapshot / "manifest.json").write_bytes(encoded)
+        # Catch a writer changing any source between validation and copy.
+        validate_result_manifest(manifest, staging_root=snapshot)
+    except (OSError, ValueError, AstridError) as exc:
+        raise HostError(f"render output verification failed: {exc}") from exc
+    return snapshot
+
+
 def _bind_host_owned_command_outputs(
     record: "CapabilityRecord", values: dict[str, Any], *, output_root: Path,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -1969,13 +2002,16 @@ def _record_may_render(record: 'CapabilityRecord') -> bool:
 def _launch_worker_probe_environments(pack_roots: tuple[Path, ...], environment: Mapping[str, str],
                                      capability_matrix: Path | None = None,
                                      *, remotion_only: bool = False,
-                                     installed_root: Path | None = None) -> list[dict[str, str]]:
+                                     installed_root: Path | None = None,
+                                     dispatch_only: bool = False) -> list[dict[str, str]]:
     """Project only fixed launch-known inputs; never expand task placeholders.
 
     With ``remotion_only`` just the worker environments of capabilities that
     can render are kept (matrix/metadata ``requires_remotion`` or the
     rendering pack itself); the host baseline variant is always present.
     A render in any other context is refused by ``_validated_runtime``.
+    ``dispatch_only`` selects the route the host actually executes for each
+    record; the default retains both projections for callers inspecting them.
     """
     from astrid.core.execution.executor.folder import (
         discover_folder_executor_roots,
@@ -2015,10 +2051,11 @@ def _launch_worker_probe_environments(pack_roots: tuple[Path, ...], environment:
     # local orchestration action is deliberately not a host worker definition.
     from astrid.core.pack.discovery import discover_pack_metadata
     from astrid.sdk.actions import action_executor_definition
-    for discovered_pack in discover_pack_metadata(
+    discovered_packs = discover_pack_metadata(
         project_root=pack_roots[0] if pack_roots else Path.cwd(),
         extra_pack_roots=tuple(str(root) for root in pack_roots),
-    ):
+    )
+    for discovered_pack in discovered_packs:
         pack = discovered_pack.pack
         pack_root = pack.root.resolve()
         if not any(pack_root == root or pack_root.is_relative_to(root) for root in pack_roots):
@@ -2080,11 +2117,19 @@ def _launch_worker_probe_environments(pack_roots: tuple[Path, ...], environment:
             if 'PYTHONPATH' not in fixed:
                 native.pop('PYTHONPATH', None)
         else:
-            native[ASTRID_PACKS_PATH] = os.pathsep.join(str(root) for root in pack_roots)
-            native['PYTHONPATH'] = os.pathsep.join(dict.fromkeys((
-                str(Path(__file__).resolve().parents[3]), *dependencies,
-                *(str(root) for root in _admitted_python_roots(record.source_root, record.definition)))))
-        variants.append(native)
+            native = _worker_import_environment(record, native, kind='native', pack_roots=pack_roots)
+        if dispatch_only and command is None:
+            selected = None
+            if record.definition.metadata.get('action_invocation'):
+                owner = object.__new__(GenericPackHost)
+                owner._pack_source_roots = {item.pack.id: item.pack.root.resolve() for item in discovered_packs}
+                selected = owner._selected_pack_map(record)
+            native = _worker_import_environment(record, native if installed else projected, kind='native', pack_roots=pack_roots,
+                                                python_roots=(), selected=selected, installed=installed)
+        if not dispatch_only or command is None:
+            variants.append(native)
+        if dispatch_only and command is None:
+            continue
         # The command builder supplies a canonical default, then command/env
         # and required nonsecret configuration override it, in the real order.
         command_defaults = {} if installed else {
@@ -2101,12 +2146,69 @@ def _launch_worker_probe_environments(pack_roots: tuple[Path, ...], environment:
             declared_passthrough=public_passthrough)
         if _record_may_render(record):
             _validate_remotion_worker_environment(command_variant)
-        if not installed:
-            command_variant['PYTHONPATH'] = _command_worker_pythonpath(record, command_variant['PYTHONPATH'])
-        elif ASTRID_PACKS_PATH not in fixed:
+        if installed and ASTRID_PACKS_PATH not in fixed:
             command_variant.pop(ASTRID_PACKS_PATH, None)
+        selected = None
+        if record.definition.metadata.get('action_invocation'):
+            owner = object.__new__(GenericPackHost)
+            owner._pack_source_roots = {item.pack.id: item.pack.root.resolve() for item in discovered_packs}
+            selected = owner._selected_pack_map(record)
+        command_variant = _worker_import_environment(record, command_variant, kind='command', selected=selected, installed=installed)
         variants.append(command_variant)
     return variants
+
+
+def _is_selected_command(record: 'CapabilityRecord') -> bool:
+    command = record.definition.command
+    pack_root = Path(str(record.definition.metadata.get("pack_root") or record.source_root)).resolve()
+    return bool(record.definition.metadata.get("action_invocation")
+                and not pack_root.is_relative_to(Path(__file__).resolve().parents[2] / "packs")
+                and command and command.argv and command.argv[0] in {"{python_exec}", sys.executable})
+
+
+def _worker_import_environment(record: 'CapabilityRecord', environment: Mapping[str, str], *,
+                                kind: str, pack_roots: tuple[Path, ...] = (),
+                                python_roots: tuple[str, ...] | None = None,
+                                network_hook_roots: tuple[str, ...] = (),
+                                selected: Mapping[str, Mapping[str, str]] | None = None,
+                                relocations: Mapping[str, Mapping[str, str]] | None = None,
+                                installed: bool = False) -> dict[str, str]:
+    """Apply the same worker import selection at validation and dispatch."""
+    env = dict(environment)
+    if selected is not None:
+        from astrid.core.pack.imports import selected_pack_environment
+        selection_env = selected_pack_environment(selected, verified_relocations=relocations)
+    else:
+        selection_env = {}
+    if kind == 'native':
+        if not installed:
+            env[ASTRID_PACKS_PATH] = os.pathsep.join(str(root) for root in pack_roots)
+            roots = python_roots if python_roots is not None else tuple(
+                str(root) for root in _admitted_python_roots(record.source_root, record.definition))
+            env['PYTHONPATH'] = os.pathsep.join(dict.fromkeys((
+                *network_hook_roots, str(Path(__file__).resolve().parents[3]),
+                *_dependency_pythonpath(environment), *roots)))
+        env.update(selection_env)
+        return env
+    if kind != 'command':
+        raise HostError('unknown internal readiness worker projection')
+    if selected is not None:
+        env.update(selection_env)
+        if not installed:
+            env['PYTHONPATH'] = os.pathsep.join((*network_hook_roots,
+                str(Path(__file__).resolve().parents[3]), *_dependency_pythonpath(environment)))
+    elif not installed:
+        existing = env.get('PYTHONPATH', '')
+        if network_hook_roots:
+            hook_prefix = os.pathsep.join(network_hook_roots)
+            if existing == hook_prefix:
+                existing = ''
+            elif existing.startswith(hook_prefix + os.pathsep):
+                existing = existing[len(hook_prefix) + 1:]
+            else:
+                raise HostError('host network hook context differs before command dispatch')
+        env['PYTHONPATH'] = os.pathsep.join((*network_hook_roots, _command_worker_pythonpath(record, existing)))
+    return env
 
 
 def _command_worker_pythonpath(record: 'CapabilityRecord', existing: str) -> str:
@@ -5297,7 +5399,22 @@ class RuntimeProtocolClient:
         # Waiting for it must not strand the attempt's deadline observer.
         timeout = self.execution_policy.authority_window_seconds / 150
         remaining = timeout if deadline is None else min(timeout, max(0.0, deadline - time.monotonic()))
-        if not self._heartbeat_lock.acquire(timeout=remaining):
+        lock_wait_started = time.monotonic()
+        acquired = self._heartbeat_lock.acquire(timeout=remaining)
+        lock_wait_seconds = time.monotonic() - lock_wait_started
+
+        def log_lock_wait(reason):
+            try:
+                log_lease_diagnostic(
+                    task_id=str(task_id), attempt_id=attempt_id, category="heartbeat_lock_wait",
+                    last_acknowledged_heartbeat=None, elapsed_seconds=None,
+                    reason=reason, wait_seconds=lock_wait_seconds, pump=True,
+                )
+            except Exception:  # noqa: BLE001 - diagnostics must not change heartbeat behavior
+                pass
+
+        if not acquired:
+            log_lock_wait("timed_out")
             raise TimeoutError("runtime heartbeat authority is busy")
         try:
             self._heartbeat_sequence += 1
@@ -5316,6 +5433,8 @@ class RuntimeProtocolClient:
             return self._lifecycle_client(deadline=deadline).heartbeat_attempt(attempt_id, **payload)
         finally:
             self._heartbeat_lock.release()
+            if lock_wait_seconds >= 0.001:
+                log_lock_wait("acquired")
 
     def claim(self, task_id: str, worker_id: str, lease_token: str):
         raise HostError("per-task claim is not a canonical operation; use claim_task")
@@ -6818,8 +6937,8 @@ class GenericPackHost:
     def _latch_cleanup_uncertainty(self, reason: str) -> None:
         """Record a cleanup doubt for doctor; the host keeps accepting work.
 
-        The caller fails the affected task and keeps its attempt folder.  The
-        note is written beside the host so another process can name what remains.
+        The caller keeps the attempt; an independently verified render may
+        publish its copied outputs. The note names the unresolved custody.
         """
         note = reason or "cleanup outcome unknown"
         if note not in self._unresolved_task_scopes:
@@ -6872,7 +6991,7 @@ class GenericPackHost:
             str(root), observed, self.execution_policy.evidence_cap_bytes)
         self._publish_evidence_status()
 
-    def _renderer_task_lease(self, environment: Mapping[str, str], attempt: Path):
+    def _renderer_task_lease(self, environment: Mapping[str, str], attempt: Path, *, source=None):
         from .remotion_host_session import HostRemotionSession
         # Never hold _process_lock across owner operations: owner callbacks
         # acquire it when retaining/draining the original child.
@@ -6888,7 +7007,7 @@ class GenericPackHost:
                     retire=lambda root: self.execution_policy.evidence_budget.release(str(root)),
                     report=self._latch_cleanup_uncertainty, holds=self.warm_holds)
             return self._remotion_host_session.lease(
-                environment, attempt=attempt, requested_idle=self._requested_idle_seconds)
+                environment, attempt=attempt, requested_idle=self._requested_idle_seconds, source=source)
 
     def _hold_session_slot(self) -> WarmLease:
         """Hold the session slot for one task, cancelling any idle expiry.
@@ -9266,6 +9385,7 @@ class GenericPackHost:
         attempt: Path,
         generation_intent: Mapping[str, Any] | None = None,
         unselected_generation_port: str | None = None,
+        output_root: Path | None = None,
     ) -> list[dict[str, Any]]:
         """Bind validated harvest descriptors to their declared output ports."""
         outputs: list[dict[str, Any]] = []
@@ -9345,9 +9465,9 @@ class GenericPackHost:
             # reconstructed after this ephemeral attempt is cleaned up. Keep
             # that name in the runtime's existing filename field rather than
             # widening the settlement schema with a new path property.
-            output_root = (attempt / "outputs").resolve()
+            filename_root = (output_root if output_root is not None else attempt / "outputs").resolve()
             try:
-                relative_filename = path.relative_to(output_root).as_posix()
+                relative_filename = path.relative_to(filename_root).as_posix()
             except ValueError:
                 relative_filename = path.name
             output = {
@@ -9663,6 +9783,8 @@ class GenericPackHost:
         network_broker: _NetworkBrokerContext | None = None,
         network_policy: Mapping[str, Any] | None = None,
         readiness_worker_kind: str = "native",
+        selected_command_map: Mapping[str, Mapping[str, str]] | None = None,
+        selected_command_relocations: Mapping[str, Mapping[str, str]] | None = None,
         allow_runtime_connection: bool = True,
         align: str | None = None,
         generation_entry: str | None = None,
@@ -9893,20 +10015,20 @@ class GenericPackHost:
                     raise HostError('host network hook context differs before readiness validation')
             if readiness_worker_kind not in {'native', 'command'}:
                 raise HostError('unknown internal readiness worker projection')
-            if os.environ.get('ASTRID_HOST_EXECUTION_PROFILE') == 'installed':
-                if readiness_path:
-                    readiness_env['PYTHONPATH'] = readiness_path
-                else:
-                    readiness_env.pop('PYTHONPATH', None)
-            elif readiness_worker_kind == 'command':
-                readiness_env['PYTHONPATH'] = _command_worker_pythonpath(record, readiness_path)
-            elif readiness_worker_kind == 'native':
-                readiness_env[ASTRID_PACKS_PATH] = os.pathsep.join(str(root) for root in self.pack_roots)
-                readiness_env['PYTHONPATH'] = os.pathsep.join(dict.fromkeys((
-                    str(Path(__file__).resolve().parents[3]), *_dependency_pythonpath(),
-                    *(str(root) for root in _admitted_python_roots(record.source_root, record.definition)))))
+            if readiness_path:
+                readiness_env['PYTHONPATH'] = readiness_path
             else:
-                raise HostError('unknown internal readiness worker projection')
+                readiness_env.pop('PYTHONPATH', None)
+            installed = os.environ.get('ASTRID_HOST_EXECUTION_PROFILE') == 'installed'
+            selected = (selected_command_map if readiness_worker_kind == 'command'
+                        else (admission or {}).get('selected_pack_map') or None)
+            relocations = (selected_command_relocations if readiness_worker_kind == 'command'
+                           else (admission or {}).get('verified_pack_relocations'))
+            native_roots = (tuple(str(root) for root in (admission or {}).get('python_path_roots', ()))
+                            if admission is not None and readiness_worker_kind == 'native' else None)
+            readiness_env = _worker_import_environment(
+                record, readiness_env, kind=readiness_worker_kind, pack_roots=self.pack_roots,
+                python_roots=native_roots, selected=selected, relocations=relocations, installed=installed)
             from astrid.core.rendering.remotion_runtime import _validated_runtime
             try:
                 _validated_runtime(Path(env[ASTRID_REMOTION_PROJECT_DIR]), environment=readiness_env)
@@ -10207,9 +10329,7 @@ class GenericPackHost:
         if command is None:
             raise HostError(f"capability {record.id!r} has no dispatchable command")
         pack_root = Path(str(record.definition.metadata.get("pack_root") or record.source_root)).resolve()
-        selected_command = (bool(record.definition.metadata.get("action_invocation"))
-                            and not pack_root.is_relative_to(Path(__file__).resolve().parents[2] / "packs")
-                            and bool(command.argv) and command.argv[0] in {"{python_exec}", sys.executable})
+        selected_command = _is_selected_command(record)
         if selected_command:
             from astrid.core.pack.imports import pack_command_args
 
@@ -10321,6 +10441,8 @@ class GenericPackHost:
         # boundary.  In particular, an unrelated ambient API key must never
         # leak into a provider subprocess.
         package_parent = str(Path(__file__).resolve().parents[3])
+        selected_map = ((admission or {}).get("selected_pack_map") or self._selected_pack_map(record)) if record.definition.metadata.get("action_invocation") else None
+        selected_relocations = (admission or {}).get("verified_pack_relocations", {}) if selected_map is not None else None
         env, secrets = self._child_environment(
             record,
             attempt,
@@ -10330,6 +10452,9 @@ class GenericPackHost:
             align=align,
             generation_entry=generation_entry,
             managed_preparation=managed_preparation,
+            readiness_worker_kind="command",
+            selected_command_map=selected_map,
+            selected_command_relocations=selected_relocations,
             network_policy=(
                 _network_policy(record, inputs)
                 if record.id == "vibecomfy.run" and inputs.get("comfy_url") else None
@@ -10364,8 +10489,15 @@ class GenericPackHost:
         from astrid.core.rendering.verified_source import PreparedTimelineInputs
 
         PreparedTimelineInputs.handoff_source(prepared_inputs, env)
-        if os.environ.get('ASTRID_HOST_EXECUTION_PROFILE') != 'installed':
-            env['PYTHONPATH'] = _command_worker_pythonpath(record, env.get('PYTHONPATH', ''))
+        network_hook_roots = (str(attempt / '.astrid-network-hook'),) if env.get('ASTRID_NETWORK_POLICY') else ()
+        if network_hook_roots:
+            hook_prefix = network_hook_roots[0]
+            inherited_path = env.get('PYTHONPATH', '')
+            if inherited_path != hook_prefix and not inherited_path.startswith(hook_prefix + os.pathsep):
+                raise HostError('host network hook context differs before command dispatch')
+        env = _worker_import_environment(record, env, kind='command', selected=selected_map, relocations=selected_relocations,
+                                          network_hook_roots=network_hook_roots,
+                                          installed=os.environ.get('ASTRID_HOST_EXECUTION_PROFILE') == 'installed')
         cwd = _confined_cwd(
             binding.cwd,
             attempt=attempt,
@@ -10419,17 +10551,14 @@ class GenericPackHost:
             worker_index = argv.index("astrid.core.execution.generic_host_worker") + 1
             argv[worker_index:worker_index] = ["--external-source-fd", str(source_channel.fileno())]
             # The descriptor proves Runtime selection/custody; execution reads raw source.
-            env["PYTHONPATH"] = os.pathsep.join((package_parent, *_dependency_pythonpath()))
+            if os.environ.get('ASTRID_HOST_EXECUTION_PROFILE') != 'installed':
+                env["PYTHONPATH"] = os.pathsep.join((*network_hook_roots, package_parent, *_dependency_pythonpath()))
         if selected_command:
             control = {"pack_id": str(record.definition.metadata["source_pack"]), "root": str(pack_root),
                        "source_digest": (admission or {}).get("source_digest") or _source_digest_for_roots((pack_root,)),
                        "argv": selected_arguments,
-                       "map": (admission or {}).get("selected_pack_map") or self._selected_pack_map(record),
-                       "verified_relocations": (admission or {}).get("verified_pack_relocations", {})}
-            from astrid.core.pack.imports import selected_pack_environment
-
-            env.update(selected_pack_environment(control["map"],
-                                                 verified_relocations=control["verified_relocations"]))
+                       "map": selected_map,
+                       "verified_relocations": selected_relocations}
             # pack_command_args accepts a leading -u; only the interpreter can
             # apply it (the worker re-applies -B itself), so carry it over.
             leading = list(selected_arguments)
@@ -10446,13 +10575,14 @@ class GenericPackHost:
                 argv[worker_index:worker_index] = ["--external-source-fd", str(source_channel.fileno())]
             # Keep the host-created network hook visible to strict startup, as
             # invoke_capability does; arbitrary child PYTHONPATH stays excluded.
-            network_hook_roots = (str(attempt / ".astrid-network-hook"),) if env.get("ASTRID_NETWORK_POLICY") else ()
-            env["PYTHONPATH"] = os.pathsep.join((*network_hook_roots, package_parent, *_dependency_pythonpath()))
+            if os.environ.get('ASTRID_HOST_EXECUTION_PROFILE') != 'installed':
+                env["PYTHONPATH"] = os.pathsep.join((*network_hook_roots, package_parent, *_dependency_pythonpath()))
         remotion_lease = None
         if record.id == "rendering.timeline_visualize":
             if not argv or Path(argv[0]).resolve() != Path(sys.executable).resolve():
                 raise HostError("renderer command requires the admitted Python interpreter")
-            remotion_lease = self._renderer_task_lease(env, attempt)
+            remotion_lease = self._renderer_task_lease(
+                env, attempt, source=getattr(prepared_inputs, "timeline_source", None))
         import_receipt = None
         if record.id == "vibecomfy.validate":
             from ._child_import_receipt import ChildImportReceipt
@@ -10594,17 +10724,36 @@ class GenericPackHost:
                         # The finally block signals the still-live group.
                         raise HostCancelled(f"capability {record.id!r} cancelled")
                 time.sleep(0.05)
-            cleanup_once()
-            output_capture.finish()
-            output_finished = True
-            output_capture.persist()
+            render_manifest_present = False
+            if render_scope:
+                uncertainty = getattr(process, "_astrid_tree_uncertain", None)
+                if uncertainty is not None:
+                    raise CleanupUncertainError(uncertainty)
+                try:
+                    (output_root / "manifest.json").lstat()
+                except FileNotFoundError:
+                    pass
+                else:
+                    render_manifest_present = True
+            if not render_manifest_present:
+                # Legacy declared-file renders keep the original cleanup,
+                # capture and harvest order, including every failure path.
+                cleanup_once()
+                output_capture.finish()
+                output_finished = True
+                output_capture.persist()
+                if output_capture.error:
+                    raise HostError(f"capability {record.id!r} output capture failed: {output_capture.error}")
+            # A render descendant may still hold these pipes. Tails are enough
+            # for an exit diagnostic; drain only after verified-output cleanup.
             stdout, stderr = output_capture.tails()
-            if output_capture.error:
-                raise HostError(f"capability {record.id!r} output capture failed: {output_capture.error}")
             if cancelled is not None and cancelled():
                 raise HostCancelled(f"capability {record.id!r} cancelled")
             returncode = process.returncode
             process_id = process.pid
+            if render_scope and (type(returncode) is not int
+                                 or (hasattr(process, "wait") and process.wait(timeout=0) != returncode)):
+                raise HostError("render command lacks its original process exit result")
             if returncode != 0:
                 detail = self._scrub_secret_text((stderr or stdout).strip(), secrets)
                 raise HostError(f"capability {record.id!r} exited {returncode}: {detail}")
@@ -10626,6 +10775,10 @@ class GenericPackHost:
                     shutil.copy2(source, destination)
                 output_root = attempt_output_root
                 values = {**values, "out": str(output_root)}
+            producer_output_root = output_root
+            if render_manifest_present:
+                output_root = _snapshot_verified_render_outputs(output_root, attempt_output_root)
+                values = {**values, "out": str(output_root)}
             try:
                 outputs = harvest_staged_outputs(
                     output_root,
@@ -10636,13 +10789,37 @@ class GenericPackHost:
                 )
             except HarvestError as exc:
                 raise HostError(f"capability {record.id!r}: {exc}") from exc
+            cleanup_error = None
+            cleanup_warnings = []
+            if render_manifest_present:
+                try:
+                    cleanup_once()
+                except CommandCleanupUnresolved as exc:
+                    # The exact original child exited zero and the receipt's
+                    # bytes were copied and verified before cleanup began.
+                    # Keep the process, marker and attempt as obligations.
+                    cleanup_error = exc
+                    cleanup_warnings.append("Render outputs verified; cleanup custody remains uncertain.")
+                output_capture.finish()
+                output_finished = True
+                output_capture.persist()
+                if output_capture.error:
+                    capture_error = f"capability {record.id!r} output capture failed: {output_capture.error}"
+                    if cleanup_error is None:
+                        raise HostError(capture_error)
+                    cleanup_warnings.append(capture_error)
             return SimpleNamespace(
                 outputs=outputs,
                 output_root=output_root,
+                producer_output_root=producer_output_root,
+                cleanup_error=cleanup_error,
                 payload={
                     "returncode": returncode,
                     "capability_digest": record.capability_digest,
                     "process_id": process_id,
+                    **({"cleanup_uncertain": True, "cleanup_error": str(cleanup_error),
+                        "warnings": cleanup_warnings}
+                       if cleanup_error is not None else {}),
                     **({"child_import_receipt": import_receipt.finish()}
                        if import_receipt is not None else {}),
                 },
@@ -10754,7 +10931,6 @@ class GenericPackHost:
         # The attempt directory is the child cwd; the host worker itself uses
         # this checkout, while external source-pack imports use only the
         # explicitly admitted import parents validated against source roots.
-        package_parent = str(Path(__file__).resolve().parents[3])
         import_roots: list[str] = []
         if isinstance(admission, Mapping):
             raw_import_roots = admission.get("python_path_roots")
@@ -10775,16 +10951,12 @@ class GenericPackHost:
         # Preserve the host-created sitecustomize hook when replacing the
         # worker import path; arbitrary child PYTHONPATH is still excluded.
         network_hook_roots = (str(attempt_path / ".astrid-network-hook"),) if env.get("ASTRID_NETWORK_POLICY") else ()
-        if os.environ.get('ASTRID_HOST_EXECUTION_PROFILE') != 'installed':
-            env["PYTHONPATH"] = os.pathsep.join(
-                dict.fromkeys((*network_hook_roots, package_parent, *_dependency_pythonpath(), *import_roots))
-            )
-            env[ASTRID_PACKS_PATH] = os.pathsep.join(str(root) for root in self.pack_roots)
-        if isinstance(admission, Mapping) and admission.get("selected_pack_map"):
-            from astrid.core.pack.imports import selected_pack_environment
-
-            env.update(selected_pack_environment(admission["selected_pack_map"],
-                                                 verified_relocations=admission.get("verified_pack_relocations")))
+        env = _worker_import_environment(
+            cast('CapabilityRecord', storage_record), env, kind='native', pack_roots=self.pack_roots,
+            python_roots=tuple(import_roots), network_hook_roots=network_hook_roots,
+            selected=(admission or {}).get('selected_pack_map') or None,
+            relocations=(admission or {}).get('verified_pack_relocations'),
+            installed=os.environ.get('ASTRID_HOST_EXECUTION_PROFILE') == 'installed')
         secret_values = {
             key: value for key, value in env.items()
             if key.upper().endswith(("_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_CREDENTIAL"))
@@ -11111,7 +11283,8 @@ class GenericPackHost:
                     staged = self._typed_outputs(
                         record, harvested, root,
                         generation_intent=_task_generation_intent(task),
-                        unselected_generation_port=_named_raw_publication_port(task))
+                        unselected_generation_port=_named_raw_publication_port(task),
+                        output_root=output_root if record.id == "rendering.render" else None)
             except Exception as exc:
                 warnings.append(f"terminal output collection unavailable: {error_text(exc)}")
         outputs = []
@@ -11313,6 +11486,16 @@ class GenericPackHost:
                 if previous and previous[0] == operation:
                     operation, args, kwargs = previous
                 else:
+                    if operation == self.client.settle and data.get("capability") == "rendering.render":
+                        # This is the direct command path, not render_export.
+                        # Carry the exact verified provenance warning into the
+                        # result before freezing the settlement for replay.
+                        warnings = verified_revision_warnings(
+                            terminal.get("outputs", ()), terminal["root"])
+                        if warnings:
+                            payload = kwargs["result"]
+                            payload["warnings"] = list(dict.fromkeys(
+                                [*(payload.get("warnings") or []), *warnings]))
                     terminal["publication_call"] = (operation, copy.deepcopy(args), copy.deepcopy(kwargs))
             try:
                 result = self._handoff_settlement_call(operation, *args, **kwargs)
@@ -11449,6 +11632,26 @@ class GenericPackHost:
                         elapsed_seconds=time.monotonic() - lifetime.started_at,
                         runtime_code=diagnostic.get("runtime_code"), verdict=verdict)
 
+        def log_lease_pump_event(category, *, reason=None, wait_seconds=None):
+            """Log one bounded lease-pump event without request or payload data."""
+            diagnostic = terminal["lease_diagnostic"]
+            try:
+                observed_at = time.monotonic()
+                deadline = lifetime.deadline()
+                remaining = None if deadline is None else deadline - observed_at
+                deadline_at = (None if remaining is None else
+                               (datetime.now(timezone.utc) + timedelta(seconds=remaining)).isoformat())
+                log_lease_diagnostic(
+                    task_id=str(data["id"]), attempt_id=exact_attempt, category=category,
+                    last_acknowledged_heartbeat=diagnostic["last_successful_heartbeat_at_utc"],
+                    elapsed_seconds=observed_at - lifetime.started_at,
+                    reason=reason, wait_seconds=wait_seconds, pump=True,
+                    deadline_at=deadline_at, deadline_remaining_seconds=remaining,
+                    lease_expires_at=diagnostic["last_successful_heartbeat_expiry"],
+                )
+            except Exception:  # noqa: BLE001 - diagnostics must not change attempt behavior
+                pass
+
         def record_publication_refusal(error):
             reason = _runtime_authority_refusal(error, operation="settle")
             record_lease_diagnostic("publication_refused", error=error, verdict="lease_lost")
@@ -11529,34 +11732,70 @@ class GenericPackHost:
             progress = read_progress()
             token = (terminal["stage"], _canonical_digest(progress))
             stall_diagnostics.update(stall_task_key, token)
-            if stall_diagnostics.stalled(stall_task_key):
+            notice = pending_notice_phase(progress) if terminal.get("render_notice_ack_path") else None
+            awaiting_notice = notice is not None and notice != terminal.get("render_notice_acknowledged")
+            if stall_diagnostics.stalled(stall_task_key) and not awaiting_notice:
                 # Piggyback the stuck phase on the existing observer. Fast work
                 # keeps its producer-only progress and its original RPC cadence.
                 progress = {**(progress or {}), "phase": str(terminal["stage"])}
                 token = (terminal["stage"], _canonical_digest(progress))
+            skip_reason = None
             with completion_lock:
-                if (stop.is_set() or terminal.get("recorded") or terminal.get("forced")
-                        or (lifetime.expired() and not terminal.get("publication_pending"))):
-                    return
-                changed = token != terminal.get("renewed_progress")
-                if terminal.get("renewal_inflight") or not (changed or liveness):
-                    return
-                terminal["renewal_inflight"] = True
+                if stop.is_set():
+                    skip_reason = "pump_stopped"
+                elif terminal.get("recorded"):
+                    skip_reason = "attempt_recorded"
+                elif terminal.get("forced"):
+                    skip_reason = "attempt_forced"
+                elif lifetime.expired() and not terminal.get("publication_pending"):
+                    skip_reason = "attempt_deadline_expired"
+                elif terminal.get("renewal_inflight"):
+                    skip_reason = "renewal_inflight"
+                else:
+                    changed = token != terminal.get("renewed_progress")
+                    if not (changed or liveness):
+                        skip_reason = "progress_unchanged"
+                    else:
+                        terminal["renewal_inflight"] = True
+            if skip_reason is not None:
+                log_lease_pump_event("heartbeat_skipped", reason=skip_reason)
+                return
             kwargs = {"attempt_id": exact_attempt, "fence": exact_fence}
             if (progress is not None and token[1] != terminal.get("sent_progress")
                     and token[1] != terminal.get("rejected_progress")):
                 kwargs["progress"] = progress
+            heartbeat_started = time.monotonic()
+            failure_logged = False
             try:
                 progress_error = None
                 try:
                     result = lease_call(self.client.heartbeat, str(data["id"]), lease_token, **kwargs)
                 except Exception as exc:
                     if "progress" not in kwargs or getattr(exc, "code", None) != "validation_error":
+                        error_name = type(exc).__name__
+                        reason = (error_name if error_name.isascii()
+                                  and error_name.replace("_", "").isalnum() else "heartbeat_error")
+                        log_lease_pump_event("heartbeat_failed", reason=reason,
+                                             wait_seconds=time.monotonic() - heartbeat_started)
+                        failure_logged = True
                         raise
                     progress_error = exc
+                    log_lease_pump_event("heartbeat_failed", reason="progress_rejected",
+                                         wait_seconds=time.monotonic() - heartbeat_started)
+                    failure_logged = True
                     terminal["rejected_progress"] = token[1]
                     kwargs.pop("progress")
-                    result = lease_call(self.client.heartbeat, str(data["id"]), lease_token, **kwargs)
+                    retry_started = time.monotonic()
+                    try:
+                        result = lease_call(self.client.heartbeat, str(data["id"]), lease_token, **kwargs)
+                    except Exception as retry_error:
+                        error_name = type(retry_error).__name__
+                        reason = (error_name if error_name.isascii()
+                                  and error_name.replace("_", "").isalnum() else "heartbeat_error")
+                        log_lease_pump_event("heartbeat_failed", reason=reason,
+                                             wait_seconds=time.monotonic() - retry_started)
+                        raise
+                    failure_logged = False
                 def field(name):
                     return result.get(name) if isinstance(result, Mapping) else getattr(result, name, None)
                 fields = {name: field(name) for name in (
@@ -11576,23 +11815,59 @@ class GenericPackHost:
                                        ("task_id", str(data["id"])), ("lease_id", lease_token),
                                        ("runtime_epoch", exact_epoch)):
                     if field(name) is not None and expected is not None and field(name) != expected:
+                        log_lease_pump_event("heartbeat_failed", reason="ack_identity_mismatch",
+                                             wait_seconds=time.monotonic() - heartbeat_started)
+                        failure_logged = True
                         record_lease_diagnostic(f"heartbeat_{name}_changed")
                         force_abort("lease_lost")
                         return
                 expiry = field("lease_expires_at")
+                skip_reason = None
                 with completion_lock:
-                    if (terminal.get("forced") or terminal.get("recorded") or stop.is_set()
-                            or (lifetime.expired() and not terminal.get("publication_pending"))):
-                        return
-                    terminal["renewed_progress"] = token
-                    if "progress" in kwargs:
-                        terminal["sent_progress"] = token[1]
-                    diagnostic = dict(terminal["lease_diagnostic"])
-                    diagnostic["last_successful_heartbeat_at_utc"] = datetime.now(timezone.utc).isoformat()
-                    diagnostic["last_successful_heartbeat_expiry"] = safe_lease_value(expiry, limit=96)
-                    terminal["lease_diagnostic"] = diagnostic
+                    if terminal.get("forced"):
+                        skip_reason = "attempt_forced"
+                    elif terminal.get("recorded"):
+                        skip_reason = "attempt_recorded"
+                    elif stop.is_set():
+                        skip_reason = "pump_stopped"
+                    elif lifetime.expired() and not terminal.get("publication_pending"):
+                        skip_reason = "attempt_deadline_expired"
+                    else:
+                        terminal["renewed_progress"] = token
+                        if "progress" in kwargs:
+                            terminal["sent_progress"] = token[1]
+                        diagnostic = dict(terminal["lease_diagnostic"])
+                        diagnostic["last_successful_heartbeat_at_utc"] = datetime.now(timezone.utc).isoformat()
+                        diagnostic["last_successful_heartbeat_expiry"] = safe_lease_value(expiry, limit=96)
+                        terminal["lease_diagnostic"] = diagnostic
+                if skip_reason is not None:
+                    log_lease_pump_event("heartbeat_skipped", reason=skip_reason,
+                                         wait_seconds=time.monotonic() - heartbeat_started)
+                    return
+                # Runtime appends task.progress in the accepted heartbeat's
+                # transaction. Only acknowledge that exact transmitted phase,
+                # never a rejected-progress retry or a stale lease response.
+                accepted_notice = pending_notice_phase(kwargs.get("progress"))
+                ack_path = terminal.get("render_notice_ack_path")
+                if (ack_path is not None and accepted_notice is not None
+                        and accepted_notice != terminal.get("render_notice_acknowledged")):
+                    try:
+                        write_json_atomic(ack_path, {"phase": accepted_notice})
+                        terminal["render_notice_acknowledged"] = accepted_notice
+                    except (OSError, AstridError):
+                        pass  # Advisory delivery cannot change lease semantics.
+                log_lease_pump_event("heartbeat_acknowledged", reason="accepted",
+                                     wait_seconds=time.monotonic() - heartbeat_started)
                 record_lease_diagnostic("heartbeat_progress_invalid" if progress_error else cycle_category,
                                         current=current, error=progress_error, condition="heartbeat")
+            except Exception as exc:
+                if not failure_logged:
+                    error_name = type(exc).__name__
+                    reason = (error_name if error_name.isascii()
+                              and error_name.replace("_", "").isalnum() else "heartbeat_error")
+                    log_lease_pump_event("heartbeat_failed", reason=reason,
+                                         wait_seconds=time.monotonic() - heartbeat_started)
+                raise
             finally:
                 with completion_lock:
                     terminal["renewal_inflight"] = False
@@ -11646,7 +11921,7 @@ class GenericPackHost:
                 if terminal.get("root") is not None:
                     self._write_task_result(terminal)
 
-        def pump_lease():
+        def _pump_lease_loop():
             poll_seconds = (_LEASE_POLL_SECONDS * self.execution_policy.authority_window_seconds
                             / _DEFAULT_EXECUTION_POLICY.authority_window_seconds)
             next_poll = time.monotonic() + poll_seconds
@@ -11668,21 +11943,32 @@ class GenericPackHost:
                 if time.monotonic() < next_poll or self.client is None:
                     continue
                 next_poll = time.monotonic() + poll_seconds
+                task_read_started = time.monotonic()
                 try:
                     current = task_snapshot()
                 except BaseException as exc:
+                    task_read_wait = time.monotonic() - task_read_started
+                    log_lease_pump_event("task_read_gate", reason="read_failed", wait_seconds=task_read_wait)
+                    log_lease_pump_event("heartbeat_skipped", reason="task_read_failed")
                     if lease_transport_fault("task_read_exception", exc):
                         continue
                     force_abort("timeout" if lifetime.expired() else "lease_lost")
                     return
+                task_read_wait = time.monotonic() - task_read_started
                 if terminal.get("publication_pending") and (
                         current["status"] in {"completed", "succeeded", "failed", "cancelled"}
                         or current["attempt_id"] != exact_attempt or current["fence"] != exact_fence
                         or current["runtime_epoch"] != exact_epoch):
                     # The publication owner consumes this authoritative read.
                     # Do not race it with an unrelated lifecycle failure.
+                    log_lease_pump_event("task_read_gate", reason="publication_owner_changed",
+                                         wait_seconds=task_read_wait)
+                    log_lease_pump_event("heartbeat_skipped", reason="publication_owner_changed")
                     return
                 if current["status"] in {"cancel_requested", "cancelled"}:
+                    log_lease_pump_event("task_read_gate", reason="cancel_requested",
+                                         wait_seconds=task_read_wait)
+                    log_lease_pump_event("heartbeat_skipped", reason="cancel_requested")
                     record_lease_diagnostic("cancel_requested", current=current,
                                             verdict="cancelled" if terminal.get("publication_pending") else None)
                     if terminal.get("publication_pending"):
@@ -11702,25 +11988,39 @@ class GenericPackHost:
                     except (AttributeError, TypeError, ValueError):
                         cycle_category = "lease_metadata_invalid"
                 if state not in {None, "running"}:
+                    log_lease_pump_event("task_read_gate", reason="task_state_changed",
+                                         wait_seconds=task_read_wait)
+                    log_lease_pump_event("heartbeat_skipped", reason="task_state_changed")
                     record_lease_diagnostic("task_state_changed", current=current)
                     force_abort("lease_lost")
                     return
                 if current.get("attempt_id", exact_attempt) != exact_attempt:
+                    log_lease_pump_event("task_read_gate", reason="attempt_changed",
+                                         wait_seconds=task_read_wait)
+                    log_lease_pump_event("heartbeat_skipped", reason="attempt_changed")
                     record_lease_diagnostic("attempt_changed", current=current)
                     force_abort("lease_lost")
                     return
                 if current.get("fence", exact_fence) != exact_fence:
+                    log_lease_pump_event("task_read_gate", reason="fence_changed",
+                                         wait_seconds=task_read_wait)
+                    log_lease_pump_event("heartbeat_skipped", reason="fence_changed")
                     record_lease_diagnostic("fence_changed", current=current)
                     force_abort("lease_lost")
                     return
                 if current["runtime_epoch"] != exact_epoch:
                     if type(current["runtime_epoch"]) is int:
+                        log_lease_pump_event("task_read_gate", reason="runtime_epoch_changed",
+                                             wait_seconds=task_read_wait)
+                        log_lease_pump_event("heartbeat_skipped", reason="runtime_epoch_changed")
                         record_lease_diagnostic("runtime_epoch_changed", current=current)
                         force_abort("lease_lost")
                         return
                     cycle_category = "task_metadata_invalid"
                 if observation_conditions.get("task", ("observing",))[0] == "task_read_exception":
                     record_lease_diagnostic("observing", current=current)
+                log_lease_pump_event("task_read_gate", reason="owner_matches",
+                                     wait_seconds=task_read_wait)
                 # Main execution/child guards validate full interactive
                 # authority. The observer must keep its deadline clock
                 # available if those authority reads themselves stall.
@@ -11733,9 +12033,29 @@ class GenericPackHost:
                         # Settlement may have committed between the task read
                         # and heartbeat. Its owner must resolve the stale ACK;
                         # a lifecycle abort would race successful readback.
+                        log_lease_pump_event("heartbeat_skipped", reason="publication_pending")
                         return
                     force_abort("timeout" if lifetime.expired() else "lease_lost")
                     return
+
+        def pump_lease():
+            log_lease_pump_event("lease_pump_enter", reason="started")
+            try:
+                _pump_lease_loop()
+            finally:
+                if stop.is_set():
+                    reason = "stop_requested"
+                elif terminal.get("recorded"):
+                    reason = "attempt_recorded"
+                elif terminal.get("forced"):
+                    reason = "attempt_forced"
+                elif lifetime.expired():
+                    reason = "deadline_expired"
+                elif self._shutdown.is_set():
+                    reason = "host_shutdown"
+                else:
+                    reason = "loop_finished"
+                log_lease_pump_event("lease_pump_exit", reason=reason)
 
         terminal.update(completion_call=completion_call, ensure_failure=ensure_failure,
                         read_progress=read_progress, renew_progress=renew_progress, force_abort=force_abort,
@@ -11885,6 +12205,13 @@ class GenericPackHost:
             owns_attempt = self._handoff_begin_direct_attempt()
             if exact_attempt and exact_fence is not None:
                 terminal["root"] = self._allocate_attempt_root(str(data["id"]), str(exact_attempt))
+                if data.get("capability") == "rendering.render":
+                    ack_path = terminal["root"] / NOTICE_ACK_NAME
+                    try:
+                        write_json_atomic(ack_path, {"phase": None})
+                        terminal["render_notice_ack_path"] = ack_path
+                    except (OSError, AstridError):
+                        pass
             deadline_at = data.get("deadline_at")
             if deadline_at is not None:
                 try:
@@ -12295,6 +12622,7 @@ class GenericPackHost:
         evidence_failure_receipt: dict[str, Any] | None = None
         storage_failure_receipt: dict[str, Any] | None = None
         command_cleanup_error: CommandCleanupUnresolved | None = None
+        verified_render_cleanup = False
         deadline_failed = False
         render_child_pending = False
         storage_receipt: dict[str, int] | None = None
@@ -12529,7 +12857,8 @@ class GenericPackHost:
                 self._validate_producer_evidence(
                     harvested, output_root=Path(output_root), task_id=task_id, attempt_id=attempt_id,
                 )
-                typed = self._typed_outputs(record, harvested, root)
+                typed = self._typed_outputs(record, harvested, root,
+                    output_root=Path(output_root) if record.id == "rendering.render" else None)
                 task_epoch = task_data.get("runtime_epoch")
                 upload_started = bool(typed)
                 uploaded = self._upload_outputs(
@@ -13114,6 +13443,11 @@ class GenericPackHost:
                             **{key: task_data.get(key) for key in ("operation_id", "submission_id")},
                         },
                     )
+                    if capability_id == "rendering.render" and isinstance(
+                        getattr(result, "cleanup_error", None), CommandCleanupUnresolved
+                    ):
+                        command_cleanup_error = result.cleanup_error
+                        verified_render_cleanup = True
                     # Checkout-server VibeComfy commands run inside the
                     # attested VibeComfy output root. Carry that effective root
                     # back to the outer settlement layer; otherwise harvest
@@ -13237,6 +13571,7 @@ class GenericPackHost:
                 root,
                 generation_intent=_task_generation_intent(task_data),
                 unselected_generation_port=_named_raw_publication_port(task_data),
+                output_root=output_root if capability_id == "rendering.render" else None,
             )
             _bind_named_parent_output(task_data, typed_outputs)
             _terminal["outputs"] = typed_outputs
@@ -13301,7 +13636,7 @@ class GenericPackHost:
                     else None
                 ),
             ) if typed_outputs else []
-            outputs.extend(upload_log_outputs(output_root))
+            outputs.extend(upload_log_outputs(getattr(result, "producer_output_root", output_root)))
             if capability_id == "wan2gp.generate_video":
                 verify_host_result(result.payload["wan_mapping"], attempt_root=output_root)
             # Cancellation can arrive while staged outputs are being read or
@@ -13364,7 +13699,7 @@ class GenericPackHost:
             if self.attempt_root is not None:
                 scratch_disposition = "caller_owned_pending"
                 retained_owner = "caller"
-            elif keep_attempt:
+            elif keep_attempt or command_cleanup_error is not None:
                 scratch_disposition = "retention_pending"
                 retained_owner = "generic-pack-host"
             else:
@@ -13517,6 +13852,7 @@ class GenericPackHost:
             # Keep the lease pump alive through harvesting, upload, and
             # settlement; only stop it once the claimed attempt is terminal.
             cleanup_errors: list[str] = []
+            tolerated_command_scope_error = None
             if not _terminal.get("forced"):
                 _terminal.update(
                     status="succeeded" if settled else "timeout" if deadline_exceeded or deadline_failed
@@ -13552,11 +13888,14 @@ class GenericPackHost:
                 # The task-scope supervisor has evidence of a child writer
                 # that outlived its leader. Keep the attempt even when the
                 # caller did not request debug retention.
-                cleanup_errors.append(
+                scope_error = (
                     "unresolved command task scope; attempt retained"
                     if command_cleanup_error is not None
                     else "Runtime terminal evidence publication pending; attempt retained"
                 )
+                cleanup_errors.append(scope_error)
+                if verified_render_cleanup and settled and command_cleanup_error is not None:
+                    tolerated_command_scope_error = scope_error
             cleanup_receipt: dict[str, Any] = {
                 "path": str(root),
                 "intended_disposition": (
@@ -13599,7 +13938,14 @@ class GenericPackHost:
                     and managed_settled
                     and settled
                 )
-                if not retain_persistent_session:
+                if verified_render_cleanup and settled:
+                    # This exact command's custody is unresolved: retain its
+                    # slot deliberately, without claiming a verified release.
+                    try:
+                        self.managed_tool_session.fence(reason="command_cleanup_uncertain")
+                    except Exception as exc:  # noqa: BLE001 - fence failure is recorded, cleanup continues
+                        cleanup_errors.append(f"managed fence: {exc}")
+                elif not retain_persistent_session:
                     try:
                         self.managed_tool_session.release(
                             reason=(
@@ -13709,11 +14055,14 @@ class GenericPackHost:
                 self._latch_cleanup_uncertainty("; ".join(cleanup_errors))
             self._last_cleanup_receipt = cleanup_receipt
             self._publish_evidence_status()
-            if cleanup_errors and not ((_terminal.get("evidence_pending") or _terminal.get("retain_spool"))
-                                       and sys.exc_info()[1] is not None):
+            fatal_cleanup_errors = [error for error in cleanup_errors if error != tolerated_command_scope_error]
+            if fatal_cleanup_errors and not ((_terminal.get("evidence_pending") or _terminal.get("retain_spool"))
+                                             and sys.exc_info()[1] is not None):
                 # Pending evidence retains the spool and latches cleanup above.
                 # Preserve the publication exception already being propagated.
-                raise HostError("owned cleanup incomplete: " + "; ".join(cleanup_errors))
+                raise HostError("owned cleanup incomplete: " + "; ".join(fatal_cleanup_errors))
+            # Only the verified render's command-scope uncertainty is tolerated.
+            # Other cleanup failures still raise; all remain in the receipt.
 
     def _publish_evidence_status(self) -> None:
         """Expose the live evidence charge and warm holds for ``astrid doctor``; never fails a task."""

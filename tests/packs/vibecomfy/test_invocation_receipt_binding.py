@@ -238,7 +238,7 @@ def attached_case(comfy, tmp_path, monkeypatch, real_runtime, request):
 
     monkeypatch.setattr(
         "astrid.core.execution.generic_host._dependency_pythonpath",
-        lambda: (str(Path(vibecomfy.__file__).resolve().parents[1]),),
+        lambda *_environment: (str(Path(vibecomfy.__file__).resolve().parents[1]),),
     )
     comfy.schema["EmptyImage"] = {
         "input": {"required": {"width": ["INT", {"default": 16}],

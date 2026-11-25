@@ -36,7 +36,7 @@ def source_query(request, monkeypatch):
         request.getfixturevalue("native")
         return
 
-    def answers(props, basis, frames):
+    def answers(props, basis, frames, **_selectors):
         # Static answers for this fixture's two occurrences. No evaluator or
         # visibility calculation is supplied by the Python transport double.
         ids = {0: "opaque:occ:A:opaque:source:title",

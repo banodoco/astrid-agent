@@ -1100,6 +1100,10 @@ actions:
       name: materialized_objects
       required: false
       type: json
+    - description: Editor pack IDs and their source revisions for render parity reporting.
+      name: editor_pack_revisions
+      required: false
+      type: json
     - name: review
       type: boolean
       required: false
@@ -1240,6 +1244,9 @@ actions:
           optional: true
         - input: materialized_objects
           flag: --materialized-objects
+          optional: true
+        - input: editor_pack_revisions
+          flag: --editor-pack-revisions
           optional: true
         - input: review
           flag: --review

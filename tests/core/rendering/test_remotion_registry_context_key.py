@@ -234,6 +234,33 @@ def test_render_in_an_unvalidated_context_is_still_refused(tmp_path, monkeypatch
         runtime._validated_runtime(project, environment=env, python_executable='/usr/bin/python3')
 
 
+def test_context_mismatch_names_nearest_field_without_values(tmp_path):
+    project = tmp_path / 'project'
+    project.mkdir()
+    reference = tmp_path / 'validation.json'
+    env = _env(tmp_path, ASTRID_NODE_EXECUTABLE='actual-node-secret-marker')
+    expected = runtime.probe_context(environment=env, python_executable='/usr/bin/python3')
+    expected['registry_context'] = runtime._registry_context(env, generator=False)
+    expected['registry_context'][runtime.REMOTION_PROJECT_DIR_ENV] = str(project)
+    expected['configuration'] = {
+        name: env.get(name) for name in
+        (runtime.NODE_EXECUTABLE_ENV, runtime.REMOTION_PROJECT_DIR_ENV,
+         runtime.TIMELINE_SCHEMA_PYTHONPATH_ENV)
+    }
+    expected['configuration'][runtime.NODE_EXECUTABLE_ENV] = 'validated-node-secret-marker'
+    raw = json.dumps({'schema': runtime._VALIDATION_SCHEMA, 'launch_id': 'l',
+                      'probe_source_sha256': hashlib.sha256(runtime._schema_probe_source().encode()).hexdigest(),
+                      'contexts': {'host': {'variants': [{'context': expected}]}}}).encode()
+    reference.write_bytes(raw)
+    reference.chmod(0o600)
+    env.update(dict(zip(runtime._REF_ENV_KEYS, (str(reference), hashlib.sha256(raw).hexdigest(), 'l', 'host'))))
+    with pytest.raises(runtime.RemotionValidationError,
+                       match=r'consumer context differs in configuration\.ASTRID_NODE_EXECUTABLE') as exc:
+        runtime._validated_runtime(project, environment=env, python_executable='/usr/bin/python3')
+    assert 'actual-node-secret-marker' not in str(exc.value)
+    assert 'validated-node-secret-marker' not in str(exc.value)
+
+
 def test_repeated_path_entries_do_not_make_a_different_context():
     # A shell that sourced its env twice (e.g. inside an otto-heavy job) repeats PATH
     # entries; lookup is unchanged, so the validated context must match.
