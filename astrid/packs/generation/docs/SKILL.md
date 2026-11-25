@@ -218,6 +218,198 @@ there with its kind, modes and default slots; `astrid generate describe` then sh
 it. Keep one contribution minimal: one workflow file, one entry, and a dry run that
 passes.
 
+## Workflow setup: missing packs or models
+
+Read the readiness result before running a workflow. Keep its issues and target
+together when asking for help. The existing placement and missing-assets
+instructions above apply until a subsection supplies a supported next step.
+
+<!-- Plan 56 WS-6a: one editing slot per source card. Populate each slot
+with its implementation; an empty slot promises no command or behavior. -->
+
+### WS-0a — Audio workflow readiness
+
+A raw audio graph need not choose a catalog audio mode. Use
+`generate workflow FILE --placement TARGET --dry-run --json` to check the
+actual graph; an inferred `workflow` mode is valid for explicit raw audio.
+The advisory need `audio_mode_unknown` alone does not block an explicit
+workflow. Other binding ambiguities and missing assets still need resolution.
+
+### WS-0b — Unresolved model references
+
+A node with an unrecognised `model_name` loader role may report an unresolved
+model reference. This is not a choice of workflow inputs or a guessed model
+folder. Keep the node class, field and exact model label; use the actual
+target's inventory to establish what is present. Do not treat it as a
+downloadable file in `diffusion_models` without a declared destination.
+
+### WS-0c — Node pack catalog
+
+Resolve known node packs from VibeComfy's shipped catalog, not a working-directory
+`custom_nodes.lock`. Use its exact repository and commit when giving manual
+attached-target clone/checkout guidance. An explicitly supplied lock is scoped to
+that caller. Writable target locks describe the installed environment; never
+treat them as the implicit shipped catalog or write into the packaged resource.
+
+### WS-0d — Save and replace an entry
+
+Save without queueing with `generate workflow FILE --as-entry NAME --no-run`.
+An existing name is refused unless you explicitly add `--replace`. Preview with
+`--replace --dry-run --json` before asking for approval; the preview writes nothing.
+On approval use `generate workflow FILE --as-entry NAME --replace --no-run`.
+Save-only and save-preview commands do not require a particular run's media or
+prompt; any supplied inputs are still validated. Generation requires its declared
+run inputs. The new bundle is prepared before the entry manifest is switched; a failed import
+does not erase the previous entry. Never delete an entry as a replacement fallback.
+
+### WS-0e — Align a saved entry
+
+Inspect a saved entry with `astrid generate align --entry ID --json`. Its
+bundle's node-lock identities and model declarations are authoritative; a
+different or missing bundle pin is not silently replaced by the shipped
+catalog. Incomplete model declarations appear in `unlocked` as typed
+`model_lock_incomplete` issues with the missing facts and a named repair step.
+They are not downloadable models, and apply stops without asset writes until
+the selected entry's declaration is complete. Supply verified source, SHA-256
+and byte size through workflow authoring.
+`--all` still inspects the catalog, not every saved workflow.
+
+For a managed target, `--apply --consent user_env` cannot approve new code.
+A non-shipped repository/commit/recipe requires a matching saved local code
+approval; show the consent instruction if approval is absent. The controlled
+restore path checks that approval again against the target's actual lock and
+installs only its declared recipe. Do not infer approval from an existing checkout.
+
+### WS-0g — Missing classes on every placement
+
+A dry run checks missing node classes on every placement. A live target's
+`object_info` determines what is actually loaded there; a managed or rented
+target with deferred host readiness refuses unresolved providers before any
+machine is claimed. A `missing_node_pack` issue names the missing class;
+identify its providing pack before declaring a pinned source. When a local
+engine is not installed, the same readiness result also retains
+`engine_not_found`; missing packs are not hidden by that engine failure.
+A cached schema does not establish installation. Only ComfyUI core evidence,
+an exact catalog/bundle pin, or the shipped VibeComfy node registry on a placement
+that links those nodes resolves the provider requirement. RunPod defaults to
+alignment, which links the shipped nodes; explicit check/trust cannot assume
+that link exists without evidence. Attached targets must report loaded nodes
+in their own inventory. Actual host restoration, consent and loaded classes
+still need verification.
+
+### WS-7a — Node recipe declarations
+
+Read each `extra.nodes` item as `{repo, commit, requirements_txt?, pip_no_deps?}`.
+The optional requirements file is relative to the pinned repository; the optional
+`pip_no_deps` list keeps its declared order. These are declarations, not permission
+to install. A recipe hash covers both fields, including their defaults. Changing
+the requirements path, a package requirement or its order changes that hash.
+Never execute a pack's `install.py` or turn a recipe declaration into a shell command.
+
+### WS-7b — Controlled recipe installation
+
+<!-- WS-7b: fill this subsection in the same change as the card. -->
+
+### LE-1a — Read issues and next steps
+
+Keep the existing `ready`, `ready_with_warnings` and `blocked` statuses. For setup
+issues carrying `fix_ids`, resolve those IDs in `fixes` and follow the array order.
+Each fix names `who` (`agent` or `human`) and either an argument array `argv`, or
+an `instruction` with `step` and `then_argv`. Show a human step to the person;
+never treat it as an automatic command or skip it to run a later fix.
+
+Replace every `<NAME>` in a command using that fix's `placeholders` explanation
+before running it. Keep `attempt_count` with the result; it counts actual setup
+attempts, not reads or displays. A warning does not authorize a repair. Legacy
+issues without these fields retain their existing guidance; do not invent a fix.
+
+### LE-2a — Approval identity and consent tokens
+
+Treat workflow source refs and saved code approvals separately. An approval
+records `{identity: {repo, commit}, recipe_sha256, approval_sha256, placement_class}`.
+The commit is a full 40-character hash. Resolve placement before asking:
+
+- `local`: Astrid's managed ComfyUI on the local machine. The `managed` selector
+  resolves to this placement class.
+- `attached`: the person's own ComfyUI, including one at a loopback address.
+  Sharing the local host does not make it Astrid's managed target.
+- `runpod`: a rented RunPod machine.
+
+Use the resolved placement, never `auto` or the `managed` selector as the class.
+A token is the first 12 hex characters of the approval hash. Changing the source,
+recipe or placement invalidates it.
+
+The entry's `code-approvals.json` keeps these records beside `entry.json`; a
+source declaration alone grants no approval. The token is a confirmation of
+what was shown, not proof of who typed it. Do not write approval records by hand
+or assume that their presence makes a pack safe to run.
+
+### LE-2b — Consent to unreviewed code
+
+An unfamiliar node source stops with `status: blocked` and `needs_consent`.
+Read its `instruction.step` to the person: it names each repository, full
+40-character commit, dependency recipe, recipe hash and resolved placement.
+The warning explains that the code can use the target's files, credentials and
+network. Dependencies are resolved at install time; Astrid never runs a pack's
+`install.py`.
+
+Only after the person agrees, run the instruction's exact `then_argv`, including
+each `--consent code=TOKEN`. `user_env` is separate permission and never approves
+new node code. Bare `--consent code`, a stale token, a changed commit or recipe,
+or a different placement returns the warning again.
+
+`workflow --as-entry NAME --no-run` can save the approved declaration without
+executing it. The approval is stored beside the saved entry and reused only
+when source, recipe and placement still match. A dry run writes no approval.
+On managed and rented targets, the host carries records separately from the
+workflow declarations. The target checks the whole restore lock before git or
+pip: an additional, changed or unapproved ref refuses the batch. No code
+approval grants permission to rent a machine or install into an attached
+ComfyUI.
+
+### LE-4 — Lookup availability
+
+VibeComfy's missing-node resolver returns evidence, not install permission. Its
+`source_tier_status` distinguishes `matched`, `no_match`, `degraded` (some
+evidence survives an incomplete lookup), and `unavailable`. Do not describe an
+unavailable source as searched with no match. A registry schema permission
+failure can leave a repository candidate with a warning and no usable schema.
+Candidates are not runnable; lookup does not install code.
+
+### LE-6 — Check the target after setup
+
+On Astrid-managed local or RunPod alignment, doctor checks the same target
+node-pack lock supplied to restore, not the shipped catalog. Drift and pin
+checks use that lock; an explicitly missing or unreadable lock is a failure,
+not an empty catalog. Doctor still checks the owned target schema. A removed
+input can produce `workflow_validation_failed` with the node ID, class and
+input name verified against the workflow. Use those labels to correct the
+workflow or review a compatible pin; never bypass diagnosis. An attached
+target is not granted managed installation permission by this check.
+
+### LE-15 — Workflow inputs
+
+Re-run a saved raw audio entry with
+`generate audio --entry NAME --mode workflow --placement TARGET --dry-run --json`.
+Use `--audio-ref FILE` when the graph declares exactly one audio input, or
+`--input NAME=VALUE` for its declared ports. Remove `--dry-run` only after
+readiness is satisfied and the user approves a run. This explicit mode does
+not add a default music, TTS or sound-effects slot.
+
+### WS-5 — Manager lookup
+
+The ComfyUI-Manager extension map gives repository-keyed class evidence;
+the custom-node list supplies additional metadata. A concrete class can resolve
+to a repository even when registry lookup is unavailable. Treat the repository
+as a candidate to review and pin, not evidence that the pack is installed,
+approved, or runnable.
+
+### WS-6a — Workflow setup guidance
+
+Use the populated subsections for the behavior they describe. An empty subsection
+does not introduce a command, install path or permission. Keep the user's requested
+placement and the reported next step together throughout setup.
+
 ## Defaults
 
 Each `(kind, mode)` slot has one entry. Packs offer defaults as data

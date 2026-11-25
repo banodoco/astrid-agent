@@ -355,9 +355,17 @@ def test_apply_probe_failure_never_claims_ready(fake, monkeypatch):
     assert report['probe_error']
 
 
-def test_node_pack_apply_uses_locked_sha_and_is_idempotent(fake, monkeypatch):
-    pack = {'name': 'fake-pack', 'repository': 'https://github.com/example/fake.git',
-            'revision': 'a' * 40, 'classes': ['FakeNode']}
+@pytest.fixture
+def shipped_node_pack():
+    from vibecomfy.node_packs import read_lockfile
+
+    row = next(row for row in read_lockfile() if row.name == 'ComfyUI-VideoHelperSuite')
+    return {'name': row.name, 'repository': row.url,
+            'revision': row.git_commit_sha, 'classes': list(row.class_set)}
+
+
+def test_node_pack_apply_uses_locked_sha_and_is_idempotent(fake, monkeypatch, shipped_node_pack):
+    pack = shipped_node_pack
     fake.manifests[0]['modes'][0]['node_packs'] = [pack]
     installed = []
     monkeypatch.setattr(alignment, '_pack_state', lambda *args: 'verified' if installed else 'missing')
@@ -365,9 +373,28 @@ def test_node_pack_apply_uses_locked_sha_and_is_idempotent(fake, monkeypatch):
         assert target is fake.target and locked == pack
         installed.append(locked['revision'])
     report = apply(fake, client=request_bytes([]), installer=installer)
-    assert report['status'] == 'ready' and installed == ['a' * 40]
+    assert report['status'] == 'ready' and installed == [pack['revision']]
     apply(fake, client=no_download('redownload'), installer=installer)
-    assert installed == ['a' * 40]
+    assert installed == [pack['revision']]
+
+
+def test_shipped_repo_at_unreviewed_sha_needs_consent_before_install(fake, monkeypatch, shipped_node_pack):
+    from vibecomfy.node_packs import read_lockfile
+
+    pack = {**shipped_node_pack, 'revision': 'a' * 40}
+    assert not any(row.url == pack['repository'] and row.git_commit_sha == pack['revision']
+                   for row in read_lockfile())
+    fake.manifests[0]['modes'][0]['node_packs'] = [pack]
+    monkeypatch.setattr('astrid.core.generation.entries.find_entry', lambda _entry_id: None)
+    installed = []
+
+    with pytest.raises(GenerationReadinessError) as caught:
+        apply(fake, client=no_download('unapproved node downloaded assets'),
+              installer=lambda target, locked: installed.append(locked))
+
+    assert caught.value.code == 'needs_consent'
+    assert installed == []
+    assert not fake.target.root.exists()
 
 
 def test_existing_node_checkout_verifies_repo_sha_and_cleanliness(fake):
@@ -591,10 +618,12 @@ def test_malformed_cache_metadata_is_unknown_instead_of_a_crash(tmp_path):
     assert target.cached_object_info() is None
 
 
-def test_real_node_installer_checks_out_locked_commit_on_cpu_without_network(fake, tmp_path, monkeypatch):
-    """Exercise VibeComfy's installer in target Python, redirecting only clone bytes."""
+def test_real_node_installer_checks_out_locked_commit_on_cpu_without_network(fake, tmp_path, monkeypatch, shipped_node_pack):
+    """Exercise target restore with a shipped identity and local Git fixture bytes."""
     from dataclasses import replace
     import vibecomfy
+    pack = shipped_node_pack
+    locked_sha = pack['revision']
     source = tmp_path / 'node-source'
     source.mkdir()
     def git(*args):
@@ -605,28 +634,43 @@ def test_real_node_installer_checks_out_locked_commit_on_cpu_without_network(fak
     (source / 'node.py').write_text('# locked revision\n')
     git('add', 'node.py')
     git('commit', '-qm', 'locked revision')
-    locked_sha = git('rev-parse', 'HEAD')
+    fixture_sha = git('rev-parse', 'HEAD')
     (source / 'node.py').write_text('# later revision\n')
     git('commit', '-qam', 'later revision')
+    assert fixture_sha != git('rev-parse', 'HEAD')
     assert locked_sha != git('rev-parse', 'HEAD')
-    pack = {'name': 'cpu-alignment-node', 'repository': 'https://github.com/example/cpu-alignment-node.git',
-            'revision': locked_sha, 'classes': ['FakeNode']}
     fake.manifests[0]['modes'][0]['node_packs'] = [pack]
     selected_source = tmp_path / 'target-pythonpath'
     selected_source.mkdir()
     (selected_source / 'vibecomfy').symlink_to(Path(vibecomfy.__file__).parent, target_is_directory=True)
-    # Keep the real install_pack, its capability fence, SHA verifier, sentinel,
-    # and lock writer. The tiny local Git repo substitutes only network bytes.
+    # Keep real restore approval, checkout, SHA verification, sentinel and lock
+    # writes. The clone fixture supplies the canonical shipped identity using
+    # Git's replacement-object mechanism for the tiny offline tree. Checkout
+    # and rev-parse remain real Git commands; only this clone's bytes differ.
     (selected_source / 'sitecustomize.py').write_text(
         'import subprocess, socket\n'
+        'from pathlib import Path\n'
         'original = subprocess.run\n'
         f'url = {pack["repository"]!r}\nlocal = {str(source)!r}\n'
+        f'locked_sha = {locked_sha!r}\nfixture_sha = {fixture_sha!r}\n'
+        f'fetch_seen = {str(tmp_path / "fetch-seen")!r}\n'
+        'redirected = set()\n'
         'def run(argv, *args, **kwargs):\n'
-        '    if argv[:3] == ["git", "clone", url]:\n'
-        '        result = original(["git", "clone", local, argv[3]], *args, **kwargs)\n'
-        '        original(["git", "-C", argv[3], "remote", "set-url", "origin", url], check=True, capture_output=True)\n'
+        '    if argv[:2] == ["git", "clone"] and url in argv:\n'
+        '        result = original([local if arg == url else arg for arg in argv], *args, **kwargs)\n'
+        '        original(["git", "-C", argv[-1], "remote", "set-url", "origin", url], check=True, capture_output=True)\n'
+        '        original(["git", "-C", argv[-1], "update-ref", "refs/replace/" + locked_sha, fixture_sha], check=True, capture_output=True)\n'
+        '        redirected.add(argv[-1])\n'
         '        return result\n'
         '    if argv[0] == "git" and "fetch" in argv:\n'
+        '        if (argv[:2] == ["git", "-C"] and argv[2] in redirected\n'
+        '                and argv[3:] == ["fetch", "--", url, locked_sha]):\n'
+        '            # The redirected local clone already supplies the locked object.\n'
+        '            replacement = original(["git", "-C", argv[2], "rev-parse", "refs/replace/" + locked_sha], check=True, capture_output=True, text=True)\n'
+        '            assert replacement.stdout.strip() == fixture_sha\n'
+        '            original(["git", "-C", argv[2], "cat-file", "-e", fixture_sha + "^{commit}"], check=True, capture_output=True)\n'
+        '            Path(fetch_seen).write_text(locked_sha)\n'
+        '            return subprocess.CompletedProcess(argv, 0, "", "")\n'
         '        raise AssertionError("network fetch in CPU fixture")\n'
         '    return original(argv, *args, **kwargs)\n'
         'subprocess.run = run\n'
@@ -638,6 +682,7 @@ def test_real_node_installer_checks_out_locked_commit_on_cpu_without_network(fak
     assert report['status'] == 'ready'
     assert alignment._pack_state(target, pack) == 'verified'
     assert (target.custom_nodes_root / pack['name'] / 'node.py').read_text() == '# locked revision\n'
+    assert (tmp_path / 'fetch-seen').read_text() == locked_sha
     from vibecomfy.node_packs import read_lockfile
     recorded = read_lockfile(target.root / '.astrid-engine/aligned-custom-nodes.lock')
     assert [(entry.name, entry.url, entry.git_commit_sha) for entry in recorded] == [

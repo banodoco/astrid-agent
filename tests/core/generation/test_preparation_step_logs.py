@@ -68,3 +68,32 @@ def test_a_successful_step_also_keeps_its_output(tmp_path):
     prep._native("print()", step="nodes_restore")
     declared = {row["name"]: row for row in json.loads((out / "logs.json").read_text())["logs"]}
     assert "declared patches verified: 1" in open(declared["preparation.nodes_restore.stdout"]["path"]).read()
+
+
+def test_doctor_unknown_input_labels_reach_integrity_error_without_remote_tail(tmp_path):
+    prep = _preparation(tmp_path, None)
+    prep._workflow_input_labels = (("42", "ExampleNode", "removed_field"),)
+    result = SimpleNamespace(
+        exit_code=1, timed_out=False,
+        stdout=json.dumps({
+            "status": "error", "layer": "VibeWorkflow validation",
+            "errors": ["PRIVATE_REMOTE_MESSAGE"],
+            "validation_errors": [{
+                "node_id": "42", "class_type": "ExampleNode", "errors": [
+                    {"code": "unknown_input", "input": "removed_field", "message": "changed human wording"},
+                    {"code": "unknown_input", "input": "PRIVATE_TOKEN"},
+                ],
+            }],
+        }),
+        stderr="PRIVATE_REMOTE_TAIL",
+    )
+    prep.context = SimpleNamespace(run=lambda request: result)
+    with pytest.raises(IntegrityError) as caught:
+        prep._native("fixture program", step="doctor")
+    message = str(caught.value)
+    assert "reason=workflow_validation_failed" in message
+    assert 'unknown_inputs=' + json.dumps([
+        {"node_id": "42", "class_type": "ExampleNode", "input": "removed_field"},
+    ]) in message
+    assert "PRIVATE_TOKEN" not in message and "PRIVATE_REMOTE_TAIL" not in message
+    assert "PRIVATE_REMOTE_MESSAGE" not in message

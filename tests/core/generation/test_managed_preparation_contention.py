@@ -13,6 +13,25 @@ from astrid.core.generation.engine_platforms import platform_adapter
 from astrid.core.generation.managed_preparation import ManagedEnginePreparation
 
 
+CANONICAL_WORKFLOW = object()
+
+
+class _NoNodesEngine:
+    """Declares no custom nodes, so the approval read passes with no records."""
+
+    def workflow_requirements(self, workflows):
+        assert workflows == [CANONICAL_WORKFLOW]
+        return {"extra": {"nodes": []}}
+
+
+def _admit_inputs(monkeypatch, preparation):
+    """LE-2b contract: _prepare receives an admitted canonical workflow, approvals and placement."""
+    monkeypatch.setattr("astrid.core.generation.managed_preparation._preparation_engine",
+                        lambda name: _NoNodesEngine())
+    preparation.code_approvals = ()
+    preparation.placement_class = "local"
+
+
 def _hold_install_lock(root: str, acquired, release, kind="job", content=None):
     adapter = platform_adapter("linux-x86_64-cu130")
     with adapter.local_install_lock(root, deadline=time.monotonic() + 10, kind=kind):
@@ -40,7 +59,7 @@ class _InstallingReceiptContext:
         return json.loads(Path(path).read_text())
 
 
-def test_managed_prepare_refuses_when_install_lock_is_held_for_install(tmp_path):
+def test_managed_prepare_refuses_when_install_lock_is_held_for_install(tmp_path, monkeypatch):
     root = tmp_path / "engine"
     workflow = tmp_path / "workflow.json"
     workflow.write_text("{}\n")
@@ -49,6 +68,7 @@ def test_managed_prepare_refuses_when_install_lock_is_held_for_install(tmp_path)
     receipt_path.write_text('{"status":"installing"}')
     context = _InstallingReceiptContext(str(receipt_path))
     preparation = ManagedEnginePreparation.__new__(ManagedEnginePreparation)
+    _admit_inputs(monkeypatch, preparation)
     preparation.root = str(root)
     preparation.deadline = time.monotonic() + 5
     preparation.cancelled = lambda: False
@@ -65,7 +85,7 @@ def test_managed_prepare_refuses_when_install_lock_is_held_for_install(tmp_path)
         assert acquired.wait(5), "separate process did not acquire install lock"
         with pytest.raises(EngineBusy, match="the local engine is being updated; try again when astrid engines install finishes"):
             preparation._prepare(workflow, execution_identity="unused", inputs=None,
-                                 canonical_workflow=None, input_digests=None)
+                                 canonical_workflow=CANONICAL_WORKFLOW, input_digests=None)
         assert context.reads == [], "holder classification must not read the receipt"
     finally:
         release.set()
@@ -139,6 +159,7 @@ def test_install_lock_kind_refuses_prepare_and_queues_second_installer(tmp_path,
         monkeypatch.setattr(context, "read_json", track_read_json)
 
         preparation = ManagedEnginePreparation.__new__(ManagedEnginePreparation)
+        _admit_inputs(monkeypatch, preparation)
         preparation.root = str(root)
         preparation.deadline = time.monotonic() + 5
         preparation.cancelled = lambda: False
@@ -149,7 +170,7 @@ def test_install_lock_kind_refuses_prepare_and_queues_second_installer(tmp_path,
         started = time.monotonic()
         with pytest.raises(EngineBusy, match="the local engine is being updated"):
             preparation._prepare(workflow, execution_identity="unused", inputs=None,
-                                 canonical_workflow=None, input_digests=None)
+                                 canonical_workflow=CANONICAL_WORKFLOW, input_digests=None)
         assert time.monotonic() - started < 0.5
         assert read_receipts == [], "contention classification must use lock kind, not the receipt"
 
@@ -167,7 +188,7 @@ def test_install_lock_kind_refuses_prepare_and_queues_second_installer(tmp_path,
 
 
 @pytest.mark.parametrize("holder_content", [b"job", b"", b"\xff"])
-def test_job_job_lock_contention_waits_for_managed_preparation(tmp_path, holder_content):
+def test_job_job_lock_contention_waits_for_managed_preparation(tmp_path, holder_content, monkeypatch):
     import threading
 
     root = str(tmp_path / "engine")
@@ -192,6 +213,7 @@ def test_job_job_lock_contention_waits_for_managed_preparation(tmp_path, holder_
             raise AfterLock
 
     preparation = ManagedEnginePreparation.__new__(ManagedEnginePreparation)
+    _admit_inputs(monkeypatch, preparation)
     preparation.root = root
     preparation.deadline = time.monotonic() + 8
     preparation.cancelled = lambda: False
@@ -202,7 +224,7 @@ def test_job_job_lock_contention_waits_for_managed_preparation(tmp_path, holder_
     def prepare():
         try:
             preparation._prepare(workflow, execution_identity="unused", inputs=None,
-                                 canonical_workflow=None, input_digests=None)
+                                 canonical_workflow=CANONICAL_WORKFLOW, input_digests=None)
         except BaseException as exc:
             errors.append(exc)
     waiter = threading.Thread(target=prepare, daemon=True)
@@ -447,7 +469,7 @@ def test_lost_prompt_acceptance_keeps_job_lock_and_blocks_install(tmp_path, monk
         thread.join(5)
 
 
-def test_stale_installing_receipt_does_not_block_without_lock_contention(tmp_path):
+def test_stale_installing_receipt_does_not_block_without_lock_contention(tmp_path, monkeypatch):
     from astrid.core.generation.engine_contracts import IntegrityError
 
     root = str(tmp_path / "engine")
@@ -465,6 +487,7 @@ def test_stale_installing_receipt_does_not_block_without_lock_contention(tmp_pat
             return {"status": "installing"}
 
     preparation = ManagedEnginePreparation.__new__(ManagedEnginePreparation)
+    _admit_inputs(monkeypatch, preparation)
     preparation.root = root
     preparation.deadline = time.monotonic() + 5
     preparation.cancelled = lambda: False
@@ -476,7 +499,7 @@ def test_stale_installing_receipt_does_not_block_without_lock_contention(tmp_pat
     try:
         with pytest.raises(IntegrityError):
             preparation._prepare(workflow, execution_identity="unused", inputs=None,
-                                 canonical_workflow=None, input_digests=None)
+                                 canonical_workflow=CANONICAL_WORKFLOW, input_digests=None)
         assert preparation.context.reads == [receipt_path]
     finally:
         if getattr(preparation, "lock", None) is not None:
