@@ -353,7 +353,7 @@ def test_engine_choice_uses_recipe_order_and_requires_a_recipe(monkeypatch):
 def test_pending_target_does_not_check_controller_lock():
     entry = {'needs': [{'class_type': 'UNETLoader', 'field': 'unet_name',
                         'value': 'diffusion_models/no_such_model.safetensors'}]}
-    assert entries.target_schema(entry, None, None, engine='comfyui') is None
+    assert entries.target_schema(entry, None, None, engine='comfyui').provider is None
 
 
 def test_h3_resolves_to_its_engine_through_the_same_helper(live_machine, monkeypatch, tmp_path):

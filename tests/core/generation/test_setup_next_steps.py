@@ -53,6 +53,14 @@ def test_setup_case_has_a_traceable_next_step(case_name, code, run):
     validate_setup_envelope(result)
     assert code in {issue["code"] for issue in result["issues"]}, case_name
     assert json.loads(json.dumps(result)) == result
+    if result["status"] == "ready_with_warnings":
+        # Advisory cases have no fix and are never projected as errors.
+        assert all(issue["severity"] == "warning" and not issue.get("fix_ids")
+                   for issue in result["issues"])
+        assert result["fixes"] == []
+        with pytest.raises(ValueError, match="blocking issue"):
+            GenerationReadinessError(result, task_id="task-test")
+        return
     error = GenerationReadinessError(result, task_id="task-test")
     assert error.to_envelope() == {**result, "task_id": "task-test"}
 
@@ -174,3 +182,17 @@ def test_generic_service_conflict_is_not_a_node_install_conflict():
     assert result["issues"][0]["code"] == "conflict"
     assert result["fixes"] == []
     assert "attempt_count" not in result
+
+
+def test_legacy_target_and_drift_do_not_bypass_explicit_setup_validation():
+    from astrid.core.generation.preflight import compare_versions
+
+    error = generation_error({"code": "COMFY_TARGET_UNAVAILABLE", "message": "down"})
+    warning = compare_versions({"comfyui": "1"}, {"comfyui": "2"})
+    result = readiness_envelope(issues=[*warning, *error.readiness["issues"]])
+    assert result["status"] == "blocked"
+    assert result["fixes"] == []
+    assert "attempt_count" not in result
+    # Opting into the typed contract still demands a linked repair.
+    with pytest.raises(ValueError, match="every setup error needs a linked next step"):
+        readiness_envelope(issues=[*warning, *error.readiness["issues"]], attempt_count=0)

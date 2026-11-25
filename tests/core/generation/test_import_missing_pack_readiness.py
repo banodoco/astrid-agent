@@ -182,4 +182,4 @@ def test_sam_actual_attached_inventory_is_authoritative(network, monkeypatch, sa
     assert {issue["details"]["node"] for issue in caught.value.readiness["issues"]
             if issue["code"] == "missing_node_pack"} == SAM_CLASSES
     client, _ = install_target(network, info)
-    assert entries.target_schema(entry, graph, client) is not None
+    assert entries.target_schema(entry, graph, client).provider is not None
