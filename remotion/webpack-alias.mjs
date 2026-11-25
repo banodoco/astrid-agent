@@ -1,5 +1,6 @@
 import path from 'node:path';
 import fs from 'node:fs';
+import os from 'node:os';
 import {fileURLToPath} from 'node:url';
 import {createRequire} from 'node:module';
 const MANIFEST_NAMES = ['pack.yaml', 'pack.yml', 'pack.json'];
@@ -607,6 +608,21 @@ const primitiveAliases = (projectDir) => {
   return aliases;
 };
 
+// Only repair the pinned installed pack's unresolved contract import.
+export const selectedInstalledPackContract = ({remotionRoot, issuer, request, env = process.env}) => {
+  if (typeof issuer !== 'string' || !path.isAbsolute(issuer) ||
+      typeof request !== 'string' || !/^(?:\.\.\/)+rendering\/shared\/element_contracts$/.test(request)) return undefined;
+  const roots = [path.join(env.HOME || os.homedir(), 'Astrid', 'packs'),
+    ...(env.ASTRID_PACKS_PATH ?? '').split(path.delimiter).filter(Boolean)];
+  if (!roots.some(root => packRootsIn(root, {skipLocal: true}).some(pack => isWithin(pack, issuer)))) return undefined;
+  const local = path.resolve(path.dirname(issuer), request);
+  // Webpack resolves extensionless imports with these source extensions.
+  if (['', '.ts', '.tsx', '.js', '.jsx', '.json'].some(ext => fs.existsSync(local + ext))) return undefined;
+  const target = path.resolve(projectDirOf(remotionRoot), 'astrid/packs/rendering/shared/element_contracts');
+  if (!fs.existsSync(`${target}.ts`)) throw new Error(`built-in rendering element_contracts missing: ${target}.ts`);
+  return target;
+};
+
 const hostResourcePlugins = new Map();
 const usesLegacyCarrier = (rawRoots) => {
   const roots = rawRoots === undefined ? null : JSON.parse(rawRoots);
@@ -620,7 +636,8 @@ const hostResourcePlugin = (remotionRoot) => {
         factory.hooks.beforeResolve.tap('AstridHostResources', (data) => {
           if (!data) return;
           const issuer = data.contextInfo?.issuer;
-          const selected = selectedHostResource({remotionRoot, issuer, request: data.request});
+          const selected = selectedHostResource({remotionRoot, issuer, request: data.request}) ??
+            selectedInstalledPackContract({remotionRoot, issuer, request: data.request});
           if (selected) data.request = selected;
           else if (process.env.ASTRID_RENDER_REGISTRY_ROOT && usesLegacyCarrier(process.env.ASTRID_RENDER_PACK_ROOTS) &&
                    /^\.\/(effects|animations|transitions)\.generated$/.test(data.request)) {
