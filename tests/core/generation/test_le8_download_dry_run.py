@@ -143,6 +143,14 @@ def test_runpod_dry_run_reports_only_selected_volume_policy(
     _forbid_controller_capacity(monkeypatch)
     monkeypatch.setattr(placements, "_runpod_leases", lambda kind: (
         [{"machine": "retained-fixture", "live": True, "state": "idle"}] if retained else []))
+    real_leases = placements.machine_leases
+    lease_reads = []
+
+    def observe_leases(kind):
+        lease_reads.append(kind)
+        return real_leases(kind)
+
+    monkeypatch.setattr(placements, "machine_leases", observe_leases)
     monkeypatch.setattr(generation, "_require_claimed_machine",
                         lambda *a, **k: pytest.fail("dry run required a paid machine"))
     save_runpod_preferences({
@@ -159,6 +167,7 @@ def test_runpod_dry_run_reports_only_selected_volume_policy(
                      "--dry-run", "--json"]) == 0
     issue = _assert_notice(json.loads(capsys.readouterr().out), expected)
     assert "no persistent volume declared" not in issue["message"]
+    assert lease_reads == ["runpod"]
     assert _entry_bytes(root) == before
     assert sam_api_path.read_bytes() == source_before
 
@@ -203,3 +212,84 @@ def test_managed_dry_run_reports_selected_model_root_capacity(
     assert not list(models.iterdir())
     assert _entry_bytes(root) == before
     assert sam_api_path.read_bytes() == source_before
+
+
+@pytest.fixture
+def managed_sam_dry_run(monkeypatch, tmp_path, sam_api_path):
+    from astrid.core.generation import managed_preparation
+
+    models = tmp_path / "managed" / "models"
+    models.mkdir(parents=True)
+    monkeypatch.setattr(preflight, "_module_available", lambda name: name == "vibecomfy")
+    monkeypatch.setattr(preflight, "_registered_managed_engine", lambda: {
+        "owner": "astrid", "endpoint": "http://127.0.0.1:8188", "root": str(models.parent),
+    })
+    monkeypatch.setattr(managed_preparation, "configured_models_root", lambda: str(models))
+    monkeypatch.setattr(cli, "_open_client", lambda: pytest.fail("dry run opened Runtime"))
+    root, audio = _saved_sam(tmp_path, monkeypatch, sam_api_path, "local")
+    argv = ["audio", "--entry", "sam-download", "--mode", "workflow", "--audio-ref",
+            str(audio), "--placement", "managed", "--dry-run", "--json"]
+    return models, root, argv
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_managed_dry_run_volume_is_explicit_not_ambient(
+        monkeypatch, capsys, managed_sam_dry_run, explicit):
+    models, root, argv = managed_sam_dry_run
+    declared = model_storage.DeclaredVolume(models.parent, 5)
+    ambient = model_storage.DeclaredVolume(models.parent, 999)
+    measured = []
+
+    def measure(volume, directory, **kwargs):
+        measured.append((volume, directory))
+        return model_storage.VolumeSpace(volume.mount_path, models.stat().st_dev, 123)
+
+    monkeypatch.setattr(model_storage.os, "statvfs", object(), raising=False)
+    monkeypatch.setattr(model_storage, "available_model_bytes", lambda *a, **kw: (500, False))
+    monkeypatch.setattr(model_storage, "measure_declared_volume", measure)
+    # The caller explicitly supplies the selected local volume to the actual
+    # target-generation method; never alter the production advisory result.
+    if explicit:
+        real_generate = generation.GenerationFacade._generate_on_target
+
+        def generate(self, **kwargs):
+            return real_generate(self, local_volume=declared, **kwargs)
+
+        monkeypatch.setattr(generation.GenerationFacade, "_generate_on_target", generate)
+    before = _entry_bytes(root)
+    token = model_storage.DECLARED_VOLUME.set(ambient)
+    try:
+        assert cli.main(argv) == 0
+    finally:
+        model_storage.DECLARED_VOLUME.reset(token)
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "ready_with_warnings", result
+    issue, = [row for row in result["issues"] if row["code"] == "model_download_notice"]
+    assert issue["details"]["free_bytes"] == (123 if explicit else 500)
+    assert issue["details"]["volume_status"] == ("declared_measured" if explicit else "not_declared")
+    assert measured == ([(declared, models)] if explicit else [])
+    assert not list(models.iterdir())
+    assert _entry_bytes(root) == before
+
+
+@pytest.mark.parametrize("invalid_root", [None, {}, "", "relative/models", "bad\0root"])
+def test_managed_dry_run_refuses_invalid_model_root_without_capacity_probe(
+        monkeypatch, capsys, managed_sam_dry_run, invalid_root):
+    from astrid.core.generation import managed_preparation
+
+    models, root, argv = managed_sam_dry_run
+    monkeypatch.setattr(managed_preparation, "configured_models_root", lambda: invalid_root)
+    monkeypatch.setattr(model_storage, "available_model_bytes",
+                        lambda *a, **kw: pytest.fail("invalid root was measured"))
+    monkeypatch.setattr(model_storage, "measure_declared_volume",
+                        lambda *a, **kw: pytest.fail("invalid volume was measured"))
+    before = _entry_bytes(root)
+    assert cli.main(argv) == 2
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "blocked"
+    issue, = result["issues"]
+    assert issue["code"] == "unsafe_path"
+    assert issue["details"]["field"] == "models_root"
+    assert "missing or unsafe" in issue["message"]
+    assert not list(models.iterdir())
+    assert _entry_bytes(root) == before

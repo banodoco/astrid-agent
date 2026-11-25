@@ -9,7 +9,7 @@ from astrid.core.generation import model_storage as storage
 
 def _observe(root, volume=None):
     return storage.observe_download_storage(
-        root, deadline=time.monotonic() + 10, check=lambda: None, volume=volume,
+        root, deadline=time.monotonic() + 10, volume=volume,
     )
 
 
@@ -187,3 +187,14 @@ def test_volume_evidence_is_read_only_for_a_selected_downloading_pack():
     )
     assert notice["details"]["volume_status"] == "not_declared"
     assert called == [True]
+
+
+def test_expired_advisory_budget_returns_unknown_without_probe(tmp_path, monkeypatch):
+    monkeypatch.setattr(storage, "available_model_bytes",
+                        lambda *a, **kw: pytest.fail("expired advisory measured capacity"))
+    monkeypatch.setattr(storage, "measure_declared_volume",
+                        lambda *a, **kw: pytest.fail("expired advisory measured volume"))
+    result = storage.observe_download_storage(
+        tmp_path, deadline=time.monotonic() - 1, volume=None,
+    )
+    assert result == storage.DownloadStorageObservation(None, True, "not_declared")
