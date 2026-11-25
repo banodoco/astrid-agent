@@ -21,7 +21,7 @@ import path from 'node:path';
 
 export const UPDATE_NOW = 'Update now';
 /** The App's live line once an update has finished under an open page. */
-export const UPDATED_LINE = /Astrid updated: Release \d+ → Release \d+/;
+export const UPDATED_LINE = /^(?:Astrid updated: Release \d+ → Release \d+|Astrid updated\. Reload to continue\.)$/;
 
 /** Chromium switches: the hosted origin on loopback, its leaf pinned, and the page treated as public. */
 export function chromiumArgs({ origin, spki }) {

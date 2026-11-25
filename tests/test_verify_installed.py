@@ -527,6 +527,152 @@ def test_r1_candidate_source_sha_mismatching_installed_version_fails(tmp_path, n
     assert 'installed version id does not match manifest Agent/Runtime pins' in details['problems']
 
 
+OPAQUE_PROBLEM = 'installed version id does not match manifest Agent/Runtime pins'
+
+
+def _opaque_version_root(parent, name, manifest, *, staged=True, lock_commit='manifest', direct_urls=()):
+    """A version directory carrying the records astrid.installer.backend._stage leaves."""
+    root = parent / name
+    root.mkdir(parents=True)
+    if staged:
+        (root / 'manifest.json').write_bytes(
+            (json.dumps(manifest, indent=2, sort_keys=True) + '\n').encode())
+    if lock_commit is not None:
+        (root / 'a').mkdir()
+        (root / 'a' / 'runtime.lock.json').write_text(json.dumps({
+            'source_commit': manifest['runtime']['sha'] if lock_commit == 'manifest' else lock_commit}))
+    for distribution, record in direct_urls:
+        info = root / 'py' / 'lib' / 'python3.11' / 'site-packages' / f'{distribution}-0.1.dist-info'
+        info.mkdir(parents=True)
+        (info / 'direct_url.json').write_text(json.dumps(record))
+    return root
+
+
+@pytest.mark.parametrize(('release', 'marker', 'allowed'), [
+    (14, None, True), (15, 'fresh-install-update-stand-in', True),
+    # The real R15 candidate is release 15 with no marker: the binding evidence, not a marker, admits it.
+    (15, 'unrecognized', True), (15, None, True), (13, None, False),
+])
+def test_opaque_version_directory_requires_release_14_or_later_and_pin_evidence(
+        tmp_path, release, marker, allowed):
+    assert (OPAQUE_PROBLEM not in _opaque_id_problems(
+        tmp_path, '012345abcdef', release=release, marker=marker)) is allowed
+
+
+def _opaque_id_problems(tmp_path, root_name, *, release, marker=None, evidence=True, mutate=None, **root_options):
+    from scripts import verify_installed as verifier
+    tmp_path = tmp_path / f'{release}-{marker}-{len(list(tmp_path.iterdir()))}'
+    tmp_path.mkdir()
+    fixture, version_path, runtime, raw = _identity_aware_fixture(
+        tmp_path, agent=CANDIDATE_AGENT, runtime_sha=CANDIDATE_RUNTIME, digest=CANDIDATE_DIGEST)
+    version = dict(fixture['version'])
+    manifest = json.loads(raw)
+    manifest['release'] = release
+    if marker is not None:
+        manifest['qualification_marker'] = marker
+    name = root_name(manifest) if callable(root_name) else root_name
+    if evidence:
+        staged = json.loads(raw)
+        staged['release'] = release
+        if marker is not None:
+            staged['qualification_marker'] = marker
+        if mutate is not None:
+            mutate(staged)
+        root = _opaque_version_root(version_path.parent.parent, name, staged, **root_options)
+    else:
+        root = version_path.parent.parent / name
+    version['root'] = str(root)
+    return verifier._candidate_self_consistency_problems(
+        version, manifest, verifier.installer_manifest_bytes(manifest),
+        {'protocol': 'workspace.v1', 'schema_digest': CANDIDATE_DIGEST, 'workspace_schema_version': 33})
+
+
+def test_installer_minted_version_id_is_accepted_for_r14_and_marked_stand_in(tmp_path):
+    from astrid.installer.core import new_version_id
+    problem = 'installed version id does not match manifest Agent/Runtime pins'
+    for release, marker in ((14, None), (15, 'fresh-install-update-stand-in'), (15, 'M-RT UPDATE TEST STAND-IN')):
+        assert problem not in _opaque_id_problems(
+            tmp_path, new_version_id, release=release, marker=marker), (release, marker)
+
+
+def test_pin_named_version_id_must_still_match_the_manifest_pins(tmp_path):
+    problem = 'installed version id does not match manifest Agent/Runtime pins'
+    assert problem not in _opaque_id_problems(
+        tmp_path, f'{CANDIDATE_AGENT[:8]}-{CANDIDATE_RUNTIME[:8]}-abc', release=15)
+    # Mismatched pins are not rescued by the opaque-id allowance for any release.
+    for release, marker in ((14, None), (15, None), (15, 'fresh-install-update-stand-in')):
+        assert problem in _opaque_id_problems(
+            tmp_path, 'deadbeef-cafebabe-abc', release=release, marker=marker), (release, marker)
+
+
+@pytest.mark.parametrize('name', ['0123456789a', '0123456789abc', '0123456789AB', 'g123456789ab', 'identityaware'])
+def test_only_a_twelve_hex_version_id_is_opaque(tmp_path, name):
+    assert 'installed version id does not match manifest Agent/Runtime pins' in _opaque_id_problems(
+        tmp_path, name, release=14)
+
+
+def test_opaque_directory_with_matching_evidence_passes_for_unmarked_r15(tmp_path):
+    from astrid.installer.core import new_version_id
+    assert OPAQUE_PROBLEM not in _opaque_id_problems(tmp_path, new_version_id, release=15)
+
+
+@pytest.mark.parametrize('name', ['agent', 'runtime'])
+def test_opaque_directory_whose_staged_manifest_names_another_sha_fails(tmp_path, name):
+    for release in (14, 15):
+        assert OPAQUE_PROBLEM in _opaque_id_problems(
+            tmp_path, '012345abcdef', release=release,
+            mutate=lambda staged: staged[name].update(sha='f' * 40)), (name, release)
+
+
+@pytest.mark.parametrize('options', [
+    {'staged': False},
+    {'staged': False, 'lock_commit': None},
+], ids=['no-staged-manifest', 'no-evidence-at-all'])
+def test_opaque_directory_without_evidence_fails_closed(tmp_path, options):
+    assert OPAQUE_PROBLEM in _opaque_id_problems(tmp_path, '012345abcdef', release=15, **options)
+    assert OPAQUE_PROBLEM in _opaque_id_problems(tmp_path, '0123456789ab', release=15, evidence=False)
+
+
+def test_opaque_directory_with_unparsable_or_linked_staged_manifest_fails(tmp_path):
+    from scripts import verify_installed as verifier
+    root = tmp_path / '012345abcdef'
+    root.mkdir()
+    version = {'root': str(root)}
+    manifest = {'release': 15, 'agent': {'sha': CANDIDATE_AGENT}, 'runtime': {'sha': CANDIDATE_RUNTIME}}
+    (root / 'manifest.json').write_text('{not json')
+    assert not verifier._opaque_version_id_allowed(version, manifest)
+    (root / 'manifest.json').unlink()
+    real = tmp_path / 'real.json'
+    real.write_text(json.dumps(manifest))
+    (root / 'manifest.json').symlink_to(real)
+    assert not verifier._opaque_version_id_allowed(version, manifest)
+    (root / 'manifest.json').unlink()
+    (root / 'manifest.json').write_text(json.dumps(manifest))
+    assert verifier._opaque_version_id_allowed(version, manifest)
+
+
+def test_opaque_directory_runtime_lock_must_agree_where_present(tmp_path):
+    assert OPAQUE_PROBLEM in _opaque_id_problems(
+        tmp_path, '012345abcdef', release=15, lock_commit='e' * 40)
+    assert OPAQUE_PROBLEM not in _opaque_id_problems(
+        tmp_path, '0123456789ab', release=15, lock_commit=None)
+
+
+@pytest.mark.parametrize(('distribution', 'commit', 'ok'), [
+    ('astrid', CANDIDATE_AGENT, True), ('astrid', 'e' * 40, False),
+    ('astrid_runtime', CANDIDATE_RUNTIME, True), ('astrid_runtime', CANDIDATE_AGENT, False),
+    ('astrid_runtime_client', 'e' * 40, False), ('unrelated_dependency', 'e' * 40, True),
+])
+def test_opaque_directory_package_commit_metadata_must_agree_where_readable(tmp_path, distribution, commit, ok):
+    record = {'url': 'file:///x', 'vcs_info': {'vcs': 'git', 'commit_id': commit}}
+    assert (OPAQUE_PROBLEM not in _opaque_id_problems(
+        tmp_path, '012345abcdef', release=15, direct_urls=[(distribution, record)])) is ok
+    # The installer's own file:// directory installs carry no commit and are accepted.
+    assert OPAQUE_PROBLEM not in _opaque_id_problems(
+        tmp_path, '0123456789ab', release=15,
+        direct_urls=[(distribution, {'url': 'file:///x', 'dir_info': {}})])
+
+
 @pytest.mark.parametrize(('tamper', 'problem'), [
     ('noncanonical-bytes', 'installed manifest bytes do not match installer writer output'),
     ('schema-digest', 'health/installed Runtime schema digest does not match manifest'),

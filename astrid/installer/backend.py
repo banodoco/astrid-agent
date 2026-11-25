@@ -1361,6 +1361,65 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                 remove_pack_tree(destination)
             raise
 
+    def remove_history_guards(self, candidate: Version, realm_root: str, realm_id: str) -> str | None:
+        """Prepare the stopped realm; return a warning reason if the candidate cannot answer.
+
+        An explicit Runtime refusal still blocks rollback. An unavailable
+        candidate must not permanently prevent reactivation of the old version.
+        """
+        root = absolute(realm_root)
+        if not isinstance(realm_id, str) or not realm_id:
+            raise ValueError("History guard rollback requires the exact realm identity.")
+        # Use the candidate's offline protocol CLI, not the Agent-facing CLI.
+        argv = [candidate.python, "-X", "utf8", "-I", "-m", "runtime_protocol.cli",
+                "remove-history-guards", "--root", str(root),
+                "--confirm", f"REMOVE HISTORY GUARDS {realm_id}"]
+        env = dict(candidate.env)
+        env.pop("ASTRID_INSTALLER_OPERATION_ID", None)
+        failure = "Could not remove history guards before activating the previous Runtime"
+        exit_code = 0
+        try:
+            # Bound detached database inspection like the installer schema probe.
+            output = self.run(argv, extra_env=env, timeout=120)
+        except subprocess.TimeoutExpired:
+            return "candidate Runtime command timed out after 120 seconds"
+        except OSError:
+            return "candidate Runtime interpreter could not be started"
+        except subprocess.CalledProcessError as exc:
+            exit_code = exc.returncode
+            output = exc.output or ""
+        try:
+            result = _runtime_json(output)
+        except (TypeError, ValueError):
+            # Only argparse's exact unknown-subcommand diagnostic means an
+            # older candidate does not implement this optional maintenance step.
+            if exit_code == 2 and isinstance(output, str) and re.search(
+                r"(?m)^astrid-runtime-protocol: error: argument command: invalid choice: 'remove-history-guards' \(choose from ",
+                output,
+            ):
+                return None
+            return f"candidate Runtime returned no valid result (exit {exit_code})"
+        error = result.get("error") if isinstance(result, dict) else None
+        if isinstance(result, dict) and result.get("ok") is False and isinstance(error, dict):
+            # The candidate has classified an exact historical realm. Layer 1
+            # exists only on U33, not on canonical predecessors or legacy v23.
+            if error.get("code") == "validation_error" and error.get("message") in (
+                "history guard rollback requires exact canonical U33",
+                "canonical runtime_schema table is missing",
+            ):
+                return None
+            message = error.get("message") or "Runtime refused the operation."
+            raise RuntimeOperationError(f"{failure}: {message}")
+        if exit_code:
+            return f"candidate Runtime exited unsuccessfully (exit {exit_code})"
+        if (not isinstance(result, dict) or result.get("ok") is not True
+                or result.get("realm_id") != realm_id
+                or type(result.get("changed")) is not bool
+                or type(result.get("history_guard_layer")) is not int
+                or result["history_guard_layer"] != 0):
+            return "candidate Runtime did not verify the removal"
+        return None
+
     def restore(self, old: Version, data: Path, realm: dict, backup: dict) -> None:
         if platform.sys.platform == "win32":
             platform.private_directory(data)
