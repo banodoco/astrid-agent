@@ -251,3 +251,16 @@ def test_cli_save_requires_warning_then_persists_approval(tmp_path, monkeypatch,
     # Replacing the same declaration can use its saved record without a flag.
     assert cli.main([*argv, "--replace"]) == 0
     assert json.loads(capsys.readouterr().out)["saved"] is True
+
+
+def test_engine_consent_kwargs_matches_inline_projection():
+    from astrid.core.generation.managed_preparation import _engine_consent_kwargs
+
+    records = [approvals.approval_record(NODE, placement_class="local")]
+    for intent in (None, {}, {"metadata": None}, {"metadata": {}},
+                   {"metadata": {"code_approvals": []}},
+                   {"metadata": {"code_approvals": records}},
+                   {"metadata": {"code_approvals": None}}):
+        expected = {"code_approvals": ((intent or {}).get("metadata") or {}).get("code_approvals", []),
+                    "placement_class": "local"}
+        assert _engine_consent_kwargs(intent) == expected
