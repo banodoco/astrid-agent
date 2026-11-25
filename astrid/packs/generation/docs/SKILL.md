@@ -424,7 +424,7 @@ target is not granted managed installation permission by this check.
 
 ### LE-10 — Recorded and installed versions
 
-<!-- LE-10: fill this subsection in the same change as the card. -->
+A UI workflow can record a pack version independently of the immutable commit selected for installation. Read both: `recorded X, installing Y` includes the selected full commit; a label alone is not proof that the commit matches it. If the relation is unverified, the notice says so. An API workflow with an explicit pin instead says `version not recorded; pinned at <sha> by you`. A known difference is a `pack_version_differs` warning, not permission to change a pin. The live doctor check after installation is the authority for changed inputs; use its node, class and input labels to repair the saved workflow rather than repeatedly installing another commit.
 
 ### LE-11 — Explain the warning
 
