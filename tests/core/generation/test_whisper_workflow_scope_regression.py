@@ -42,7 +42,7 @@ def test_real_image_preparation_requirements_do_not_need_whisper():
         target=SimpleNamespace(kind="attached", facts={}),
         http_origin="http://127.0.0.1:8188",
     )
-    assert entries.target_schema({"id": "image/z_image_turbo"}, workflow, client) is not None
+    assert entries.target_schema({"id": "image/z_image_turbo"}, workflow, client).provider is not None
 
 
 def test_real_transcription_preflight_refuses_when_whisper_node_is_absent():

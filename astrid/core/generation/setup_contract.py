@@ -11,11 +11,16 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
+# These existing readiness facts are recognized in typed setup envelopes, but
+# alone they must not opt unmigrated F04 target errors into mandatory repairs.
+# LE-1b removes this transitional distinction when it migrates the producers.
+_LEGACY_COMPANION_CODES = frozenset({"version_drift", "target_unreachable"})
+
 SETUP_ISSUE_CODES = frozenset({
     "needs_consent", "entry_exists", "pin_conflict", "pack_version_differs", "unknown_input",
     "source_unreachable", "commit_unavailable", "pip_failed", "protected_change", "node_pack_conflict",
     "partial_install", "classes_not_loaded", "fetch_404", "model_download_notice",
-})
+}) | _LEGACY_COMPANION_CODES
 _SCOPES = frozenset({"read_only", "managed_write", "user_env", "paid", "attached_target"})
 _FIX_FIELDS = frozenset({"id", "who", "scope", "details", "argv", "instruction", "placeholders"})
 _PLACEHOLDER = re.compile(r"<([^<>]+)>")
@@ -24,7 +29,8 @@ _NAME = re.compile(r"[A-Z][A-Z0-9_]*")
 
 def uses_setup_contract(envelope: Mapping[str, Any]) -> bool:
     return ("attempt_count" in envelope
-            or any(issue.get("code") in SETUP_ISSUE_CODES or "fix_ids" in issue for issue in envelope.get("issues", ()))
+            or any(issue.get("code") in SETUP_ISSUE_CODES - _LEGACY_COMPANION_CODES
+                   or "fix_ids" in issue for issue in envelope.get("issues", ()))
             or any(set(fix) & {"id", "who", "instruction", "placeholders"} for fix in envelope.get("fixes", ())))
 
 
