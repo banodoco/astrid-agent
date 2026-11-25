@@ -1039,3 +1039,29 @@ def test_cold_helper_imports_without_astrid_core_pack(tmp_path):
     result = subprocess.run([sys.executable, "-I", "-S", "-c", code, str(tmp_path)],
                             capture_output=True, text=True, cwd=tmp_path, env={})
     assert result.returncode == 0 and result.stdout.strip() == "ok", result.stderr
+
+
+def test_release_lock_keeps_each_rows_own_repository(monkeypatch):
+    def spec(name, repository):
+        return SimpleNamespace(name=name, repository=repository, url=None, revision="a" * 40,
+                               path=f"{name}.safetensors", destination=f"loras/{name}.safetensors",
+                               bytes=1, sha256="b" * 64)
+
+    fake = SimpleNamespace(models=(spec("one", "Comfy-Org/MiniMax-H3"), spec("two", "Pika-Labs/Pika-H3-Flex-Turbo-LoRA")))
+    monkeypatch.setattr(build, "load_recipe_model_lock", lambda *a, **k: fake)
+    rows = build.release_inputs()["lock"]["models"]
+    assert [r["repository"] for r in rows] == ["Comfy-Org/MiniMax-H3", "Pika-Labs/Pika-H3-Flex-Turbo-LoRA"]
+
+
+def test_download_uses_row_repository_over_lock_default(tmp_path):
+    payload = b"model-bytes" * 25
+    row = dict(model_row(payload), repository="other/repo")
+    urls = []
+
+    def opener(request, timeout):
+        urls.append(request.full_url)
+        start, end = map(int, request.headers["Range"].removeprefix("bytes=").split("-"))
+        return RangeResponse(payload, start, end)
+
+    remote.download_model(row, tmp_path / "test.safetensors", "first/repo", time.time() + 60, opener=opener)
+    assert urls and all("other/repo" in u and "first/repo" not in u for u in urls)

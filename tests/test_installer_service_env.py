@@ -78,6 +78,88 @@ def test_windows_stop_validation_accepts_exact_canonical_task_action(tmp_path, m
     )
 
 
+def test_darwin_stop_probe_ignores_loaded_label_when_autostart_off_and_plist_missing(tmp_path):
+    from runtime_protocol import platform
+
+    run = Mock(return_value=(f"gui/{platform.current_user()}/{LABEL} = {{\n"
+                             "\tstate = running\n\tpath = /foreign/agent.plist\n"
+                             "\tprogram = /foreign/python\n\targuments = {\n"
+                             "\t\t/foreign/python\n\t}\n\tpid = 42\n}"))
+    manager = Service(tmp_path / "program", tmp_path / "log", run,
+                      home=tmp_path / "home", system="darwin", say=lambda _: None)
+    data = tmp_path / "data"
+    write_json(manager.selection, {
+        "owner": LABEL, "program_root": str(manager.root), "data_root": str(data),
+        "choices": {"autostart": False},
+    })
+
+    assert manager.validate_stop_target(None, data, owner_pid=None) is None
+    manager.disable()
+
+    assert [call.args[0][0] for call in run.call_args_list] == ["launchctl"]
+    assert all("bootout" not in call.args[0] for call in run.call_args_list)
+
+
+def test_darwin_stop_probe_reports_missing_plist_when_autostart_on(tmp_path):
+    from runtime_protocol import platform
+
+    run = Mock(return_value=(f"gui/{platform.current_user()}/{LABEL} = {{\n"
+                             "\tstate = running\n\tpath = /foreign/agent.plist\n"
+                             "\tprogram = /foreign/python\n\targuments = {\n"
+                             "\t\t/foreign/python\n\t}\n\tpid = 42\n}"))
+    manager = Service(tmp_path / "program", tmp_path / "log", run,
+                      home=tmp_path / "home", system="darwin", say=lambda _: None)
+    data = tmp_path / "data"
+    write_json(manager.selection, {
+        "owner": LABEL, "program_root": str(manager.root), "data_root": str(data),
+        "choices": {"autostart": True},
+    })
+
+    with pytest.raises(ValueError, match="launchd service configuration is missing"):
+        manager.validate_stop_target(None, data, owner_pid=None)
+
+
+def test_darwin_stop_probe_uses_saved_autostart_when_explicit_choice_is_off(tmp_path):
+    from runtime_protocol import platform
+
+    run = Mock(return_value=(f"gui/{platform.current_user()}/{LABEL} = {{\n"
+                             "\tstate = running\n\tpath = /foreign/agent.plist\n"
+                             "\tprogram = /foreign/python\n\targuments = {\n"
+                             "\t\t/foreign/python\n\t}\n\tpid = 42\n}"))
+    manager = Service(tmp_path / "program", tmp_path / "log", run,
+                      home=tmp_path / "home", system="darwin", say=lambda _: None)
+    manager.choices = {"autostart": False}
+    data = tmp_path / "data"
+    write_json(manager.selection, {
+        "owner": LABEL, "program_root": str(manager.root), "data_root": str(data),
+        "choices": {"autostart": True},
+    })
+
+    with pytest.raises(ValueError, match="launchd service configuration is missing"):
+        manager.validate_stop_target(None, data, owner_pid=None)
+
+
+def test_darwin_autostart_on_valid_plist_does_not_require_saved_owner(tmp_path, monkeypatch):
+    import plistlib
+
+    from runtime_protocol import platform
+
+    manager, version, data, _transaction, action = _posix_action_fixture(
+        tmp_path, monkeypatch, "darwin", "canonical")
+    write_json(manager.selection, {"choices": {"autostart": True}})
+    document = plistlib.loads(manager.path.read_bytes())
+    args = document["ProgramArguments"]
+    manager.run.return_value = (
+        f"gui/{platform.current_user()}/{LABEL} = {{\n"
+        f"\tstate = running\n\tpath = {manager.path}\n\tprogram = {args[0]}\n"
+        "\targuments = {\n" + "".join(f"\t\t{part}\n" for part in args) +
+        "\t}\n\tpid = 42\n}"
+    )
+
+    with pytest.raises(ValueError, match="service record belongs to another installer"):
+        manager.validate_stop_target(version, data, owner_pid=42)
+
+
 @pytest.mark.parametrize("mutation", ["executable", "profile", "argument"])
 def test_windows_stop_validation_rejects_mutated_canonical_task_action(tmp_path, monkeypatch, mutation):
     from astrid.installer.core import switch

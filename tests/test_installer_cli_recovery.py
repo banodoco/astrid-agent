@@ -391,12 +391,17 @@ def test_installed_cli_validates_candidate_without_requiring_staging_uv(
     assert dispatched == [("install", candidate)]
 
 
-def test_update_flag_is_hidden_but_remains_mutually_exclusive():
+def test_update_flag_is_shown_and_remains_mutually_exclusive():
     help_text = cli.parser().format_help()
-    assert "--update]" not in help_text
-    assert "--update " not in help_text
+    assert "--update" in help_text
     with pytest.raises(SystemExit):
         cli.parser().parse_args(["--update", "--uninstall"])
+
+
+def test_managed_by_help_names_process_ownership_and_autostart_effects():
+    help_text = " ".join(cli.parser().format_help().split())
+    assert "let Pinokio start and stop Astrid" in help_text
+    assert "disable Astrid sign-in autostart" in help_text
 
 
 def _valid_cli_manifest(release):

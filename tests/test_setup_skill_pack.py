@@ -11,7 +11,7 @@ from astrid.skills.harnesses import ClaudeAdapter, CodexAdapter, HermesAdapter
 
 ROOT = Path(__file__).resolve().parents[1]
 PACK = ROOT / 'astrid/packs/setup'
-HEADER = '<!-- Generated from astrid/packs/setup/docs/SKILL.md; regenerate with python scripts/generate_setup_skill_mirror.py. -->\n\n'
+HEADER = '<!-- GENERATED from astrid/packs/setup/docs/SKILL.md by scripts/generate_setup_skill_mirror.py. Do not edit: edit the source and regenerate. -->\n'
 
 
 def test_setup_pack_is_default_and_mirror_is_current():
