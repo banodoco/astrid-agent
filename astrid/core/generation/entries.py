@@ -1438,7 +1438,7 @@ def target_schema(entry: dict[str, Any], workflow: Any, client: Any, *, engine: 
         # No additional pack issue; keep the original typed engine refusal.
         raise GenerationReadinessError(initial_readiness)
     issues = list(initial_readiness['issues']) if initial_readiness is not None else []
-    for class_type in missing_classes:
+    for index, class_type in enumerate(missing_classes, 1):
         message = (f'target is missing node {class_type!r}; '
                    'install it on the requested ComfyUI target, '
                    'or choose a target that provides it.') if client is not None else (
@@ -1446,7 +1446,8 @@ def target_schema(entry: dict[str, Any], workflow: Any, client: Any, *, engine: 
                    'identify the providing pack before preparing the requested target.')
         issues.append({'code': 'missing_node_pack', 'severity': 'error',
                        'message': message,
-                       'details': {'engine_code': 'comfyui.missing_node', 'node': class_type, 'bytes': None}})
+                       'details': {'engine_code': 'comfyui.missing_node', 'node': class_type, 'bytes': None},
+                       'fix_ids': [f'target-schema-lookup-{index}' if client is None else 'target-schema-align']})
     roles = {}
     needs_by_key = {}
     for index, need in enumerate(entry.get("needs", [])):
@@ -1465,19 +1466,31 @@ def target_schema(entry: dict[str, Any], workflow: Any, client: Any, *, engine: 
         issues.append({'code': 'missing_model', 'severity': 'error',
                        'message': f"target is missing {need.get('role') or 'model'} {need['value']!r} for {need['class_type']}.{need['field']}",
                        'details': {'engine_code': 'comfyui.models_missing', 'model': need['value'],
-                                   'node': need['class_type'], 'field': need['field'], 'bytes': need.get('bytes')}})
+                                   'node': need['class_type'], 'field': need['field'], 'bytes': need.get('bytes')},
+                       'fix_ids': ['target-schema-align']})
     if issues:
         if client is None:
             target = pending_target or {'engine': engine or 'comfyui', 'placement': 'local',
                                         'state': 'pending_host_readiness'}
-            fixes = [{'argv': ['vibecomfy', 'nodes', 'lookup', '--', name], 'scope': 'read_only',
-                      'details': {'action': 'Identify the providing pack before declaring its pinned source.'}}
-                     for name in missing_classes]
+            fixes = [{
+                'id': f'target-schema-lookup-{index}', 'who': 'agent', 'scope': 'read_only',
+                'details': {'action': 'Identify the providing pack before declaring its pinned source.'},
+                'instruction': {
+                    'step': 'Identify the providing pack before declaring its pinned source.',
+                    'then_argv': ['vibecomfy', 'nodes', 'lookup', '--', name],
+                },
+            } for index, name in enumerate(missing_classes, 1)]
         else:
             from .asset_gaps import align_argv
             target = getattr(client, 'generation_target', None)
-            fixes = [{'argv': align_argv(entry.get('registry_id') or entry.get('id')),
-                      'scope': 'user_env', 'details': {'action': 'Install missing locked assets; unlocked assets require a manifest.'}}]
+            fixes = [{
+                'id': 'target-schema-align', 'who': 'human', 'scope': 'user_env',
+                'details': {'action': 'Install missing locked assets; unlocked assets require a manifest.'},
+                'instruction': {
+                    'step': 'Install missing locked assets only after explicit user_env consent; unlocked assets require a manifest.',
+                    'then_argv': align_argv(entry.get('registry_id') or entry.get('id')),
+                },
+            }]
         if initial_readiness is not None:
             target = initial_readiness.get('target') or target
             fixes = [*initial_readiness['fixes'], *fixes]
