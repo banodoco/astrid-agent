@@ -109,6 +109,7 @@ CASES += [
         ("executor_failed", "Executor failed"),
         ("engine_busy", "Engine busy"),
         ("custody_unresolved", "Custody unresolved"),
+        ("release_not_proven", "Managed engine release could not be proven"),
         ("endpoint_ownership", "Endpoint ownership unproved"),
         ("endpoint_unhealthy", "Endpoint unhealthy"),
         ("unsupported_placement", "Unsupported placement"),
