@@ -649,16 +649,28 @@ def test_real_node_installer_checks_out_locked_commit_on_cpu_without_network(fak
     # and rev-parse remain real Git commands; only this clone's bytes differ.
     (selected_source / 'sitecustomize.py').write_text(
         'import subprocess, socket\n'
+        'from pathlib import Path\n'
         'original = subprocess.run\n'
         f'url = {pack["repository"]!r}\nlocal = {str(source)!r}\n'
         f'locked_sha = {locked_sha!r}\nfixture_sha = {fixture_sha!r}\n'
+        f'fetch_seen = {str(tmp_path / "fetch-seen")!r}\n'
+        'redirected = set()\n'
         'def run(argv, *args, **kwargs):\n'
-        '    if argv[:3] == ["git", "clone", url]:\n'
-        '        result = original(["git", "clone", local, argv[3]], *args, **kwargs)\n'
-        '        original(["git", "-C", argv[3], "remote", "set-url", "origin", url], check=True, capture_output=True)\n'
-        '        original(["git", "-C", argv[3], "update-ref", "refs/replace/" + locked_sha, fixture_sha], check=True, capture_output=True)\n'
+        '    if argv[:2] == ["git", "clone"] and url in argv:\n'
+        '        result = original([local if arg == url else arg for arg in argv], *args, **kwargs)\n'
+        '        original(["git", "-C", argv[-1], "remote", "set-url", "origin", url], check=True, capture_output=True)\n'
+        '        original(["git", "-C", argv[-1], "update-ref", "refs/replace/" + locked_sha, fixture_sha], check=True, capture_output=True)\n'
+        '        redirected.add(argv[-1])\n'
         '        return result\n'
         '    if argv[0] == "git" and "fetch" in argv:\n'
+        '        if (argv[:2] == ["git", "-C"] and argv[2] in redirected\n'
+        '                and argv[3:] == ["fetch", "--", url, locked_sha]):\n'
+        '            # The redirected local clone already supplies the locked object.\n'
+        '            replacement = original(["git", "-C", argv[2], "rev-parse", "refs/replace/" + locked_sha], check=True, capture_output=True, text=True)\n'
+        '            assert replacement.stdout.strip() == fixture_sha\n'
+        '            original(["git", "-C", argv[2], "cat-file", "-e", fixture_sha + "^{commit}"], check=True, capture_output=True)\n'
+        '            Path(fetch_seen).write_text(locked_sha)\n'
+        '            return subprocess.CompletedProcess(argv, 0, "", "")\n'
         '        raise AssertionError("network fetch in CPU fixture")\n'
         '    return original(argv, *args, **kwargs)\n'
         'subprocess.run = run\n'
@@ -670,6 +682,7 @@ def test_real_node_installer_checks_out_locked_commit_on_cpu_without_network(fak
     assert report['status'] == 'ready'
     assert alignment._pack_state(target, pack) == 'verified'
     assert (target.custom_nodes_root / pack['name'] / 'node.py').read_text() == '# locked revision\n'
+    assert (tmp_path / 'fetch-seen').read_text() == locked_sha
     from vibecomfy.node_packs import read_lockfile
     recorded = read_lockfile(target.root / '.astrid-engine/aligned-custom-nodes.lock')
     assert [(entry.name, entry.url, entry.git_commit_sha) for entry in recorded] == [

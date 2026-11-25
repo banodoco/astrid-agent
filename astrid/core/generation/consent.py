@@ -33,4 +33,4 @@ def consent_scope(value: str) -> str:
 
 
 # Argument parsers that take a consent choice publish this schema (see astrid.mcp_server).
-consent_scope.json_schema = {"type": "string", "pattern": CONSENT_SCOPE_PATTERN}
+setattr(consent_scope, "json_schema", {"type": "string", "pattern": CONSENT_SCOPE_PATTERN})

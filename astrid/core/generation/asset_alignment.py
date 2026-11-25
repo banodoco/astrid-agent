@@ -377,7 +377,11 @@ def catalog_manifests(entry_id: str | None = None) -> list[dict[str, Any]]:
                 from vibecomfy.custom_node_refs import workflow_lock_entries
                 from vibecomfy.node_recipes import recipe_sha256
 
-                from .node_approvals import approval_matches, entry_approval_directory, read_entry_approvals
+                from .node_approvals import (
+                    approval_matches,
+                    entry_approval_directory,
+                    read_entry_approvals,
+                )
 
                 directory = entry_approval_directory(entry)
                 approvals = read_entry_approvals(directory) if directory is not None else []
@@ -418,8 +422,8 @@ def catalog_manifests(entry_id: str | None = None) -> list[dict[str, Any]]:
                                      'missing': ['locked_repository_and_sha']})
                 packs = [pack for _, pack in by_name.values()]
                 incomplete = []
-                models = list(declared_model_specs(workflow.metadata.get('model_assets', []),
-                                                   incomplete=incomplete))
+                declared_models = list(declared_model_specs(workflow.metadata.get('model_assets', []),
+                                                           incomplete=incomplete))
                 retry = shlex.join(['astrid', 'generate', 'align', '--entry', entry_id, '--json'])
                 for record in incomplete:
                     name = record['name']
@@ -439,7 +443,7 @@ def catalog_manifests(entry_id: str | None = None) -> list[dict[str, Any]]:
                 # Assets belong to the workflow even if its saved generation
                 # mode has not been chosen (e.g. an imported audio workflow).
                 return [{'id': entry_id, 'provider_only': False, 'modes': [
-                    {'mode': mode, 'workflow': workflow, 'models': models,
+                    {'mode': mode, 'workflow': workflow, 'models': declared_models,
                      'node_packs': packs, 'unlocked': unlocked}
                     for mode in (entry['modes'] or ['workflow'])]}]
             for pack in resolve_node_packs(classes, lockfile_path=lockpath):
