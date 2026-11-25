@@ -270,16 +270,23 @@ def serve(args: argparse.Namespace) -> int:
     types = json.loads(Path(args.types).read_text()) if args.types else {}
     log = Path(args.log)
     lock = threading.Lock()
+    alternate = getattr(args, "secondary_routes", None)
+    secondary = ({route: Path(file) for route, file in json.loads(Path(alternate).read_text()).items()}
+                 if alternate else {})
+    activate = Path(args.activate) if alternate else None
 
     class Handler(http.server.BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
         def _respond(self, head_only: bool) -> None:
             path = urlsplit(self.path).path  # the page asks for its entry with a query string
-            file = routes.get(path)
+            use_secondary = activate is not None and activate.is_file() and path in secondary
+            file = secondary[path] if use_secondary else routes.get(path)
             body = file.read_bytes() if file is not None else None
             status = 200 if body is not None else 404
             hit = {"method": self.command, "path": path, "status": status}
+            if activate is not None:
+                hit["phase"] = "secondary" if use_secondary else "initial"
             if PAGE_AGENT_MARK in (self.headers.get("User-Agent") or ""):
                 hit["page"] = True
             with lock, log.open("a", encoding="utf-8") as stream:
@@ -370,10 +377,12 @@ class Intercept:
     """Map ``astrid.haus`` to a local HTTPS server that serves ``routes``, for the length of a ``with``."""
 
     def __init__(self, routes: dict[str, bytes | Path], *, python: str | os.PathLike | None = None, port: int = 443,
-                 max_seconds: int = 3600, types: dict[str, str] | None = None):
+                 max_seconds: int = 3600, types: dict[str, str] | None = None,
+                 secondary_routes: dict[str, bytes | Path] | None = None, activate: Path | None = None):
         """``routes`` maps a path to its bytes, or to a file served as it is (the hosted page's build)."""
         self.routes, self.python, self.port, self.max_seconds = dict(routes), python, port, max_seconds
         self.types = dict(types or {})
+        self.secondary_routes, self.activate = dict(secondary_routes or {}), activate
         self.leaf_spki: str | None = None
         self.directory: Path | None = None
         self.process: subprocess.Popen | None = None
@@ -410,6 +419,15 @@ class Intercept:
             files[route] = str(d / f"route-{index}")
         (d / "routes.json").write_text(json.dumps(files), encoding="utf-8")
         (d / "types.json").write_text(json.dumps(self.types), encoding="utf-8")
+        if self.secondary_routes:
+            secondary_files = {}
+            for index, (route, body) in enumerate(self.secondary_routes.items()):
+                target = d / f"secondary-route-{index}"
+                target.write_bytes(body.read_bytes() if isinstance(body, Path) else body)
+                secondary_files[route] = str(target)
+            (d / "secondary-routes.json").write_text(json.dumps(secondary_files), encoding="utf-8")
+            activate_file = self.activate or (d / "published")
+            (d / "activate").write_text(str(activate_file), encoding="utf-8")
         (d / "hits.jsonl").write_text("", encoding="utf-8")
         ca, leaf, key = make_certs(d)
         self.leaf_spki = spki_pin(leaf)
@@ -418,6 +436,8 @@ class Intercept:
         self.process = subprocess.Popen(
             _helper("serve", "--cert", str(leaf), "--key", str(key), "--routes", str(d / "routes.json"),
                     "--types", str(d / "types.json"),
+                    *(["--secondary-routes", str(d / "secondary-routes.json"), "--activate", str(activate_file)]
+                      if self.secondary_routes else []),
                     "--log", str(d / "hits.jsonl"), "--ready", str(d / "ready"), "--stop", str(d / "stop"),
                     "--port", str(self.port), "--max-seconds", str(self.max_seconds)),
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -655,6 +675,7 @@ def door_origin(door_base: str) -> str:
 # The open page must show the finished update ("Astrid updated: Release N → Release M") this soon after the
 # status route reports it terminal, with no reload and no click from the journey (UR-15k).
 LIVE_RESULT_SECONDS = 30
+LIVE_RESULT_LINE = re.compile(r"^(?:Astrid updated: Release \d+ → Release \d+|Astrid updated\. Reload to continue\.)$")
 
 
 class LiveResult:
@@ -757,6 +778,8 @@ def live_result(live: "LiveResult", terminal_at: float) -> dict:
     if not seen or not isinstance(seen.get("seen_at"), (int, float)):
         raise RuntimeError("The open page never showed the update's result by itself: "
                            + str(final.get("live_error") or final.get("error") or "no result")[:400])
+    if not isinstance(seen.get("text"), str) or not LIVE_RESULT_LINE.fullmatch(seen["text"]):
+        raise RuntimeError("The open page showed an unrecognized update completion message")
     after = seen["seen_at"] / 1000 - terminal_at
     if after > LIVE_RESULT_SECONDS:
         raise RuntimeError(f"The open page showed the update's result {after:.0f}s after it finished, "
@@ -870,6 +893,8 @@ def main(argv: list[str] | None = None) -> int:
     server = sub.add_parser("serve")
     for flag in ("cert", "key", "routes", "log", "ready", "stop"):
         server.add_argument("--" + flag, required=True)
+    server.add_argument("--secondary-routes")
+    server.add_argument("--activate")
     server.add_argument("--types")
     server.add_argument("--port", type=int, default=443)
     server.add_argument("--max-seconds", type=int, default=3600)

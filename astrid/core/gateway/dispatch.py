@@ -7,7 +7,11 @@ from typing import Any
 
 from astrid.core.contracts.errors import AstridError
 
-from .hivemind import installed_pack_ids as _installed_pack_ids
+
+def _installed_pack_ids() -> frozenset[str]:
+    from .hivemind import installed_pack_ids
+
+    return installed_pack_ids()
 
 
 def _dispatch(raw: list[str]) -> int:
@@ -724,8 +728,6 @@ _CORE_ROUTE_NAMES = frozenset(_TOP_LEVEL_HANDLERS)
 # External packs opt into the CLI through the same declarative registry. This
 # keeps pack installation and command exposure separate: a pack is available
 # to the runtime without automatically claiming a top-level command.
-from .hivemind import PACK_COMMANDS as _PACK_COMMANDS
-
 # Pack ids are discoverable, but never allowed to shadow a core family or an
 # outer launcher command. This is a blocklist/precedence rule, not a second
 # hand-maintained pack allowlist.
@@ -737,11 +739,13 @@ _DYNAMIC_PACK_ROUTE_NAMES: set[str] = set()
 
 def _register_installed_pack_routes() -> None:
     """Register discovered pack ids lazily, preserving core route precedence."""
+    from .hivemind import PACK_COMMANDS
+
     for pack_name in _DYNAMIC_PACK_ROUTE_NAMES:
         _TOP_LEVEL_HANDLERS.pop(pack_name, None)
     _DYNAMIC_PACK_ROUTE_NAMES.clear()
     core_names = _CORE_ROUTE_NAMES
-    for pack_name in sorted({spec.pack for spec in _PACK_COMMANDS} | _installed_pack_ids()):
+    for pack_name in sorted({spec.pack for spec in PACK_COMMANDS} | _installed_pack_ids()):
         if pack_name in _PACK_ROUTE_BLOCKLIST or pack_name in core_names:
             continue
         _TOP_LEVEL_HANDLERS[pack_name] = (

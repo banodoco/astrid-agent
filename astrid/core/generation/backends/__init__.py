@@ -5,9 +5,9 @@ the adapter classes from here and calls ``.generate()`` without any
 backend-specific branching.
 """
 
+from typing import TYPE_CHECKING
+
 from astrid.core.generation.backends.base import BackendAdapter, GenerationResult
-from astrid.core.generation.backends.codex import CodexBackend
-from astrid.core.generation.backends.fal import FalBackend
 from astrid.core.generation.backends.registry import (
     GenerationBackendDescriptor,
     GenerationBackendRegistry,
@@ -15,9 +15,12 @@ from astrid.core.generation.backends.registry import (
     load_default_generation_backend_registry,
 )
 
-# VibeComfy adapters are lazy-imported via module __getattr__ so
-# that ``import astrid`` never pulls in the vibecomfy module tree.
-# Their public names are preserved and trigger the lazy load.
+if TYPE_CHECKING:
+    from astrid.core.generation.backends.codex import CodexBackend
+    from astrid.core.generation.backends.fal import FalBackend
+
+# Load provider adapters only when their public names are requested. In
+# particular, importing a Comfy submodule must not load Codex or fal.
 
 __all__ = [
     "BackendAdapter",
@@ -34,6 +37,16 @@ __all__ = [
 
 
 def __getattr__(name: str):
+    if name == "CodexBackend":
+        from astrid.core.generation.backends.codex import CodexBackend
+
+        globals()[name] = CodexBackend
+        return CodexBackend
+    if name == "FalBackend":
+        from astrid.core.generation.backends.fal import FalBackend
+
+        globals()[name] = FalBackend
+        return FalBackend
     if name in {"VibeComfyEngine", "VibeComfyBackend"}:
         from astrid.core.generation.backends.vibecomfy import (
             VibeComfyBackend,
@@ -52,3 +65,8 @@ def __getattr__(name: str):
         except ModuleNotFoundError as exc:
             raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from exc
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    # Keep the formerly eager public names discoverable without loading them.
+    return sorted({*globals(), "CodexBackend", "FalBackend"})
