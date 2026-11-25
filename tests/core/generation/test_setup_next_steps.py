@@ -168,24 +168,31 @@ def test_warnings_do_not_invent_a_repair():
 
 
 def test_legacy_envelopes_remain_unchanged_until_their_mapping_card():
+    # LE-1b completes the mapping card. Raw legacy facts cannot bypass the
+    # validator or acquire a guessed link at the envelope boundary.
+    from astrid.core.generation.setup_repairs import manual_setup_fix
+
     issue = {"code": "missing_node_pack", "severity": "error", "message": "Install it manually", "details": {}}
-    fix = {"scope": "attached_target", "details": {"action": "Install it manually"}}
-    result = readiness_envelope(issues=[issue], fixes=[fix])
+    legacy = {"scope": "attached_target", "details": {"action": "Install it manually"}}
+    with pytest.raises(ValueError, match="unique nonempty ids"):
+        readiness_envelope(issues=[issue], fixes=[legacy])
     projected = {
-        **fix, "id": "setup-1", "who": "human",
+        **legacy, "id": "inspect-attached-pack", "who": "human",
         "instruction": {"step": "Install it manually", "then_argv": [
             "astrid", "generate", "targets", "--placement", "<PLACEMENT>", "--json",
         ]},
         "placeholders": {"PLACEMENT": "The originally selected target or its explicit ComfyUI URL"},
     }
+    fix = manual_setup_fix("inspect-attached-pack", "Install it manually", **legacy)
+    assert fix == projected
+    result = readiness_envelope(issues=[{**issue, "fix_ids": [fix["id"]]}], fixes=[fix])
     assert result == {"entry": None, "target": None, "status": "blocked",
-                      "issues": [{**issue, "fix_ids": ["setup-1"]}], "fixes": [projected],
+                      "issues": [{**issue, "fix_ids": ["inspect-attached-pack"]}], "fixes": [projected],
                       "attempt_count": 0}
     assert all("argv" not in fix for fix in result["fixes"])
     error = GenerationReadinessError(copy.deepcopy(result))
     assert all("argv" not in fix for fix in error.to_envelope()["fixes"])
     assert error.recovery_command == ""
-
 
 def test_generic_service_conflict_is_not_a_node_install_conflict():
     error = generation_error({"code": "conflict", "message": "A service write conflicted"})
@@ -212,11 +219,16 @@ def test_all_non_success_projections_invoke_validator(monkeypatch):
     readiness_envelope(issues=[{"code": "pack_version_differs", "severity": "warning",
                                 "message": "Observed version differs", "details": {}}])
     readiness_envelope(issues=[_issue()], fixes=[_fix()])
-    readiness_envelope(
-        issues=[{"code": "missing_node_pack", "severity": "error", "message": "Missing", "details": {}}],
-        fixes=[{"scope": "attached_target", "details": {"action": "Identify the providing pack."}}],
-    )
-    assert seen == ["ready_with_warnings", "blocked", "blocked"]
+    from astrid.core.generation.setup_repairs import manual_setup_fix
+
+    fix = manual_setup_fix("inspect-attached-pack", "Identify the providing pack.", scope="attached_target")
+    issue = {"code": "missing_node_pack", "severity": "error", "message": "Missing", "details": {},
+             "fix_ids": [fix["id"]]}
+    readiness_envelope(issues=[issue], fixes=[fix])
+    with pytest.raises(ValueError):
+        readiness_envelope(issues=[issue], fixes=[{"scope": "attached_target",
+                                                 "details": {"action": "Identify the providing pack."}}])
+    assert seen == ["ready_with_warnings", "blocked", "blocked", "blocked"]
 
 
 def test_bare_or_dangling_error_fails_closed_even_without_attempt_count():
@@ -310,10 +322,16 @@ def test_legacy_target_and_drift_do_not_bypass_explicit_setup_validation():
 
     error = generation_error({"code": "COMFY_TARGET_UNAVAILABLE", "message": "down"})
     warning = compare_versions({"comfyui": "1"}, {"comfyui": "2"})
-    result = readiness_envelope(issues=[*warning, *error.readiness["issues"]])
+    result = readiness_envelope(issues=[*warning, *error.readiness["issues"]],
+                                fixes=error.readiness["fixes"])
     assert result["status"] == "blocked"
-    assert result["fixes"] == []
-    assert "attempt_count" not in result
-    # Opting into the typed contract still demands a linked repair.
-    with pytest.raises(ValueError, match="every setup error needs a linked next step"):
-        readiness_envelope(issues=[*warning, *error.readiness["issues"]], attempt_count=0)
+    assert [issue["code"] for issue in result["issues"]] == ["version_drift", "target_unreachable"]
+    assert result["fixes"] == error.readiness["fixes"]
+    assert result["issues"][0] == warning[0] and not warning[0].get("fix_ids")
+    assert result["issues"][1]["fix_ids"] == [fix["id"] for fix in result["fixes"]]
+    assert result["attempt_count"] == 0
+    # The LE-1b mapping supersedes the legacy opt-in distinction: the
+    # omission must fail both with and without an explicit attempt count.
+    for attempt in (None, 0):
+        with pytest.raises(ValueError, match="fix_ids|linked next step"):
+            readiness_envelope(issues=[*warning, *error.readiness["issues"]], attempt_count=attempt)
