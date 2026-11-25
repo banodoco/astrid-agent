@@ -36,6 +36,7 @@ _ISSUE_REPAIR_STEPS = {
     "model_lock_incomplete": "Complete the saved model declaration with the verified HTTPS source, SHA-256 and exact byte size.",
     "invalid_model_lock": "Correct the invalid model declaration and verify its source, fingerprint and destination before installation.",
     "target_unreachable": "Start or repair the selected target and verify its endpoint before retrying.",
+    "target_schema_unavailable": "Start or repair the selected attached ComfyUI and verify its live schema before retrying the JSON import.",
     "input_rejected": "Correct the rejected input or option using the selected entry's declared inputs and retry.",
     "missing_dependency": "Install or repair the required dependency through the supported setup path, or select a target that already provides it.",
     "engine_not_found": "Install or repair the selected managed ComfyUI engine, or explicitly select an existing ComfyUI.",
