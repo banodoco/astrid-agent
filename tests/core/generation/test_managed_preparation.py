@@ -135,7 +135,7 @@ def test_preparation_keeps_installation_guidance_for_unreadable_receipt(tmp_path
     try:
         with pytest.raises(EngineNotInstalled, match="astrid engines install comfyui") as error:
             preparation.prepare(workflow, execution_identity="execution", inputs={},
-                                canonical_workflow=None, input_digests={})
+                                canonical_workflow=SimpleNamespace(metadata={}), input_digests={})
         assert error.value.next_action == "astrid engines install comfyui"
     finally:
         preparation.close()
@@ -627,9 +627,10 @@ def test_real_vibecomfy_doctor_stdout_failure_and_success_are_distinguished(tmp_
     secret = 'PRIVATE_NATIVE_WORKFLOW_PATH_SENTINEL'
     with pytest.raises(IntegrityError, match='step=doctor, reason=workflow_load_failed') as error:
         prep._native('import sys;from vibecomfy.cli import main;sys.exit(main(sys.argv[1:]))',
-                     'doctor', str(tmp_path / secret / 'absent.py'), '--non-interactive', '--yes', step='doctor')
+                     'doctor', str(tmp_path / secret / 'absent.py'), '--non-interactive', '--yes', '--json', step='doctor')
     assert observed[-1].returncode == 1 and observed[-1].stderr == ''
-    assert 'Layer: Python scratchpad import/build' in observed[-1].stdout
+    report = json.loads(observed[-1].stdout)
+    assert report['status'] == 'error' and report['layer'] == 'Python scratchpad import/build'
     assert secret not in str(error.value) + caplog.text
 
     with new_workflow(ReadyMetadata.build(template_id='native-doctor', capability='image')) as workflow:
@@ -638,8 +639,9 @@ def test_real_vibecomfy_doctor_stdout_failure_and_success_are_distinguished(tmp_
         workflow.finalize({}, outputs=[OutputSpec(node=saved)])
     emitted = emit_bundle_with_candidate(workflow, tmp_path / 'workflow.py', Provenance.USER_CONFIRMED, None)
     prep._native('import sys;from vibecomfy.cli import main;sys.exit(main(sys.argv[1:]))',
-                 'doctor', str(emitted.python_path), '--non-interactive', '--yes', step='doctor')
+                 'doctor', str(emitted.python_path), '--non-interactive', '--yes', '--json', step='doctor')
     assert observed[-1].returncode == 0
+    assert json.loads(observed[-1].stdout)["status"] in {"ok", "warning"}
 
 
 def test_managed_node_lock_declares_real_recipe_patches(tmp_path):
@@ -673,9 +675,10 @@ def test_managed_node_lock_without_patches_preserves_original_bytes(tmp_path):
                                 'commit = "abc"\n')
 
 
-def test_asset_alignment_accepts_only_verified_recipe_patch_at_recipe_pin(tmp_path):
+def test_asset_alignment_accepts_only_verified_recipe_patch_at_recipe_pin(tmp_path, monkeypatch):
     import subprocess
     from dataclasses import replace
+    from vibecomfy import resources
     from astrid.core.generation.asset_alignment import ManagedAssetTarget, _pack_state
     from astrid.core.generation.engine_recipe import load_recipe
 
@@ -703,8 +706,24 @@ def test_asset_alignment_accepts_only_verified_recipe_patch_at_recipe_pin(tmp_pa
     target = ManagedAssetTarget(tmp_path, tmp_path / 'models', root, 'python', 'http://localhost', '',
                                 tmp_path / 'cache', recipe=recipe)
     pack = {'name': pack_path.name, 'repository': repo, 'revision': revision}
+    # Supply a shipped catalog fixture, not a writable target lock or mocked verifier.
+    shipped_patches = [{'path': 'patched.py', 'sha256': hashlib.sha256(b'after').hexdigest()}]
+    shipped_row = {'url': repo, 'commit': revision, 'patches': shipped_patches}
+    monkeypatch.setattr(resources, 'custom_nodes_lock', lambda: {'nodepacks': {pack_path.name: shipped_row}})
     assert _pack_state(target, pack) == 'verified'
     (pack_path / 'untracked').write_text('other')
+    assert _pack_state(target, pack) == 'mismatch'
+    (pack_path / 'untracked').unlink()
+
+    # A target recipe cannot authorize an omitted patch or a different shipped hash.
+    shipped_row['patches'] = []
+    assert _pack_state(target, pack) == 'mismatch'
+    shipped_row['patches'] = [{'path': 'patched.py', 'sha256': hashlib.sha256(b'wrong').hexdigest()}]
+    assert _pack_state(target, pack) == 'mismatch'
+
+    # Even matching declarations do not authorize different worktree bytes.
+    shipped_row['patches'] = shipped_patches
+    (pack_path / 'patched.py').write_text('wrong')
     assert _pack_state(target, pack) == 'mismatch'
 
 
@@ -739,9 +758,11 @@ def fetch_volume(tmp_path, monkeypatch):
         {'name': 'need.bin', 'subdir': 'checkpoints', 'size': 9,
          'sha256': hashlib.sha256(b'need-more').hexdigest()},
     ]
-    manifest = {'models_root': str(models), 'models': rows}
+    manifest = {'models_root': str(models), 'models': rows, 'extra': {'nodes': []}}
     prep = ManagedEnginePreparation.__new__(ManagedEnginePreparation)
     prep.mode = 'align'
+    prep.code_approvals = []
+    prep.placement_class = 'local'
     prep.deadline = time.monotonic() + 20
     prep.cancelled = lambda: False
     native, quota_calls = [], []
@@ -824,7 +845,7 @@ def fetch_volume(tmp_path, monkeypatch):
 
     prep._verify_alignment = alignment_complete
 
-    workflow = SimpleNamespace(compile=lambda backend, *, run_inputs: {})
+    workflow = SimpleNamespace(metadata={}, compile=lambda backend, *, run_inputs: {})
     def fetch(**inputs):
         try:
             prep._prepare(source, execution_identity='execution', inputs=inputs,

@@ -15,11 +15,15 @@ from pathlib import Path
 from typing import Any
 
 
-def declared_model_specs(assets: Any, *, require_complete: bool = True):
+def declared_model_specs(assets: Any, *, require_complete: bool = True,
+                         incomplete: list[dict[str, Any]] | None = None):
     """Project canonical workflow declarations into the existing downloader type.
 
     Incomplete declarations grant no custody authority. Inventory composition
     may ignore them; provisioning a selected entry must report them instead.
+    An explicit incomplete collector lets inspection report missing fields
+    without granting those declarations custody authority. Invalid complete
+    declarations still fail validation.
     """
     from .engine_contracts import EngineError, IntegrityError, ModelLockValidationError, ModelSpec
     from .model_downloader import _safe_relative, _validate_model
@@ -33,6 +37,10 @@ def declared_model_specs(assets: Any, *, require_complete: bool = True):
         missing = [key for key in ('name', 'url', 'sha256', 'size_bytes')
                    if asset.get(key) is None or asset.get(key) == '']
         if missing:
+            if incomplete is not None:
+                incomplete.append({'name': asset.get('name'), 'subdir': asset.get('subdir'),
+                                   'missing': missing})
+                continue
             if require_complete:
                 raise ModelLockValidationError(
                     f"Declared model {asset.get('name', '?')} is unavailable: missing {', '.join(missing)}")
@@ -134,11 +142,9 @@ def attached_asset_readiness(entry: str | None, *, nodes=(), models=(), lockfile
     names that pack, and its repository when the lock declares a URL. For such a pack Astrid only
     shows the commands; the person or their coding agent runs them.
     """
-    from pathlib import Path
+    from vibecomfy.node_packs import resolve_lockfile_path, resolve_node_packs
 
-    from vibecomfy.node_packs import resolve_node_packs
-
-    lock = Path('custom_nodes.lock') if lockfile_path is None else lockfile_path
+    lock = resolve_lockfile_path(lockfile_path)
     issues, fixes = [], []
     fixed_packs: set[str] = set()
     for name in nodes:

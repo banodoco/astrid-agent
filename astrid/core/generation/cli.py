@@ -7,6 +7,7 @@ import contextlib
 import json
 import logging
 import sys
+import tempfile
 import time
 from contextlib import nullcontext
 from contextvars import ContextVar
@@ -43,9 +44,9 @@ _KIND_SPEC: dict[str, dict[str, Any]] = {
     'video': {'noun': 'a video', 'dimension_key': 'resolution', 'prompt_only_guard': True},
     # audio_modes: the sound-generating modes (music, tts, sfx); the table contract tests pin this tuple.
     # transcribe_modes: modes that take --audio-ref and yield a transcript, not sound. Kept under its own
-    # key so audio_modes stays unchanged; the --mode choices are audio_modes plus transcribe_modes.
+    # key so audio_modes stays unchanged. workflow_modes are explicitly saved raw audio graphs.
     'audio': {'noun': 'audio', 'dimension_key': 'resolution', 'audio_modes': ('music', 'tts', 'sfx'),
-              'transcribe_modes': ('transcribe',)},
+              'transcribe_modes': ('transcribe',), 'workflow_modes': ('workflow',)},
 }
 
 
@@ -125,10 +126,12 @@ class _GenerationParser(argparse.ArgumentParser):
 
 
 def _common_options(command):
+    from .consent import consent_scope
     command.add_argument('--input', action='append', default=[], metavar='NAME=VALUE')
     command.add_argument('--engine', action=_Once)
     command.add_argument('--no-wait', action='store_true', help='Return the admitted task; follow it separately.')
-    command.add_argument('--consent', action='append', choices=('user_env',), default=[])
+    command.add_argument('--consent', action='append', type=consent_scope, metavar='{user_env,code}', default=[],
+                         help='Use code=TOKEN only after showing the exact code warning to the person.')
     command.add_argument('--recovery-path', action=_Once, help='Save the exact Runtime admission receipt.')
 
 
@@ -249,8 +252,8 @@ def _parser(contextual: dict[str, Any] | None = None) -> _GenerationParser:
         command.add_argument("--entry", action=_Once, help="Generation entry ID; use --help to inspect its declared inputs.")
         command.add_argument("--inputs-json", action=_Once, metavar="FILE", help="Read declared entry inputs from a JSON object.")
         command.add_argument("--mode", action=_Once,
-                             choices=(spec.get('audio_modes', ()) + spec.get('transcribe_modes', ())) or None,
-                             required='audio_modes' in spec, help=("Audio mode: music, tts, or sfx. Use transcribe with --audio-ref FILE for word timings." if 'audio_modes' in spec
+                             choices=(spec.get('audio_modes', ()) + spec.get('transcribe_modes', ()) + spec.get('workflow_modes', ())) or None,
+                             required='audio_modes' in spec, help=("Audio mode: music, tts, or sfx. Use transcribe with --audio-ref FILE for word timings; workflow with --entry NAME for a saved raw audio graph." if 'audio_modes' in spec
                              else "Generation mode; inferred from the supplied inputs by default."))
         command.add_argument("--execution", action=_Once, help="Catalog execution backend, when explicitly selected.")
         command.add_argument(
@@ -265,7 +268,7 @@ def _parser(contextual: dict[str, Any] | None = None) -> _GenerationParser:
             command.add_argument('--video-ref', action=_Once, metavar='FILE', help='Reference video for video generation or Foley sound effects.')
         if modality == 'audio':
             command.add_argument('--audio-ref', action=_Once, metavar='FILE_OR_MEDIA',
-                                 help='Audio or video to transcribe (--mode transcribe): a local file, or a project media id or digest (needs --project).')
+                                 help='Audio or video to transcribe, or the saved workflow\'s one audio input: a local file, or a project media id or digest (needs --project).')
         command.add_argument("--width", action=_Once, type=int)
         command.add_argument("--height", action=_Once, type=int)
         command.add_argument("--steps", action=_Once, type=int)
@@ -326,7 +329,8 @@ def _parser(contextual: dict[str, Any] | None = None) -> _GenerationParser:
     selection.add_argument('--entry', action=_Once, metavar='ID')
     selection.add_argument('--all', action='store_true')
     command.add_argument('--apply', action='store_true')
-    command.add_argument('--consent', action='append', choices=('user_env',), default=[])
+    from .consent import consent_scope
+    command.add_argument('--consent', action='append', type=consent_scope, metavar='{user_env,code}', default=[])
     command.add_argument('--json', action='store_true')
     command = sub.add_parser('fetch-models', help='Show, then download on confirmation, the models an entry lacks on your own ComfyUI.')
     command.add_argument('entry')
@@ -520,18 +524,11 @@ def _workflow_command(parsed: argparse.Namespace, *, output=None) -> int:
                                code='input_rejected', details={'field': 'replace'})
     if parsed.no_run and not parsed.as_entry:
         raise ValueError('--no-run requires --as-entry')
-    from astrid.core.generation.placement import is_runpod_placement
-    if is_runpod_placement(parsed.placement) and not parsed.dry_run and not parsed.no_run:
-        # Same order as entries: the local dry run (with its preflight) before a claimed machine
-        # is required, and before --as-entry writes anything.
-        _generate_facade().workflow(workflow=path, placement=parsed.placement, mode=parsed.mode,
-            inputs=values, dry_run=True, client=None, project=parsed.project, out=parsed.out,
-            **_controls(parsed))
-        from astrid.sdk.generation import _require_claimed_machine
-        _require_claimed_machine(parsed.placement)
     if parsed.as_entry and parsed.dry_run:
-        # Preview only: validate the inputs the entry would declare, write nothing, run nothing.
-        description, _ = entries.resolve_workflow_inputs(path, values, mode=parsed.mode, **_workflow_comfy_url(parsed))
+        # Preview the reusable entry's input contract without demanding the
+        # media/prompt or code consent for a particular execution.
+        description, _ = entries.resolve_workflow_inputs(path, values, mode=parsed.mode,
+                                                         required=False, **_workflow_comfy_url(parsed))
         preview = {
             "dry_run": True,
             "written": False,
@@ -543,6 +540,7 @@ def _workflow_command(parsed: argparse.Namespace, *, output=None) -> int:
         }
         print(json.dumps(preview, indent=2, sort_keys=True, default=str), file=output)
         return 0
+    saved_code_approvals = None
     if parsed.as_entry:
         from vibecomfy.entries import import_as_entry
         if parsed.replace:
@@ -551,8 +549,48 @@ def _workflow_command(parsed: argparse.Namespace, *, output=None) -> int:
                 from astrid.core.generation.preflight import generation_error
                 raise generation_error(ValueError('The installed VibeComfy entry API does not support atomic replacement'),
                                        code='missing_dependency', details={'field': 'replace'})
-        entries.resolve_workflow_inputs(path, values, mode=parsed.mode, **_workflow_comfy_url(parsed))
-        entry = import_as_entry(path, parsed.as_entry, **({'replace': True} if parsed.replace else {}))
+        from astrid.core.generation import placement as placements
+        from astrid.core.generation.node_approvals import authorize_nodes
+        resolved = placements.validate_placement(placements.resolve_placement(
+            placements.request_from_selector(parsed.placement)))
+        from astrid.packs.vibecomfy.production_engine import load_workflow_path
+        with tempfile.TemporaryDirectory(prefix='astrid-code-consent-') as scratch:
+            source_workflow = load_workflow_path(path, scratch, **_workflow_comfy_url(parsed)).resolved.workflow
+            source_nodes = entries.engine_table()['comfyui'].workflow_requirements([source_workflow])['extra']['nodes']
+        previous = entries.find_entry(parsed.as_entry) if parsed.replace else None
+        retry = ['astrid', 'generate', *getattr(parsed, '_invocation_argv', (
+            'workflow', str(path), '--as-entry', parsed.as_entry,
+            '--placement', parsed.placement or 'auto', *(['--no-run'] if parsed.no_run else [])))]
+        saved_code_approvals = authorize_nodes(source_nodes, placement_class=resolved.kind,
+            consent=parsed.consent, entry=previous, retry_argv=retry)
+    from astrid.core.generation.placement import is_runpod_placement
+    if is_runpod_placement(parsed.placement) and not parsed.dry_run and not parsed.no_run:
+        # Same order as entries: the local dry run (with its preflight) before a claimed machine
+        # is required, and before --as-entry writes anything.
+        _generate_facade().workflow(workflow=path, placement=parsed.placement, mode=parsed.mode,
+            inputs=values, dry_run=True, client=None, project=parsed.project, out=parsed.out,
+            **_controls(parsed))
+        from astrid.sdk.generation import _require_claimed_machine
+        _require_claimed_machine(parsed.placement)
+    if parsed.as_entry:
+        entries.resolve_workflow_inputs(path, values, mode=parsed.mode,
+                                        required=not parsed.no_run, **_workflow_comfy_url(parsed))
+        from astrid.core.generation.node_approvals import (
+            require_approved_nodes,
+            write_entry_approvals,
+        )
+
+        def approve_staged_entry(staged, revision):
+            # Retained additions and the canonical import can change the actual
+            # node set. Validate that exact bundle, then attach its records to
+            # the same unpublished revision before VibeComfy commits it.
+            actual_nodes = entries.engine_table()['comfyui'].workflow_requirements(
+                [entries._load_entry_workflow(staged)])['extra']['nodes']
+            approved = require_approved_nodes(actual_nodes, saved_code_approvals, placement_class=resolved.kind)
+            write_entry_approvals(revision, approved)
+
+        entry = dict(import_as_entry(path, parsed.as_entry, replace=parsed.replace,
+                                     before_publish=approve_staged_entry), source='user-entry')
         if parsed.no_run:
             print(json.dumps({'saved': True, 'ran': False, 'entry': parsed.as_entry,
                               'replaced': bool(parsed.replace)}, indent=2, sort_keys=True), file=output)
@@ -563,12 +601,11 @@ def _workflow_command(parsed: argparse.Namespace, *, output=None) -> int:
             return facade.workflow(workflow=path, placement=parsed.placement, mode=parsed.mode,
                 inputs=values, dry_run=parsed.dry_run, client=client,
                 project=parsed.project, out=parsed.out, **_controls(parsed))
-        from astrid.sdk.generation import _load_model_registry
+        from astrid.sdk.generation import _explicit_workflow_needs, _load_model_registry
         mode = parsed.mode or (entry['modes'][0] if len(entry['modes']) == 1 else 'workflow')
         selected = entry
         if mode not in entry['modes']:
-            selected = dict(entry, modes=[mode], needs=[need for need in entry['needs']
-                if need.get('ambiguity') != 'audio mode is unknown; choose tts, music, or sfx'])
+            selected = dict(entry, modes=[mode], needs=_explicit_workflow_needs(entry['needs']))
         return facade._generate_on_target(registry=_load_model_registry(), model=None,
             mode=mode, modality=selected['kind'], placement=parsed.placement, execution=None,
             inputs=values, dry_run=False, workflow_entry=selected,
@@ -625,6 +662,8 @@ def _main(argv: list[str], *, output=None) -> int:
         output = _generation_output.get()
     # A media id given as --audio-ref is written to a file that must outlive generation.
     with contextlib.ExitStack() as stack:
+        from .consent import consent_command
+        stack.enter_context(consent_command(argv))
         return _main_request(argv, stack, output=output)
 
 
@@ -669,6 +708,7 @@ def _main_request(argv: list[str], stack, *, output=None) -> int:
                         configure(child)
         configure(parser)
         parsed = parser.parse_args(argv)
+        parsed._invocation_argv = tuple(argv)
     from astrid.core.generation.placement import is_runpod_placement
     if parsed.modality == 'list':
         from astrid.core.generation.listing import main as list_main
@@ -752,6 +792,8 @@ def _main_request(argv: list[str], stack, *, output=None) -> int:
         return _workflow_command(parsed, output=output)
     if parsed.model and parsed.entry and parsed.model != parsed.entry:
         parser.error("--model and --entry select different generation entries")
+    if parsed.modality == 'audio' and parsed.mode == 'workflow' and not parsed.entry:
+        parser.error("--mode workflow requires --entry NAME for a saved raw audio workflow")
     if parsed.prompt is not None and not parsed.prompt.strip():
         parser.error("prompt must not be empty")
     if (parsed.width is None) != (parsed.height is None):

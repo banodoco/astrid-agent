@@ -24,6 +24,7 @@ from .engine_contracts import (
     SourcePatch,
 )
 from .engine_local_endpoint import DEFAULT_ENGINE
+from .node_approvals import NodeApproval as NodeApproval
 
 SCHEMA = "astrid.managed-engine-preparation.v1"
 _ENGINE_STOP_TIMEOUT_SECONDS = 30.0
@@ -33,6 +34,11 @@ _NATIVE_STEPS = frozenset({"runtime_inspect", "nodes_restore", "pip_bootstrap", 
 # and cleanup cannot prove that its command drained. Keep the actual lock owner
 # alive for this process lifetime; dropping the wrapper must not close the fd.
 _UNRESOLVED_CUSTODY: dict[int, "ManagedEnginePreparation"] = {}
+
+
+def _engine_consent_kwargs(intent: dict[str, Any] | None) -> dict[str, Any]:
+    return {"code_approvals": ((intent or {}).get("metadata") or {}).get("code_approvals", []),
+            "placement_class": "local"}
 
 
 def _preparation_engine(name: str | None) -> Any:
@@ -71,7 +77,7 @@ def _recipe_node_patches(recipe: EngineRecipe) -> dict[str, list[SourcePatch]]:
     return patches_by_pack
 
 
-def _write_managed_nodes_lock(path: Path, nodes: list[dict[str, str]], recipe: EngineRecipe) -> None:
+def _write_managed_nodes_lock(path: Path, nodes: list[dict[str, Any]], recipe: EngineRecipe) -> None:
     """Write the selected node pins and their recipe-owned source patches."""
     patches_by_pack = _recipe_node_patches(recipe)
     sources = {source.name: source for source in recipe.sources}
@@ -82,6 +88,12 @@ def _write_managed_nodes_lock(path: Path, nodes: list[dict[str, str]], recipe: E
             raise IntegrityError("managed node name is invalid")
         lines += [f"[nodepacks.{json.dumps(name)}]", f"url = {json.dumps(node['repo'])}",
                   f"commit = {json.dumps(node['commit'])}"]
+        from vibecomfy.node_recipes import RECIPE_FIELDS, canonical_recipe
+        declared = canonical_recipe({key: node[key] for key in RECIPE_FIELDS if key in node})
+        if declared["requirements_txt"] is not None:
+            lines.append("requirements_txt = " + json.dumps(declared["requirements_txt"]))
+        if declared["pip_no_deps"]:
+            lines.append("pip_no_deps = " + json.dumps(declared["pip_no_deps"]))
         patches = patches_by_pack.get(name, ())
         pins = {(sources[patch.source].pin.repository, sources[patch.source].pin.revision) for patch in patches}
         if patches and pins != {(node["repo"], node["commit"])}:
@@ -95,6 +107,17 @@ def _write_managed_nodes_lock(path: Path, nodes: list[dict[str, str]], recipe: E
     path.write_text("\n".join(lines) + "\n")
 
 
+def _doctor_error_payload(stdout: str) -> dict[str, Any]:
+    """Read only a bounded, structured doctor error; never recover labels from prose."""
+    if len(stdout) > 1024 * 1024:
+        return {}
+    try:
+        payload = json.loads(stdout)
+    except (ValueError, RecursionError):
+        return {}
+    return payload if isinstance(payload, dict) and payload.get("status") == "error" else {}
+
+
 def native_failure_diagnostic(step: str, stdout: str, stderr: str) -> tuple[str, str]:
     """Reduce untrusted output to fixed labels; never forward a remote text tail."""
     step = step if step in _NATIVE_STEPS else "unknown"
@@ -102,19 +125,20 @@ def native_failure_diagnostic(step: str, stdout: str, stderr: str) -> tuple[str,
               "pip_bootstrap": "pip_bootstrap_failed", "fetch": "model_fetch_failed",
               "prepare": "native_preparation_failed", "doctor": "workflow_diagnosis_failed",
               "node_probe": "node_probe_failed"}.get(step, "command_failed")
-    # VibeComfy doctor emits its diagnostic on stdout and returns 1. Only
-    # recognize complete fixed headings, never its paths, errors or suggestions.
+    # Doctor's JSON layer and missing_models fields are the existing CLI
+    # contract. Human messages and arbitrary remote output are not parsed.
     if step == "doctor":
-        headings = {"Layer: Python scratchpad import/build": "workflow_load_failed",
-                    "Layer: Schema reconciliation": "schema_reconciliation_failed",
-                    "Layer: VibeWorkflow validation": "workflow_validation_failed",
-                    "Layer: Porting helper diagnostics": "workflow_helper_failed",
-                    "Layer: nodepack lockfile drift": "nodepack_drift",
-                    "Missing models:": "models_missing"}
-        for line in stdout[-4096:].splitlines()[-32:]:
-            if line in headings:
-                reason = headings[line]
-                break
+        payload = _doctor_error_payload(stdout)
+        layers = {"Python scratchpad import/build": "workflow_load_failed",
+                  "Schema reconciliation": "schema_reconciliation_failed",
+                  "VibeWorkflow validation": "workflow_validation_failed",
+                  "Porting helper diagnostics": "workflow_helper_failed",
+                  "nodepack lockfile drift": "nodepack_drift"}
+        layer = payload.get("layer")
+        if isinstance(layer, str):
+            reason = layers.get(layer, reason)
+        elif isinstance(payload.get("missing_models"), list) and payload["missing_models"]:
+            reason = "models_missing"
     if any(line.startswith("ModuleNotFoundError: ") for line in stderr[-4096:].splitlines()[-32:]):
         reason = "dependency_missing"
     if step == "doctor":
@@ -138,12 +162,43 @@ def native_failure_classes(stdout: str, reason: str) -> tuple[str, ...]:
         public = set(list_classes())
     except (OSError, ValueError, TypeError, ImportError):
         return ()
-    prefix = "- workflow contains unresolved class types: "
-    for line in stdout[-4096:].splitlines()[-32:]:
-        if line.startswith(prefix):
-            return tuple(sorted({name for name in line[len(prefix):].split(", ")
-                                 if name in public and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", name)})[:16])
-    return ()
+    names = _doctor_error_payload(stdout).get("missing_classes")
+    if not isinstance(names, list):
+        return ()
+    return tuple(sorted({name for name in names
+                         if isinstance(name, str) and name in public
+                         and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", name)})[:16])
+
+
+def native_failure_inputs(stdout: str, reason: str, labels: tuple[tuple[str, str, str], ...]) -> tuple[dict[str, str], ...]:
+    """Project structured unknown_input findings only for canonical graph labels."""
+    if reason != "workflow_validation_failed":
+        return ()
+    groups = _doctor_error_payload(stdout).get("validation_errors")
+    if not isinstance(groups, list):
+        return ()
+    reported: set[tuple[str, str, str]] = set()
+    for group in groups:
+        if not isinstance(group, dict) or not isinstance(group.get("errors"), list):
+            continue
+        node_id, class_type = group.get("node_id"), group.get("class_type")
+        if not isinstance(node_id, str) or not isinstance(class_type, str):
+            continue
+        for finding in group["errors"]:
+            if (isinstance(finding, dict) and finding.get("code") == "unknown_input"
+                    and isinstance(finding.get("input"), str)):
+                reported.add((node_id, class_type, finding["input"]))
+    matches = []
+    for node_id, class_type, name in labels:
+        if (node_id, class_type, name) not in reported:
+            continue
+        if not all(value and len(value) <= 128 and value.isprintable()
+                   for value in (node_id, class_type, name)):
+            continue
+        matches.append({"node_id": node_id, "class_type": class_type, "input": name})
+        if len(matches) == 16:
+            break
+    return tuple(matches)
 
 
 @contextmanager
@@ -262,9 +317,11 @@ def read_preparation(*, task: str, attempt: str | None, endpoint: str,
                 or row["size"] is not None and (type(row["size"]) is not int or row["size"] < 0)):
             raise ValueError("managed engine preparation has an invalid model row")
     for node in manifest["extra"]["nodes"]:
-        if (not isinstance(node, dict) or set(node) != {"repo", "commit"}
-                or any(not isinstance(value, str) or not value for value in node.values())):
-            raise ValueError("managed engine preparation has an invalid node row")
+        try:
+            from .node_approvals import approval_record
+            approval_record(node, placement_class="local")
+        except ValueError as exc:
+            raise ValueError("managed engine preparation has an invalid node row") from exc
     if inputs is not None and any(name not in inputs or not Path(inputs[name]).is_file()
             or hashlib.sha256(Path(inputs[name]).read_bytes()).hexdigest() != expected
             for name, expected in body["inputs"].items()):
@@ -313,12 +370,16 @@ class ManagedEnginePreparation:
     the HTTP worker runs. No worker receives this object or its control socket.
     """
     def __init__(self, *, task: str, attempt: str, mode: str, deadline: float, cancelled: Any, scratch: Path,
-                 device: int | None = None, logs_root: Path | None = None, on_phase: Any = None):
+                 device: int | None = None, logs_root: Path | None = None, on_phase: Any = None,
+                 code_approvals=(), placement_class="local"):
         from .engine_execution import create_local_backend
         from .engine_local_endpoint import DEFAULT_PLATFORM, default_engine_root
         from .engine_recipe import load_recipe
 
         self.task, self.attempt, self.mode = task, attempt, mode
+        from .node_approvals import _records
+        self.code_approvals = _records(code_approvals)
+        self.placement_class = placement_class
         self.device = device
         self.visibility = str(device) if device is not None else os.environ.get("CUDA_VISIBLE_DEVICES")
         self.scratch = scratch
@@ -340,6 +401,7 @@ class ManagedEnginePreparation:
         self.engine_start_seconds: float | None = 0.0
         self.engine_start_attempted = False
         self.checked_classes: list[str] = []
+        self._workflow_input_labels: tuple[tuple[str, str, str], ...] = ()
         self.engine_restarted = False
         self.engine_reused: bool | None = None
         self.evidence_waiting: Any = None
@@ -429,6 +491,13 @@ class ManagedEnginePreparation:
         )
 
         self.check()
+        from .node_approvals import target_approvals
+        engine = _preparation_engine(DEFAULT_ENGINE)
+        declared_nodes = engine.workflow_requirements([canonical_workflow])["extra"]["nodes"]
+        # Author source metadata is not an approval channel. Read only the
+        # admitted records, plus exact shipped catalog pins, before native I/O.
+        approved_nodes = target_approvals(declared_nodes, self.code_approvals,
+                                        placement_class=self.placement_class)
         self._begin_model_verification()
         staged_members = [workflow]
         if workflow.suffix == ".py":
@@ -480,8 +549,9 @@ class ManagedEnginePreparation:
             raise IntegrityError("managed installation evidence differs from its receipt")
         self._runtime_requirements = None
         self._guard_runtime(canonical_workflow, runner, post=False)
-        engine = _preparation_engine(DEFAULT_ENGINE)
         manifest, source_format = judge_declarations(canonical_workflow, self.scratch, engine)
+        approved_nodes = target_approvals(manifest["extra"]["nodes"], approved_nodes,
+                                        placement_class=self.placement_class)
         self._native_generated_scratchpad = source_format == "scratchpad"
         canonical_path = self.scratch / "canonical" / "workflow.py"
         # CLI preparation owns only this emitted copy.
@@ -495,13 +565,25 @@ class ManagedEnginePreparation:
         self.scratch.mkdir(parents=True, exist_ok=True)
         lockfile = self.scratch / "managed-custom-nodes.lock"
         _write_managed_nodes_lock(lockfile, (manifest.get("extra") or {}).get("nodes", []), self.recipe)
+        approval_file = self.scratch / "managed-code-approvals.json"
+        approval_file.write_text(json.dumps(approved_nodes, sort_keys=True), encoding="utf-8")
+        # Restore enriches its target lock with verification facts. Its mutable
+        # rows are admitted again on the target; the approval set stays sealed.
+        self._canonical_members[approval_file] = hashlib.sha256(approval_file.read_bytes()).hexdigest()
+        staged_digests[approval_file] = self._canonical_members[approval_file]
         if engine.commands is None:
-            engine.commands = commands_type(str(canonical_path), str(lockfile), runner=self._command)
+            engine.commands = commands_type(str(canonical_path), str(lockfile), runner=self._command,
+                approvals=str(approval_file), placement_class=self.placement_class)
         self.check()
         self._alignment_runner = runner
         self._alignment_verification = (canonical_workflow, runner, staged_digests, manifest, receipt)
         api = canonical_workflow.compile("api", run_inputs=json.loads(inputs.get("workflow_inputs") or "{}"))
         self._workflow_classes = sorted({node["class_type"] for node in api.values()})
+        self._workflow_input_labels = tuple(
+            (str(node_id), node["class_type"], name)
+            for node_id, node in api.items()
+            for name in node.get("inputs", {})
+        )
         if self.mode == "align":
             self._preflight_model_storage(manifest)
         callback = getattr(self, "on_phase", None)
@@ -814,6 +896,10 @@ print(json.dumps(compare_runtime(requirements,target=actual)))
                 hashlib.sha256(result.stdout.encode()).hexdigest(),
                 hashlib.sha256(result.stderr.encode()).hexdigest())
             detail = f", missing_classes={json.dumps(classes)}" if classes else ""
+            if reason == "workflow_validation_failed":
+                unknown_inputs = native_failure_inputs(result.stdout, reason, self._workflow_input_labels)
+                if unknown_inputs:
+                    detail += f", unknown_inputs={json.dumps(unknown_inputs)}"
             where = ("its whole output is the run logs preparation.{0}.stdout and preparation.{0}.stderr"
                      .format(step) if self._keep_step_output(step, result) else "inspect the host log for this attempt")
             error = IntegrityError(f"managed alignment command failed (step={step}, reason={reason}{detail}); {where}")

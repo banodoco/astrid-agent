@@ -184,7 +184,7 @@ POLICY_OPENINGS = {
         "astrid/packs/vibecomfy/extensions/generation.engine/comfyui_engine.py",
         "ComfyUIEngine.probe",
         "urllib.request.urlopen",
-    ): (1, "c4dbcad97c4d52282d9d26c9db00169ef40112b8f16a30d262c4832d2cb42c87"),
+    ): (1, "08f96ea93cf1116368963ef89032da4a905ef138f727f043442fe57bba06fcd1"),
 }
 LOOPBACK_HTTP_OPENINGS = {
     ("astrid/core/dev/journey.py", "runtime_request", "urllib.request.urlopen"): (
@@ -197,7 +197,7 @@ LOOPBACK_HTTP_OPENINGS = {
     ),
     ("astrid/mcp_server.py", "_comfy_workflow_import", "urllib.request.build_opener"): (
         1,
-        "4da7fcc51b87402b63716a4195db09233a4e0f68ac979d6d38fd5ff286503ea7",
+        "26d004dde92d90dcfc6e4edf101905406502d630971998becee8282dfd4584ca",
     ),
     ("astrid/packs/runpod/pod_reset.py", "_post", "urllib.request.urlopen"): (
         1,
@@ -211,7 +211,7 @@ LOOPBACK_HTTP_OPENINGS = {
     # Literal IPv4 loopback only; redirects and environment proxies are disabled.
     ("astrid/packs/vibecomfy/native_preparation.py", "_read_object_info", "httpx.stream"): (
         1,
-        "2c8233fd6ca8a751f928d67b935041398791fad298e503f55aea38104d934ebe",
+        "eff66c8d1106781fc03bb386cdca3adba32a1afc9d0929f79c11d3769364c7a1",
     ),
 }
 
