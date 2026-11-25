@@ -70,6 +70,7 @@ _ISSUE_REPAIR_STEPS = {
     "executor_failed": "Inspect the existing task and its executor failure before retrying.",
     "engine_busy": "Wait for the selected engine's existing operation to finish or inspect its custody.",
     "custody_unresolved": "Resolve the existing engine or task custody before starting another operation.",
+    "release_not_proven": "Inspect the selected engine and its existing custody; do not assume release or retry work until release is proven.",
     "endpoint_ownership": "Verify endpoint ownership; do not adopt or restart an unrelated service.",
     "endpoint_unhealthy": "Repair or start the selected engine and verify its endpoint.",
     "unsupported_placement": "Select a supported target without silently switching placements.",
