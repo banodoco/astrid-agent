@@ -80,6 +80,7 @@ CASES = [
 CASES += [
     (code, code, partial(_native_case, code, message))
     for code, message in (
+        ("target_schema_unavailable", "Attached target schema unavailable"),
         ("invalid_model_lock", "Invalid model declaration"),
         ("generation_failed", "Generation failed"),
         ("download_failed", "Model download failed"),
