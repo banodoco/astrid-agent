@@ -675,9 +675,10 @@ def test_managed_node_lock_without_patches_preserves_original_bytes(tmp_path):
                                 'commit = "abc"\n')
 
 
-def test_asset_alignment_accepts_only_verified_recipe_patch_at_recipe_pin(tmp_path):
+def test_asset_alignment_accepts_only_verified_recipe_patch_at_recipe_pin(tmp_path, monkeypatch):
     import subprocess
     from dataclasses import replace
+    from vibecomfy import resources
     from astrid.core.generation.asset_alignment import ManagedAssetTarget, _pack_state
     from astrid.core.generation.engine_recipe import load_recipe
 
@@ -705,8 +706,24 @@ def test_asset_alignment_accepts_only_verified_recipe_patch_at_recipe_pin(tmp_pa
     target = ManagedAssetTarget(tmp_path, tmp_path / 'models', root, 'python', 'http://localhost', '',
                                 tmp_path / 'cache', recipe=recipe)
     pack = {'name': pack_path.name, 'repository': repo, 'revision': revision}
+    # Supply a shipped catalog fixture, not a writable target lock or mocked verifier.
+    shipped_patches = [{'path': 'patched.py', 'sha256': hashlib.sha256(b'after').hexdigest()}]
+    shipped_row = {'url': repo, 'commit': revision, 'patches': shipped_patches}
+    monkeypatch.setattr(resources, 'custom_nodes_lock', lambda: {'nodepacks': {pack_path.name: shipped_row}})
     assert _pack_state(target, pack) == 'verified'
     (pack_path / 'untracked').write_text('other')
+    assert _pack_state(target, pack) == 'mismatch'
+    (pack_path / 'untracked').unlink()
+
+    # A target recipe cannot authorize an omitted patch or a different shipped hash.
+    shipped_row['patches'] = []
+    assert _pack_state(target, pack) == 'mismatch'
+    shipped_row['patches'] = [{'path': 'patched.py', 'sha256': hashlib.sha256(b'wrong').hexdigest()}]
+    assert _pack_state(target, pack) == 'mismatch'
+
+    # Even matching declarations do not authorize different worktree bytes.
+    shipped_row['patches'] = shipped_patches
+    (pack_path / 'patched.py').write_text('wrong')
     assert _pack_state(target, pack) == 'mismatch'
 
 
