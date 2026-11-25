@@ -320,8 +320,9 @@ never treat it as an automatic command or skip it to run a later fix.
 
 Replace every `<NAME>` in a command using that fix's `placeholders` explanation
 before running it. Keep `attempt_count` with the result; it counts actual setup
-attempts, not reads or displays. A warning does not authorize a repair. Legacy
-issues without these fields retain their existing guidance; do not invent a fix.
+attempts, not reads or displays. A warning does not authorize a repair. Every
+blocking issue has explicit repair links; an unlinked or undeclared issue is
+invalid, not a cue to invent a fix.
 
 ### LE-1b — Missing assets and failed checks
 
