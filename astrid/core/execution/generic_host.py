@@ -13119,11 +13119,11 @@ class GenericPackHost:
                     and not inputs.get("comfy_url") and readiness_profile is None):
                 from concurrent.futures import CancelledError
 
-                from astrid.core.generation.managed_preparation import ManagedEnginePreparation, _engine_consent_kwargs
+                from astrid.core.generation import managed_preparation as _mp
                 admitted_mode = _align_admission(task_data).get("align", "check")
-                engine_preparation = ManagedEnginePreparation(task=str(task_id), attempt=str(attempt_id),
+                engine_preparation = _mp.ManagedEnginePreparation(task=str(task_id), attempt=str(attempt_id),
                     mode=admitted_mode, deadline=lifetime.deadline(), cancelled=cancelled,
-                    scratch=root / "engine-preparation", device=local_device, logs_root=_host_log_root(root), **_engine_consent_kwargs(_task_generation_intent(task_data)))
+                    scratch=root / "engine-preparation", device=local_device, logs_root=_host_log_root(root), **_mp._engine_consent_kwargs(_task_generation_intent(task_data)))
                 from contextlib import suppress
 
                 from astrid.core.generation.engine_custody import declare_engine_log
