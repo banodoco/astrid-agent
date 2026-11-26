@@ -49,6 +49,30 @@ class ReadinessFix(TypedDict):
     details: dict[str, Any]
 
 
+class ReadinessRung(TypedDict):
+    rung: Literal["installed", "reachable", "identified", "compatible", "computes", "workflow_ready", "delivered"]
+    owner: Literal["existing-install", "environment", "workflow", "delivery"]
+    state: Literal["observed", "failed", "unchecked"]
+    observation: dict[str, Any] | None
+    reason: str | None
+    message: str | None
+
+
+class ReadinessLadder(TypedDict):
+    through: Literal["installed", "reachable", "identified", "compatible", "computes", "workflow_ready"]
+    rungs: list[ReadinessRung]
+    stopped_at: str | None
+
+
+class ReadinessNextAction(TypedDict):
+    who: Literal["person", "agent"]
+    step: str
+    argv: list[str] | None
+    then_argv: list[str] | None
+    alternative: dict[str, Any] | None
+    choices: list[dict[str, Any]] | None
+
+
 class ReadinessEnvelope(TypedDict):
     entry: dict[str, Any] | None
     target: dict[str, Any] | None
@@ -56,6 +80,8 @@ class ReadinessEnvelope(TypedDict):
     issues: list[ReadinessIssue]
     fixes: list[ReadinessFix]
     attempt_count: NotRequired[int]
+    ladder: NotRequired[ReadinessLadder]
+    next_action: NotRequired[ReadinessNextAction | None]
 
 
 class GenerationErrorEnvelope(ReadinessEnvelope):
@@ -161,7 +187,8 @@ class GenerationReleaseOwner(Protocol):
 
 __all__ = [
     "TargetRecord", "TargetSelection", "InputInventoryRow", "ReadinessIssue",
-    "ReadinessInstruction", "ReadinessFix", "ReadinessEnvelope", "GenerationErrorEnvelope", "ResultEvidence",
+    "ReadinessInstruction", "ReadinessFix", "ReadinessRung", "ReadinessLadder",
+    "ReadinessNextAction", "ReadinessEnvelope", "GenerationErrorEnvelope", "ResultEvidence",
     "OwnedSessionAdapter", "GenerationAdmission", "RunPodPreparationRequest",
     "PreparedGeneration", "RunPodGenerationPreparation", "GenerationInvocationClient",
     "GenerationReleaseOwner",
