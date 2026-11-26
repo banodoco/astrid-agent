@@ -801,3 +801,68 @@ def render_offer(offer):
         "It becomes the ComfyUI Astrid uses, and your current choice is kept so you can switch back. Go ahead?\n"
         f"To confirm: astrid generate install-comfyui --destination {destination} --apply {offer['offer_sha256']}"
     )
+
+
+def main(parsed, *, steps=None):
+    """Show an offer without writes, or apply and attach the confirmed install."""
+    destination = parsed.destination
+    try:
+        # Keep the offer, installer and attachment on the same release pin.
+        pin = load_pin()
+        options = {"pin": pin, "disk_usage": shutil.disk_usage}
+        offer = build_offer(destination, **options)
+        if parsed.apply is None:
+            print(json.dumps(offer) if parsed.json else render_offer(offer))
+            return 0 if offer["status"] == "offered" else 2
+
+        def progress(stage, done, total):
+            if stage == "download":
+                print(f"Downloading ComfyUI: {done} of {total}", file=sys.stderr)
+            elif stage == "extract" and done == 0:
+                print("Unpacking ComfyUI", file=sys.stderr)
+
+        resume = offer.get("resume")
+        if (
+            parsed.apply == offer["offer_sha256"] and offer["status"] == "offered"
+            and offer["state"] != "complete" and resume and resume["done_bytes"]
+        ):
+            done = resume["done_bytes"]
+            total = offer["download_bytes"] + offer["installed_bytes"]
+            print(f"Picking up where we left off: {done} of {total} done.", file=sys.stderr)
+        result = install_portable(
+            destination, parsed.apply, steps=steps or default_steps(),
+            progress=progress, **options,
+        )
+        print("Checking the install", file=sys.stderr)
+        attached = attach_installation(result, pin=pin)
+    except PortableError as exc:
+        print(json.dumps({"error": {"code": exc.code, "message": str(exc)}}), file=sys.stderr)
+        if exc.code == "consent_mismatch":
+            print(render_offer(build_offer(destination, **options)), file=sys.stderr)
+        return 1
+
+    payload = {
+        "status": result["status"],
+        "root": result["root"],
+        "python": result["python"],
+        "endpoint": attached["target"]["endpoint"],
+        "kept_previous": result["kept_previous"],
+        "previous_target": attached["previous_target"],
+        "undo": attached["undo"],
+        "next_action": {"who": "person", "text": attached["start"]["text"]},
+        "then": "astrid generate targets --json",
+    }
+    if parsed.json:
+        print(json.dumps(payload))
+    else:
+        status = "ComfyUI is already installed." if result["status"] == "already_installed" else "ComfyUI is installed."
+        print(status)
+        print(f"Install folder: {payload['root']}.")
+        print(f"Python: {payload['python']}.")
+        print(f"Endpoint: {payload['endpoint']}.")
+        print(f"Previous install kept: {payload['kept_previous'] or 'none'}.")
+        print(f"Previous target: {json.dumps(payload['previous_target'])}.")
+        print(f"Undo: {payload['undo']}.")
+        print(payload["next_action"]["text"])
+        print(f"Then: {payload['then']}")
+    return 0
