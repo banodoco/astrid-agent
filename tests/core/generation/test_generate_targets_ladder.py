@@ -1,0 +1,103 @@
+"""CD-1: targets reports observed readiness for an attached local endpoint."""
+import json
+from pathlib import Path
+
+import pytest
+
+from astrid.core.generation import cli, preflight, targets
+from astrid.sdk.generation import GenerationFacade
+
+
+URL = "http://127.0.0.1:18111"
+COMMAND = ["astrid", "generate", "targets", "--placement", URL]
+
+
+@pytest.fixture
+def probe(monkeypatch, tmp_path):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.delenv("VIBECOMFY_COMFYUI_URL", raising=False)
+    calls = []
+    responses = {
+        "/system_stats": {"system": {"comfyui_version": "0.43.2"}},
+        "/object_info": {"ExampleNode": {}},
+    }
+
+    def fake(url, path):
+        assert url == URL
+        calls.append((url, path))
+        response = responses[path]
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    monkeypatch.setattr(preflight, "_comfy_get_json", fake)
+    return calls, responses
+
+
+def test_healthy_target(probe, tmp_path):
+    calls, _ = probe
+    payload = GenerationFacade().targets(placement=URL)
+    assert payload["status"] == "ready"
+    assert payload["ladder"]["through"] == "compatible"
+    assert payload["ladder"]["stopped_at"] is None
+    assert payload["next_action"] is None
+    assert payload["issues"] == payload["fixes"] == []
+    assert payload["target"]["endpoint"] == URL
+    assert payload["placement"] == {
+        "resolved": {"kind": "attached", "endpoint": URL}, "source": "request",
+    }
+    assert calls == [(URL, "/system_stats"), (URL, "/object_info")]
+    assert not (tmp_path / ".vibecomfy").exists()
+
+
+def assert_refused(payload):
+    assert payload["status"] == "blocked"
+    assert payload["ladder"]["stopped_at"] == "reachable"
+    assert len(payload["issues"]) == len(payload["fixes"]) == 1
+    assert payload["issues"][0]["code"] == "target_unreachable"
+    assert payload["next_action"]["who"] == "person"
+    assert payload["next_action"]["then_argv"] == COMMAND
+
+
+def test_refused_target_and_explicit_save(probe, tmp_path):
+    calls, responses = probe
+    responses["/system_stats"] = ConnectionRefusedError("closed")
+    facade = GenerationFacade()
+    assert_refused(facade.targets(placement=URL))
+    assert not (tmp_path / ".vibecomfy").exists()
+    saved = facade.targets(placement=URL, save=True)
+    assert_refused(saved)
+    assert targets.config_path().is_file()
+    assert targets.resolve_target().record.endpoint == URL
+    assert calls == [(URL, "/system_stats")] * 2
+
+
+def test_managed_keeps_unprobed_shape(probe, tmp_path):
+    calls, _ = probe
+    payload = GenerationFacade().targets(placement="managed")
+    assert payload == {
+        **preflight.readiness_envelope(target=targets.TargetRecord(owner="astrid")),
+        "placement": {
+            "resolved": {"kind": "managed", "endpoint": None}, "source": "request:managed",
+        },
+    }
+    assert "ladder" not in payload
+    assert not calls
+    assert not (tmp_path / ".vibecomfy").exists()
+
+
+@pytest.mark.parametrize("refused", [False, True])
+def test_stable_cli_facade_payload(probe, monkeypatch, capsys, refused):
+    calls, responses = probe
+    if refused:
+        responses["/system_stats"] = ConnectionRefusedError("closed")
+    monkeypatch.setattr(cli, "_open_client", lambda: pytest.fail("discovery opened Runtime"))
+    facade = GenerationFacade()
+    payload = facade.targets(placement=URL)
+    assert facade.targets(placement=URL) == payload
+    assert cli.main(["targets", "--placement", URL, "--json"]) == 0
+    assert json.loads(capsys.readouterr().out) == payload
+    expected = [(URL, "/system_stats")]
+    if not refused:
+        expected.append((URL, "/object_info"))
+    assert calls == expected * 3
