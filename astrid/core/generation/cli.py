@@ -729,7 +729,7 @@ def _main_request(argv: list[str], stack, *, output=None) -> int:
         return fetch_models_main(parsed)
     if parsed.modality == 'install-comfyui':
         from astrid.core.generation import comfy_portable
-        return comfy_portable.main(parsed)
+        return comfy_portable.main(parsed, stderr=sys.stderr)
     if parsed.modality == 'targets':
         return _targets_command(parsed)
     if parsed.modality == 'defaults':

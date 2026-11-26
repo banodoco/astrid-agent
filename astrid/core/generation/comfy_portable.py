@@ -803,8 +803,9 @@ def render_offer(offer):
     )
 
 
-def main(parsed, *, steps=None):
+def main(parsed, *, steps=None, stderr=None):
     """Show an offer without writes, or apply and attach the confirmed install."""
+    stderr = sys.stderr if stderr is None else stderr
     destination = parsed.destination
     try:
         # Keep the offer, installer and attachment on the same release pin.
@@ -817,9 +818,9 @@ def main(parsed, *, steps=None):
 
         def progress(stage, done, total):
             if stage == "download":
-                print(f"Downloading ComfyUI: {done} of {total}", file=sys.stderr)
+                print(f"Downloading ComfyUI: {done} of {total}", file=stderr)
             elif stage == "extract" and done == 0:
-                print("Unpacking ComfyUI", file=sys.stderr)
+                print("Unpacking ComfyUI", file=stderr)
 
         resume = offer.get("resume")
         if (
@@ -828,17 +829,17 @@ def main(parsed, *, steps=None):
         ):
             done = resume["done_bytes"]
             total = offer["download_bytes"] + offer["installed_bytes"]
-            print(f"Picking up where we left off: {done} of {total} done.", file=sys.stderr)
+            print(f"Picking up where we left off: {done} of {total} done.", file=stderr)
         result = install_portable(
             destination, parsed.apply, steps=steps or default_steps(),
             progress=progress, **options,
         )
-        print("Checking the install", file=sys.stderr)
+        print("Checking the install", file=stderr)
         attached = attach_installation(result, pin=pin)
     except PortableError as exc:
-        print(json.dumps({"error": {"code": exc.code, "message": str(exc)}}), file=sys.stderr)
+        print(json.dumps({"error": {"code": exc.code, "message": str(exc)}}), file=stderr)
         if exc.code == "consent_mismatch":
-            print(render_offer(build_offer(destination, **options)), file=sys.stderr)
+            print(render_offer(build_offer(destination, **options)), file=stderr)
         return 1
 
     payload = {
