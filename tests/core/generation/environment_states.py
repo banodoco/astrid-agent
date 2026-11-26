@@ -51,8 +51,10 @@ def clean_machine(tmp_path):
     """Create only the empty home and local application data directories."""
     home = tmp_path / "home"
     localappdata = tmp_path / "localappdata"
-    home.mkdir()
-    localappdata.mkdir()
+    home.mkdir(exist_ok=True)
+    localappdata.mkdir(exist_ok=True)
+    if any(home.iterdir()) or any(localappdata.iterdir()):
+        raise ValueError("clean machine folders must be empty")
     return SimpleNamespace(
         home=home,
         localappdata=localappdata,

@@ -71,7 +71,15 @@ def test_clean_machine(builder, tmp_path):
     }
 
 
-def test_foreign_destination_and_snapshot(root):
+def test_clean_machine_with_existing_empty_home(tmp_path):
+    (tmp_path / "home").mkdir(exist_ok=True)
+    machine = clean_machine(tmp_path)
+    assert not list(machine.home.iterdir())
+    assert not list(machine.localappdata.iterdir())
+    assert not machine.destination.exists()
+
+
+def test_foreign_destination_and_snapshot(tmp_path):
     root = tmp_path / "machine"
     root.mkdir()
     foreign = foreign_destination(root)
