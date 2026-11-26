@@ -30,7 +30,8 @@ class InMemoryAppState:
 
 
 def test_legacy_import_once(tmp_path, caplog, monkeypatch):
-    monkeypatch.delattr(settings.read, "_legacy_import_warning", raising=False)
+    monkeypatch.setattr(settings.read, "_legacy_import_warning", None, raising=False)
+    monkeypatch.delattr(settings.read, "_legacy_import_warning")
     store = InMemoryAppState()
     legacy = tmp_path / "config.toml"
     original = b'[runpod]\ngpu_types = ["A40"]\n'
@@ -78,7 +79,8 @@ def test_removal_date():
 
 
 def test_missing_toml_does_not_import_or_warn(tmp_path, caplog, monkeypatch):
-    monkeypatch.delattr(settings.read, "_legacy_import_warning", raising=False)
+    monkeypatch.setattr(settings.read, "_legacy_import_warning", None, raising=False)
+    monkeypatch.delattr(settings.read, "_legacy_import_warning")
     store = InMemoryAppState()
     legacy = tmp_path / "missing.toml"
     with caplog.at_level(logging.WARNING, logger=settings.__name__):
