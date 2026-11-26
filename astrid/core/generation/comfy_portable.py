@@ -705,6 +705,34 @@ def extract_archive(archive_path, staging_dir, pin):
                 raise unsafe(f"Unsafe extracted member: {path}")
 
 
+def missing_files(root, pin):
+    """Report missing, empty, nonregular or redirected required files."""
+    root = Path(root)
+    missing = []
+    for relative in pin["release"]["required_files"]:
+        path = root / relative
+        try:
+            if not _relative(relative) or _redirected(path):
+                missing.append(relative)
+                continue
+            info = path.stat()
+            if not stat.S_ISREG(info.st_mode) or info.st_size == 0:
+                missing.append(relative)
+        except OSError:
+            missing.append(relative)
+    return sorted(missing)
+
+
+def default_steps(client=None, deadline=None):
+    """The real installer operations, with optional injected HTTP client/deadline."""
+    def download(pin, archive_path, part_path, progress):
+        return download_archive(
+            pin, archive_path, part_path, progress, client=client, deadline=deadline,
+        )
+
+    return Steps(download=download, extract=extract_archive, missing=missing_files)
+
+
 def render_offer(offer):
     if offer["status"] == "refused":
         refusal = offer["refusal"]
