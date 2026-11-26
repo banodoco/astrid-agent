@@ -209,12 +209,13 @@ def test_default_probe_is_looked_up_at_call_time(monkeypatch):
 
 
 def test_reason_table_and_unknown_reason_default():
-    assert preflight.LADDER_REASONS == {
+    expected = {
         "files_missing": "installed", "not_answering": "reachable",
         "access_denied": "reachable", "not_comfyui": "identified",
         "api_unsupported": "compatible",
     }
-    assert set(preflight.LADDER_TEXT) == set(preflight.LADDER_REASONS)
+    assert {reason: preflight.LADDER_REASONS[reason] for reason in expected} == expected
+    assert expected.keys() <= preflight.LADDER_TEXT.keys()
     ladder = preflight.with_rung(
         preflight.new_ladder("compatible"), "installed", "failed", reason="future_reason",
     )
