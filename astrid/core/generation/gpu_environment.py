@@ -289,6 +289,96 @@ print(json.dumps(result))
 """
 
 
+def classify_compute(raw, *, returncode=0, stderr="", timed_out=False) -> dict[str, Any]:
+    """Turn the isolated compute report into a bounded, user-facing diagnosis."""
+    valid = isinstance(raw, dict) and raw.get("schema") == COMPUTE_SCHEMA
+    report = raw if valid else {}
+    torch_version = report.get("torch")
+    torch_version = torch_version if isinstance(torch_version, str) else None
+    cuda = report.get("cuda")
+    cuda = cuda if isinstance(cuda, str) else None
+    raw_devices = report.get("devices")
+    devices = [item for item in raw_devices if isinstance(item, dict)] if isinstance(raw_devices, list) else []
+    names = [item["name"] for item in devices if isinstance(item.get("name"), str)]
+    raw_arches = report.get("arch_list")
+    arches = {item for item in raw_arches if isinstance(item, str)} if isinstance(raw_arches, list) else set()
+    raw_operations = report.get("operations")
+    operations = {
+        name: value for name, value in raw_operations.items()
+        if isinstance(name, str) and isinstance(value, bool)
+    } if isinstance(raw_operations, dict) else {}
+    expected = ("matmul_fp32", "matmul_fp16", "matmul_bf16", "conv2d_fp16", "softmax_fp32")
+    error = report.get("error")
+    error = error if isinstance(error, dict) else {}
+    stage = error.get("stage")
+    stage = stage if isinstance(stage, str) else ""
+    detail = error.get("message")
+    detail = detail if isinstance(detail, str) else ""
+    diagnostic = (detail + " " + (stderr if isinstance(stderr, str) else "")).lower()
+    unsupported = []
+    for device in devices:
+        capability = device.get("capability")
+        if (isinstance(capability, (tuple, list)) and len(capability) == 2
+                and all(type(part) is int and part >= 0 for part in capability)):
+            arch = f"sm_{capability[0]}{capability[1]}"
+            if arch not in arches:
+                unsupported.append(arch)
+
+    version = torch_version or "unknown"
+    gpu_names = ", ".join(names) or "unknown GPU"
+    if timed_out:
+        cause = "timed_out"
+        message = "The CUDA compute probe timed out before it could finish."
+        works = "Try a responsive interpreter with a working GPU driver."
+    elif returncode != 0 or not valid:
+        cause = "probe_failed"
+        message = (f"The CUDA compute probe exited with code {returncode}."
+                   if returncode != 0 else "The interpreter did not return a valid CUDA compute report.")
+        works = "Use a working Python interpreter and rerun the CUDA compute probe."
+    elif stage == "import":
+        cause = "no_torch"
+        message = "PyTorch could not be imported by this interpreter."
+        works = "Use an interpreter with a compatible CUDA-enabled PyTorch installation."
+    elif torch_version is not None and report.get("cuda") is None:
+        cause = "cpu_only_wheel"
+        message = f"This PyTorch ({version}) was built without CUDA support."
+        works = "Use a CUDA-enabled PyTorch build for your GPU."
+    elif cuda is not None and not devices:
+        cause = "no_device"
+        message = f"PyTorch ({version}, CUDA {cuda}) cannot see a usable NVIDIA GPU."
+        works = "Use a machine with an accessible NVIDIA GPU and a working driver."
+    elif (report.get("ok") is True and not error and torch_version and cuda and names
+          and all(operations.get(name) is True for name in expected)):
+        cause = None
+        message = f"PyTorch ({version}, CUDA {cuda}) passed all five compute checks on {gpu_names}."
+        works = ""
+    elif unsupported or "no kernel image" in diagnostic:
+        cause = "wheel_arch_mismatch"
+        architecture = ", ".join(dict.fromkeys(unsupported))
+        target = f"{gpu_names} ({architecture})" if architecture else gpu_names
+        message = f"This PyTorch ({version}) has no kernels for your GPU ({target})."
+        works = ("Use a PyTorch built for CUDA 12.8 or newer; Astrid's separate ComfyUI install includes one."
+                 if "sm_120" in unsupported else "Use a PyTorch build that includes kernels for your GPU architecture.")
+    elif "driver" in diagnostic and "too old" in diagnostic:
+        cause = "driver_too_old"
+        message = f"The NVIDIA driver is too old for PyTorch ({version}, CUDA {cuda or 'unknown'})."
+        works = "Update the NVIDIA driver to one that supports this CUDA build."
+    elif "out of memory" in diagnostic:
+        cause = "out_of_memory"
+        message = f"PyTorch ({version}) ran out of GPU memory during {stage or 'the compute probe'} on {gpu_names}."
+        works = "Free GPU memory or use a GPU with more available memory."
+    else:
+        cause = "operation_failed"
+        operation = stage or next((name for name in expected if operations.get(name) is not True), "compute probe")
+        message = f"PyTorch ({version}) failed the {operation} check on {gpu_names}."
+        works = "Use a PyTorch installation that supports all five compute operations on your GPU."
+    return {
+        "schema": COMPUTE_SCHEMA, "ok": cause is None, "cause": cause,
+        "message": message, "works": works, "torch": torch_version, "cuda": cuda,
+        "devices": names, "operations": operations,
+    }
+
+
 def _verify_sources(plan: Mapping[str, Any]) -> None:
     # Use the same bounded Git inventory operation as existing pack setup.
     from astrid.core.pack.source_setup import _run_git
