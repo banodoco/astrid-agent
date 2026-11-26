@@ -4,16 +4,17 @@ from __future__ import annotations
 
 import io
 import re
-import shutil
 import socket
 import threading
 import zipfile
+from collections import namedtuple
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 
 GIB = 1 << 30
+_DiskUsage = namedtuple("usage", "total used free")
 
 
 def fake_gpu(kind):
@@ -28,7 +29,7 @@ def fake_gpu(kind):
         "available": bool(devices),
         "devices": devices,
         "reason": (
-            None if devices else
+            "" if devices else
             "No NVIDIA GPU was detected because nvidia-smi is not on PATH."
         ),
     }
@@ -36,7 +37,7 @@ def fake_gpu(kind):
 
 def fake_disk_usage(free_bytes, total_bytes=2000 * GIB):
     """Return a path-independent stand-in for shutil.disk_usage."""
-    result = type(shutil.disk_usage(Path.cwd()))(
+    result = _DiskUsage(
         total_bytes, total_bytes - free_bytes, free_bytes
     )
 
