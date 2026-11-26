@@ -338,6 +338,14 @@ def _parser(contextual: dict[str, Any] | None = None) -> _GenerationParser:
     command.add_argument('--comfy-url', required=True)
     command.add_argument('--apply', metavar='PLAN_SHA256', help='Download exactly the plan with this digest.')
     command.add_argument('--json', action='store_true')
+    from os import environ
+    from astrid.core.generation import comfy_portable
+    command = sub.add_parser('install-comfyui', help='Show, then on confirmation set up, a separate ComfyUI Portable install on this computer.',
+                             description='Set up a separate ComfyUI Portable install on this computer at no cost.')
+    command.add_argument('--destination', type=Path,
+                         default=comfy_portable.default_destination(environ, sys.platform))
+    command.add_argument('--apply', metavar='OFFER_SHA256', help='Install exactly the offer with this digest.')
+    command.add_argument('--json', action='store_true')
     command = sub.add_parser('targets', help='Inspect or explicitly save the selected Comfy target.')
     command.add_argument('--placement', action=_Once, default='auto')
     command.add_argument('--engine', action=_Once, default='comfyui')
@@ -719,6 +727,9 @@ def _main_request(argv: list[str], stack, *, output=None) -> int:
     if parsed.modality == 'fetch-models':
         from astrid.core.generation.asset_gaps import main as fetch_models_main
         return fetch_models_main(parsed)
+    if parsed.modality == 'install-comfyui':
+        from astrid.core.generation import comfy_portable
+        return comfy_portable.main(parsed, stderr=sys.stderr)
     if parsed.modality == 'targets':
         return _targets_command(parsed)
     if parsed.modality == 'defaults':
