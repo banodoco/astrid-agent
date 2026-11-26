@@ -206,6 +206,152 @@ def make_next_action(who, step, *, argv=None, then_argv=None, alternative=None, 
             "alternative": deepcopy(alternative), "choices": deepcopy(choices)}
 
 
+# Observations of the human-owned existing-install prefix.
+
+LADDER_REASONS = {
+    "files_missing": "installed",
+    "not_answering": "reachable",
+    "access_denied": "reachable",
+    "not_comfyui": "identified",
+    "api_unsupported": "compatible",
+}
+
+LADDER_TEXT = {
+    "files_missing": {
+        "message": "The folder recorded for this ComfyUI no longer exists.",
+        "step": "Tell me the address of a ComfyUI that is running, or reinstall it, then ask me to check again.",
+        "who": "person",
+    },
+    "not_answering": {
+        "message": "Nothing is answering at {url}.",
+        "step": "Start your ComfyUI so it answers at {url}, then ask me to check again.",
+        "who": "person",
+    },
+    "access_denied": {
+        "message": "Access to {url} was denied.",
+        "step": "Retry the same check through the normal permission request.",
+        "who": "agent",
+    },
+    "not_comfyui": {
+        "message": "Something that is not ComfyUI answers at {url}.",
+        "step": "Close it, or tell me the address of your ComfyUI.",
+        "who": "person",
+    },
+    "api_unsupported": {
+        "message": "The ComfyUI at {url} does not offer the API Astrid needs.",
+        "step": "Update that ComfyUI, then ask me to check again.",
+        "who": "person",
+    },
+}
+
+
+def _comfy_get_json(url, path):
+    """Read one bounded JSON observation from this exact attached endpoint."""
+    from .backends.comfy_target import MAX_JSON_BYTES, ComfyTarget, ComfyTargetClient
+
+    client = ComfyTargetClient(ComfyTarget(url, "attached"))
+    if path == "/object_info":
+        return client.request_json(path, timeout=5.0, response_limit=MAX_JSON_BYTES)
+    return client.request_json(path, timeout=1.0)
+
+
+def _failure_kind(exc):
+    """Classify a bounded exception graph without leaking transport details."""
+    def attr(item, name):
+        try:
+            return getattr(item, name, None)
+        except Exception:  # noqa: BLE001 - classification must not raise
+            return None
+
+    pending = [(exc, 0)]
+    seen = set()
+    denied = False
+    while pending:
+        item, depth = pending.pop(0)
+        if item is None or id(item) in seen:
+            continue
+        seen.add(id(item))
+        if isinstance(attr(item, "code"), int):
+            return "answered_not_comfyui"
+        if isinstance(item, PermissionError):
+            denied = True
+        if depth < 6:
+            pending.extend((attr(item, name), depth + 1) for name in ("__cause__", "reason"))
+    return "access_denied" if denied else "not_answering"
+
+
+def observe_target_rungs(record, *, get_json=None):
+    """Observe the four existing-install rungs without adopting or starting it."""
+    from pathlib import Path
+
+    from .targets import TargetRecord
+
+    if not isinstance(record, TargetRecord) or record.owner != "human" or not record.endpoint:
+        raise ValueError("existing-install observations require a human-owned endpoint")
+    url = record.endpoint
+    probe = _comfy_get_json if get_json is None else get_json
+    ladder = new_ladder("compatible")
+
+    def failed(rung, reason):
+        result = with_rung(ladder, rung, "failed", reason=reason,
+                           message=LADDER_TEXT[reason]["message"].format(url=url))
+        for later in LADDER_RUNGS[LADDER_RUNGS.index(rung) + 1:]:
+            result = with_rung(result, later, "unchecked", reason="not_reached")
+        return result
+
+    if record.root is None:
+        installed = {"identity": "endpoint_only"}
+    else:
+        try:
+            exists = Path(record.root).is_dir()
+        except OSError:
+            exists = False
+        if not exists:
+            return failed("installed", "files_missing")
+        installed = {"root_exists": True}
+    ladder = with_rung(ladder, "installed", "observed", observation=installed)
+
+    try:
+        stats = probe(url, "/system_stats")
+    except Exception as exc:  # noqa: BLE001 - injected/transport failures are observations
+        reason = _failure_kind(exc)
+        if reason != "answered_not_comfyui":
+            return failed("reachable", reason)
+        stats = None
+    ladder = with_rung(ladder, "reachable", "observed", observation={"endpoint": url})
+
+    if not isinstance(stats, dict) or not isinstance(stats.get("system"), dict):
+        return failed("identified", "not_comfyui")
+    ladder = with_rung(ladder, "identified", "observed", observation={"tied_to_install": False})
+
+    try:
+        schema = probe(url, "/object_info")
+    except Exception:  # noqa: BLE001 - an unavailable API is a stable compatibility failure
+        return failed("compatible", "api_unsupported")
+    if not isinstance(schema, dict) or not schema:
+        return failed("compatible", "api_unsupported")
+    version = stats["system"].get("comfyui_version")
+    return with_rung(ladder, "compatible", "observed", observation={
+        "comfyui_version": version if isinstance(version, str) else None,
+    })
+
+
+def ladder_next_action(ladder, *, url=None, installation=None):
+    """Project the first missing observation into one person or agent action."""
+    stop = ladder_stop(ladder)
+    if stop is None:
+        return None
+    command = ["astrid", "generate", "targets", "--placement", url or "auto"]
+    wording = LADDER_TEXT.get(stop["reason"])
+    if wording is None:
+        step = f"Check the {stop['rung']} step ({stop['reason'] or 'not checked'}), then ask me to check again."
+        return make_next_action("person", step, then_argv=command)
+    step = wording["step"].format(url=url or "auto")
+    if wording["who"] == "agent":
+        return make_next_action("agent", step, argv=command)
+    return make_next_action("person", step, then_argv=command)
+
+
 def _mirror_next_action(action):
     from copy import deepcopy
 
