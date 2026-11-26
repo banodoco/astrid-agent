@@ -85,9 +85,13 @@ def load(path: Path | None = None) -> dict[str, Any]:
         try:
             data = json.loads(target.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            pass
+            # A failed read is not a deliberate empty opt-out list.  Treat the
+            # mirror as unavailable so fallback defaults cannot erase Runtime
+            # choices during reconciliation.
+            present = False
     if not isinstance(data, dict):
         data = _empty_state()
+        present = False
     # Defensive: backfill missing top-level keys for forward-compat.
     if not isinstance(data, dict):
         return _empty_state()

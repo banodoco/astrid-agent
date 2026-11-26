@@ -128,6 +128,43 @@ def test_unreachable_read_write_update():
         assert (error.value.code, error.value.status) == ("unavailable", None)
 
 
+@pytest.mark.parametrize("code", ["transport_error", "transport_timeout"])
+@pytest.mark.parametrize("operation", ["read", "write", "update"])
+def test_wrapped_transport_failure_is_unavailable(code, operation):
+    class UnavailableStore(InMemoryAppState):
+        def get_user_app_state(self, key):
+            if operation == "read":
+                raise FakeApiError(0, code)
+            return super().get_user_app_state(key)
+
+        def update_user_app_state(self, key, content, *, expected_version, idempotency_key):
+            raise FakeApiError(0, code)
+
+    store = UnavailableStore()
+    operations = {
+        "read": lambda: state.read(KEY, store=store),
+        "write": lambda: state.write(
+            KEY, {}, expected_version=0, idempotency_key="once", store=store),
+        "update": lambda: state.update(KEY, lambda doc: doc.update(x=1), store=store),
+    }
+    with pytest.raises(state.UserStateError) as error:
+        operations[operation]()
+    assert (error.value.code, error.value.status, error.value.key) == ("unavailable", 0, KEY)
+
+
+@pytest.mark.parametrize("status,code", [
+    (0, "invalid_response"), (401, "unauthorized"), (422, "validation"),
+])
+def test_non_transport_api_errors_remain_rejected(status, code):
+    class RejectingStore(InMemoryAppState):
+        def get_user_app_state(self, key):
+            raise FakeApiError(status, code)
+
+    with pytest.raises(state.UserStateError) as error:
+        state.read(KEY, store=RejectingStore())
+    assert (error.value.code, error.value.status, error.value.key) == ("rejected", status, KEY)
+
+
 def test_default_open_failure_cached_and_reset(monkeypatch):
     opens = []
 

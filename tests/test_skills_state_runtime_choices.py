@@ -30,6 +30,59 @@ def test_fresh_profile_reads_runtime_without_file(profile):
     assert not path.exists()
 
 
+@pytest.mark.parametrize("content", ["{", "[]", "null", "42", '"invalid state"'])
+def test_invalid_file_cannot_clear_runtime_opt_outs(profile, content):
+    store, path = profile
+    assert user_choices.push_skills({"claude": ["paint"], "codex": ["audio"]})
+    path.parent.mkdir(parents=True)
+    path.write_text(content, encoding="utf-8")
+    before = list(store.writes)
+
+    data = state.load()
+
+    assert data["disabled_defaults"] == {"claude": ["paint"], "codex": ["audio"], "hermes": []}
+    assert runtime_choices(store) == data["disabled_defaults"]
+    assert store.writes == before
+    assert path.read_text(encoding="utf-8") == content
+
+
+def test_unreadable_file_cannot_clear_runtime_opt_outs(profile, monkeypatch):
+    store, path = profile
+    assert user_choices.push_skills({"claude": ["paint"]})
+    local = state.load(path)
+    state.save(local, path)
+    original = path.read_bytes()
+    before = list(store.writes)
+    read_text = type(path).read_text
+
+    def fail_read(target, *args, **kwargs):
+        if target == path:
+            raise PermissionError("mirror temporarily unreadable")
+        return read_text(target, *args, **kwargs)
+
+    monkeypatch.setattr(type(path), "read_text", fail_read)
+
+    data = state.load()
+
+    assert data["disabled_defaults"] == {"claude": ["paint"], "codex": [], "hermes": []}
+    assert runtime_choices(store) == data["disabled_defaults"]
+    assert store.writes == before
+    assert path.read_bytes() == original
+    assert state.load(path) == local
+
+
+def test_valid_empty_file_still_clears_runtime_opt_outs(profile):
+    store, path = profile
+    assert user_choices.push_skills({"claude": ["paint"]})
+    local = state.load(path)
+    state.save(local, path)
+    original = path.read_bytes()
+
+    assert state.load()["disabled_defaults"] == {"claude": [], "codex": [], "hermes": []}
+    assert runtime_choices(store) == local["disabled_defaults"]
+    assert path.read_bytes() == original
+
+
 def test_import_then_save_and_older_file_edit(profile):
     store, path = profile
     local = state.load(path)

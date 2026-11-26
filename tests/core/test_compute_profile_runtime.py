@@ -19,7 +19,7 @@ from astrid.core.compute_profile import (
     write_resolved_snapshot,
 )
 from astrid.core.user_state_import import RECEIPT_KEY
-from tests.user_state_fakes import InMemoryAppState
+from tests.user_state_fakes import FakeApiError, InMemoryAppState
 
 
 def profile(profile_id="default", **values):
@@ -188,3 +188,127 @@ def test_snapshot_contains_only_credential_references(home, monkeypatch):
     assert json.loads(output)["credentials"]["runpod_api_key"] == "RUNPOD_API_KEY"
     assert "rpa_never_persist_this" not in output
     assert "rpa_never_persist_this" not in json.dumps(store.documents)
+
+
+@pytest.mark.parametrize("values", [
+    {"image": {"api_key": "opaque-credential"}},
+    {"description": {"nested": [{"token": "opaque-credential"}]}},
+    {"excludes": ["sk-literal-secret"]},
+    {"excludes": ("rpa_literal_secret",)},
+    {"description": "  sk-literal-secret"},
+    {"image": {"sk-literal-secret": "value"}},
+    {"credentials": {"sk-literal-secret": "RUNPOD_API_KEY"}},
+    {"credentials": {"rpa_literal_secret": "RUNPOD_API_KEY"}},
+])
+def test_nested_secrets_are_refused_on_save_and_skipped_on_import(home, values):
+    unsafe = profile("unsafe", **values)
+    store = InMemoryAppState()
+    with pytest.raises(ValueError, match="secret-bearing field|literal credential"):
+        save_profile(unsafe, store=store)
+    assert not store.documents
+    assert not store.writes
+
+    unsafe_path = write_legacy(home, "unsafe", unsafe)
+    original = unsafe_path.read_bytes()
+    write_legacy(home, "default", profile(gpu_type="safe"))
+    assert load_profile("default", store=store)[0]["gpu_type"] == "safe"
+    assert list_profile_ids(store=store) == ["default"]
+    assert unsafe_path.read_bytes() == original
+    saved = json.dumps(store.documents)
+    assert "literal-secret" not in saved
+    assert "literal_secret" not in saved
+    assert "opaque-credential" not in saved
+
+
+@pytest.mark.parametrize("source", ["explicit", "executor_defaults"])
+@pytest.mark.parametrize("values", [
+    {"image": {"api_key": "opaque-credential"}},
+    {"image": "sk-literal-secret"},
+    {"excludes": ("rpa_literal_secret",)},
+    {"credentials": {"sk-literal-secret": "RUNPOD_API_KEY"}},
+])
+def test_resolver_refuses_secrets_in_overrides_and_executor_defaults(home, source, values):
+    with pytest.raises(ValueError, match="secret-bearing field|literal credential"):
+        resolve_compute_profile(env={}, home=home, **{source: values})
+
+
+@pytest.mark.parametrize("values", [
+    {"image": {"nested": [{"password": "opaque-credential"}]}},
+    {"image": "sk-literal-secret"},
+    {"excludes": ["rpa_literal_secret"]},
+    {"credentials": {"rpa_literal_secret": "RUNPOD_API_KEY"}},
+])
+def test_snapshot_refuses_secrets_before_any_file_write(home, values):
+    safe = resolve_compute_profile(env={}, home=home)
+    output = write_resolved_snapshot(home / "produces", safe)
+    original = output.read_bytes()
+    unsafe = {**safe, **values}
+    with pytest.raises(ValueError, match="secret-bearing field|literal credential"):
+        write_resolved_snapshot(output.parent, unsafe)
+    assert output.read_bytes() == original
+
+    absent = home / "not-created"
+    with pytest.raises(ValueError, match="secret-bearing field|literal credential"):
+        write_resolved_snapshot(absent, unsafe)
+    assert not absent.exists()
+
+
+def test_oversized_initial_import_preserves_legacy_reads_and_rejects_save(home):
+    paths = [write_legacy(home, name, profile(name, description="x" * 8500))
+             for name in ("default", "other")]
+    original = [path.read_bytes() for path in paths]
+    store = InMemoryAppState()
+
+    assert load_profile("default", store=store)[1] == paths[0]
+    resolved = resolve_compute_profile(env={"ASTRID_COMPUTE_PROFILE": "other"}, store=store)
+    assert resolved["profile_id"] == "other"
+    assert resolved["profile_path"] == str(paths[1])
+    assert list_profile_ids(store=store) == ["default", "other"]
+    with pytest.raises(ValueError, match="new.*16 KiB"):
+        save_profile(profile("new"), store=store)
+    assert not store.documents
+    assert not store.writes
+    assert [path.read_bytes() for path in paths] == original
+
+
+def test_oversized_import_does_not_override_concurrently_emptied_runtime(home):
+    paths = [write_legacy(home, name, profile(name, description="x" * 8500))
+             for name in ("default", "other")]
+    original = [path.read_bytes() for path in paths]
+
+    class ConcurrentStore(InMemoryAppState):
+        target_reads = 0
+
+        def get_user_app_state(self, key):
+            if key == RUNTIME_KEY:
+                self.target_reads += 1
+                if self.target_reads == 3:
+                    seed(self)
+            return super().get_user_app_state(key)
+
+    store = ConcurrentStore()
+    with pytest.raises(FileNotFoundError, match=f"runtime:{RUNTIME_KEY}/default"):
+        load_profile("default", store=store)
+    assert list_profile_ids(store=store) == []
+    assert user_state.read(RUNTIME_KEY, store=store).content["profiles"] == {}
+    assert [path.read_bytes() for path in paths] == original
+
+
+@pytest.mark.parametrize("code", ["transport_error", "transport_timeout"])
+def test_transport_failure_falls_back_to_files_and_refuses_writes(home, code):
+    path = write_legacy(home, "default", profile(gpu_type="legacy"))
+
+    class UnreachableStore(InMemoryAppState):
+        def get_user_app_state(self, key):
+            raise FakeApiError(0, code)
+
+    store = UnreachableStore()
+    assert load_profile("default", store=store)[1] == path
+    assert resolve_compute_profile(env={}, store=store)["gpu_type"] == "legacy"
+    assert list_profile_ids(store=store) == ["default"]
+    with pytest.raises(RuntimeError, match="not saved"):
+        save_profile(profile("new"), store=store)
+    with pytest.raises(RuntimeError, match="not removed"):
+        remove_profile("default", store=store)
+    assert not store.documents
+    assert not store.writes

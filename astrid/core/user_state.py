@@ -137,6 +137,11 @@ def _call(key: str, operation: Callable[[], Any]) -> Document:
         if not hasattr(exc, "status"):
             raise
         status = exc.status
+        # The generated Runtime client (and WorkspaceClient) wraps socket
+        # failures in an API error instead of letting OSError escape. Keep
+        # those failures eligible for the consumers' local-state fallback.
+        if status == 0 and getattr(exc, "code", None) in ("transport_error", "transport_timeout"):
+            raise UserStateError("unavailable", key, status=status) from exc
         raise UserStateError("conflict" if status == 409 else "rejected",
                              key, status=status) from exc
     return _document(raw)
