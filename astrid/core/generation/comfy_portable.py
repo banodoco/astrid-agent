@@ -15,8 +15,10 @@ import os
 import re
 import shutil
 import stat
+import subprocess
 import sys
 import tempfile
+import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -560,6 +562,171 @@ def install_portable(destination, consent, *, pin=None, steps, platform=None, gp
         return result("installed")
     finally:
         lock.release()
+
+
+def download_archive(pin, archive_path, part_path, progress, *, client=None, deadline=None):
+    """Fetch and force-verify the pinned archive, retaining interrupted prefixes."""
+    from .engine_contracts import IntegrityError
+
+    release = pin["release"]
+    archive_path, part_path = Path(archive_path), Path(part_path)
+    root = archive_path.parent
+    entry = {
+        "name": archive_path.name, "subdir": "portable", "url": release["url"],
+        "sha256": release["archive_sha256"], "size_bytes": release["archive_bytes"],
+    }
+
+    def report(done):
+        progress("download", done, release["archive_bytes"])
+
+    try:
+        from .asset_alignment import fetch_verified
+
+        if _redirected(root):
+            raise OSError("The archive folder is redirected.")
+        if part_path.parent != root or part_path == archive_path:
+            raise OSError("The partial archive must be beside the final archive.")
+        for path in (archive_path, part_path):
+            if _redirected(path) or (
+                path.exists() and (not path.is_file() or path.stat().st_nlink != 1)
+            ):
+                raise OSError(f"Unsafe archive path: {path}")
+        # The pinned downloader requires a named subdirectory. Keep its working
+        # file and receipts private until the verified archive can be promoted.
+        root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix=".fetch-", dir=root) as directory:
+            fetch_root = Path(directory)
+            downloaded = fetch_root / entry["subdir"] / archive_path.name
+            fetch_verified(
+                entry, downloaded, root=fetch_root, part=part_path,
+                label=release["archive_name"], client=client, deadline=deadline,
+                progress=report if progress is not None else None,
+            )
+            downloaded.replace(archive_path)
+    except IntegrityError as exc:
+        raise PortableError(
+            "archive_mismatch",
+            f"{release['archive_name']} did not match its pinned size or hash; "
+            "the archive was refused and removed.",
+        ) from exc
+    except Exception as exc:  # noqa: BLE001 - surface a resumable failure to the installer
+        raise PortableError(
+            "download_failed",
+            f"Could not download {release['archive_name']}: {exc}. "
+            "Any partial copy is kept; rerun to resume the download.",
+        ) from exc
+
+
+def extract_archive(archive_path, staging_dir, pin):
+    """Unpack only into a private staging tree, refusing unsafe archive members."""
+    release = pin["release"]
+    archive_path, staging_dir = Path(archive_path), Path(staging_dir)
+
+    def unsafe(detail):
+        return PortableError("unsafe_archive", f"{release['archive_name']}: {detail}")
+
+    if _redirected(staging_dir):
+        raise unsafe("The staging directory is redirected.")
+    staging_dir.mkdir(exist_ok=True)
+    if any(staging_dir.iterdir()):
+        raise unsafe("The staging directory must be empty.")
+    root = staging_dir.resolve()
+    if release["archive_format"] == "zip":
+        try:
+            with zipfile.ZipFile(archive_path) as archive:
+                members = archive.infolist()
+                total = 0
+                for member in members:
+                    # Inspect original names before zipfile can normalize or truncate them.
+                    name = member.orig_filename.rstrip("/")
+                    mode = stat.S_IFMT(member.external_attr >> 16)
+                    if (
+                        not _relative(name)
+                        or any(
+                            part.endswith((".", " ")) or PureWindowsPath(part).is_reserved()
+                            for part in name.split("/")
+                        )
+                        or mode not in (0, stat.S_IFREG, stat.S_IFDIR)
+                        or (mode == stat.S_IFDIR and not member.is_dir())
+                        or (mode == stat.S_IFREG and member.is_dir())
+                    ):
+                        raise unsafe(f"Unsafe ZIP member: {member.orig_filename!r}")
+                    total += member.file_size
+                    if total * 10 > release["extracted_bytes"] * 11:
+                        raise unsafe("ZIP exceeds the pinned unpacked size plus 10%.")
+                for member in members:
+                    target = staging_dir / member.orig_filename.rstrip("/")
+                    if _redirected(target) or not target.resolve().is_relative_to(root):
+                        raise unsafe(f"ZIP member escapes staging: {member.orig_filename!r}")
+                    if member.is_dir():
+                        target.mkdir(parents=True, exist_ok=True)
+                    else:
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        # Exclusive creation also prevents overwriting a prior member.
+                        with archive.open(member) as source, target.open("xb") as destination:
+                            shutil.copyfileobj(source, destination)
+        except PortableError:
+            raise
+        except (OSError, RuntimeError, ValueError, zipfile.BadZipFile) as exc:
+            raise unsafe(f"Could not safely unpack ZIP: {exc}") from exc
+    elif release["archive_format"] == "7z":
+        tar_executable = shutil.which("tar")
+        if tar_executable is None:
+            raise PortableError("no_extractor", "Cannot unpack ComfyUI Portable: tar is not available.")
+        # Windows' libarchive tar rejects escaping paths and symlink traversal by
+        # default. Keep those protections enabled (in particular, never use -P).
+        try:
+            subprocess.run(
+                [tar_executable, "-xf", str(archive_path), "-C", str(staging_dir)],
+                check=True, stdin=subprocess.DEVNULL, timeout=3600,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise unsafe(f"tar could not safely unpack the archive: {exc}") from exc
+    else:
+        raise unsafe("Unsupported archive format.")
+
+    # Do not promote an extracted link, junction, special file or redirected tree.
+    if _redirected(staging_dir) or staging_dir.resolve() != root:
+        raise unsafe("The staging directory was redirected.")
+    for folder, directories, files in os.walk(staging_dir, followlinks=False):
+        for name in (*directories, *files):
+            path = Path(folder) / name
+            info = path.lstat()
+            if (
+                _redirected(path)
+                or not path.resolve().is_relative_to(root)
+                or not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode))
+                or (stat.S_ISREG(info.st_mode) and info.st_nlink != 1)
+            ):
+                raise unsafe(f"Unsafe extracted member: {path}")
+
+
+def missing_files(root, pin):
+    """Report missing, empty, nonregular or redirected required files."""
+    root = Path(root)
+    missing = []
+    for relative in pin["release"]["required_files"]:
+        path = root / relative
+        try:
+            if not _relative(relative) or _redirected(path):
+                missing.append(relative)
+                continue
+            info = path.stat()
+            if not stat.S_ISREG(info.st_mode) or info.st_size == 0:
+                missing.append(relative)
+        except OSError:
+            missing.append(relative)
+    return sorted(missing)
+
+
+def default_steps(client=None, deadline=None):
+    """The real installer operations, with optional injected HTTP client/deadline."""
+    def download(pin, archive_path, part_path, progress):
+        return download_archive(
+            pin, archive_path, part_path, progress, client=client, deadline=deadline,
+        )
+
+    return Steps(download=download, extract=extract_archive, missing=missing_files)
 
 
 def render_offer(offer):
