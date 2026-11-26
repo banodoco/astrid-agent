@@ -1349,7 +1349,9 @@ class GenerationFacade:
     @_generation_boundary
     def targets(self, *, placement='auto', engine='comfyui', save=False, inputs=None,
                 project_root=None, client=None):
-        """Inspect selection without probing; persist only an explicit save."""
+        """Probe a selected attached endpoint with read-only GETs (/system_stats
+        and /object_info); write only on an explicit save.
+        """
         from astrid.core.generation import targets
         from astrid.core.generation.entries import merge_input_values
         from astrid.core.generation.preflight import readiness_envelope
@@ -1397,7 +1399,13 @@ class GenerationFacade:
                 if record is None:
                     raise ValueError('select an explicit target before saving')
                 targets.save_target(record)
-            payload = readiness_envelope(target=record)
+            if record is not None and record.owner == 'human' and record.endpoint:
+                from astrid.core.generation import preflight
+                ladder = preflight.observe_target_rungs(record)
+                action = preflight.ladder_next_action(ladder, url=record.endpoint)
+                payload = readiness_envelope(target=record, ladder=ladder, next_action=action)
+            else:
+                payload = readiness_envelope(target=record)
             payload['placement'] = generation_listing.placement_block(selection)
             return payload
         except (ValueError, OSError) as exc:
