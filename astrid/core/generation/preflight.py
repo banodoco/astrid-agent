@@ -87,7 +87,285 @@ _CORE_CODES = {
 }
 
 
-def readiness_envelope(*, entry=None, target=None, issues=(), fixes=(), attempt_count=None) -> ReadinessEnvelope:
+# Readiness ladder
+
+LADDER_RUNGS = ("installed", "reachable", "identified", "compatible",
+                "computes", "workflow_ready", "delivered")
+LADDER_OWNERS = {
+    "installed": "existing-install",
+    "reachable": "existing-install",
+    "identified": "existing-install",
+    "compatible": "existing-install",
+    "computes": "environment",
+    "workflow_ready": "workflow",
+    "delivered": "delivery",
+}
+LADDER_THROUGH = LADDER_RUNGS[:6]
+LADDER_ISSUE_CODES = {
+    "installed": "target_not_installed",
+    "reachable": "target_unreachable",
+    "identified": "target_not_identified",
+    "compatible": "target_incompatible",
+    "computes": "target_not_computing",
+    "workflow_ready": "workflow_not_ready",
+}
+
+
+def new_ladder(through):
+    """Readiness ladder.
+
+    Seven ordered rungs: installed, reachable, identified, compatible, computes,
+    workflow_ready, delivered. Each rung is observed, failed or unchecked; its
+    owner supplies the observation or reason. Through is the last rung this
+    answer owns (never delivered). Ready requires positive observations through
+    that rung. The first non-observed rung blocks with one next action: a person
+    step (optionally followed by an Astrid recheck) or an agent command. No
+    timestamps or durations are added. Without a ladder the envelope is unchanged.
+    Delivery evidence belongs to the result path.
+
+    Pinned tests owed to later packets: `tests/packs/test_vibecomfy_local.py::test_scan_reports_pinokio_when_no_script_is_running` and `::test_scan_continues_when_pinokio_is_absent` compare the whole scan response and gain `"installations": []` (R16-P93-06). No other pinned test changes: envelopes without a ladder are unchanged, and the tests that call `generate targets` (`test_workflow_input_a01.py`, `test_settings_set_placement.py`, `test_generation_readiness_fields.py`) assert only `target` and `placement`.
+    """
+    if through not in LADDER_THROUGH:
+        raise ValueError("invalid readiness ladder through")
+    return {"through": through, "rungs": [
+        {"rung": rung, "owner": LADDER_OWNERS[rung], "state": "unchecked",
+         "observation": None, "reason": None, "message": None}
+        for rung in LADDER_RUNGS
+    ], "stopped_at": None}
+
+
+def _validate_rung_state(state, observation, reason, message):
+    if state not in ("observed", "failed", "unchecked"):
+        raise ValueError("invalid readiness rung state")
+    if (observation is not None and not isinstance(observation, dict)
+            or state == "observed" and not isinstance(observation, dict)):
+        raise ValueError("an observed rung needs an observation object")
+    if (reason is not None and not isinstance(reason, str)
+            or state == "failed" and (not isinstance(reason, str) or not reason.strip())):
+        raise ValueError("a failed rung needs a nonempty reason")
+    if message is not None and not isinstance(message, str):
+        raise ValueError("readiness rung message must be a string")
+
+
+def _validate_ladder(ladder):
+    if not isinstance(ladder, dict) or ladder.get("through") not in LADDER_THROUGH:
+        raise ValueError("invalid readiness ladder through")
+    rungs = ladder.get("rungs")
+    if not isinstance(rungs, list) or len(rungs) != len(LADDER_RUNGS):
+        raise ValueError("readiness ladder needs all seven ordered rungs")
+    for name, item in zip(LADDER_RUNGS, rungs):
+        if (not isinstance(item, dict)
+                or set(item) != {"rung", "owner", "state", "observation", "reason", "message"}
+                or item["rung"] != name or item["owner"] != LADDER_OWNERS[name]):
+            raise ValueError("invalid readiness ladder rung or owner")
+        _validate_rung_state(item["state"], item["observation"], item["reason"], item["message"])
+
+
+def with_rung(ladder, rung, state, *, observation=None, reason=None, message=None):
+    """Return a separate ladder with precisely one rung's evidence replaced."""
+    from copy import deepcopy
+
+    _validate_ladder(ladder)
+    if rung not in LADDER_RUNGS:
+        raise ValueError("unknown readiness rung")
+    _validate_rung_state(state, observation, reason, message)
+    result = deepcopy(ladder)
+    result["rungs"][LADDER_RUNGS.index(rung)] = {
+        "rung": rung, "owner": LADDER_OWNERS[rung], "state": state,
+        "observation": deepcopy(observation), "reason": reason, "message": message,
+    }
+    return result
+
+
+def ladder_stop(ladder):
+    """Return the first missing observation in this answer's owned prefix."""
+    _validate_ladder(ladder)
+    return next((item for item in ladder["rungs"][:LADDER_RUNGS.index(ladder["through"]) + 1]
+                 if item["state"] != "observed"), None)
+
+
+def make_next_action(who, step, *, argv=None, then_argv=None, alternative=None, choices=None):
+    """Describe exactly one action, not an implicit sequence of repairs."""
+    from copy import deepcopy
+
+    def command(value):
+        if (not isinstance(value, (list, tuple)) or not value
+                or not all(isinstance(word, str) and word.strip() for word in value)):
+            raise ValueError("readiness action command must be a nonempty string array")
+        return list(value)
+
+    if not isinstance(step, str) or not step.strip():
+        raise ValueError("readiness action needs a step")
+    if who == "person" and argv is None:
+        then_argv = command(then_argv) if then_argv is not None else None
+    elif who == "agent" and then_argv is None:
+        argv = command(argv)
+    else:
+        raise ValueError("readiness action must be one person step or agent command")
+    return {"who": who, "step": step, "argv": argv, "then_argv": then_argv,
+            "alternative": deepcopy(alternative), "choices": deepcopy(choices)}
+
+
+# Observations of the human-owned existing-install prefix.
+
+LADDER_REASONS = {
+    "files_missing": "installed",
+    "not_answering": "reachable",
+    "access_denied": "reachable",
+    "not_comfyui": "identified",
+    "api_unsupported": "compatible",
+}
+
+LADDER_TEXT = {
+    "files_missing": {
+        "message": "The folder recorded for this ComfyUI no longer exists.",
+        "step": "Tell me the address of a ComfyUI that is running, or reinstall it, then ask me to check again.",
+        "who": "person",
+    },
+    "not_answering": {
+        "message": "Nothing is answering at {url}.",
+        "step": "Start your ComfyUI so it answers at {url}, then ask me to check again.",
+        "who": "person",
+    },
+    "access_denied": {
+        "message": "Access to {url} was denied.",
+        "step": "Retry the same check through the normal permission request.",
+        "who": "agent",
+    },
+    "not_comfyui": {
+        "message": "Something that is not ComfyUI answers at {url}.",
+        "step": "Close it, or tell me the address of your ComfyUI.",
+        "who": "person",
+    },
+    "api_unsupported": {
+        "message": "The ComfyUI at {url} does not offer the API Astrid needs.",
+        "step": "Update that ComfyUI, then ask me to check again.",
+        "who": "person",
+    },
+}
+
+
+def _comfy_get_json(url, path):
+    """Read one bounded JSON observation from this exact attached endpoint."""
+    from .backends.comfy_target import MAX_JSON_BYTES, ComfyTarget, ComfyTargetClient
+
+    client = ComfyTargetClient(ComfyTarget(url, "attached"))
+    if path == "/object_info":
+        return client.request_json(path, timeout=5.0, response_limit=MAX_JSON_BYTES)
+    return client.request_json(path, timeout=1.0)
+
+
+def _failure_kind(exc):
+    """Classify a bounded exception graph without leaking transport details."""
+    def attr(item, name):
+        try:
+            return getattr(item, name, None)
+        except Exception:  # noqa: BLE001 - classification must not raise
+            return None
+
+    pending = [(exc, 0)]
+    seen = set()
+    denied = False
+    while pending:
+        item, depth = pending.pop(0)
+        if item is None or id(item) in seen:
+            continue
+        seen.add(id(item))
+        if isinstance(attr(item, "code"), int):
+            return "answered_not_comfyui"
+        if isinstance(item, PermissionError):
+            denied = True
+        if depth < 6:
+            pending.extend((attr(item, name), depth + 1) for name in ("__cause__", "reason"))
+    return "access_denied" if denied else "not_answering"
+
+
+def observe_target_rungs(record, *, get_json=None):
+    """Observe the four existing-install rungs without adopting or starting it."""
+    from pathlib import Path
+
+    from .targets import TargetRecord
+
+    if not isinstance(record, TargetRecord) or record.owner != "human" or not record.endpoint:
+        raise ValueError("existing-install observations require a human-owned endpoint")
+    url = record.endpoint
+    probe = _comfy_get_json if get_json is None else get_json
+    ladder = new_ladder("compatible")
+
+    def failed(rung, reason):
+        result = with_rung(ladder, rung, "failed", reason=reason,
+                           message=LADDER_TEXT[reason]["message"].format(url=url))
+        for later in LADDER_RUNGS[LADDER_RUNGS.index(rung) + 1:]:
+            result = with_rung(result, later, "unchecked", reason="not_reached")
+        return result
+
+    if record.root is None:
+        installed = {"identity": "endpoint_only"}
+    else:
+        try:
+            exists = Path(record.root).is_dir()
+        except OSError:
+            exists = False
+        if not exists:
+            return failed("installed", "files_missing")
+        installed = {"root_exists": True}
+    ladder = with_rung(ladder, "installed", "observed", observation=installed)
+
+    try:
+        stats = probe(url, "/system_stats")
+    except Exception as exc:  # noqa: BLE001 - injected/transport failures are observations
+        reason = _failure_kind(exc)
+        if reason != "answered_not_comfyui":
+            return failed("reachable", reason)
+        stats = None
+    ladder = with_rung(ladder, "reachable", "observed", observation={"endpoint": url})
+
+    if not isinstance(stats, dict) or not isinstance(stats.get("system"), dict):
+        return failed("identified", "not_comfyui")
+    ladder = with_rung(ladder, "identified", "observed", observation={"tied_to_install": False})
+
+    try:
+        schema = probe(url, "/object_info")
+    except Exception:  # noqa: BLE001 - an unavailable API is a stable compatibility failure
+        return failed("compatible", "api_unsupported")
+    if not isinstance(schema, dict) or not schema:
+        return failed("compatible", "api_unsupported")
+    version = stats["system"].get("comfyui_version")
+    return with_rung(ladder, "compatible", "observed", observation={
+        "comfyui_version": version if isinstance(version, str) else None,
+    })
+
+
+def ladder_next_action(ladder, *, url=None, installation=None):
+    """Project the first missing observation into one person or agent action."""
+    stop = ladder_stop(ladder)
+    if stop is None:
+        return None
+    command = ["astrid", "generate", "targets", "--placement", url or "auto"]
+    wording = LADDER_TEXT.get(stop["reason"])
+    if wording is None:
+        step = f"Check the {stop['rung']} step ({stop['reason'] or 'not checked'}), then ask me to check again."
+        return make_next_action("person", step, then_argv=command)
+    step = wording["step"].format(url=url or "auto")
+    if wording["who"] == "agent":
+        return make_next_action("agent", step, argv=command)
+    return make_next_action("person", step, then_argv=command)
+
+
+def _mirror_next_action(action):
+    from copy import deepcopy
+
+    if action["who"] == "person":
+        return {"scope": "attached_target", "details": {
+            "guidance": action["step"], "who": "person",
+            "then_argv": deepcopy(action["then_argv"]),
+        }}
+    return {"argv": deepcopy(action["argv"]), "scope": "read_only",
+            "details": {"guidance": action["step"], "who": "agent"}}
+
+
+def readiness_envelope(*, entry=None, target=None, issues=(), fixes=(), attempt_count=None,
+                       ladder=None, next_action=None) -> ReadinessEnvelope:
     """Project observations once; unknown version facts do not become issues."""
     from copy import deepcopy
 
@@ -97,11 +375,53 @@ def readiness_envelope(*, entry=None, target=None, issues=(), fixes=(), attempt_
     fixes = [deepcopy({**fix, **({'argv': list(fix['argv'])} if isinstance(fix.get('argv'), tuple) else {}),
               'details': fix.get('details', {})})
              for fix in fixes]
+    target_payload = deepcopy(target.as_dict() if hasattr(target, 'as_dict') else target)
+    if ladder is None:
+        if next_action is not None:
+            raise ValueError("next_action requires a readiness ladder")
+    else:
+        ladder = deepcopy(ladder)
+        stop = ladder_stop(ladder)
+        ladder["stopped_at"] = stop["rung"] if stop is not None else None
+        if stop is not None:
+            rung = stop["rung"]
+            code = "rung_unchecked" if stop["state"] == "unchecked" else LADDER_ISSUE_CODES[rung]
+            issue = {"code": code, "severity": "error",
+                     "message": stop["message"] or f"{rung} was not observed",
+                     "details": {"rung": rung, "reason": stop["reason"], "field": "target"}}
+            matching = next((item for item in issues
+                             if item["code"] == code and item["details"].get("rung") == rung), None)
+            if matching is None:
+                issues.append(issue)
+            elif matching["severity"] != "error":
+                matching["severity"] = "error"
+            if next_action is None:
+                endpoint = (target_payload or {}).get("endpoint") or "auto"
+                next_action = make_next_action(
+                    "person", f"Check the {rung} step ({stop['reason'] or 'not checked'}), then ask me to check again.",
+                    then_argv=["astrid", "generate", "targets", "--placement", endpoint],
+                )
+        if next_action is not None:
+            if not isinstance(next_action, dict):
+                raise ValueError("next_action must be an action object")
+            try:
+                next_action = make_next_action(**next_action)
+            except TypeError as exc:
+                raise ValueError("invalid readiness next_action") from exc
+        mirror = [] if next_action is None else [_mirror_next_action(next_action)]
+        if fixes and fixes != mirror:
+            raise ValueError("ladder fixes must mirror the single next_action")
+        fixes = mirror
     status = ('blocked' if any(issue['severity'] == 'error' for issue in issues) else
               'ready_with_warnings' if issues else 'ready')
     envelope = {'entry': deepcopy(entry),
-            'target': deepcopy(target.as_dict() if hasattr(target, 'as_dict') else target),
+            'target': target_payload,
             'status': status, 'issues': issues, 'fixes': fixes}
+    if ladder is not None:
+        envelope["ladder"] = ladder
+        envelope["next_action"] = next_action
+        if attempt_count is not None or uses_setup_contract(envelope):
+            raise ValueError("readiness ladder cannot opt into the strict setup contract")
     if attempt_count is not None or uses_setup_contract(envelope):
         # The caller counts actual attempts; constructing/serializing is not one.
         envelope['attempt_count'] = 0 if attempt_count is None else attempt_count
@@ -115,7 +435,7 @@ class GenerationReadinessError(AstridError, ValueError):
     def __init__(self, envelope: ReadinessEnvelope, *, task_id: str | None = None):
         from astrid.core.contracts.errors import _redact_credential_data
         self.readiness = readiness_envelope(**{key: envelope[key] for key in
-            ('entry', 'target', 'issues', 'fixes', 'attempt_count') if key in envelope})
+            ('entry', 'target', 'issues', 'fixes', 'attempt_count', 'ladder', 'next_action') if key in envelope})
         self.readiness = _redact_credential_data(self.readiness)
         self.task_id = task_id
         if 'attempt_count' in self.readiness and self.readiness['status'] != 'blocked':
