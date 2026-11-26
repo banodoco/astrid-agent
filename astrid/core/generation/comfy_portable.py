@@ -1,20 +1,29 @@
-"""Read-only consent offers for official Windows ComfyUI Portable.
+"""Consent offers and resumable installs for Windows ComfyUI Portable.
 
 The Astrid engine recipe is not a Windows installer: Portable avoids the
 Linux-only runner, custody, locking and endpoint-root assumptions and the
-network-dependent recipe build. No archive is fetched or unpacked here.
+network-dependent recipe build. Download and extraction are injected steps;
+this module owns consent, the journal and the destination's write boundary.
 """
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
 import re
 import shutil
+import stat
 import sys
+import tempfile
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import Callable, Literal, TypedDict
 from urllib.parse import urlsplit
+
+from filelock import FileLock, Timeout
 
 PIN_PATH = Path(__file__).resolve().parents[2] / "packs" / "vibecomfy" / "portable.pin.json"
 MARGIN_BYTES = 1 << 30
@@ -26,9 +35,119 @@ _SUPPORTED = "a computer with an NVIDIA RTX 20, 30, 40 or 50 series card, or you
 
 
 class PortableError(RuntimeError):
-    def __init__(self, code, message):
-        super().__init__(message)
+    def __init__(self, code, message=None):
+        super().__init__(message or code)
         self.code = code
+
+
+Phase = Literal["started", "downloaded", "extracted", "complete"]
+Progress = Callable[[str, int, int], None]
+
+
+@dataclass(frozen=True)
+class Steps:
+    """The transfer, extraction and verification operations of an install."""
+
+    download: Callable[[dict, Path, Path, Progress | None], None]
+    extract: Callable[[Path, Path, dict], None]
+    missing: Callable[[Path, dict], list[str]]
+
+
+class InstallResult(TypedDict):
+    status: Literal["installed", "already_installed"]
+    resumed_from: Phase | None
+    root: str
+    comfy_dir: str
+    python: str
+    release: str
+    kept_previous: str | None
+
+
+def _write_json(path, record):
+    """Publish a durable JSON record using a temporary file beside it."""
+    fd, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(record, stream, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _write_journal(path, record):
+    _write_json(path, record)
+
+
+def _read_journal(destination):
+    path = destination / ".astrid-install" / "journal.json"
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        raise PortableError("destination_changed", "The install journal cannot be read.") from exc
+    if not isinstance(record, dict) or record.get("schema") != _JOURNAL_SCHEMA:
+        raise PortableError("destination_changed", "The install journal is not ours.")
+    return record
+
+
+def _redirected(path):
+    """Do not traverse links or Windows junctions in an install-owned path."""
+    return any(
+        part.is_symlink() or getattr(part, "is_junction", lambda: False)()
+        for part in (path, *path.parents)
+    )
+
+
+def _check_layout(destination, release):
+    metadata = destination / ".astrid-install"
+    root = destination / release["inner_directory"]
+    # The release must not place its final tree inside the install metadata.
+    if root == metadata or metadata in root.parents:
+        raise PortableError("pin_invalid", "The Portable root overlaps its install metadata.")
+    directories = (destination, metadata, metadata / "archive", metadata / "staging", root)
+    files = (
+        metadata / "journal.json", metadata / "lock", metadata / "receipt.json",
+        metadata / "archive" / release["archive_name"],
+        metadata / "archive" / (release["archive_name"] + ".part"),
+    )
+    for path in (*directories, *files):
+        if _redirected(path):
+            raise PortableError("destination_changed", f"An install path was redirected: {path}")
+        if path.exists() and (not path.is_dir() if path in directories else not path.is_file()):
+            raise PortableError("destination_changed", f"An install path changed type: {path}")
+    for path in files:
+        if path.exists() and path.stat().st_nlink != 1:
+            raise PortableError("destination_changed", f"An install file has another owner: {path}")
+
+
+def _required_missing(root, pin):
+    return [
+        relative for relative in pin["release"]["required_files"]
+        if _redirected(root / relative) or not (root / relative).is_file()
+    ]
+
+
+def _work_bytes(destination):
+    total = 0
+    for name in ("archive", "staging"):
+        directory = destination / ".astrid-install" / name
+        if not directory.is_dir() or _redirected(directory):
+            continue
+        for folder, subdirs, filenames in os.walk(directory, followlinks=False):
+            subdirs[:] = [name for name in subdirs if not _redirected(Path(folder) / name)]
+            for filename in filenames:
+                try:
+                    info = (Path(folder) / filename).stat(follow_symlinks=False)
+                except FileNotFoundError:
+                    continue  # A running install may just have moved this file.
+                if stat.S_ISREG(info.st_mode):
+                    total += info.st_size
+    return total
 
 
 def _require(condition, field):
@@ -232,19 +351,215 @@ def build_offer(destination, *, pin=None, platform=None, gpu=None,
             f"A different folder is already there: {destination}. Nothing was touched.",
             "Choose a different, empty or absent folder.",
         )
+    if offer["state"] == "ours":
+        try:
+            _check_layout(destination, release)
+            journal = _read_journal(destination)
+        except PortableError as exc:
+            return refuse(exc.code, str(exc), "Keep the existing folder and choose another destination.")
+        if journal is None:
+            return refuse("destination_changed", "The install journal disappeared.", "Retry the offer.")
+        done = _work_bytes(destination)
+        offer["resume"] = {"phase": journal.get("phase"), "done_bytes": done}
+        # Space already occupied by this attempt is not required a second time.
+        # The consent identity above continues to use the original full peak.
+        offer["peak_bytes"] = max(0, peak - done)
+        if (
+            journal.get("phase") == "complete"
+            and journal.get("offer_sha256") == offer["offer_sha256"]
+            and journal.get("release") == release
+            and not _required_missing(destination / release["inner_directory"], pin)
+        ):
+            offer["state"] = "complete"
+            offer["peak_bytes"] = 0
     ancestor = destination
     while not ancestor.exists() and ancestor != ancestor.parent:
         ancestor = ancestor.parent
     if not ancestor.is_dir():
         return refuse("destination_invalid", f"Not a folder: {ancestor}", "Choose an absolute, unused folder.")
     offer["free_bytes"] = disk_usage(ancestor).free
-    if offer["free_bytes"] < peak:
+    if offer["free_bytes"] < offer["peak_bytes"]:
         return refuse(
             "insufficient_space",
-            f"Only {offer['free_bytes']} bytes are free; {peak} bytes are needed at the peak.",
+            f"Only {offer['free_bytes']} bytes are free; {offer['peak_bytes']} bytes are needed at the peak.",
             "Free enough disk space or choose a folder on a drive with enough space.",
         )
     return offer
+
+
+def _validate_journal(journal, offer, release):
+    if journal is None:
+        return
+    if journal.get("offer_sha256") != offer["offer_sha256"]:
+        raise PortableError("consent_mismatch")
+    if (
+        # The offer identity predates this installer and does not include these
+        # layout details. The journal's release descriptor binds custody so a
+        # changed pin cannot redirect repair or cleanup onto someone else's data.
+        journal.get("release") != release
+        or journal.get("phase") not in ("started", "downloaded", "extracted", "complete")
+        or type(journal.get("renaming")) is not bool
+        or (journal["renaming"] and journal["phase"] != "downloaded")
+    ):
+        raise PortableError("destination_changed", "The install journal has changed.")
+
+
+def _check_final_root(journal, root, staged_root, pin, steps):
+    """Check custody before touching even the lock or stale staging."""
+    if journal is None:
+        if root.exists():
+            raise PortableError("destination_changed")
+        return
+    phase = journal["phase"]
+    if phase == "started" and root.exists():
+        raise PortableError("destination_changed")
+    if phase == "downloaded" and root.exists():
+        if (
+            not journal["renaming"] or staged_root.exists() or staged_root.is_symlink()
+            or _required_missing(root, pin) or steps.missing(root, pin)
+        ):
+            raise PortableError("destination_changed")
+    if phase == "extracted" and (_required_missing(root, pin) or steps.missing(root, pin)):
+        raise PortableError("destination_changed", "The promoted install no longer verifies.")
+
+
+def _preserve_broken(root):
+    """Move the owned root aside, never overwriting an earlier preserved one."""
+    if not root.exists():
+        return None
+    stamp = datetime.now(timezone.utc)
+    while True:
+        kept = root.with_name(f"{root.name}.broken-{stamp:%Y%m%dT%H%M%S}")
+        if not kept.exists() and not kept.is_symlink():
+            root.rename(kept)
+            return str(kept)
+        stamp += timedelta(seconds=1)
+
+
+def install_portable(destination, consent, *, pin=None, steps, platform=None, gpu=None,
+                     disk_usage=shutil.disk_usage, environ=None, progress=None) -> InstallResult:
+    """Apply one exact offer, resuming only work owned by its destination journal."""
+    if consent is None:
+        raise PortableError("consent_required")
+    pin = load_pin() if pin is None else _validate_pin(pin)
+    offer = build_offer(destination, pin=pin, platform=platform, gpu=gpu,
+                        disk_usage=disk_usage, environ=environ)
+    if not isinstance(consent, str) or consent != offer["offer_sha256"]:
+        raise PortableError("consent_mismatch")
+    if offer["status"] == "refused":
+        raise PortableError(offer["refusal"]["code"], offer["refusal"]["message"])
+
+    destination = Path(offer["destination"])
+    release = pin["release"]
+    metadata = destination / ".astrid-install"
+    journal_path = metadata / "journal.json"
+    archive = metadata / "archive" / release["archive_name"]
+    part = archive.with_name(archive.name + ".part")
+    staging = metadata / "staging"
+    root = destination / release["inner_directory"]
+    staged_root = staging / release["inner_directory"]
+    _check_layout(destination, release)
+    journal = _read_journal(destination)
+    _validate_journal(journal, offer, release)
+    _check_final_root(journal, root, staged_root, pin, steps)
+    resumed_from = journal["phase"] if journal is not None else None
+    kept_previous = None
+
+    def result(status):
+        return {
+            "status": status, "resumed_from": resumed_from,
+            "root": str(root), "comfy_dir": str(root / "ComfyUI"),
+            "python": str(root / "python_embeded" / "python.exe"),
+            "release": release["tag"], "kept_previous": kept_previous,
+        }
+
+    if journal is not None and journal["phase"] == "complete":
+        if not _required_missing(root, pin) and not steps.missing(root, pin):
+            # FileLock may create/truncate its file; a completed no-op is read-only.
+            return result("already_installed")
+
+    # Recheck before taking custody of a destination which had no journal.
+    if journal is None and destination_state(destination) not in ("absent", "empty"):
+        raise PortableError("destination_changed")
+    metadata.mkdir(parents=True, exist_ok=True)
+    lock = FileLock(str(metadata / "lock"), timeout=0)
+    try:
+        lock.acquire()
+    except Timeout as exc:
+        raise PortableError("install_in_progress") from exc
+    try:
+        _check_layout(destination, release)
+        locked_journal = _read_journal(destination)
+        _validate_journal(locked_journal, offer, release)
+        _check_final_root(locked_journal, root, staged_root, pin, steps)
+        if journal is not None and locked_journal is None:
+            raise PortableError("destination_changed", "The install journal disappeared.")
+        journal = locked_journal
+        if journal is None:
+            journal = {
+                "schema": _JOURNAL_SCHEMA, "offer_sha256": consent,
+                "release": copy.deepcopy(release), "phase": "started", "renaming": False,
+            }
+            _write_journal(journal_path, journal)
+
+        def advance(phase, *, renaming=False):
+            nonlocal journal
+            record = {**journal, "phase": phase, "renaming": renaming}
+            _write_journal(journal_path, record)
+            journal = record
+
+        if journal["phase"] == "complete":
+            if not _required_missing(root, pin) and not steps.missing(root, pin):
+                return result("already_installed")
+            kept_previous = _preserve_broken(root)
+            advance("started")
+
+        if journal["phase"] == "started":
+            archive.parent.mkdir(exist_ok=True)
+            steps.download(pin, archive, part, progress)
+            _check_layout(destination, release)
+            if not archive.is_file():
+                raise PortableError("archive_incomplete", "The download left no verified archive.")
+            advance("downloaded")
+
+        if journal["phase"] == "downloaded":
+            _check_layout(destination, release)
+            _check_final_root(journal, root, staged_root, pin, steps)
+            if root.exists():
+                # The rename completed, but its following journal write did not.
+                advance("extracted")
+            else:
+                if staging.exists():
+                    shutil.rmtree(staging)
+                if progress is not None:
+                    progress("extract", 0, release["extracted_bytes"])
+                steps.extract(archive, staging, pin)
+                _check_layout(destination, release)
+                if _required_missing(staged_root, pin) or steps.missing(staged_root, pin):
+                    raise PortableError("archive_incomplete")
+                if root.exists():
+                    raise PortableError("destination_changed")
+                root.parent.mkdir(parents=True, exist_ok=True)
+                advance("downloaded", renaming=True)
+                os.replace(staged_root, root)
+                advance("extracted")
+                if progress is not None:
+                    progress("extract", release["extracted_bytes"], release["extracted_bytes"])
+
+        if journal["phase"] == "extracted":
+            _check_layout(destination, release)
+            _check_final_root(journal, root, staged_root, pin, steps)
+            archive.unlink(missing_ok=True)
+            part.unlink(missing_ok=True)
+            _write_json(metadata / "receipt.json", {
+                "release": release["tag"], "root": str(root),
+                "python": str(root / "python_embeded" / "python.exe"),
+                "installed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            })
+            advance("complete")
+        return result("installed")
+    finally:
+        lock.release()
 
 
 def render_offer(offer):
