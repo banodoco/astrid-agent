@@ -562,6 +562,63 @@ def install_portable(destination, consent, *, pin=None, steps, platform=None, gp
         lock.release()
 
 
+def download_archive(pin, archive_path, part_path, progress, *, client=None, deadline=None):
+    """Fetch and force-verify the pinned archive, retaining interrupted prefixes."""
+    from vibecomfy import fetch
+
+    from .asset_alignment import fetch_verified
+    from .engine_contracts import IntegrityError
+
+    release = pin["release"]
+    archive_path, part_path = Path(archive_path), Path(part_path)
+    root = archive_path.parent
+    entry = {
+        "name": archive_path.name, "subdir": "", "url": release["url"],
+        "sha256": release["archive_sha256"], "size_bytes": release["archive_bytes"],
+    }
+
+    def report(done):
+        progress("download", done, release["archive_bytes"])
+
+    try:
+        receipt = fetch._verification_receipt_path(archive_path, root=root)
+        if (
+            not receipt.resolve().is_relative_to(root.resolve())
+            or _redirected(receipt)
+            or (receipt.exists() and (not receipt.is_file() or receipt.stat().st_nlink != 1))
+        ):
+            raise OSError(f"Unsafe verification receipt: {receipt}")
+        directories = (receipt.parent, receipt.parent.parent)
+        kept = {directory for directory in directories if directory.exists()}
+        try:
+            fetch_verified(
+                entry, archive_path, root=root, part=part_path,
+                label=release["archive_name"], client=client, deadline=deadline,
+                progress=report if progress is not None else None,
+            )
+        finally:
+            # The archive is install work, not a persistent VibeComfy model.
+            receipt.unlink(missing_ok=True)
+            for directory in directories:
+                if directory not in kept and directory.is_relative_to(root):
+                    try:
+                        directory.rmdir()
+                    except OSError:
+                        pass  # Never remove unrelated contents.
+    except IntegrityError as exc:
+        raise PortableError(
+            "archive_mismatch",
+            f"{release['archive_name']} did not match its pinned size or hash; "
+            "the archive was refused and removed.",
+        ) from exc
+    except Exception as exc:  # noqa: BLE001 - surface a resumable failure to the installer
+        raise PortableError(
+            "download_failed",
+            f"Could not download {release['archive_name']}: {exc}. "
+            "Any partial copy is kept; rerun to resume the download.",
+        ) from exc
+
+
 def render_offer(offer):
     if offer["status"] == "refused":
         refusal = offer["refusal"]
