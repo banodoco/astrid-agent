@@ -55,8 +55,10 @@ def test_fake_disk_usage(tmp_path):
 
 @pytest.mark.parametrize("builder", [clean_machine, no_comfyui])
 def test_clean_machine(builder, tmp_path):
-    machine = builder(tmp_path)
-    assert set(tmp_path.iterdir()) == {machine.home, machine.localappdata}
+    root = tmp_path / "machine"
+    root.mkdir()
+    machine = builder(root)
+    assert set(root.iterdir()) == {machine.home, machine.localappdata}
     assert machine.home.is_dir() and not list(machine.home.iterdir())
     assert machine.localappdata.is_dir() and not list(machine.localappdata.iterdir())
     assert machine.destination == machine.localappdata / "Astrid" / "ComfyUI"
@@ -69,21 +71,23 @@ def test_clean_machine(builder, tmp_path):
     }
 
 
-def test_foreign_destination_and_snapshot(tmp_path):
-    foreign = foreign_destination(tmp_path)
+def test_foreign_destination_and_snapshot(root):
+    root = tmp_path / "machine"
+    root.mkdir()
+    foreign = foreign_destination(root)
     assert foreign.is_dir()
     note = foreign / "notes.txt"
     assert list(foreign.iterdir()) == [note]
     assert note.is_file()
-    assert snapshot(tmp_path / "absent") == {}
-    before = snapshot(tmp_path)
+    assert snapshot(root / "absent") == {}
+    before = snapshot(root)
     assert set(before) == {foreign.name, f"{foreign.name}/notes.txt"}
     stat = note.stat()
     assert before[f"{foreign.name}/notes.txt"] == (stat.st_size, stat.st_mtime_ns)
     note.read_bytes()
-    assert snapshot(tmp_path) == before
+    assert snapshot(root) == before
     note.write_bytes(b"changed" * 100)
-    assert snapshot(tmp_path) != before
+    assert snapshot(root) != before
 
 
 def test_make_zip_round_trip():
