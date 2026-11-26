@@ -8,6 +8,7 @@ this module owns consent, the journal and the destination's write boundary.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -366,6 +367,7 @@ def build_offer(destination, *, pin=None, platform=None, gpu=None,
         if (
             journal.get("phase") == "complete"
             and journal.get("offer_sha256") == offer["offer_sha256"]
+            and journal.get("release") == release
             and not _required_missing(destination / release["inner_directory"], pin)
         ):
             offer["state"] = "complete"
@@ -391,7 +393,10 @@ def _validate_journal(journal, offer, release):
     if journal.get("offer_sha256") != offer["offer_sha256"]:
         raise PortableError("consent_mismatch")
     if (
-        journal.get("release") != release["tag"]
+        # The offer identity predates this installer and does not include these
+        # layout details. The journal's release descriptor binds custody so a
+        # changed pin cannot redirect repair or cleanup onto someone else's data.
+        journal.get("release") != release
         or journal.get("phase") not in ("started", "downloaded", "extracted", "complete")
         or type(journal.get("renaming")) is not bool
         or (journal["renaming"] and journal["phase"] != "downloaded")
@@ -493,7 +498,7 @@ def install_portable(destination, consent, *, pin=None, steps, platform=None, gp
         if journal is None:
             journal = {
                 "schema": _JOURNAL_SCHEMA, "offer_sha256": consent,
-                "release": release["tag"], "phase": "started", "renaming": False,
+                "release": copy.deepcopy(release), "phase": "started", "renaming": False,
             }
             _write_journal(journal_path, journal)
 

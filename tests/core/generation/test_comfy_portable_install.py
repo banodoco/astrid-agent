@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 import shutil
@@ -210,7 +211,8 @@ def test_full_install_has_receipt_correct_paths_and_no_archive(case):
     journal = read_journal(case)
     assert journal["schema"] == "astrid.comfy-install-journal.v1"
     assert journal["offer_sha256"] == case.consent
-    assert journal["release"] == case.pin["release"]["tag"]
+    assert journal["release"] == case.pin["release"]
+    assert set(journal) == {"schema", "offer_sha256", "release", "phase", "renaming"}
     assert journal["phase"] == "complete"
     assert journal["renaming"] is False
     receipt = json.loads((case.metadata / "receipt.json").read_text(encoding="utf-8"))
@@ -417,3 +419,73 @@ def test_resume_offer_counts_existing_bytes_without_changing_consent(tmp_path, c
     assert refused["refusal"]["code"] == "insufficient_space"
     assert refused["offer_sha256"] == original["offer_sha256"]
     assert snapshot(tmp_path) == before
+
+
+@pytest.mark.parametrize("phase", ["downloaded", "complete"])
+@pytest.mark.parametrize("field", ["inner_directory", "archive_name"])
+def test_changed_pin_cannot_claim_other_install_paths(tmp_path, case, phase, field):
+    if phase == "complete":
+        apply(case)
+    else:
+        interrupt_extract(case)
+        # Recreate the exact window after promotion and before its journal write.
+        (case.staging / case.pin["release"]["inner_directory"]).rename(case.root)
+        journal = read_journal(case)
+        journal["renaming"] = True
+        case.journal.write_text(json.dumps(journal), encoding="utf-8")
+    changed_pin = copy.deepcopy(case.pin)
+    if field == "inner_directory":
+        changed_pin["release"][field] = "personal"
+        personal = case.destination / "personal"
+        personal.mkdir()
+        (personal / "notes.txt").write_text("do not rename me", encoding="utf-8")
+        # A lookalike tree must not be admitted as recovered either.
+        if phase == "downloaded":
+            for relative in case.pin["release"]["required_files"]:
+                path = personal / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"belongs to the person")
+    else:
+        changed_pin["release"][field] = "personal.zip"
+        personal = case.archive.parent / "personal.zip"
+        personal.write_bytes(b"never downloaded by this install")
+    changed_kwargs = {**case.kwargs, "pin": changed_pin}
+    # The pre-existing consent format is retained, including its original tests.
+    assert portable.build_offer(case.destination, **changed_kwargs)["offer_sha256"] == case.consent
+    before = snapshot(tmp_path)
+    calls_before = case.fake.work_calls
+    with pytest.raises(portable.PortableError) as caught:
+        apply(case, pin=changed_pin)
+    assert caught.value.code == "destination_changed"
+    assert snapshot(tmp_path) == before
+    assert case.fake.work_calls == calls_before
+    assert personal.exists()
+
+
+@pytest.mark.parametrize("location", ["metadata", "archive", "staging", "root"])
+def test_redirected_install_path_refuses_without_touching_either_tree(tmp_path, case, location):
+    interrupt_extract(case)
+    outside = tmp_path / "personal"
+    outside.mkdir()
+    (outside / "notes.txt").write_text("keep me", encoding="utf-8")
+    path = {
+        "metadata": case.metadata, "archive": case.archive.parent,
+        "staging": case.staging, "root": case.root,
+    }[location]
+    if path.exists():
+        path.rename(path.with_name(path.name + ".saved"))
+    if location == "metadata":
+        # Even a matching journal reached through a link is not owned here.
+        original = case.destination / ".astrid-install.saved" / "journal.json"
+        (outside / "journal.json").write_bytes(original.read_bytes())
+    try:
+        path.symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("creating directory symlinks is unavailable on this host")
+    before = snapshot(tmp_path)
+    with pytest.raises(portable.PortableError) as caught:
+        apply(case)
+    assert caught.value.code == "destination_changed"
+    assert snapshot(tmp_path) == before
+    assert (outside / "notes.txt").read_text(encoding="utf-8") == "keep me"
+    assert case.fake.work_calls == (1, 1)
