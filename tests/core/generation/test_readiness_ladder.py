@@ -269,3 +269,43 @@ def test_error_round_trip_and_reprojection_are_idempotent(who):
     assert GenerationReadinessError(envelope).to_envelope() == {**envelope, "task_id": None}
     assert GenerationReadinessError(envelope, task_id="task-1").to_envelope() == {**envelope, "task_id": "task-1"}
     check_envelope(envelope)
+
+
+@pytest.mark.parametrize("state", ["failed", "unchecked"])
+@pytest.mark.parametrize("severity", ["error", "warning"])
+def test_stop_issue_uses_current_observation_once(state, severity):
+    ladder = with_rung(
+        observed_prefix("compatible", before="reachable"), "reachable", state,
+        reason="access_denied", message="The current observation was denied.",
+    )
+    code = "target_unreachable" if state == "failed" else "rung_unchecked"
+    stale = {
+        "code": code, "severity": severity, "message": "An old observation failed.",
+        "details": {"rung": "reachable", "reason": "not_answering", "field": "old"},
+    }
+    unrelated = [
+        {"code": "version_drift", "severity": "warning", "message": "Keep the warning.",
+         "details": {}},
+        {"code": "other_failure", "severity": "error", "message": "Keep the error.",
+         "details": {"rung": "reachable"}},
+    ]
+    issues = [unrelated[0], stale, unrelated[1], copy.deepcopy(stale)]
+    original = copy.deepcopy(issues)
+    action = make_next_action("agent", "Check again.", argv=COMMAND)
+
+    envelope = readiness_envelope(ladder=ladder, next_action=action, issues=issues)
+
+    assert envelope["status"] == "blocked"
+    assert envelope["issues"] == [unrelated[0], {
+        "code": code, "severity": "error", "message": "The current observation was denied.",
+        "details": {"rung": "reachable", "reason": "access_denied", "field": "target"},
+    }, unrelated[1]]
+    assert issues == original
+    assert envelope["next_action"] == action
+    assert len(envelope["fixes"]) == 1
+    assert readiness_envelope(
+        ladder=envelope["ladder"], next_action=envelope["next_action"],
+        issues=envelope["issues"], fixes=envelope["fixes"],
+    ) == envelope
+    assert GenerationReadinessError(envelope).to_envelope() == {**envelope, "task_id": None}
+    check_envelope(envelope)
