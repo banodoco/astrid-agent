@@ -564,6 +564,65 @@ def install_portable(destination, consent, *, pin=None, steps, platform=None, gp
         lock.release()
 
 
+
+def attach_installation(result: InstallResult, *, pin=None, port=8188, client=None):
+    """Select a finished Portable install without starting it or probing it."""
+    from astrid.core.generation import settings, targets
+
+    comfy_dir = Path(result["comfy_dir"])
+    python = Path(result["python"])
+    app = comfy_dir / "main.py"
+    try:
+        installed = all(path.is_file() and path.stat().st_size > 0 for path in (python, app))
+    except OSError:
+        installed = False
+    if not installed:
+        raise PortableError("not_installed")
+
+    pin = load_pin() if pin is None else _validate_pin(pin)
+    release = pin["release"]
+    if release is None:
+        raise PortableError("no_verified_release")
+    if release["tag"] != result["release"]:
+        raise PortableError("pin_invalid", "The pin does not describe the installed release.")
+
+    previous = targets.read_target()
+    previous_target = previous.as_dict() if previous is not None else None
+    previous_placement = settings.placement_default(client)
+    endpoint = f"http://127.0.0.1:{port}"
+    script = str(Path(result["root"]) / release["start_script"])
+    record = targets.TargetRecord(
+        engine="comfyui", location="local", owner="human", layout="portable",
+        endpoint=endpoint, root=str(comfy_dir), python=str(python),
+        facts={
+            "installed_by": "astrid",
+            "release": release["tag"],
+            "start_script": script,
+            "launch_app": str(app),
+            "launch_argv": [str(python), "-s", str(app), *release["launch_args"],
+                            "--port", str(port)],
+        },
+        verified_at=None,
+        # save_target replaces an existing explicit preference with attached.
+        prefer="attached" if previous is not None and previous.prefer is not None else None,
+    )
+    record = targets.normalize_target(record)
+    if previous != record:
+        targets.save_target(record)
+    placement = settings.set_placement(endpoint, client)["placement"]
+    return {
+        "target": record.as_dict(),
+        "placement": placement,
+        "previous_target": previous_target,
+        "previous_placement": previous_placement,
+        "undo": "astrid generate settings unset placement",
+        "start": {
+            "who": "person",
+            "script": script,
+            "text": f"Start ComfyUI by opening {script}. Then ask me to check again.",
+        },
+    }
+
 def download_archive(pin, archive_path, part_path, progress, *, client=None, deadline=None):
     """Fetch and force-verify the pinned archive, retaining interrupted prefixes."""
     from .engine_contracts import IntegrityError
