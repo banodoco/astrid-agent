@@ -1,8 +1,9 @@
-"""Read-only consent offers for official Windows ComfyUI Portable.
+"""Consent offers and resumable installs for Windows ComfyUI Portable.
 
 The Astrid engine recipe is not a Windows installer: Portable avoids the
 Linux-only runner, custody, locking and endpoint-root assumptions and the
-network-dependent recipe build. No archive is fetched or unpacked here.
+network-dependent recipe build. Download and extraction are injected steps;
+this module owns consent, the journal and the destination's write boundary.
 """
 
 from __future__ import annotations
@@ -12,9 +13,16 @@ import json
 import os
 import re
 import shutil
+import stat
 import sys
+import tempfile
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import Callable, Literal, TypedDict
 from urllib.parse import urlsplit
+
+from filelock import FileLock, Timeout
 
 PIN_PATH = Path(__file__).resolve().parents[2] / "packs" / "vibecomfy" / "portable.pin.json"
 MARGIN_BYTES = 1 << 30
@@ -26,9 +34,119 @@ _SUPPORTED = "a computer with an NVIDIA RTX 20, 30, 40 or 50 series card, or you
 
 
 class PortableError(RuntimeError):
-    def __init__(self, code, message):
-        super().__init__(message)
+    def __init__(self, code, message=None):
+        super().__init__(message or code)
         self.code = code
+
+
+Phase = Literal["started", "downloaded", "extracted", "complete"]
+Progress = Callable[[str, int, int], None]
+
+
+@dataclass(frozen=True)
+class Steps:
+    """The transfer, extraction and verification operations of an install."""
+
+    download: Callable[[dict, Path, Path, Progress | None], None]
+    extract: Callable[[Path, Path, dict], None]
+    missing: Callable[[Path, dict], list[str]]
+
+
+class InstallResult(TypedDict):
+    status: Literal["installed", "already_installed"]
+    resumed_from: Phase | None
+    root: str
+    comfy_dir: str
+    python: str
+    release: str
+    kept_previous: str | None
+
+
+def _write_json(path, record):
+    """Publish a durable JSON record using a temporary file beside it."""
+    fd, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(record, stream, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _write_journal(path, record):
+    _write_json(path, record)
+
+
+def _read_journal(destination):
+    path = destination / ".astrid-install" / "journal.json"
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        raise PortableError("destination_changed", "The install journal cannot be read.") from exc
+    if not isinstance(record, dict) or record.get("schema") != _JOURNAL_SCHEMA:
+        raise PortableError("destination_changed", "The install journal is not ours.")
+    return record
+
+
+def _redirected(path):
+    """Do not traverse links or Windows junctions in an install-owned path."""
+    return any(
+        part.is_symlink() or getattr(part, "is_junction", lambda: False)()
+        for part in (path, *path.parents)
+    )
+
+
+def _check_layout(destination, release):
+    metadata = destination / ".astrid-install"
+    root = destination / release["inner_directory"]
+    # The release must not place its final tree inside the install metadata.
+    if root == metadata or metadata in root.parents or metadata == root.parent / root.name:
+        raise PortableError("pin_invalid", "The Portable root overlaps its install metadata.")
+    directories = (destination, metadata, metadata / "archive", metadata / "staging", root)
+    files = (
+        metadata / "journal.json", metadata / "lock", metadata / "receipt.json",
+        metadata / "archive" / release["archive_name"],
+        metadata / "archive" / (release["archive_name"] + ".part"),
+    )
+    for path in (*directories, *files):
+        if _redirected(path):
+            raise PortableError("destination_changed", f"An install path was redirected: {path}")
+        if path.exists() and (not path.is_dir() if path in directories else not path.is_file()):
+            raise PortableError("destination_changed", f"An install path changed type: {path}")
+    for path in files:
+        if path.exists() and path.stat().st_nlink != 1:
+            raise PortableError("destination_changed", f"An install file has another owner: {path}")
+
+
+def _required_missing(root, pin):
+    return [
+        relative for relative in pin["release"]["required_files"]
+        if _redirected(root / relative) or not (root / relative).is_file()
+    ]
+
+
+def _work_bytes(destination):
+    total = 0
+    for name in ("archive", "staging"):
+        directory = destination / ".astrid-install" / name
+        if not directory.is_dir() or _redirected(directory):
+            continue
+        for folder, subdirs, filenames in os.walk(directory, followlinks=False):
+            subdirs[:] = [name for name in subdirs if not _redirected(Path(folder) / name)]
+            for filename in filenames:
+                try:
+                    info = (Path(folder) / filename).stat(follow_symlinks=False)
+                except FileNotFoundError:
+                    continue  # A running install may just have moved this file.
+                if stat.S_ISREG(info.st_mode):
+                    total += info.st_size
+    return total
 
 
 def _require(condition, field):
