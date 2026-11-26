@@ -572,7 +572,7 @@ def download_archive(pin, archive_path, part_path, progress, *, client=None, dea
     archive_path, part_path = Path(archive_path), Path(part_path)
     root = archive_path.parent
     entry = {
-        "name": archive_path.name, "subdir": "", "url": release["url"],
+        "name": archive_path.name, "subdir": "portable", "url": release["url"],
         "sha256": release["archive_sha256"], "size_bytes": release["archive_bytes"],
     }
 
@@ -580,10 +580,10 @@ def download_archive(pin, archive_path, part_path, progress, *, client=None, dea
         progress("download", done, release["archive_bytes"])
 
     try:
-        from vibecomfy import fetch
-
         from .asset_alignment import fetch_verified
 
+        if _redirected(root):
+            raise OSError("The archive folder is redirected.")
         if part_path.parent != root or part_path == archive_path:
             raise OSError("The partial archive must be beside the final archive.")
         for path in (archive_path, part_path):
@@ -591,30 +591,18 @@ def download_archive(pin, archive_path, part_path, progress, *, client=None, dea
                 path.exists() and (not path.is_file() or path.stat().st_nlink != 1)
             ):
                 raise OSError(f"Unsafe archive path: {path}")
-        receipt = fetch._verification_receipt_path(archive_path, root=root)
-        if (
-            not receipt.resolve().is_relative_to(root.resolve())
-            or _redirected(receipt)
-            or (receipt.exists() and (not receipt.is_file() or receipt.stat().st_nlink != 1))
-        ):
-            raise OSError(f"Unsafe verification receipt: {receipt}")
-        directories = (receipt.parent, receipt.parent.parent)
-        kept = {directory for directory in directories if directory.exists()}
-        try:
+        # The pinned downloader requires a named subdirectory. Keep its working
+        # file and receipts private until the verified archive can be promoted.
+        root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix=".fetch-", dir=root) as directory:
+            fetch_root = Path(directory)
+            downloaded = fetch_root / entry["subdir"] / archive_path.name
             fetch_verified(
-                entry, archive_path, root=root, part=part_path,
+                entry, downloaded, root=fetch_root, part=part_path,
                 label=release["archive_name"], client=client, deadline=deadline,
                 progress=report if progress is not None else None,
             )
-        finally:
-            # The archive is install work, not a persistent VibeComfy model.
-            receipt.unlink(missing_ok=True)
-            for directory in directories:
-                if directory not in kept and directory.is_relative_to(root):
-                    try:
-                        directory.rmdir()
-                    except OSError:
-                        pass  # Never remove unrelated contents.
+            downloaded.replace(archive_path)
     except IntegrityError as exc:
         raise PortableError(
             "archive_mismatch",
