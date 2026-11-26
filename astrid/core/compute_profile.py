@@ -1,6 +1,7 @@
 """Secret-safe, user-scoped compute profile resolution.
 
-Compute profiles are deliberately small JSON files in ``~/.astrid``.  They
+Compute profiles are Runtime-owned documents, with legacy JSON files in
+``~/.astrid`` imported once or used when the Runtime is unavailable. They
 describe where an executor should run (GPU, image, storage, and paths), but
 never contain credentials.  Credential fields contain environment-variable
 *names* only; the executor resolves those names against its process
@@ -24,6 +25,12 @@ import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
+
+from astrid.core import user_state, user_state_import
+
+RUNTIME_KEY = "agent.compute-profiles"
+_RUNTIME_SCHEMA = "astrid.compute-profiles.v1"
+_AUTO = object()
 
 SCHEMA_ID = "astrid.compute_profile.v1"
 PROFILE_ENV_VAR = "ASTRID_COMPUTE_PROFILE"
@@ -90,6 +97,34 @@ def _validate_env_ref(value: Any, *, field: str) -> str:
     return value.strip()
 
 
+def _no_literal_credentials(value: Any) -> None:
+    """Reject credential values anywhere in a profile's JSON-shaped fields."""
+
+    if isinstance(value, str):
+        if value.lstrip().startswith(("rpa_", "sk-")):
+            raise ValueError("literal credential values are not allowed in compute profiles")
+    elif isinstance(value, Mapping):
+        for key, item in value.items():
+            _no_literal_credentials(str(key))
+            if _SECRET_FIELD_RE.search(str(key)):
+                raise ValueError(
+                    f"secret-bearing field {key!r} is not allowed; use credentials env references"
+                )
+            _no_literal_credentials(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _no_literal_credentials(item)
+
+
+def _check_profile_secrets(document: Mapping[str, Any]) -> None:
+    """Check non-credential fields after credential references have been validated."""
+
+    for name in document.get("credentials", {}):
+        _no_literal_credentials(str(name))
+    # Only the validated credentials mapping may use secret-bearing reference names.
+    _no_literal_credentials({key: value for key, value in document.items() if key != "credentials"})
+
+
 def validate_profile(document: Mapping[str, Any], *, expected_id: str | None = None) -> dict[str, Any]:
     """Validate and copy one profile document.
 
@@ -132,21 +167,101 @@ def validate_profile(document: Mapping[str, Any], *, expected_id: str | None = N
         str(name): _validate_env_ref(value, field=f"credentials.{name}")
         for name, value in credentials.items()
     }
-
     # Catch accidental literal secrets in conventional fields while allowing
     # ordinary executor values such as image names and paths.
-    for key, value in data.items():
-        if _SECRET_FIELD_RE.search(str(key)) and key != "credentials":
-            raise ValueError(f"secret-bearing field {key!r} is not allowed; use credentials env references")
-        if isinstance(value, str) and (value.startswith("rpa_") or value.startswith("sk-")):
-            raise ValueError("literal credential values are not allowed in compute profiles")
+    _check_profile_secrets(data)
     return data
 
 
-def load_profile(profile_id: str, *, home: Path | str | None = None) -> tuple[dict[str, Any], Path]:
-    """Load and validate a named profile from the user-local directory."""
+def _read_legacy_profiles() -> dict[str, Any] | None:
+    profiles = {}
+    for path in sorted(profile_dir().glob("*.json")):
+        try:
+            profile = validate_profile(
+                json.loads(path.read_text(encoding="utf-8")), expected_id=path.stem
+            )
+            profile_path(path.stem)
+        except (OSError, ValueError):
+            continue
+        profiles[path.stem] = profile
+    return profiles or None
+
+
+def _runtime_document(profiles: dict) -> dict:
+    return {"schema": _RUNTIME_SCHEMA, "profiles": profiles}
+
+
+def _profiles(document: dict | None) -> dict:
+    if document is None:
+        return {}
+    if document.get("schema") != _RUNTIME_SCHEMA or not isinstance(document.get("profiles"), dict):
+        raise ValueError("invalid Runtime compute-profiles document")
+    return document["profiles"]
+
+
+def _runtime_profiles(store: Any, *, allow_legacy_fallback: bool = False) -> dict | None:
+    """Return Runtime profiles, or a file-read fallback if an initial import cannot fit."""
+
+    snapshot = user_state.read(RUNTIME_KEY, store=store)
+    if snapshot.content is None:
+        try:
+            user_state_import.run_import(
+                user_state_import.ImportSpec(
+                    import_id="compute-profiles",
+                    target_key=RUNTIME_KEY,
+                    source_label="~/.astrid/compute-profiles/*.json",
+                    read_source=_read_legacy_profiles,
+                    to_document=_runtime_document,
+                ),
+                store=store,
+            )
+        except user_state.UserStateError as exc:
+            if not allow_legacy_fallback or exc.code != "too_large":
+                raise
+            # The target might have been created concurrently, or the target
+            # write may have succeeded before an oversized receipt failed.
+            # An existing (including deliberately empty) Runtime still wins.
+            snapshot = user_state.read(RUNTIME_KEY, store=store)
+            return None if snapshot.content is None else _profiles(snapshot.content)
+        snapshot = user_state.read(RUNTIME_KEY, store=store)
+    return _profiles(snapshot.content)
+
+
+def _selected_store(store: Any, home: Path | str | None = None) -> Any:
+    if home is not None:
+        return None
+    if store is _AUTO:
+        try:
+            return user_state.current_store()
+        except OSError:
+            return None
+    return store
+
+
+def load_profile(
+    profile_id: str, *, home: Path | str | None = None, store: Any = _AUTO
+) -> tuple[dict[str, Any], Path]:
+    """Load and validate a named profile, preferring the Runtime when reachable."""
 
     path = profile_path(profile_id, home)
+    runtime = _selected_store(store, home)
+    if runtime is not None:
+        try:
+            profiles = _runtime_profiles(runtime, allow_legacy_fallback=True)
+        except user_state.UserStateError as exc:
+            if exc.code != "unavailable":
+                raise
+        else:
+            if profiles is not None:
+                location = Path(f"runtime:{RUNTIME_KEY}/{profile_id}")
+                if profile_id not in profiles:
+                    raise FileNotFoundError(f"compute profile {profile_id!r} not found at {location}")
+                return validate_profile(profiles[profile_id], expected_id=profile_id), location
+
+    return _load_file(profile_id, path)
+
+
+def _load_file(profile_id: str, path: Path) -> tuple[dict[str, Any], Path]:
     if not path.is_file():
         raise FileNotFoundError(f"compute profile {profile_id!r} not found at {path}")
     try:
@@ -154,6 +269,80 @@ def load_profile(profile_id: str, *, home: Path | str | None = None) -> tuple[di
     except json.JSONDecodeError as exc:
         raise ValueError(f"invalid JSON in compute profile {profile_id!r}: {exc.msg}") from exc
     return validate_profile(document, expected_id=profile_id), path
+
+
+def save_profile(document: Mapping[str, Any], *, store: Any = _AUTO) -> None:
+    """Validate and save a profile without ever writing credentials or legacy files."""
+
+    profile = validate_profile(document)
+    profile_id = profile["id"]
+    profile_path(profile_id)
+    runtime = _selected_store(store)
+    unavailable = "the Runtime is not reachable; the compute profile was not saved"
+    if runtime is None:
+        raise RuntimeError(unavailable)
+
+    def change(content: dict) -> None:
+        profiles = _profiles(content or None)
+        profiles[profile_id] = profile
+        content.update(_runtime_document(profiles))
+
+    try:
+        _runtime_profiles(runtime)
+        user_state.update(RUNTIME_KEY, change, store=runtime)
+    except user_state.UserStateError as exc:
+        if exc.code == "unavailable":
+            raise RuntimeError(unavailable) from exc
+        if exc.code == "too_large" and exc.key == RUNTIME_KEY:
+            raise ValueError(
+                f"compute profile {profile_id!r} would exceed the 16 KiB "
+                f"({user_state.APP_STATE_MAX_BYTES} byte) limit"
+            ) from exc
+        raise
+
+
+def remove_profile(profile_id: str, *, store: Any = _AUTO) -> bool:
+    """Remove a Runtime profile, retaining the legacy file for rollback."""
+
+    profile_path(profile_id)
+    runtime = _selected_store(store)
+    unavailable = "the Runtime is not reachable; the compute profile was not removed"
+    if runtime is None:
+        raise RuntimeError(unavailable)
+
+    removed = False
+
+    def change(content: dict) -> None:
+        nonlocal removed
+        profiles = _profiles(content or None)
+        removed = profile_id in profiles
+        if removed:
+            del profiles[profile_id]
+            content.update(_runtime_document(profiles))
+
+    try:
+        _runtime_profiles(runtime)
+        user_state.update(RUNTIME_KEY, change, store=runtime)
+    except user_state.UserStateError as exc:
+        if exc.code == "unavailable":
+            raise RuntimeError(unavailable) from exc
+        raise
+    return removed
+
+
+def list_profile_ids(*, store: Any = _AUTO) -> list[str]:
+    """List profile ids from the Runtime or, if unavailable, valid legacy files."""
+
+    runtime = _selected_store(store)
+    if runtime is not None:
+        try:
+            profiles = _runtime_profiles(runtime, allow_legacy_fallback=True)
+            if profiles is not None:
+                return sorted(profiles)
+        except user_state.UserStateError as exc:
+            if exc.code != "unavailable":
+                raise
+    return sorted(_read_legacy_profiles() or {})
 
 
 def _deep_merge(base: Mapping[str, Any], overlay: Mapping[str, Any]) -> dict[str, Any]:
@@ -173,6 +362,7 @@ def resolve_compute_profile(
     profile_id: str | None = None,
     executor_defaults: Mapping[str, Any] | None = None,
     home: Path | str | None = None,
+    store: Any = _AUTO,
 ) -> dict[str, Any]:
     """Resolve a profile into a safe, JSON-serialisable mapping.
 
@@ -202,14 +392,22 @@ def resolve_compute_profile(
     source = "executor-defaults"
     selected_path: Path | None = None
     selected: Mapping[str, Any] = {}
+    runtime = _selected_store(store, home)
     if selected_id is not None:
-        selected, selected_path = load_profile(selected_id, home=home)
+        selected, selected_path = load_profile(selected_id, home=home, store=runtime)
         source = "explicit-profile" if explicit_profile_id else "env-selected-profile"
     else:
         named_id = str(profile_id or "").strip() or DEFAULT_PROFILE_ID
-        default_path = profile_path(named_id, home)
-        if default_path.is_file():
-            selected, selected_path = load_profile(named_id, home=home)
+        if runtime is None:
+            default_path = profile_path(named_id, home)
+            if default_path.is_file():
+                selected, selected_path = load_profile(named_id, home=home, store=None)
+        else:
+            try:
+                selected, selected_path = load_profile(named_id, home=home, store=runtime)
+            except FileNotFoundError:
+                pass
+        if selected_path is not None:
             source = "named-profile" if named_id != DEFAULT_PROFILE_ID else "default-profile"
 
     resolved = _deep_merge(defaults, {k: v for k, v in selected.items() if k not in {"schema", "schema_version", "id", "description", "provider"}})
@@ -227,6 +425,7 @@ def resolve_compute_profile(
         str(name): _validate_env_ref(value, field=f"credentials.{name}")
         for name, value in credentials.items()
     }
+    _check_profile_secrets(resolved)
     return resolved
 
 
@@ -255,9 +454,8 @@ def write_resolved_snapshot(produces_dir: Path | str, resolved: Mapping[str, Any
     """Write the safe resolved profile next to executor-produced artifacts."""
 
     path = Path(produces_dir) / "compute_resolved.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
     # This function receives only resolver output, which contains references,
-    # but validate the credentials once more at the persistence boundary.
+    # but revalidate secret safety before creating or replacing a snapshot.
     safe = dict(resolved)
     credentials = safe.get("credentials", {})
     if not isinstance(credentials, Mapping):
@@ -266,12 +464,18 @@ def write_resolved_snapshot(produces_dir: Path | str, resolved: Mapping[str, Any
         str(name): _validate_env_ref(value, field=f"credentials.{name}")
         for name, value in credentials.items()
     }
+    _check_profile_secrets(safe)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(safe, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path
 
 
 __all__ = [
     "SCHEMA_ID",
+    "RUNTIME_KEY",
+    "save_profile",
+    "remove_profile",
+    "list_profile_ids",
     "PROFILE_ENV_VAR",
     "PROFILE_DIRNAME",
     "DEFAULT_PROFILE_ID",

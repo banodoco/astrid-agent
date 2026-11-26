@@ -13,6 +13,7 @@ engine-neutral::
 only a credential *reference* by name. An old ``[placement]`` / ``[runpod]`` table in VibeComfy's
 ``~/.vibecomfy/config.toml`` is imported into the document once, when the document does not exist
 yet, and is never read for Astrid again.
+This one-time migration is deleted after 2027-05-26 along with ``_legacy``, the ``legacy_path`` arguments and the use of ``targets.read_config`` here, leaving standalone VibeComfy's ``[library]`` table and ComfyUI address in its TOML.
 
 This module owns the document and its refusal site (:func:`refuse`); resolution of defaults lives
 in :mod:`astrid.core.generation.defaults`.
@@ -34,6 +35,7 @@ from astrid.core.contracts.errors import AstridError
 
 _logger = logging.getLogger(__name__)
 
+LEGACY_TOML_IMPORT_REMOVE_AFTER = "2027-05-26"
 KEY = "generation"
 DOCUMENT_KEYS = ("placement", "defaults", "machines", "models")
 DEFAULT_KINDS = ("image", "video", "audio")
@@ -241,6 +243,13 @@ def read(client: Any = None, *, legacy_path: str | Path | None = None) -> Snapsh
             document = validate_document({**empty_document(), **found})
             digest = hashlib.sha256(json.dumps(document, sort_keys=True).encode()).hexdigest()[:24]
             snapshot = _write(store, document, 0, f"generation-legacy-import-{digest}")
+            warning_token = object()
+            if read.__dict__.setdefault("_legacy_import_warning", warning_token) is warning_token:
+                _logger.warning(
+                    "Imported your old VibeComfy [placement]/[runpod] settings into Astrid's Runtime "
+                    "settings; this one-time import is removed after %s.",
+                    LEGACY_TOML_IMPORT_REMOVE_AFTER,
+                )
             return Snapshot(snapshot.content, snapshot.version, "runtime", imported=True)
         return Snapshot(empty_document(), 0, "runtime")
     return Snapshot(validate_document(content), version, "runtime")
