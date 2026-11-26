@@ -228,7 +228,7 @@ def test_refuses_when_free_space_is_below_the_total(comfy, models, file_server, 
     root, _ = models
     plan = _plan(comfy, file_server)
     real = shutil.disk_usage
-    monkeypatch.setattr(shutil, "disk_usage", lambda path: real(path)._replace(free=TOTAL - 1))
+    monkeypatch.setattr(shutil, "disk_usage", lambda path: real(path)._replace(free=plan["peak_bytes"] - 1))
     with pytest.raises(AttachedDownloadRefused) as caught:
         _apply(comfy, file_server, plan["plan_sha256"])
     assert "free" in str(caught.value).lower() and caught.value.code == "insufficient_space"
@@ -241,7 +241,7 @@ def test_free_space_margin_is_part_of_the_check_and_is_stated(comfy, models, fil
     assert plan["margin_bytes"] > 0
     real = shutil.disk_usage
     monkeypatch.setattr(shutil, "disk_usage",
-                        lambda path: real(path)._replace(free=TOTAL + plan["margin_bytes"] - 1))
+                        lambda path: real(path)._replace(free=plan["peak_bytes"] + plan["margin_bytes"] - 1))
     with pytest.raises(AttachedDownloadRefused) as caught:
         _apply(comfy, file_server, plan["plan_sha256"])
     assert "margin" in str(caught.value)
@@ -407,10 +407,25 @@ def test_a_failed_publish_without_hard_links_leaves_no_placeholder(comfy, models
 
 def test_the_plan_records_whether_each_folder_takes_hard_links(comfy, models, file_server, monkeypatch):
     root, _ = models
-    assert all(f["hard_links"] is True for f in _plan(comfy, file_server)["files"])
+    from astrid.core.generation import asset_gaps
+    from tests.core.generation.environment_states import snapshot
+
+    before = snapshot(root)
+    plan = _plan(comfy, file_server)
+    assert all("hard_links" not in f for f in plan["files"])
+    assert snapshot(root) == before
+    observed = []
+    real_fetch = asset_gaps._fetch_into_folder
+
+    def fetch(item, *args, **kwargs):
+        observed.append(item["hard_links"])
+        return real_fetch(item, *args, **kwargs)
+
+    monkeypatch.setattr(asset_gaps, "_fetch_into_folder", fetch)
     _no_hard_links(monkeypatch)
-    assert all(f["hard_links"] is False for f in _plan(comfy, file_server)["files"])
-    assert _files(root) == []  # the probe file is removed again
+    assert snapshot(root) == before
+    _apply(comfy, file_server, plan["plan_sha256"])
+    assert observed == [False] * len(plan["files"])
 
 
 def test_a_server_file_the_local_folder_lacks_refuses_that_folder(comfy, models, file_server):
