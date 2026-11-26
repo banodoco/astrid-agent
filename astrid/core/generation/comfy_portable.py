@@ -566,9 +566,6 @@ def install_portable(destination, consent, *, pin=None, steps, platform=None, gp
 
 def download_archive(pin, archive_path, part_path, progress, *, client=None, deadline=None):
     """Fetch and force-verify the pinned archive, retaining interrupted prefixes."""
-    from vibecomfy import fetch
-
-    from .asset_alignment import fetch_verified
     from .engine_contracts import IntegrityError
 
     release = pin["release"]
@@ -583,6 +580,17 @@ def download_archive(pin, archive_path, part_path, progress, *, client=None, dea
         progress("download", done, release["archive_bytes"])
 
     try:
+        from vibecomfy import fetch
+
+        from .asset_alignment import fetch_verified
+
+        if part_path.parent != root or part_path == archive_path:
+            raise OSError("The partial archive must be beside the final archive.")
+        for path in (archive_path, part_path):
+            if _redirected(path) or (
+                path.exists() and (not path.is_file() or path.stat().st_nlink != 1)
+            ):
+                raise OSError(f"Unsafe archive path: {path}")
         receipt = fetch._verification_receipt_path(archive_path, root=root)
         if (
             not receipt.resolve().is_relative_to(root.resolve())
