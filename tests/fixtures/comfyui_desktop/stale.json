@@ -1,0 +1,21 @@
+{
+  "state": "stale",
+  "source_report": "banodoco/astrid-dev#1848",
+  "shape_basis": "assumed from Desktop's public layout; #1848 records only version 0.7.2 and the missing paths; not yet verified on a real Windows machine",
+  "registration": {
+    "source": "registry+config",
+    "version": "0.7.2",
+    "executable": "C:\\Users\\<user>\\AppData\\Local\\Programs\\ComfyUI\\ComfyUI.exe",
+    "data_dir": "C:\\Users\\<user>\\Documents\\ComfyUI",
+    "server_port": 8000
+  },
+  "files": {
+    "executable": false,
+    "data_dir": false
+  },
+  "responders": {},
+  "tells_apart": [
+    "Registration remains",
+    "Executable and data directory are missing"
+  ]
+}
