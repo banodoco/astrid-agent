@@ -1,0 +1,240 @@
+{
+  "schema": "astrid.user-state-side-stores.v1",
+  "rule": "Counts of home/XDG path matches may only shrink; new files and categories require reviewed baseline edits.",
+  "categories": {
+    "install-record": "install selection, lock and program-root records; read before the Runtime starts",
+    "bootstrap-state": "data root, support root and managed pack source profile; read at process start (Plan 38 pins the source profile)",
+    "harness-owned": "file owned by the Claude, Codex or Hermes harness",
+    "secret": "credential or key material; moves with Plan 36",
+    "user-files": "user-authored pack folders and project packs; files the person owns",
+    "engine-data": "managed engine install data under the data root",
+    "cache-or-diagnostic": "cache, redaction, build or disk-space probe; no user choice is stored",
+    "move-plan-35": "moves to Runtime app-state or is removed by Plan 35 (R16-P35-07, -08, -09)"
+  },
+  "files": {
+    "astrid/core/_shared/log_redaction.py": {
+      "count": 3,
+      "category": "cache-or-diagnostic"
+    },
+    "astrid/core/auth.py": {
+      "count": 1,
+      "category": "install-record"
+    },
+    "astrid/core/compute_profile.py": {
+      "count": 1,
+      "category": "move-plan-35"
+    },
+    "astrid/core/dev/journey.py": {
+      "count": 4,
+      "category": "cache-or-diagnostic"
+    },
+    "astrid/core/element/project_packs.py": {
+      "count": 3,
+      "category": "user-files"
+    },
+    "astrid/core/element/registry.py": {
+      "count": 1,
+      "category": "user-files"
+    },
+    "astrid/core/execution/custody_broker.py": {
+      "count": 2,
+      "category": "bootstrap-state"
+    },
+    "astrid/core/execution/generic_host.py": {
+      "count": 3,
+      "category": "secret"
+    },
+    "astrid/core/extensions/scopes.py": {
+      "count": 2,
+      "category": "user-files"
+    },
+    "astrid/core/foundation/renderer_toolchain.py": {
+      "count": 1,
+      "category": "cache-or-diagnostic"
+    },
+    "astrid/core/gateway/dev_operator.py": {
+      "count": 1,
+      "category": "cache-or-diagnostic"
+    },
+    "astrid/core/gateway/doctor_bundle.py": {
+      "count": 1,
+      "category": "install-record"
+    },
+    "astrid/core/generation/backends/codex.py": {
+      "count": 2,
+      "category": "secret"
+    },
+    "astrid/core/generation/engine_local_endpoint.py": {
+      "count": 1,
+      "category": "engine-data"
+    },
+    "astrid/core/generation/gpu_environment.py": {
+      "count": 1,
+      "category": "cache-or-diagnostic"
+    },
+    "astrid/core/generation/targets.py": {
+      "count": 1,
+      "category": "move-plan-35"
+    },
+    "astrid/core/hivemind/executors/_common.py": {
+      "count": 1,
+      "category": "secret"
+    },
+    "astrid/core/model_setup/manifest.py": {
+      "count": 1,
+      "category": "cache-or-diagnostic"
+    },
+    "astrid/core/pack/cli_manage.py": {
+      "count": 2,
+      "category": "user-files"
+    },
+    "astrid/core/pack/discovery.py": {
+      "count": 4,
+      "category": "user-files"
+    },
+    "astrid/core/pack/install.py": {
+      "count": 1,
+      "category": "user-files"
+    },
+    "astrid/core/pack/loader.py": {
+      "count": 1,
+      "category": "user-files"
+    },
+    "astrid/core/pack/source_setup.py": {
+      "count": 4,
+      "category": "bootstrap-state"
+    },
+    "astrid/core/rendering/remotion_runtime.py": {
+      "count": 5,
+      "category": "cache-or-diagnostic"
+    },
+    "astrid/core/rendering/replay.py": {
+      "count": 1,
+      "category": "cache-or-diagnostic"
+    },
+    "astrid/core/util/secrets.py": {
+      "count": 4,
+      "category": "secret"
+    },
+    "astrid/installer/_d2_launch_prelude.py": {
+      "count": 2,
+      "category": "install-record"
+    },
+    "astrid/installer/_legacy_launch_prelude.py": {
+      "count": 2,
+      "category": "install-record"
+    },
+    "astrid/installer/boundary_registration.py": {
+      "count": 2,
+      "category": "install-record"
+    },
+    "astrid/installer/cli.py": {
+      "count": 3,
+      "category": "install-record"
+    },
+    "astrid/installer/core.py": {
+      "count": 1,
+      "category": "install-record"
+    },
+    "astrid/installer/foreground.py": {
+      "count": 1,
+      "category": "install-record"
+    },
+    "astrid/installer/local_update.py": {
+      "count": 1,
+      "category": "install-record"
+    },
+    "astrid/installer/maintenance.py": {
+      "count": 1,
+      "category": "install-record"
+    },
+    "astrid/installer/runtime_lifecycle.py": {
+      "count": 1,
+      "category": "install-record"
+    },
+    "astrid/installer/service.py": {
+      "count": 10,
+      "category": "install-record"
+    },
+    "astrid/installer/support.py": {
+      "count": 1,
+      "category": "install-record"
+    },
+    "astrid/installer/tools.py": {
+      "count": 1,
+      "category": "install-record"
+    },
+    "astrid/installer/update_job.py": {
+      "count": 4,
+      "category": "install-record"
+    },
+    "astrid/omp_agent.py": {
+      "count": 4,
+      "category": "install-record"
+    },
+    "astrid/packs/generation/actions/generate_image_codex/run.py": {
+      "count": 1,
+      "category": "harness-owned"
+    },
+    "astrid/packs/rendering/actions/timeline_visualize/motion/rules.py": {
+      "count": 1,
+      "category": "cache-or-diagnostic"
+    },
+    "astrid/packs/runpod/remote_placement.py": {
+      "count": 1,
+      "category": "cache-or-diagnostic"
+    },
+    "astrid/personal_packs_root.py": {
+      "count": 1,
+      "category": "user-files"
+    },
+    "astrid/sdk/invocation.py": {
+      "count": 2,
+      "category": "cache-or-diagnostic"
+    },
+    "astrid/sdk/media_handles.py": {
+      "count": 1,
+      "category": "cache-or-diagnostic"
+    },
+    "astrid/sdk/project_render.py": {
+      "count": 2,
+      "category": "cache-or-diagnostic"
+    },
+    "astrid/sdk/storage_ownership.py": {
+      "count": 1,
+      "category": "install-record"
+    },
+    "astrid/sdk/storage_root.py": {
+      "count": 9,
+      "category": "bootstrap-state"
+    },
+    "astrid/sdk/timeline_address.py": {
+      "count": 1,
+      "category": "user-files"
+    },
+    "astrid/sdk/upgrade.py": {
+      "count": 1,
+      "category": "install-record"
+    },
+    "astrid/skills/cli.py": {
+      "count": 2,
+      "category": "install-record"
+    },
+    "astrid/skills/harnesses/claude.py": {
+      "count": 1,
+      "category": "harness-owned"
+    },
+    "astrid/skills/harnesses/codex.py": {
+      "count": 1,
+      "category": "harness-owned"
+    },
+    "astrid/skills/harnesses/hermes.py": {
+      "count": 1,
+      "category": "harness-owned"
+    },
+    "astrid/skills/state.py": {
+      "count": 4,
+      "category": "move-plan-35"
+    }
+  }
+}
