@@ -86,6 +86,24 @@ def test_managed_keeps_unprobed_shape(probe, tmp_path):
     assert not (tmp_path / ".vibecomfy").exists()
 
 
+@pytest.mark.parametrize("placement", ["auto", "runpod"])
+def test_targets_without_save_do_not_import_legacy_settings(probe, generation_settings_store, placement):
+    config = targets.config_path()
+    config.parent.mkdir(parents=True)
+    legacy = (
+        '[placement]\nkind = "attached"\nendpoint = "' + URL + '"\n'
+        '[runpod]\ngpu_types = ["A40"]\n'
+    ).encode()
+    config.write_bytes(legacy)
+    assert generation_settings_store.documents == {}
+
+    GenerationFacade().targets(placement=placement, save=False)
+
+    assert config.read_bytes() == legacy
+    assert generation_settings_store.documents == {}
+    assert generation_settings_store.receipts == {}
+
+
 @pytest.mark.parametrize("refused", [False, True])
 def test_stable_cli_facade_payload(probe, monkeypatch, capsys, refused):
     calls, responses = probe
