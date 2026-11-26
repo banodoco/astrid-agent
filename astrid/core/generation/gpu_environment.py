@@ -225,6 +225,70 @@ print(json.dumps({'packages':actual,'cuda':torch.version.cuda,'devices':[torch.c
 """
 
 
+COMPUTE_SCHEMA = "astrid.compute-probe.v1"
+COMPUTE_PROBE_SOURCE = """import contextlib
+import json
+import sys
+
+result = {
+    "schema": "astrid.compute-probe.v1", "ok": False,
+    "torch": None, "cuda": None, "devices": [], "arch_list": [],
+    "operations": {}, "error": None,
+}
+stage = "import"
+try:
+    with contextlib.redirect_stdout(sys.stderr):
+        import torch
+
+        result["torch"] = str(torch.__version__)
+        stage = "cuda"
+        result["cuda"] = torch.version.cuda
+        if result["cuda"] is not None and torch.cuda.is_available():
+            for index in range(torch.cuda.device_count()):
+                result["devices"].append({
+                    "name": torch.cuda.get_device_name(index),
+                    "capability": list(torch.cuda.get_device_capability(index)),
+                })
+            result["arch_list"] = torch.cuda.get_arch_list()
+            if result["devices"]:
+                for stage, dtype, tolerance in (
+                    ("matmul_fp32", torch.float32, 1e-5),
+                    ("matmul_fp16", torch.float16, 1e-2),
+                    ("matmul_bf16", torch.bfloat16, 3e-2),
+                    ("conv2d_fp16", torch.float16, 1e-2),
+                    ("softmax_fp32", torch.float32, 1e-5),
+                ):
+                    result["operations"][stage] = False
+                    if stage.startswith("matmul"):
+                        left = torch.tensor([[1., 2.], [3., 4.]], dtype=torch.float32)
+                        right = torch.tensor([[2., 1.], [0., 3.]], dtype=torch.float32)
+                        operation = torch.matmul
+                        inputs = (left, right)
+                    elif stage == "conv2d_fp16":
+                        inputs = (
+                            torch.tensor([[[[1., 2., 3.], [4., 5., 6.],
+                                             [7., 8., 9.]]]], dtype=torch.float32),
+                            torch.tensor([[[[1., 0.], [0., -1.]]]], dtype=torch.float32),
+                        )
+                        operation = torch.nn.functional.conv2d
+                    else:
+                        inputs = (torch.tensor([[1., 2., 3.]], dtype=torch.float32),)
+                        operation = lambda value: torch.softmax(value, dim=-1)
+                    expected = operation(*inputs)
+                    actual = operation(*(value.to(device="cuda:0", dtype=dtype) for value in inputs))
+                    torch.cuda.synchronize()
+                    result["operations"][stage] = bool(torch.allclose(
+                        actual.cpu().float(), expected, rtol=tolerance, atol=tolerance,
+                    ))
+                result["ok"] = all(result["operations"].values())
+except Exception as exc:
+    result["error"] = {
+        "stage": stage, "type": type(exc).__name__, "message": str(exc)[:300],
+    }
+print(json.dumps(result))
+"""
+
+
 def _verify_sources(plan: Mapping[str, Any]) -> None:
     # Use the same bounded Git inventory operation as existing pack setup.
     from astrid.core.pack.source_setup import _run_git
