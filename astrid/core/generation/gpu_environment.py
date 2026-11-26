@@ -379,6 +379,33 @@ def classify_compute(raw, *, returncode=0, stderr="", timed_out=False) -> dict[s
     }
 
 
+def probe_compute(python, *, run=subprocess.run, timeout=120.0) -> dict[str, Any]:
+    """Run only the compute probe in the nominated interpreter."""
+    environment = {
+        key: value for key, value in os.environ.items()
+        if key.upper() not in {"PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV"}
+    }
+    try:
+        result = run(
+            [python, "-I", "-c", COMPUTE_PROBE_SOURCE],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            check=False, timeout=timeout, env=environment,
+        )
+    except subprocess.TimeoutExpired:
+        return classify_compute(None, timed_out=True)
+    except OSError:
+        diagnosis = classify_compute(None)
+        diagnosis["message"] = f"The Python interpreter ({python}) could not be started."
+        return diagnosis
+    stdout = result.stdout if isinstance(result.stdout, str) else ""
+    lines = [line for line in stdout.splitlines() if line.strip()]
+    try:
+        raw = json.loads(lines[-1]) if lines else None
+    except (ValueError, RecursionError):
+        raw = None
+    return classify_compute(raw, returncode=result.returncode, stderr=result.stderr)
+
+
 def _verify_sources(plan: Mapping[str, Any]) -> None:
     # Use the same bounded Git inventory operation as existing pack setup.
     from astrid.core.pack.source_setup import _run_git
