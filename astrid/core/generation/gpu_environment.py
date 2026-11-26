@@ -225,6 +225,187 @@ print(json.dumps({'packages':actual,'cuda':torch.version.cuda,'devices':[torch.c
 """
 
 
+COMPUTE_SCHEMA = "astrid.compute-probe.v1"
+COMPUTE_PROBE_SOURCE = """import contextlib
+import json
+import sys
+
+result = {
+    "schema": "astrid.compute-probe.v1", "ok": False,
+    "torch": None, "cuda": None, "devices": [], "arch_list": [],
+    "operations": {}, "error": None,
+}
+stage = "import"
+try:
+    with contextlib.redirect_stdout(sys.stderr):
+        import torch
+
+        result["torch"] = str(torch.__version__)
+        stage = "cuda"
+        result["cuda"] = torch.version.cuda
+        if result["cuda"] is not None and torch.cuda.is_available():
+            for index in range(torch.cuda.device_count()):
+                result["devices"].append({
+                    "name": torch.cuda.get_device_name(index),
+                    "capability": list(torch.cuda.get_device_capability(index)),
+                })
+            result["arch_list"] = torch.cuda.get_arch_list()
+            if result["devices"]:
+                for stage, dtype, tolerance in (
+                    ("matmul_fp32", torch.float32, 1e-5),
+                    ("matmul_fp16", torch.float16, 1e-2),
+                    ("matmul_bf16", torch.bfloat16, 3e-2),
+                    ("conv2d_fp16", torch.float16, 1e-2),
+                    ("softmax_fp32", torch.float32, 1e-5),
+                ):
+                    result["operations"][stage] = False
+                    if stage.startswith("matmul"):
+                        left = torch.tensor([[1., 2.], [3., 4.]], dtype=torch.float32)
+                        right = torch.tensor([[2., 1.], [0., 3.]], dtype=torch.float32)
+                        operation = torch.matmul
+                        inputs = (left, right)
+                    elif stage == "conv2d_fp16":
+                        inputs = (
+                            torch.tensor([[[[1., 2., 3.], [4., 5., 6.],
+                                             [7., 8., 9.]]]], dtype=torch.float32),
+                            torch.tensor([[[[1., 0.], [0., -1.]]]], dtype=torch.float32),
+                        )
+                        operation = torch.nn.functional.conv2d
+                    else:
+                        inputs = (torch.tensor([[1., 2., 3.]], dtype=torch.float32),)
+                        operation = lambda value: torch.softmax(value, dim=-1)
+                    expected = operation(*inputs)
+                    actual = operation(*(value.to(device="cuda:0", dtype=dtype) for value in inputs))
+                    torch.cuda.synchronize()
+                    result["operations"][stage] = bool(torch.allclose(
+                        actual.cpu().float(), expected, rtol=tolerance, atol=tolerance,
+                    ))
+                result["ok"] = all(result["operations"].values())
+except Exception as exc:
+    result["error"] = {
+        "stage": stage, "type": type(exc).__name__, "message": str(exc)[:300],
+    }
+print(json.dumps(result))
+"""
+
+
+def classify_compute(raw, *, returncode=0, stderr="", timed_out=False) -> dict[str, Any]:
+    """Turn the isolated compute report into a bounded, user-facing diagnosis."""
+    valid = isinstance(raw, dict) and raw.get("schema") == COMPUTE_SCHEMA
+    report = raw if valid else {}
+    torch_version = report.get("torch")
+    torch_version = torch_version if isinstance(torch_version, str) else None
+    cuda = report.get("cuda")
+    cuda = cuda if isinstance(cuda, str) else None
+    raw_devices = report.get("devices")
+    devices = [item for item in raw_devices if isinstance(item, dict)] if isinstance(raw_devices, list) else []
+    names = [item["name"] for item in devices if isinstance(item.get("name"), str)]
+    raw_arches = report.get("arch_list")
+    arches = {item for item in raw_arches if isinstance(item, str)} if isinstance(raw_arches, list) else set()
+    raw_operations = report.get("operations")
+    operations = {
+        name: value for name, value in raw_operations.items()
+        if isinstance(name, str) and isinstance(value, bool)
+    } if isinstance(raw_operations, dict) else {}
+    expected = ("matmul_fp32", "matmul_fp16", "matmul_bf16", "conv2d_fp16", "softmax_fp32")
+    error = report.get("error")
+    error = error if isinstance(error, dict) else {}
+    stage = error.get("stage")
+    stage = stage if isinstance(stage, str) else ""
+    detail = error.get("message")
+    detail = detail if isinstance(detail, str) else ""
+    diagnostic = (detail + " " + (stderr if isinstance(stderr, str) else "")).lower()
+    unsupported = []
+    for device in devices:
+        capability = device.get("capability")
+        if (isinstance(capability, (tuple, list)) and len(capability) == 2
+                and all(type(part) is int and part >= 0 for part in capability)):
+            arch = f"sm_{capability[0]}{capability[1]}"
+            if arch not in arches:
+                unsupported.append(arch)
+
+    version = torch_version or "unknown"
+    gpu_names = ", ".join(names) or "unknown GPU"
+    if timed_out:
+        cause = "timed_out"
+        message = "The CUDA compute probe timed out before it could finish."
+        works = "Try a responsive interpreter with a working GPU driver."
+    elif returncode != 0 or not valid:
+        cause = "probe_failed"
+        message = (f"The CUDA compute probe exited with code {returncode}."
+                   if returncode != 0 else "The interpreter did not return a valid CUDA compute report.")
+        works = "Use a working Python interpreter and rerun the CUDA compute probe."
+    elif stage == "import":
+        cause = "no_torch"
+        message = "PyTorch could not be imported by this interpreter."
+        works = "Use an interpreter with a compatible CUDA-enabled PyTorch installation."
+    elif torch_version is not None and report.get("cuda") is None:
+        cause = "cpu_only_wheel"
+        message = f"This PyTorch ({version}) was built without CUDA support."
+        works = "Use a CUDA-enabled PyTorch build for your GPU."
+    elif cuda is not None and not devices:
+        cause = "no_device"
+        message = f"PyTorch ({version}, CUDA {cuda}) cannot see a usable NVIDIA GPU."
+        works = "Use a machine with an accessible NVIDIA GPU and a working driver."
+    elif (report.get("ok") is True and not error and torch_version and cuda and names
+          and all(operations.get(name) is True for name in expected)):
+        cause = None
+        message = f"PyTorch ({version}, CUDA {cuda}) passed all five compute checks on {gpu_names}."
+        works = ""
+    elif unsupported or "no kernel image" in diagnostic:
+        cause = "wheel_arch_mismatch"
+        architecture = ", ".join(dict.fromkeys(unsupported))
+        target = f"{gpu_names} ({architecture})" if architecture else gpu_names
+        message = f"This PyTorch ({version}) has no kernels for your GPU ({target})."
+        works = ("Use a PyTorch built for CUDA 12.8 or newer; Astrid's separate ComfyUI install includes one."
+                 if "sm_120" in unsupported else "Use a PyTorch build that includes kernels for your GPU architecture.")
+    elif "driver" in diagnostic and "too old" in diagnostic:
+        cause = "driver_too_old"
+        message = f"The NVIDIA driver is too old for PyTorch ({version}, CUDA {cuda or 'unknown'})."
+        works = "Update the NVIDIA driver to one that supports this CUDA build."
+    elif "out of memory" in diagnostic:
+        cause = "out_of_memory"
+        message = f"PyTorch ({version}) ran out of GPU memory during {stage or 'the compute probe'} on {gpu_names}."
+        works = "Free GPU memory or use a GPU with more available memory."
+    else:
+        cause = "operation_failed"
+        operation = stage or next((name for name in expected if operations.get(name) is not True), "compute probe")
+        message = f"PyTorch ({version}) failed the {operation} check on {gpu_names}."
+        works = "Use a PyTorch installation that supports all five compute operations on your GPU."
+    return {
+        "schema": COMPUTE_SCHEMA, "ok": cause is None, "cause": cause,
+        "message": message, "works": works, "torch": torch_version, "cuda": cuda,
+        "devices": names, "operations": operations,
+    }
+
+
+def probe_compute(python, *, run=subprocess.run, timeout=120.0) -> dict[str, Any]:
+    """Run only the compute probe in the nominated interpreter."""
+    environment = {
+        key: value for key, value in os.environ.items()
+        if key.upper() not in {"PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV"}
+    }
+    try:
+        result = run(
+            [python, "-I", "-c", COMPUTE_PROBE_SOURCE],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            check=False, timeout=timeout, env=environment,
+        )
+    except subprocess.TimeoutExpired:
+        return classify_compute(None, timed_out=True)
+    except OSError:
+        diagnosis = classify_compute(None)
+        diagnosis["message"] = f"The Python interpreter ({python}) could not be started."
+        return diagnosis
+    stdout = result.stdout if isinstance(result.stdout, str) else ""
+    lines = [line for line in stdout.splitlines() if line.strip()]
+    try:
+        raw = json.loads(lines[-1]) if lines else None
+    except (ValueError, RecursionError):
+        raw = None
+    return classify_compute(raw, returncode=result.returncode, stderr=result.stderr)
+
+
 def _verify_sources(plan: Mapping[str, Any]) -> None:
     # Use the same bounded Git inventory operation as existing pack setup.
     from astrid.core.pack.source_setup import _run_git
