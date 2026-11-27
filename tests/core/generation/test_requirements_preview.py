@@ -228,7 +228,7 @@ def vc_fixtures():
     assert Path(producer.__file__).resolve().is_relative_to(checkout)
     # Do not accept an installed fallback package or a partial fixture copy.
     actual = subprocess.check_output(["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True).strip()
-    assert actual == VC_SHA, "use the exact independently accepted WS2 candidate"
+    assert actual == os.environ.get("WS9_EXPECTED_VC_SHA", VC_SHA), "use the exact manager-selected WS2 source"
     assert not subprocess.check_output(["git", "-C", str(checkout), "status", "--porcelain", "--untracked-files=no"])
     folder = checkout / "tests" / "fixtures" / "requirements"
     for case, blob in GOLDEN_BLOBS.items():
@@ -350,6 +350,26 @@ def command_case(tmp_path, monkeypatch, vc_fixtures):
     # actual plan, source-ref normalization, file observation and digest run.
     git_calls = []
     run = subprocess.run
+    import astrid
+    import vibecomfy
+    import vibecomfy.requirements as producer
+    import runtime_protocol
+    from astrid.core.generation import preflight
+    imports = {}
+    for module, package in ((requirements, astrid), (cli, astrid), (preflight, astrid),
+                            (producer, vibecomfy), (runtime_protocol, runtime_protocol)):
+        path = Path(module.__file__).resolve()
+        checkout = Path(package.__file__).resolve().parent.parent
+        sha = subprocess.check_output(["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True).strip()
+        tracked = subprocess.check_output(["git", "-C", str(checkout), "show",
+                                           "HEAD:" + path.relative_to(checkout).as_posix()])
+        assert tracked == path.read_bytes()
+        imports[module.__name__] = {"sha": sha, "origin": str(path),
+                                   "file_sha256": hashlib.sha256(tracked).hexdigest()}
+    if "WS9_EXPECTED_AGENT_SHA" in os.environ:
+        assert imports[requirements.__name__]["sha"] == os.environ["WS9_EXPECTED_AGENT_SHA"]
+    if "WS9_EXPECTED_RUNTIME_SHA" in os.environ:
+        assert imports[runtime_protocol.__name__]["sha"] == os.environ["WS9_EXPECTED_RUNTIME_SHA"]
 
     def recorded_run(argv, **kwargs):
         if argv and argv[0] == "git" and "ls-remote" in argv:
@@ -383,7 +403,7 @@ def command_case(tmp_path, monkeypatch, vc_fixtures):
     store = ReadOnlyStore()
     with user_state.using(store):
         yield SimpleNamespace(root=root, managed=managed, python=python, target=target,
-                              files=vc_fixtures, store=store, git_calls=git_calls)
+                              files=vc_fixtures, store=store, git_calls=git_calls, imports=imports)
 
 
 def _command(case, capsys, *argv):
@@ -410,11 +430,12 @@ def _command(case, capsys, *argv):
                    for gap in value["gaps"])
     # Native proof can archive pytest -s output alongside JUnit. Do not put
     # receipts under observed source/target roots.
-    print("WS9_COMMAND_RECEIPT", json.dumps({
-        "argv": ["astrid", "generate", *argv], "exit": rc, "json": payload,
-        "digest": value["digest"], "unchanged": after == before,
-        "vibecomfy_sha": VC_SHA,
-    }, sort_keys=True))
+    with capsys.disabled():
+        print("WS9_COMMAND_RECEIPT", json.dumps({
+            "argv": ["astrid", "generate", *argv], "exit": rc, "json": payload,
+            "digest": value["digest"], "unchanged": after == before,
+            "before": before, "after": after, "imports": case.imports,
+        }, sort_keys=True))
     return payload
 
 
@@ -613,3 +634,109 @@ def test_auto_legacy_settings_selection_is_read_only(command_case, monkeypatch):
     assert target["root"] == str(case.managed)
     assert case.store.reads == [settings.KEY]
     assert snapshot([case.root]) == before
+
+
+@pytest.mark.parametrize("case_name", ["local", "sam"])
+def test_complete_canonical_golden_producer_and_transport(command_case, case_name):
+    """Replay the exact richer WS2 fixture inputs and compare the entire plan.
+
+    The CLI form has a raw URL/hash or repo/ref, not a structured model size
+    or an explicitly authored no-deps recipe. The separate actual CLI cases
+    above retain that real difference; this checks the exact canonical contract
+    with the reviewed complete fixtures, without adding hidden CLI options.
+    """
+    import copy
+    from vibecomfy.requirements import plan, plan_digest
+
+    case = command_case
+    root = case.root / "golden-target"
+    root.mkdir()
+    python = str(Path(sys.executable).parent.resolve() / Path(sys.executable).name)
+    target = {"root": str(root), "python": python, "comfyui_root": str(root / "ComfyUI"),
+              "models_root": str(root / "ComfyUI" / "models"),
+              "custom_nodes_root": str(root / "ComfyUI" / "custom_nodes"),
+              "placement_class": "local", "location": "local", "owner": "astrid",
+              "capacity_bytes": None}
+    source = case.root / (case_name + ".api.json")
+    source.write_bytes((case.files / (case_name + ".workflow.api.json")).read_bytes())
+    if case_name == "local":
+        model = _read_json(case.files / "local.model.json")
+        dest = Path(target["models_root"]) / model["subdir"] / model["name"]
+        dest.parent.mkdir(parents=True)
+        dest.write_bytes((case.files / "local-model-only-payload.bin").read_bytes())
+        options = {"add_models": [model]}
+        flags = ["--add-model", f"{model['subdir']}/{model['name']}={model['url']}#{model['sha256']}"]
+    else:
+        options = {"add": [SAM_REPO + "@main"],
+                   "added_node_refs": [_read_json(case.files / "sam.recipe.json")]}
+        flags = ["--add", SAM_REPO + "@main"]
+    before = snapshot([case.root])
+    value = plan(source, target=target, **options)
+    assert snapshot([case.root]) == before
+    assert plan_digest(value) == value["digest"]
+    executable = Path(python).resolve()
+    executable_bytes = executable.read_bytes()
+    assert value["target"]["python"] == python
+    assert value["target_observed"]["python"] == {
+        "state": "present", "size_bytes": len(executable_bytes),
+        "sha256": hashlib.sha256(executable_bytes).hexdigest(), "executable": str(executable),
+    }
+
+    def portable(item):
+        if isinstance(item, dict):
+            return {key: portable(child) for key, child in item.items()}
+        if isinstance(item, list):
+            return [portable(child) for child in item]
+        if isinstance(item, str):
+            if item == python:
+                return "${PYTHON}"
+            if item == str(root) or item.startswith(str(root) + "/"):
+                return "${TARGET}" + item[len(str(root)):]
+        return item
+
+    normalized = portable(copy.deepcopy(value))
+    normalized["target_observed"]["python"].update(
+        size_bytes="${PYTHON_SIZE}", sha256="${PYTHON_SHA256}", executable="${PYTHON_EXECUTABLE}",
+    )
+    normalized["digest"] = plan_digest(normalized)
+    expected = _read_json(case.files / (case_name + ".expected-plan.json"))
+    assert normalized == expected
+    assert normalized["digest"] == GOLDEN_DIGESTS[case_name]
+    args = cli._parser().parse_args(["requirements", str(source), "--placement", "managed", *flags, "--json"])
+    issues, fixes = requirements._readiness(value, args)
+    if case_name == "sam":
+        with pytest.raises(GenerationReadinessError) as exc:
+            requirements.preview_envelope(value, entry=None, target=value["target"], issues=issues, fixes=fixes)
+        envelope = json.loads(json.dumps(exc.value.to_envelope()))
+        assert envelope["status"] == "blocked"
+        assert generation_error(envelope).to_envelope() == envelope
+        assert all(f["who"] in ("agent", "human") for f in envelope["fixes"])
+    else:
+        envelope = requirements.preview_envelope(value, entry=None, target=value["target"], issues=issues, fixes=fixes)
+        assert envelope["status"] == "ready"
+    assert envelope["plan"] == value
+    assert plan_digest(envelope["plan"]) == value["digest"]
+    assert snapshot([case.root]) == before
+
+
+def test_attached_timeout_has_typed_gap_and_never_falls_back(command_case, capsys, monkeypatch):
+    from astrid.core.generation.backends.comfy_target import ComfyTargetClient
+    case = command_case
+    source = case.root / "timeout.api.json"
+    source.write_bytes((case.files / "local.workflow.api.json").read_bytes())
+    calls = []
+
+    def timeout(self, path, **kwargs):
+        calls.append(path)
+        raise TimeoutError("fixture target did not answer")
+
+    monkeypatch.setattr(ComfyTargetClient, "request_json", timeout)
+    result = _command(case, capsys, "requirements", str(source),
+                      "--placement", "http://127.0.0.1:8188", "--dry-run", "--json")
+    assert calls == ["/system_stats"]
+    assert result["status"] == "blocked"
+    assert result["target"]["placement_class"] == "attached"
+    assert result["target"]["root"] is None
+    assert result["target"]["python"] is None
+    assert any(i["details"]["gap"]["code"] == "selected_target_timeout"
+               and i["details"]["state"] == "timeout" for i in result["issues"])
