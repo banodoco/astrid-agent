@@ -905,6 +905,8 @@ class InstallReceipt:
     failed_step_id: str | None = None
     # Model directory the install bound; absent in receipts written before this field (then <root>/models).
     models_root: TargetPath | None = None
+    # Optional provenance for an exact managed offer. Legacy installs omit it.
+    managed_offer_sha256: Digest | None = None
 
 
 @dataclass(frozen=True)

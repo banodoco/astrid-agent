@@ -91,7 +91,8 @@ _A2_PATHS = ("core/generation/engine_execution.py", "core/generation/engine_plat
 
 def _plain(value):
     if is_dataclass(value):
-        return {f.name: _plain(getattr(value, f.name)) for f in fields(value)}
+        return {f.name: _plain(getattr(value, f.name)) for f in fields(value)
+                if f.name != 'managed_offer_sha256' or getattr(value, f.name) is not None}
     if isinstance(value, Mapping):
         return {k: _plain(v) for k, v in value.items()}
     if isinstance(value, (tuple, list)):
@@ -354,6 +355,7 @@ class _Runner:
         self.receipt_id = uuid.uuid4().hex
         self.started_at = _now()
         self.service_owner = None
+        self.managed_offer_sha256 = None
 
     def custody_error(self, error, reason):
         """Enrich a local Linux custody refusal from the pinned owner marker when possible."""
@@ -819,21 +821,33 @@ class _Runner:
                               self.plan.recipe_sha256, self.plan.models_lock_sha256, dict(self.locks),
                               dict(self.commits), tuple(self.models), tuple(self.steps), self.health,
                               self.started_at, None if status == "installing" else _now(), error_code,
-                              models_root=self.plan.models_root)
+                              models_root=self.plan.models_root,
+                              managed_offer_sha256=self.managed_offer_sha256)
 
 
 SANITY_CMD_ENV = "ASTRID_ENGINE_SANITY_CMD"
 
 
 def install_engine(plan: InstallPlan, *, context: ExecutionContext,
-                   adapter: PlatformAdapter, deadline: Deadline, sanity_cmd: str | None = None) -> InstallReceipt:
+                   adapter: PlatformAdapter, deadline: Deadline, sanity_cmd: str | None = None,
+                   managed_offer_sha256: str | None = None, before_managed_install=None) -> InstallReceipt:
     """Install the engine. ``sanity_cmd`` (default: ``ASTRID_ENGINE_SANITY_CMD``) runs once after the
     last environment step and before start; a failure aborts the install there. The install is
     model-free (Plan 32 T5h): align fetches the models a job's manifest needs.
     """
     sanity_cmd = sanity_cmd if sanity_cmd is not None else os.environ.get(SANITY_CMD_ENV, "")
     runner = _Runner(plan, context, adapter, deadline)
+    if ((managed_offer_sha256 is None) != (before_managed_install is None)
+            or managed_offer_sha256 is not None and (
+                not isinstance(managed_offer_sha256, str) or not _DIGEST.fullmatch(managed_offer_sha256)
+                or not callable(before_managed_install) or plan.placement != "local")):
+        raise RecipeValidationError("invalid install receipt evidence")
+    runner.managed_offer_sha256 = managed_offer_sha256
     with context.acquire_install_lock(plan.root, deadline=deadline, kind="install"):
+        # The consent/capacity check is refreshed under the existing transaction
+        # lock, before stopping an engine or rewriting its receipt or environment.
+        if before_managed_install is not None:
+            before_managed_install()
         from .engine_custody import stop_engine_for_converge
         stop_engine_for_converge(plan, context=context, deadline=deadline)
         # Also bind installed target code/data before any source/environment action.
@@ -926,7 +940,7 @@ def _parse_receipt(raw, plan):
     """Strict JSON receipt reconstruction; a receipt is evidence, never instructions."""
     def obj(value, cls):
         if cls is InstallReceipt and isinstance(value, Mapping):
-            value = {"failed_step_id": None, "models_root": None, **value}
+            value = {"failed_step_id": None, "models_root": None, "managed_offer_sha256": None, **value}
             value.pop("helper_sha256", None)
         if not isinstance(value, Mapping) or set(value) != {f.name for f in fields(cls)}:
             raise IntegrityError("invalid install receipt fields")
@@ -953,6 +967,10 @@ def _parse_receipt(raw, plan):
         for key in ("recipe_sha256", "models_lock_sha256"):
             if not isinstance(value[key], str) or not _DIGEST.fullmatch(value[key]):
                 raise ValueError
+        managed_digest = value["managed_offer_sha256"]
+        if managed_digest is not None and (not isinstance(managed_digest, str)
+                or not _DIGEST.fullmatch(managed_digest) or value["placement"] != "local"):
+            raise ValueError
         for key in ("started_at", "completed_at"):
             stamp = value[key]
             if stamp is not None and datetime.fromisoformat(stamp).utcoffset() is None:
