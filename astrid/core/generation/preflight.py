@@ -221,6 +221,7 @@ LADDER_REASONS = {
     "files_missing": "installed",
     "not_answering": "reachable",
     "access_denied": "reachable",
+    "installation_access_denied": "installed",
     "not_comfyui": "identified",
     "api_unsupported": "compatible",
     "stale_registration": "installed",
@@ -248,6 +249,11 @@ LADDER_TEXT = {
     "access_denied": {
         "message": "Access to {url} was denied.",
         "step": "Retry the same check through the normal permission request.",
+        "who": "agent",
+    },
+    "installation_access_denied": {
+        "message": "Access to ComfyUI Desktop registration or files was denied; its installation could not be verified.",
+        "step": "Retry the installation check through the normal permission request.",
         "who": "agent",
     },
     "not_comfyui": {
@@ -399,8 +405,21 @@ def _observe_desktop_rungs(installation, url, probe):
     responder = installation["responder"]
     if state == "stale":
         return _stop_existing(ladder, "installed", "stale_registration", url)
-    # A registration is an observation, not proof that all its files exist.
-    # Preserve the file booleans as supplied by B; no path/interpreter guess.
+    # B distinguishes registration/config/stat denial (no responder
+    # observation) from denied responder access after both files were found.
+    # A false file flag on a denied observation is not proof of absence.
+    if state == "denied":
+        recorded = installation["recorded"]
+        files_verified = all(
+            files.get(field) is True
+            and isinstance(recorded.get(field), str) and recorded[field].strip()
+            for field in ("executable", "data_dir")
+        )
+        if not files_verified or responder.get("kind") != "denied":
+            return _stop_existing(ladder, "installed", "installation_access_denied",
+                                  url, state="unchecked")
+    # Only responder denial with positively observed files can advance past
+    # installed. Preserve the supplied evidence; never guess paths.
     ladder = with_rung(ladder, "installed", "observed", observation={
         "layout": "desktop", "files": files,
     })
@@ -655,7 +674,8 @@ def ladder_next_action(ladder, *, url=None, installation=None, choices=None, bou
     command = ["astrid", "generate", "targets", "--placement", url or "auto"]
     if stop["reason"] == "closed" and installation is not None:
         command[-1] = installation["endpoint"]
-    if stop["reason"] in ("stale_registration", "no_install_found", "discovery_incomplete"):
+    if stop["reason"] in ("stale_registration", "no_install_found", "discovery_incomplete",
+                          "installation_access_denied"):
         command[-1] = "auto" if not bound or stop["reason"] == "stale_registration" else url or "auto"
     alternative = _separate_copy() if stop["reason"] in ("stale_registration", "no_install_found") else None
     if stop["reason"] == "several_installs":
