@@ -4,6 +4,7 @@ from copy import deepcopy
 import pytest
 
 from astrid.core.generation import desktop_install, preflight
+from astrid.core.generation.desktop_install import observe_installations as real_observe_installations
 from astrid.core.generation.targets import TargetRecord
 from tests.fixtures.comfyui_desktop import get_json_for, load
 
@@ -68,7 +69,9 @@ def denied_installation_for(case, tmp_path, monkeypatch):
 
     with monkeypatch.context() as m:
         m.setattr(desktop_install.os, "stat", stat)
-        installations = desktop_install.observe_installations(
+        # The public-payload scenario stubs the module attribute for SDK calls.
+        # Keep this OS-I/O witness bound to B's real observer, not that stub.
+        installations = real_observe_installations(
             environ=environ, registry=registry, read_text=read_text, get_json=no_network,
         )
     assert len(installations) == 1
