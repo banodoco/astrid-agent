@@ -16,6 +16,7 @@ import pytest
 from astrid.core.generation import engine_readiness
 from astrid.packs.vibecomfy import local as local_scan
 from tests.packs.runpod.conftest import (  # noqa: F401
+    acknowledged_watchdog as acknowledged_watchdog,
     lease_https_transport as lease_https_transport,
     pod_watchdog_transport as pod_watchdog_transport,
 )
