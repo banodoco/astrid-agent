@@ -344,7 +344,10 @@ def _parser(contextual: dict[str, Any] | None = None) -> _GenerationParser:
                              description='Set up a separate ComfyUI Portable install on this computer at no cost.')
     command.add_argument('--destination', type=Path,
                          default=comfy_portable.default_destination(environ, sys.platform))
-    command.add_argument('--apply', metavar='OFFER_SHA256', help='Install exactly the offer with this digest.')
+    action = command.add_mutually_exclusive_group()
+    action.add_argument('--apply', metavar='OFFER_SHA256', help='Install exactly the offer with this digest.')
+    action.add_argument('--restore', metavar='ATTACHMENT_SHA256',
+                        help='Restore the target and placement saved before this attachment.')
     command.add_argument('--json', action='store_true')
     command = sub.add_parser('targets', help='Inspect or explicitly save the selected Comfy target.')
     command.add_argument('--placement', action=_Once, default='auto')

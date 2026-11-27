@@ -269,9 +269,11 @@ def update_config(update: Callable[[dict[str, Any]], None], *, path: str | Path 
     target.parent.mkdir(parents=True, exist_ok=True)
     with FileLock(str(config_lock_path(target))):
         document = read_config(target)
+        previous = copy.deepcopy(document)
         update(document)
         _validate_document(document)
-        write_text_atomic(target, _format_toml(document))
+        if document != previous:
+            write_text_atomic(target, _format_toml(document))
     return target
 
 
@@ -338,16 +340,7 @@ def _without_nulls(value: Any) -> Any:
     return value
 
 
-def save_target(value: TargetRecord | Mapping[str, Any], *, path: str | Path | None = None,
-                primary: bool = False) -> Path:
-    """Explicitly replace Comfy's selection, lazily migrating its legacy table.
-
-    Transient selections are never saved by the resolver. Managed paths/facts
-    are derived on read and are never copied into this document.
-    """
-    record = normalize_target(value)
-    if record.owner == "astrid":
-        _managed_record(record)  # ownership proof, outside the config lock
+def _save_target(document: dict[str, Any], record: TargetRecord, primary: bool) -> None:
     wire = {"location": "local", "owner": record.owner, "layout": record.layout}
     if record.owner == "human":
         wire.update(_without_nulls({"url": record.endpoint, "root": record.root,
@@ -362,20 +355,94 @@ def save_target(value: TargetRecord | Mapping[str, Any], *, path: str | Path | N
     if record.prefer is not None:
         wire["prefer"] = record.prefer
 
+    previous = next((document[n] for n in _COMFY_TABLES if n in document), {})
+    if "prefer" not in wire and "prefer" in previous:
+        # A new explicit selection supersedes a contradictory old policy.
+        wire["prefer"] = "managed" if record.owner == "astrid" else "attached"
+    for name in _COMFY_TABLES:
+        document.pop(name, None)
+    document["comfyui"] = wire
+    engines = document.setdefault("engines", {"schema_version": 1})
+    if "primary" in engines:
+        engines["primary"] = canonical_engine(engines["primary"])
+    if primary:
+        engines["primary"] = "comfyui"
+
+
+def _selection(document: dict[str, Any]) -> dict[str, Any]:
+    selected = {name: copy.deepcopy(document[name]) for name in _COMFY_TABLES if name in document}
+    if "primary" in document.get("engines", {}):
+        selected["engines"] = {"schema_version": 1, "primary": document["engines"]["primary"]}
+    return selected
+
+
+def _selection_document(snapshot: str) -> dict[str, Any]:
+    """A lossless TOML snapshot of selection only, never unrelated config."""
+    try:
+        document = tomllib.loads(snapshot)
+        _validate_document(document)
+        if document != _selection(document):
+            raise ValueError("snapshot contains unrelated settings")
+    except (TypeError, ValueError) as exc:
+        raise TargetConfigError("invalid target selection snapshot") from exc
+    return document
+
+
+def target_snapshot(*, path: str | Path | None = None) -> str:
+    return _format_toml(_selection(read_config(path)))
+
+
+def target_from_snapshot(snapshot: str) -> TargetRecord | None:
+    """Saved intent, including a stale managed choice; do not resolve or launch it."""
+    document = _selection_document(snapshot)
+    return next((normalize_target(document[name]) for name in _COMFY_TABLES if name in document), None)
+
+
+def target_snapshot_after_save(value: TargetRecord, previous: str) -> str:
+    document = _selection_document(previous)
+    _save_target(document, normalize_target(value), False)
+    return _format_toml(_selection(document))
+
+
+def save_target(value: TargetRecord | Mapping[str, Any], *, path: str | Path | None = None,
+                primary: bool = False, expected_snapshot: str | None = None) -> Path:
+    """Explicitly replace Comfy's selection, optionally checking its prior state under the lock.
+
+    Transient selections are never saved by the resolver. Managed paths/facts
+    are derived on read and are never copied into this document.
+    """
+    record = normalize_target(value)
+    if record.owner == "astrid":
+        _managed_record(record)  # ownership proof, outside the config lock
+    expected = _selection_document(expected_snapshot) if expected_snapshot is not None else None
+
     def save(document):
-        previous = next((document[n] for n in _COMFY_TABLES if n in document), {})
-        if "prefer" not in wire and "prefer" in previous:
-            # A new explicit selection supersedes a contradictory old policy.
-            wire["prefer"] = "managed" if record.owner == "astrid" else "attached"
+        if expected is not None and _selection(document) != expected:
+            raise TargetConfigError("the selected target changed; it was not replaced")
+        _save_target(document, record, primary)
+    return update_config(save, path=path)
+
+
+def restore_target_snapshot(previous: str, expected: str, *, path: str | Path | None = None) -> Path:
+    """Restore only the saved selection if it still matches this attachment."""
+    before, after = _selection_document(previous), _selection_document(expected)
+
+    def restore(document):
+        current = _selection(document)
+        if current == before:
+            return
+        if current != after:
+            raise TargetConfigError("the selected target changed; it was not restored")
         for name in _COMFY_TABLES:
             document.pop(name, None)
-        document["comfyui"] = wire
-        engines = document.setdefault("engines", {"schema_version": 1})
-        if "primary" in engines:
-            engines["primary"] = canonical_engine(engines["primary"])
-        if primary:
-            engines["primary"] = "comfyui"
-    return update_config(save, path=path)
+            if name in before:
+                document[name] = copy.deepcopy(before[name])
+        if "engines" in before:
+            document.setdefault("engines", {"schema_version": 1})["primary"] = before["engines"]["primary"]
+        elif "engines" in document:
+            document["engines"].pop("primary", None)
+
+    return update_config(restore, path=path)
 
 
 def resolve_target(request: str = "auto", *, path: str | Path | None = None,

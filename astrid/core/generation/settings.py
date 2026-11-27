@@ -45,6 +45,7 @@ CHECKOUT_SCHEMA = "astrid.generation-settings-checkout.v1"
 _store: ContextVar[Any] = ContextVar("generation_settings_store", default=None)
 _store_factory: Callable[[], Any] | None = None
 _model_policy: ContextVar[bool | None] = ContextVar("model_trust_unchanged", default=None)
+_expected_placement: ContextVar[dict | None] = ContextVar("expected_generation_placement", default=None)
 
 
 def refuse(message: str, *, key: str, code: str = "generation_settings_invalid", options: Any = (),
@@ -227,8 +228,8 @@ def _write(store: Any, content: Mapping[str, Any], expected: int, key: str) -> S
     return Snapshot(validate_document(stored or {}), version, "runtime")
 
 
-def read(client: Any = None, *, legacy_path: str | Path | None = None) -> Snapshot:
-    """Read the document; a missing one is created once from any old TOML Astrid default."""
+def read(client: Any = None, *, legacy_path: str | Path | None = None, migrate: bool = True) -> Snapshot:
+    """Read effective settings; ``migrate=False`` projects legacy defaults without publishing them."""
     try:
         store = current_store(client)
     except Exception as exc:  # noqa: BLE001 - best-effort fallback; log only the type, never transport data or a traceback.
@@ -241,6 +242,8 @@ def read(client: Any = None, *, legacy_path: str | Path | None = None) -> Snapsh
         found = _legacy(legacy_path)
         if found:
             document = validate_document({**empty_document(), **found})
+            if not migrate:
+                return Snapshot(document, 0, "runtime")
             digest = hashlib.sha256(json.dumps(document, sort_keys=True).encode()).hexdigest()[:24]
             snapshot = _write(store, document, 0, f"generation-legacy-import-{digest}")
             warning_token = object()
@@ -256,9 +259,9 @@ def read(client: Any = None, *, legacy_path: str | Path | None = None) -> Snapsh
 
 
 def update(change: Callable[[dict[str, Any]], None], client: Any = None, *,
-           legacy_path: str | Path | None = None) -> Snapshot:
+           legacy_path: str | Path | None = None, migrate: bool = True) -> Snapshot:
     """Read, apply ``change`` to a copy, validate and write with the version it was read at."""
-    snapshot = read(client, legacy_path=legacy_path)
+    snapshot = read(client, legacy_path=legacy_path, migrate=migrate)
     if snapshot.source != "runtime":
         raise refuse("the Runtime is not reachable; generation settings cannot be written", key="$",
                      code="generation_settings_unavailable")
@@ -380,19 +383,18 @@ def _change_placement(client: Any, change: Callable[[dict[str, Any]], dict[str, 
     def write(document: dict[str, Any]) -> None:
         nonlocal previous
         previous = copy.deepcopy(dict(document.get("placement") or {}))
+        expected = _expected_placement.get()
+        if expected is not None and previous != expected:
+            raise refuse("the placement changed; it was not replaced", key="placement",
+                         code="generation_placement_changed")
         document["placement"] = change(copy.deepcopy(previous))
 
-    snapshot = update(write, client)
+    snapshot = update(write, client, migrate=_expected_placement.get() is None)
     return {"version": snapshot.version, "placement": snapshot.content["placement"], "previous": previous}
 
 
-def set_placement(url: str, client: Any = None) -> dict[str, Any]:
-    """Save one attached ComfyUI endpoint as the placement default; the URL must pass ``normalize_target``.
-
-    The saved ``policy`` stays. ``device``, ``machine`` and ``engine`` belong to the place they were saved
-    for (the same rule as ``placement._merge``): ``device`` is kept only when the previous kind was already
-    attached, and ``machine`` and ``engine`` always go. ``previous`` shows everything that was dropped.
-    """
+def attached_placement(url: str, previous: Mapping[str, Any]) -> dict[str, Any]:
+    """The exact read-only transformation used by ``set_placement``."""
     from astrid.core.generation import targets
 
     try:
@@ -400,14 +402,47 @@ def set_placement(url: str, client: Any = None) -> dict[str, Any]:
     except (targets.TargetConfigError, ValueError) as exc:
         raise refuse(ATTACHED_REFUSAL, key="placement.endpoint", code="generation_settings_invalid") from exc
 
-    def change(current: dict[str, Any]) -> dict[str, Any]:
-        same_place = current.get("kind") == "attached"
-        for name in ("device", "machine", "engine"):
-            if name != "device" or not same_place:
-                current.pop(name, None)
-        return {**current, "kind": "attached", "endpoint": endpoint}
+    current = copy.deepcopy(dict(previous))
+    same_place = current.get("kind") == "attached"
+    for name in ("device", "machine", "engine"):
+        if name != "device" or not same_place:
+            current.pop(name, None)
+    return {**current, "kind": "attached", "endpoint": endpoint}
 
-    return _change_placement(client, change)
+
+@contextmanager
+def expect_placement(previous: Mapping[str, Any]) -> Iterator[None]:
+    """Guard the existing placement operation, including its Runtime versioned write."""
+    token = _expected_placement.set(copy.deepcopy(dict(previous)))
+    try:
+        yield
+    finally:
+        _expected_placement.reset(token)
+
+
+def set_placement(url: str, client: Any = None) -> dict[str, Any]:
+    """Save an attached endpoint, retaining policy and any already-attached device.
+
+    Machine/engine and a device from a different placement kind are removed.
+    ``previous`` reports the complete placement that was replaced.
+    """
+    endpoint = attached_placement(url, {})["endpoint"]  # Refuse before any legacy migration.
+    return _change_placement(client, lambda previous: attached_placement(endpoint, previous))
+
+
+def restore_placement(previous: Mapping[str, Any], expected: Mapping[str, Any], client: Any = None) -> Snapshot:
+    """Conditionally restore exactly one placement, retaining all unrelated settings."""
+    before = validate_document({"placement": previous})["placement"]
+    after = validate_document({"placement": expected})["placement"]
+
+    def restore(document):
+        current = document.get("placement", {})
+        if current not in (before, after):
+            raise refuse("the placement changed; it was not restored", key="placement",
+                         code="generation_placement_changed")
+        document["placement"] = copy.deepcopy(before)
+
+    return update(restore, client, migrate=False)
 
 
 def unset_placement(client: Any = None) -> dict[str, Any]:
