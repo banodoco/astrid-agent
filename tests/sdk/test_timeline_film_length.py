@@ -52,10 +52,13 @@ def test_check_syncs_the_placement_and_says_so_in_words():
 
 def test_a_layer_longer_than_its_middle_shot_blocks_check():
     data = tiny()
-    shot_a = data["shots"]["A"]["internal_timeline"]["clips"]
-    shot_a.append({"id": "a-card", "clipType": "am-type", "track": "type", "at": 0.0, "hold": 6.0,
-                   "params": {"text": "Long."}, "app": {"cut": "c1", "layer": "card", "for": 6.0}})
+    Checkout._pin_initial_base(data)
     tl = Checkout(data)
+    # Add the overrun *after* opening the checkout. The release contract reports
+    # unchanged pre-existing overruns without blocking unrelated new edits, but
+    # a newly introduced six-second layer in this four-second shot must block.
+    tl.add("am-type", at=0.0, hold=6.0, track="type", cut="c1", layer="card",
+           clip_id="a-card", params={"text": "Long."})
     report = tl.check()
     lines = length_lines(report)
     assert any("c1.card ends at 6.00 s, after its shot ends at 4.00 s" in line for line in lines), lines

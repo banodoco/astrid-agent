@@ -72,6 +72,9 @@ _AUTH_HEADER_RE = re.compile(
 )
 _BEARER_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
 _MAX_LOG_CHARS = 64 * 1024
+_MAX_DIAGNOSTIC_LINES = 40
+_MAX_DIAGNOSTIC_BYTES = 8 * 1024
+_NPM_NOISE_RE = re.compile(r"^\s*npm\s+(?:warn|notice)\b", re.IGNORECASE)
 _DEFAULT_TERMINATION_GRACE = 0.5
 
 
@@ -325,9 +328,13 @@ class CommandTransport:
         _terminate_leftover_group(process, grace=self.termination_grace)
 
         if process.returncode != 0:
+            message = f"renderer command exited with status {process.returncode}"
+            for stream in ("stderr", "stdout"):
+                if logs.get(stream):
+                    message += f"; child {stream} tail: {logs[stream]}"
             raise_internal_error(
                 backend=selected_backend,
-                message=f"renderer command exited with status {process.returncode}",
+                message=message,
                 details={"returncode": process.returncode, **logs},
             )
 
@@ -341,6 +348,7 @@ class CommandTransport:
             payload,
             backend=selected_backend,
             logs=logs,
+            secret_values=secret_values,
         )
 
 
@@ -564,7 +572,9 @@ def _secret_environment_values(
     return tuple(sorted(values, key=len, reverse=True))
 
 
-def _redact_log(value: str, *, secret_values: Sequence[str]) -> str:
+def _redact_log(
+    value: str, *, secret_values: Sequence[str], max_chars: int | None = _MAX_LOG_CHARS
+) -> str:
     redacted = value.replace("\x00", "\ufffd")
     for secret in secret_values:
         redacted = redacted.replace(secret, "[redacted]")
@@ -579,8 +589,8 @@ def _redact_log(value: str, *, secret_values: Sequence[str]) -> str:
         lambda match: f"{match.group(1)}[redacted]", redacted
     )
     redacted = _SECRET_VALUE_RE.sub("[redacted]", redacted)
-    if len(redacted) > _MAX_LOG_CHARS:
-        redacted = redacted[:_MAX_LOG_CHARS] + "\n[truncated]"
+    if max_chars is not None and len(redacted) > max_chars:
+        redacted = redacted[:max_chars] + "\n[truncated]"
     return redacted
 
 
@@ -591,9 +601,20 @@ def _redacted_logs(
     secret_values: Sequence[str],
 ) -> dict[str, str]:
     return {
-        "stdout": _redact_log(stdout or "", secret_values=secret_values),
-        "stderr": _redact_log(stderr or "", secret_values=secret_values),
+        "stdout": _format_diagnostic(stdout or "", secret_values=secret_values),
+        "stderr": _format_diagnostic(stderr or "", secret_values=secret_values),
     }
+
+
+def _format_diagnostic(value: str, *, secret_values: Sequence[str]) -> str:
+    """Redact and compact a diagnostic stream before exposing it in errors."""
+    redacted = _redact_log(value, secret_values=secret_values, max_chars=None)
+    lines = [line for line in redacted.splitlines() if not _NPM_NOISE_RE.match(line)]
+    tail = "\n".join(lines[-_MAX_DIAGNOSTIC_LINES :])
+    encoded = tail.encode("utf-8")
+    if len(encoded) > _MAX_DIAGNOSTIC_BYTES:
+        tail = encoded[-_MAX_DIAGNOSTIC_BYTES :].decode("utf-8", errors="ignore")
+    return tail
 
 
 def _read_result_file(
@@ -656,6 +677,7 @@ def _parse_result(
     *,
     backend: str,
     logs: Mapping[str, str],
+    secret_values: Sequence[str] = (),
 ) -> CommandResult:
     if isinstance(payload, Mapping) and "kind" in payload:
         try:
@@ -668,12 +690,18 @@ def _parse_result(
                 message="renderer error result names a different backend",
                 details={"reported_backend": emitted_error.backend, **logs},
             )
-        raise_renderer_error(
-            replace(
-                emitted_error,
-                details={**emitted_error.details, **logs},
-            )
-        )
+        details = {**logs, **emitted_error.details}
+        message = emitted_error.message
+        for stream in ("stderr", "stdout"):
+            child_output = emitted_error.details.get(stream)
+            if isinstance(child_output, str) and child_output:
+                child_output = _format_diagnostic(child_output, secret_values=secret_values)
+                details[stream] = child_output
+                if child_output:
+                    message += f"; child {stream} tail: {child_output}"
+                if logs.get(stream):
+                    details[f"renderer_{stream}"] = logs[stream]
+        raise_renderer_error(replace(emitted_error, message=message, details=details))
 
     parser: Any
     if verb in {"render", "finalize"}:

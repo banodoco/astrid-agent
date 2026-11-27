@@ -473,6 +473,16 @@ def test_missing_binary_is_renderer_qualified(tmp_path: Path) -> None:
     assert caught.value.error.backend == RENDERER_ID
 
 
+def test_nested_child_failure_surfaces_stderr_and_exit_code(tmp_path: Path) -> None:
+    with pytest.raises(RendererInternalError) as caught:
+        _run(tmp_path, {"action": "child-failure"})
+
+    assert "Browser not available" in str(caught.value)
+    assert "exit 23" in str(caught.value)
+    assert "Browser not available" in caught.value.to_dict()["details"]["stderr"]
+    assert "exit 23" in caught.value.to_dict()["message"]
+
+
 def test_nonzero_exit_is_internal_and_captures_both_streams(tmp_path: Path) -> None:
     with pytest.raises(RendererInternalError) as caught:
         _run(
@@ -490,6 +500,46 @@ def test_nonzero_exit_is_internal_and_captures_both_streams(tmp_path: Path) -> N
     assert caught.value.details["returncode"] == 23
     assert "renderer stdout" in caught.value.details["stdout"]
     assert "renderer stderr" in caught.value.details["stderr"]
+
+
+def test_npm_diagnostics_are_filtered_before_bounded_tail(tmp_path: Path) -> None:
+    warnings = "".join(f"npm warn dependency-{index}: noisy package warning\n" for index in range(30))
+    with pytest.raises(RendererInternalError) as caught:
+        _run(
+            tmp_path,
+            {
+                "action": "nonzero",
+                "returncode": 23,
+                "stdout": warnings + "stdout real error\n",
+                "stderr": warnings + "stderr real error\n",
+            },
+        )
+
+    assert "stderr real error" in str(caught.value)
+    details = caught.value.to_dict()["details"]
+    for stream in ("stdout", "stderr"):
+        assert f"{stream} real error" in details[stream]
+        assert "npm warn" not in details[stream]
+        assert len(details[stream].splitlines()) <= 40
+        assert len(details[stream].encode("utf-8")) <= 8 * 1024
+
+
+def test_nested_child_streams_are_filtered_and_redacted(tmp_path: Path) -> None:
+    warnings = "".join(f"npm warn package {index}\n" for index in range(30))
+    with pytest.raises(RendererInternalError) as caught:
+        _run(tmp_path, {
+            "action": "noisy-child-failure",
+            "stdout_child": warnings + "stdout error token=secret-value\n",
+            "stderr_child": "stderr error\n" + warnings + "npm notice upgrade\n",
+        })
+    details = caught.value.to_dict()["details"]
+    assert "stdout error" in str(caught.value)
+    assert "stderr error" in str(caught.value)
+    assert "secret-value" not in str(caught.value)
+    assert "secret-value" not in details["stdout"]
+    assert "npm warn" not in details["stdout"]
+    assert "npm warn" not in details["stderr"]
+    assert "npm notice" not in details["stderr"]
 
 
 @pytest.mark.posix_native  # POSIX-only process-group API

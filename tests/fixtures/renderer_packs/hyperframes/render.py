@@ -42,6 +42,7 @@ import hashlib
 import html
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -50,6 +51,11 @@ BACKEND_ID = "hyperframes.renderer"
 _BACKEND_VERSION = "1.0.0"
 _HYPERFRAMES_PIN = "0.7.107"
 _MIN_NODE_MAJOR = 22
+
+
+def _diagnostic_tail(value: str) -> str:
+    lines = [line for line in value.splitlines() if not re.match(r"^\s*npm\s+(?:warn|notice)\b", line, re.IGNORECASE)]
+    return "\n".join(lines[-40:]).encode("utf-8")[-8192:].decode("utf-8", errors="ignore")
 
 
 def find_node22() -> str | None:
@@ -602,6 +608,7 @@ def _run(verb: str, request: dict, request_path: Path, result_path: Path) -> int
     output_path = out_dir / output_name
 
     env = dict(os.environ)
+    env["npm_config_foreground_scripts"] = "true"
     node22 = find_node22()
     if node22 is None:
         _error(
@@ -643,8 +650,8 @@ def _run(verb: str, request: dict, request_path: Path, result_path: Path) -> int
             f"hyperframes render failed (exit {completed.returncode})",
             recovery_command="rerun hyperframes render in the workspace and inspect its output",
             details={
-                "stderr": completed.stderr[-2000:],
-                "stdout": completed.stdout[-1000:],
+                "stderr": _diagnostic_tail(completed.stderr),
+                "stdout": _diagnostic_tail(completed.stdout),
             },
         )
         return 0

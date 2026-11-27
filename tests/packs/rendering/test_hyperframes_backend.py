@@ -48,6 +48,37 @@ def _load_pack_render_module():
     return module
 
 
+def test_hyperframes_preserves_actionable_child_diagnostics() -> None:
+    render = _load_pack_render_module()
+    text = "real failure\n" + "npm warn noisy\n" * 30 + "npm notice update\n"
+    assert render._diagnostic_tail(text) == "real failure"
+
+
+def test_hyperframes_enables_npm_foreground_script_diagnostics(tmp_path: Path, monkeypatch) -> None:
+    render = _load_pack_render_module()
+    monkeypatch.setattr(render.shutil, "which", lambda name: "/fake/" + name)
+    monkeypatch.setattr(render, "find_node22", lambda: "/fake/node")
+
+    def fake_run(command, **kwargs):
+        assert command[0] == "npx"
+        stderr = ""
+        if kwargs["env"].get("npm_config_foreground_scripts") == "true":
+            stderr = "onnxruntime-node postinstall failed: underlying detail"
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr=stderr)
+
+    monkeypatch.setattr(render.subprocess, "run", fake_run)
+    (tmp_path / "timeline.json").write_text(json.dumps({
+        "theme_overrides": {"visual": {"canvas": {"width": 640, "height": 360, "fps": 24}}},
+        "tracks": [{"id": "v1", "kind": "visual"}],
+        "clips": [{"id": "title", "at": 0, "track": "v1", "clipType": "text", "hold": 1, "params": {"content": "test"}}],
+    }), encoding="utf-8")
+    request = {"schema_version": 1, "output_name": "output.mp4", "timeline_path": "timeline.json"}
+    result_path = tmp_path / "result.json"
+    assert render._run("render", request, tmp_path / "request.json", result_path) == 0
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    assert "onnxruntime-node postinstall failed: underlying detail" in result["details"]["stderr"]
+
+
 def _require_hyperframes_environment() -> None:
     """Fail (these tests are in the ``integration`` lane) unless ffmpeg and a Node >= 22 are available.
 
