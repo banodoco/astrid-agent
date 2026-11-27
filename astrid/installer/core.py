@@ -410,13 +410,29 @@ def recover_transaction(root: Path, data: Path, backend, *, stop, switch_old,
         retained = absolute(backup["root"])
         if retained.parent != absolute(root / "backups"):
             raise ValueError("The interrupted update backup is outside this installation.")
-    install_runtime(root)
     publish = getattr(backend, "publish_launch_admission", None)
-    if publish is not None:
-        publish(current(root) or Version.load(transaction["old"]), data)
+    selected = current(root) or Version.load(transaction["old"])
+    legacy_check = getattr(backend, "_legacy_linux_update", None)
+    defer_publication = callable(legacy_check) and legacy_check(selected)
+
+    def publish_recovery_launcher():
+        install_runtime(root)
+        if publish is not None:
+            publish(selected, data)
+
+    recovery_stop = stop
+    if defer_publication:
+        # An uncertain R15 stop is re-admitted from live supervisor/quiescence
+        # before changing launchers, the loaded action or the recovery journal.
+        # No old CLI and no second label-based systemd stop are involved.
+        def recovery_stop(version, workspace):
+            stop(version, workspace)
+            publish_recovery_launcher()
+    else:
+        publish_recovery_launcher()
     say("Recovering the interrupted Astrid update.")
     rollback_transaction(
-        root, data, backend, transaction, stop=stop, switch_old=switch_old,
+        root, data, backend, transaction, stop=recovery_stop, switch_old=switch_old,
         activate_old=activate_old, restore_workspace=restore_workspace,
         save=write_step, say=say,
     )
@@ -575,6 +591,9 @@ class Installer:
 
             raise R0StopError("R0 cannot enter the legacy in-place update transaction; use the copy-only upgrade boundary.")
         with ExitStack() as authority:
+            legacy_context = getattr(self.backend, "legacy_update_stop", None)
+            legacy_stop = (authority.enter_context(legacy_context(old, self.data, realm=realm))
+                           if callable(legacy_context) else None)
             candidate = prepare()
             transaction = {
                 "format": "astrid-install-update/v1", "operation_id": uuid.uuid4().hex,
@@ -582,6 +601,9 @@ class Installer:
                 "old": old.document(), "realm": realm, "backup": None,
                 "candidate": candidate.document(),
             }
+            if legacy_stop is not None and legacy_stop.systemd_enabled is not None:
+                # Configuration preference only; never serialized stop authority.
+                transaction["legacy_systemd_enabled"] = legacy_stop.systemd_enabled
             log = getattr(self.backend, "log", None)
             if isinstance(log, (str, Path)):
                 transaction["log_path"] = str(absolute(Path(log)))
@@ -592,15 +614,26 @@ class Installer:
                 # Adapter-owned recovery context lives in the shared journal,
                 # and is durable before any owner stop or checkout movement.
                 transaction["transaction_context"] = transaction_context
-            self._save_update(transaction, "staged")
             authority.enter_context(update_context(self.backend, transaction))
-            install_runtime(self.root)
             publish = getattr(self.backend, "publish_launch_admission", None)
-            if publish is not None:
-                publish(old, self.data)
-            # Record intent before the fenced stop: recovery can distinguish a
-            # pure staged image from a stop that may have completed on crash.
-            self._save_update(transaction, "stopping")
+            journal_started = False
+
+            def publish_stop_intent():
+                nonlocal journal_started
+                self._save_update(transaction, "staged")
+                journal_started = True
+                if legacy_stop is None:
+                    install_runtime(self.root)
+                    if publish is not None:
+                        publish(old, self.data)
+                # R15 supervisor admission invokes this only inside Runtime's
+                # final fence, before its stopping marker/first manager action.
+                self._save_update(transaction, "stopping")
+
+            if legacy_stop is None:
+                publish_stop_intent()
+            else:
+                legacy_stop.on_admitted = publish_stop_intent
 
             def rollback_after(failure):
                 try:
@@ -622,18 +655,32 @@ class Installer:
             try:
                 stop(old, self.data)
             except (Exception, KeyboardInterrupt) as failure:
+                if legacy_stop is not None and not journal_started:
+                    # No admission means no transaction/launcher/selection
+                    # writes and no rollback action against the live owner.
+                    raise
                 if is_lifecycle_refusal(failure):
                     try:
                         self._save_update(transaction, "complete", outcome="stop_refused")
                     except (Exception, KeyboardInterrupt) as journal_failure:
                         failure.add_note(
                             f"Could not durably cancel the staged update after the stop refusal: {journal_failure!r}")
-                else:
+                elif legacy_stop is None or legacy_stop.consumed:
                     rollback_after(failure)
+                # A supervisor request may have acted before a timeout. Keep
+                # the existing stopping journal for re-admission on retry;
+                # do not issue a second stop or activate over uncertain exit.
                 raise
+            finally:
+                if legacy_stop is not None:
+                    legacy_stop.on_admitted = None
 
             backup_image = None
             try:
+                if legacy_stop is not None:
+                    install_runtime(self.root)
+                    if publish is not None:
+                        publish(old, self.data)
                 self._save_update(transaction, "stopped")
                 if backup is not None:
                     backup_image = backup(old, self.data, realm)
@@ -862,6 +909,10 @@ class Installer:
                 raise ValueError("The selected workspace identity is unavailable.")
             # Choose the workspace policy before constructing the transaction;
             # the shared runner receives its callbacks as concrete values.
+            legacy_context = getattr(self.backend, "legacy_update_stop", None)
+            if callable(legacy_context):
+                with legacy_context(old, self.data, realm=realm):
+                    pass  # Read-only refusal before even isolated staging.
             prepare()
             self._run_update_transaction(
                 old, realm, prepare=prepare, stop=self._stop,

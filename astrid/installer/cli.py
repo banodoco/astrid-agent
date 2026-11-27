@@ -7,6 +7,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 import traceback
 from pathlib import Path
 from types import SimpleNamespace
@@ -39,6 +40,7 @@ from .core import (
     pending_transaction,
     read_json,
     separate_roots,
+    update_required,
     write_json,
 )
 from .installation import Installation, State
@@ -370,6 +372,33 @@ def _download_manifest(root: Path, destination: Path) -> None:
     prior = current(root)
     require_git(recorded=prior.env.get("ASTRID_GIT_EXECUTABLE") if prior else None)
     download("https://astrid.haus/install-manifest.json", destination)
+
+
+def _preflight_update_manifest(backend, mode, installed, data, manifest_path):
+    """Resolve the install-line update before touching its owned pending work.
+
+    A remote manifest is downloaded to disposable scratch for classification;
+    the installation's manifest/claims are published only after admission.
+    Healthy same-release repair keeps its existing lifecycle path.
+    """
+    legacy = getattr(backend, "_legacy_linux_update", None)
+    if not callable(legacy) or not legacy(installed):
+        return None
+    if mode in {"update", "app-update"}:
+        backend.preflight_update(installed, data)
+        return None
+    if mode != "install":
+        return None
+    if manifest_path is not None:
+        manifest = validate_manifest(read_json(manifest_path))
+    else:
+        with tempfile.TemporaryDirectory(prefix="astrid-update-inspect-") as folder:
+            path = Path(folder) / "manifest.json"
+            _download_manifest(backend.root, path)
+            manifest = validate_manifest(read_json(path))
+    if update_required(mode, manifest, installed, managed_by=backend.managed_by):
+        backend.preflight_update(installed, data)
+    return manifest
 
 
 def _retained_r0_roots(service) -> list[Path]:
@@ -947,16 +976,17 @@ def main(argv: list[str] | None = None) -> int:
                         print(RECOVERED_PREVIOUS_VERSION)
                     run.reason = "recovered-previous-version"
                     return run.finish()
-                if mode in {"install", "update", "app-update"} and marker.get("owner") == LABEL:
-                    # Sweep only jobs and artifacts named by Astrid's durable
-                    # ownership record. Active and unqueryable objects remain.
-                    update_job.sweep_owned_jobs(root, locked=True)
-                    marker = read_json(root / "install.json")
                 if mode == "uninstall" and not marker and recorded.get("owner") != LABEL:
                     raise ValueError("No managed Astrid installation was found to uninstall.")
                 installed = current(root)
                 if installed is not None and not installed.python.is_file():
                     installed = None
+                early_manifest = _preflight_update_manifest(backend, mode, installed, data, args.manifest)
+                if mode in {"install", "update", "app-update"} and marker.get("owner") == LABEL:
+                    # Sweep only jobs and artifacts named by Astrid's durable
+                    # ownership record. Active and unqueryable objects remain.
+                    update_job.sweep_owned_jobs(root, locked=True)
+                    marker = read_json(root / "install.json")
                 update_job_record: dict | None = None
                 if args.update_job:
                     update_job_record, accepted_old = update_job.admit_worker(
@@ -985,10 +1015,17 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Using your workspace at {data}.")
                 manifest = {}
                 if mode not in {"uninstall", "doctor"}:
-                    if not args.manifest:
+                    if early_manifest is not None:
+                        manifest = early_manifest
+                        if not args.manifest:
+                            args.manifest = root / "install-manifest.json"
+                            write_json(args.manifest, manifest)
+                    elif not args.manifest:
                         args.manifest = root / "install-manifest.json"
                         _download_manifest(root, args.manifest)
-                    manifest = validate_manifest(read_json(args.manifest))
+                        manifest = validate_manifest(read_json(args.manifest))
+                    else:
+                        manifest = validate_manifest(read_json(args.manifest))
                     if settled:
                         run.manifest(manifest)
                 bundle = None
