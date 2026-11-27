@@ -244,3 +244,58 @@ def test_absent_tombstoned_target_stays_removed_on_receipt_rollback(tmp_path):
     assert not (root / "default_two").exists()
     assert read_group(root).removals == ("default_two",)
     assert read_pin(root / "default_one/PIN")["origin"] == "default"
+
+
+@pytest.mark.parametrize("legacy", [False, True], ids=["bound-prior", "legacy-prior"])
+def test_rollback_preserves_the_prior_binding_format_and_every_restored_byte(tmp_path, legacy):
+    repo = Repository(tmp_path / "repo")
+    root = tmp_path / "home/Astrid/packs"
+    first = install_release_manifest(manifest=repo.defaults_manifest(), packs_root=root)
+    prior = json.loads((root / ".group.json").read_bytes())
+    if legacy:
+        # Exact legacy wire format. The installed proof also constructs this
+        # through the real earlier executable and reads rollback with it.
+        prior.pop("pins")
+        (root / ".group.json").write_text(json.dumps(prior))
+    assert read_group(root).pins == prior.get("pins", {})
+    assert json.loads((root / ".group.json").read_bytes()) == prior
+    original = {name: _all_user_bytes(path) for name, path in first.paths.items()}
+    (root / "protected-user.bin").write_bytes(b"preserve unrelated user bytes\x00\xff")
+    repo.write_pack("default_one", "new\n")
+    repo.publish()
+    receipts = []
+    changed = install_release_manifest(manifest=repo.defaults_manifest(), packs_root=root,
+                                       on_prepared=receipts.append)
+    record, = receipts
+    assert set(read_group(root).pins) == {"default_one", "default_two"}
+    rollback_group(packs_root=root, transaction_id=changed.transaction_id, pack_ids=record["pack_ids"],
+                   expected_pins=record["pins"], expected_previous=(first.transaction_id, first.revision))
+    restored = json.loads((root / ".group.json").read_bytes())
+    assert ("pins" in restored) is not legacy
+    assert restored.get("pins", {}) == prior.get("pins", {})
+    assert restored["admissions"] == prior["admissions"]
+    assert {name: _all_user_bytes(path) for name, path in read_group(root).paths.items()} == original
+    assert (root / "protected-user.bin").read_bytes() == b"preserve unrelated user bytes\x00\xff"
+
+
+def test_partial_legacy_rollback_keeps_every_untouched_independent_pin(tmp_path):
+    repo = Repository(tmp_path / "repo")
+    root = tmp_path / "home/Astrid/packs"
+    first = install_release_manifest(manifest=repo.defaults_manifest(), packs_root=root)
+    prior = json.loads((root / ".group.json").read_bytes())
+    prior.pop("pins")
+    (root / ".group.json").write_text(json.dumps(prior))
+    repo.write_pack("default_one", "new\n")
+    repo.publish()
+    receipts = []
+    changed = install_release_manifest(manifest=repo.defaults_manifest(), packs_root=root,
+                                       on_prepared=receipts.append)
+    record, = receipts
+    untouched = _all_user_bytes(root / "default_two")
+    binding = read_group(root).pins["default_two"]
+    rollback_group(packs_root=root, transaction_id=changed.transaction_id, pack_ids=["default_one"],
+                   expected_pins={"default_one": record["pins"]["default_one"]},
+                   expected_previous=(first.transaction_id, first.revision))
+    assert read_group(root).pins == {"default_two": binding}
+    assert _all_user_bytes(root / "default_two") == untouched
+    assert (root / "default_one/payload.txt").read_text() == "default v1\n"
