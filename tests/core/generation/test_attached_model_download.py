@@ -389,14 +389,15 @@ def test_a_failed_publish_without_hard_links_leaves_no_placeholder(comfy, models
     root, _ = models
     _no_hard_links(monkeypatch)
     plan = _plan(comfy, file_server)
-    real_replace = os.replace
+    from astrid.core.generation import asset_gaps
+    real_rename = asset_gaps._rename_noreplace
 
-    def replace(src, dst, *args, **kwargs):
+    def rename(src, dst):
         if os.fspath(dst).endswith("ae.safetensors"):
             raise OSError(errno.EIO, "the drive went away", os.fspath(dst))
-        return real_replace(src, dst, *args, **kwargs)
+        return real_rename(src, dst)
 
-    monkeypatch.setattr(os, "replace", replace)
+    monkeypatch.setattr(asset_gaps, "_rename_noreplace", rename)
     with pytest.raises(AttachedDownloadRefused) as caught:  # the failure is reported with what finished before it
         _apply(comfy, file_server, plan["plan_sha256"])
     assert isinstance(caught.value.__cause__, OSError)
@@ -408,12 +409,14 @@ def test_a_failed_publish_without_hard_links_leaves_no_placeholder(comfy, models
 @pytest.mark.parametrize("supports_links", [True, False])
 def test_the_plan_records_whether_each_folder_takes_hard_links(
         comfy, models, file_server, monkeypatch, supports_links):
+    from astrid.core.generation import asset_gaps
     from tests.core.generation.environment_states import snapshot
 
     root, _ = models
     targets = {root / key / name for key, (name, _) in WANTED.items()}
-    link_calls, replace_calls = [], []
+    link_calls, replace_calls, rename_calls = [], [], []
     real_link, real_replace = os.link, os.replace
+    real_rename = asset_gaps._rename_noreplace
 
     def link(src, dst, *args, **kwargs):
         link_calls.append(Path(dst))
@@ -425,19 +428,25 @@ def test_the_plan_records_whether_each_folder_takes_hard_links(
         replace_calls.append(Path(dst))
         return real_replace(src, dst, *args, **kwargs)
 
+    def rename(src, dst):
+        rename_calls.append(Path(dst))
+        return real_rename(src, dst)
+
     monkeypatch.setattr(os, "link", link)
     monkeypatch.setattr(os, "replace", replace)
+    monkeypatch.setattr(asset_gaps, "_rename_noreplace", rename)
     before = snapshot(root)
     plan = _plan(comfy, file_server)
     assert all("hard_links" not in f for f in plan["files"])
-    assert link_calls == replace_calls == file_server.requested == []
+    assert link_calls == replace_calls == rename_calls == file_server.requested == []
     assert snapshot(root) == before
 
     result = _apply(comfy, file_server, plan["plan_sha256"])
     probes = [p for p in link_calls if p.name.startswith(".astrid-link-probe-")]
     assert sorted(p.parent for p in probes) == sorted(root / key for key in WANTED)
     assert set(link_calls) & targets == (targets if supports_links else set())
-    assert set(replace_calls) & targets == (set() if supports_links else targets)
+    assert set(rename_calls) & targets == (set() if supports_links else targets)
+    assert not set(replace_calls) & targets  # never publish using an overwriting rename
     assert len(result["downloaded"]) == len(targets)
     for key, (name, source) in WANTED.items():
         assert (root / key / name).read_bytes() == BLOBS[source]

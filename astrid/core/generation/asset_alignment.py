@@ -7,6 +7,7 @@ endpoint; it never provisions, starts or restarts an engine.
 from __future__ import annotations
 
 import contextlib
+import errno
 import hashlib
 import json
 import logging
@@ -151,20 +152,28 @@ class _ResumingClient:
     and replays the prefix ahead of the new bytes. A server that ignores Range restarts at 0.
     """
 
-    def __init__(self, inner, part: Path, deadline: float | None, progress=None):
+    def __init__(self, inner, part: Path, deadline: float | None, progress=None, *, expected_size: int):
         self.inner, self.part, self.deadline, self.progress = inner, part, deadline, progress
+        self.expected_size = expected_size
         self.resumed_from = 0
 
     @contextlib.contextmanager
     def stream(self, method, url, **kwargs):
         prefix = self.part.stat().st_size if self.part.exists() else 0
         headers = dict(kwargs.pop('headers', None) or {})
+        # Range offsets are byte offsets in the locked artifact, not in an
+        # HTTP content encoding. Request identity on every redirect hop.
+        headers['Accept-Encoding'] = 'identity'
         if prefix:
             headers['Range'] = f'bytes={prefix}-'
         with self.inner.stream(method, url, headers=headers, **kwargs) as response:
-            if prefix and response.status_code == 206:
-                start = re.match(r'bytes (\d+)-', str(response.headers.get('Content-Range', '')))
-                if start is None or int(start.group(1)) != prefix:
+            if response.status_code == 206:
+                import httpx
+                response_headers = httpx.Headers(response.headers)
+                match = re.fullmatch(r'bytes (\d+)-(\d+)/(\d+)',
+                                     response_headers.get('Content-Range', ''))
+                if (not prefix or match is None or tuple(map(int, match.groups())) !=
+                        (prefix, self.expected_size - 1, self.expected_size)):
                     raise DownloadError('server answered a resume request with a different range')
             else:
                 prefix = 0
@@ -183,15 +192,28 @@ class _SplicedResponse:
 
     def iter_bytes(self):
         client = self._client
+        import httpx
+        encoding = httpx.Headers(getattr(self._response, 'headers', {})).get('content-encoding', 'identity')
+        if encoding.lower() != 'identity':
+            raise DownloadError('server did not provide identity-encoded model bytes')
         if self._prefix:
             with client.part.open('rb') as handle:
-                for chunk in iter(lambda: handle.read(8 << 20), b''):
+                remaining = self._prefix
+                while remaining:
+                    chunk = handle.read(min(8 << 20, remaining))
+                    if not chunk:
+                        raise DownloadError('partial download changed during resume')
+                    remaining -= len(chunk)
                     yield chunk
+                if handle.read(1):
+                    raise DownloadError('partial download changed during resume')
         done = self._prefix
         with client.part.open('ab' if self._prefix else 'wb') as handle:
             for chunk in self._response.iter_bytes():
                 if client.deadline is not None and time.monotonic() >= client.deadline:
                     raise DeadlineExceeded('model download deadline exceeded')
+                if done + len(chunk) > client.expected_size:
+                    raise IntegrityError('download exceeds its locked byte count')
                 handle.write(chunk)
                 handle.flush()
                 done += len(chunk)
@@ -219,7 +241,7 @@ def fetch_verified(entry: dict[str, Any], path: Path, *, root: Path, part: Path,
         # The operating system's trust store, so antivirus and company proxies that inspect HTTPS work.
         from astrid.core.util.http import trusted_httpx_client
         client = owned = trusted_httpx_client()
-    resuming = _ResumingClient(client, part, deadline, progress)
+    resuming = _ResumingClient(client, part, deadline, progress, expected_size=entry['size_bytes'])
     error = None
     try:
         fetch.download(entry, root=root, client=resuming, quiet=True)
@@ -232,14 +254,26 @@ def fetch_verified(entry: dict[str, Any], path: Path, *, root: Path, part: Path,
         if owned is not None:
             owned.close()
     # A caller may pre-claim `path` as an empty placeholder: only bytes fetch actually published count here.
+    # An overlong body is a lock mismatch, even if the verified downloader
+    # stopped before it could publish its staging file.
+    if isinstance(error, IntegrityError):
+        part.unlink(missing_ok=True)
+        raise error
     published = path.exists() and (error is None or path.stat().st_size > 0)
     if published:
         try:
             # fetch published first and left its source receipt over the verification sidecar
             # model_root reads; force-verifying checks size and SHA-256 and rewrites that sidecar.
             fetch.verify(entry, path, root=root, force=True)
+        except OSError as exc:
+            # An I/O error while checking the staged bytes is not a checksum
+            # verdict. Never leave that unverified file at its final name.
+            path.unlink(missing_ok=True)
+            if exc.errno == errno.ENOSPC:
+                raise DownloadError(f'{label}: disk ran out of space while verifying') from exc
+            raise DownloadError(f'{label}: verification could not read the file ({exc})') from exc
         except Exception as exc:
-            path.unlink()
+            path.unlink(missing_ok=True)
             part.unlink(missing_ok=True)
             raise IntegrityError(f'{label}: SHA-256 mismatch against the lock ({exc}); refused to publish') from exc
     else:
