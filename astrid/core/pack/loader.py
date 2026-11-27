@@ -310,11 +310,17 @@ def _isolate_incompatible_packs(
     from packaging.markers import default_environment
 
     python_environment = dict(default_environment())
-    # The existing managed-source policy is the only default pin authority on
-    # this base; the release-manifest packs mechanism is a later integration.
+    # Managed installs consume their own selected version manifest. Acquisition
+    # declarations remain the explicit source-checkout/legacy policy only.
     from astrid.core.pack.source_setup import declarations_from_json
-    release_pins = {item.pack_id: {"commit": item.revision, "digest": item.tree_sha256 or ""}
-                    for item in declarations_from_json()}
+    from astrid.core.pack.release_manifest import installed_release_manifest, release_pins as manifest_pins, verify_release_default
+    from astrid.core.pack.identity import read_pin
+    from astrid.core.pack.install import PackInstallError
+    installed = installed_release_manifest()
+    installed_pins = manifest_pins(installed[1]) if installed is not None and "packs" in installed[1] else None
+    release_pins = (installed_pins if installed_pins is not None else
+                    {item.pack_id: {"commit": item.revision, "digest": item.tree_sha256 or ""}
+                     for item in declarations_from_json()})
     from astrid import sdk
     contract = ImportContract(
         facade_exports=frozenset(pack_api.__all__), facade_version=PACK_API_VERSION,
@@ -360,6 +366,29 @@ def _isolate_incompatible_packs(
         rejected: dict[str, QuarantinedPack] = {}
         for pack in active:
             if pack.id not in external_ids:
+                continue
+            try:
+                pin_path = pack.root / "PIN"
+                pin = read_pin(pin_path) if pin_path.exists() else {}
+                # PINs describe installed provenance; only the independent
+                # selected manifest authorizes a managed default. User-origin
+                # packs retain inventory semantics and are never relabelled.
+                if pin:
+                    selected[pack.id].update(origin=pin["origin"], commit=pin["commit"],
+                                             installed_digest=pin["digest"])
+                if installed_pins is not None and pin.get("origin") == "default":
+                    expected = installed[1]["packs"].get(pack.id)
+                    if expected is None or pack.root.parent != Path.home() / "Astrid/packs":
+                        raise ValueError("Installed defaults require the selected release's canonical collection.")
+                    verify_release_default(pack.root, expected)
+            except (OSError, ValueError, PackInstallError) as exc:
+                rejected[pack.id] = QuarantinedPack(pack_id=pack.id, pack_dir=pack.root,
+                                                   manifest_path=pack.manifest_path, error=str(exc))
+                continue
+        # Populate every selected PIN before checking any dependency. Otherwise
+        # inventory order could make an earlier pack see an unpinned dependency.
+        for pack in active:
+            if pack.id not in external_ids or pack.id in rejected:
                 continue
             manifest = pack.to_dict()
             manifest["schema_version"] = int(pack.schema_version)

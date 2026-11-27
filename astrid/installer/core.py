@@ -352,6 +352,9 @@ def rollback_transaction(root: Path, data: Path, backend, transaction: dict, *,
             restore_pre_restamp_boot_manifest(
                 Path(data) / "runtime", remove_if_missing=not (backup is not None and restore_workspace and kind == "migration"),
             )
+        rollback_defaults = getattr(backend, "rollback_default_packs", None)
+        if rollback_defaults is not None:
+            rollback_defaults(old, candidate)
         switch_old(old, candidate)
         save("rollback_selected")
         try:
@@ -642,6 +645,9 @@ class Installer:
                 if migrate is not None:
                     migrate(candidate, self.data, realm)
                     self._save_update(transaction, "migrated")
+                apply_defaults = getattr(self.backend, "apply_default_packs", None)
+                if apply_defaults is not None:
+                    apply_defaults(candidate, old)
                 switch_candidate(candidate)
                 self._save_update(transaction, "switched")
                 activate(candidate, self.data, realm)
@@ -744,12 +750,18 @@ class Installer:
                 self.say(f"Workspace kept at {self.data}.")
             return
 
-        # Repair never provisions tools, installs code, migrates or rewrites data.
+        # Repair uses the selected code/tools and never migrates workspace data.
+        # Missing release defaults use the same canonical group transaction,
+        # only after the existing lifecycle stop fence.
         if old and mode != "update":
             realm = self.backend.workspace(old, self.data)
+            check_defaults = getattr(self.backend, "default_packs_need_repair", None)
+            repair_defaults = bool(check_defaults and check_defaults(old))
             repair_chat_command = getattr(self.backend, "repair_chat_command", None)
             chat_changed = bool(repair_chat_command and repair_chat_command(old))
             if self.managed_by == "pinokio":
+                if repair_defaults:
+                    raise ValueError("Choose Pinokio's Update button to repair the selected release defaults while stopped.")
                 self.backend.register(old, self.data)
                 self.outcomes["startup"] = "registered; Pinokio owns startup"
                 install_launcher(self.root)
@@ -767,7 +779,7 @@ class Installer:
                 pass
             else:
                 self.outcomes["startup"] = "running and ready"
-                if not chat_changed and not self.backend.restart_required():
+                if not repair_defaults and not chat_changed and not self.backend.restart_required():
                     # The only repair path without registration still stamps
                     # legacy records, after recovery and healthy verification.
                     persist = getattr(self.backend, "persist_identity", None)
@@ -781,6 +793,8 @@ class Installer:
             self.say("Restarting Astrid with the installed version.")
             self._publish_stop_admission(old)
             self.backend.stop(old, self.data)
+            if repair_defaults:
+                self.backend.apply_default_packs(old, old)
             self.backend.register(old, self.data)
             self._observe_autostart()
             self.outcomes["startup"] = "configured; readiness not confirmed"
@@ -890,6 +904,9 @@ class Installer:
             else:
                 with self._phase("Creating your workspace"):
                     realm = self.backend.create(candidate_version, self.data)
+            apply_defaults = getattr(self.backend, "apply_default_packs", None)
+            if apply_defaults is not None:
+                apply_defaults(candidate_version)
             switch(self.root, candidate_version)
             with self._phase("Finishing up." if self.managed_by == "pinokio" else f"Starting {new}"):
                 self.backend.register(candidate_version, self.data)
@@ -920,6 +937,9 @@ class Installer:
             if candidate_version is not None:
                 try:
                     self.backend.stop(candidate_version, self.data)
+                    rollback_defaults = getattr(self.backend, "rollback_default_packs", None)
+                    if rollback_defaults is not None:
+                        rollback_defaults(None, candidate_version)
                 except (Exception, KeyboardInterrupt) as cleanup:
                     if is_lifecycle_refusal(cleanup):
                         raise cleanup

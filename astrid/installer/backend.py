@@ -1676,7 +1676,45 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         from .boundary_registration import stage_runtime_launcher
 
         stage_runtime_launcher(version)
+        self.prepare_default_packs(version)
         return version
+
+    def _default_packs(self, version: Version, operation: str, previous: Version | None = None) -> dict:
+        """Execute the canonical adapter in this version's real installed venv."""
+        arguments = [version.python, "-X", "utf8", "-I", "-m", "astrid.installer.default_packs", operation]
+        if previous is not None:
+            arguments.extend(["--previous", previous.root])
+        home = str(self.service.home)
+        env = {**version.env, "HOME": home, "USERPROFILE": home}
+        return json.loads(self.run(arguments, extra_env=env, separate_stderr=True))
+
+    def prepare_default_packs(self, version: Version) -> None:
+        if "packs" in read_json(version.root / "manifest.json"):
+            self._default_packs(version, "prepare")
+
+    def _has_default_delivery(self, version: Version) -> bool:
+        if "packs" not in read_json(version.root / "manifest.json"):
+            return False
+        # Retained versions predate this adapter. Probe their real interpreter;
+        # a missing preparation receipt in a supporting version is an error,
+        # never a switch that disables delivery or its selected authority.
+        code = ("import importlib.util,json; "
+                "print(json.dumps(importlib.util.find_spec('astrid.installer.default_packs') is not None))")
+        return json.loads(self.run([version.python, "-I", "-c", code],
+                                   extra_env=version.env, separate_stderr=True))
+
+    def default_packs_need_repair(self, version: Version) -> bool:
+        if not self._has_default_delivery(version):
+            return False
+        return self._default_packs(version, "needs-repair")["needed"]
+
+    def apply_default_packs(self, version: Version, previous: Version | None = None) -> None:
+        if self._has_default_delivery(version):
+            self._default_packs(version, "apply", previous)
+
+    def rollback_default_packs(self, previous: Version | None, candidate: Version | None) -> None:
+        if candidate is not None and (candidate.root / "default-packs.json").is_file():
+            self._default_packs(candidate, "rollback", previous)
 
     def validate_candidate(self, version: Version, data: Path, realm: dict) -> None:
         """Admit the staged package against the live workspace without changing it."""

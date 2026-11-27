@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import stat
 import sys
@@ -1161,6 +1162,7 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
                   reconcile_defaults: bool = False,
                   refresh: Refresh | None = None,
                   consent: Callable[[Mapping[str, Any]], bool] | None = None,
+                  on_prepared: Callable[[Mapping[str, Any]], None] | None = None,
                   boundary: Callable[[str], None] | None = None) -> GroupResult:
     """Validate -> build -> publish a same-source, same-commit dependency group.
 
@@ -1440,6 +1442,16 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
             _write_state(candidate, state)
             _sync_tree(candidate)
             _sync_directory(retired)
+            if on_prepared is not None:
+                # Trusted installer write-ahead receipt, before the exchange.
+                # The callback cannot select an epoch or bypass the source,
+                # retained-state and artifact rechecks that follow it.
+                on_prepared({"transaction_id": tx, "revision": committed_revision,
+                             "previous_transaction_id": old["transaction_id"],
+                             "previous_revision": old["revision"],
+                             "pack_ids": sorted(set(packs) | set(remove)),
+                             "pins": {i: read_pin(candidate / i / "PIN") if i in packs else None
+                                      for i in sorted(set(packs) | set(remove))}})
             mark("prepared")
             mark("before_swap")
             # Host quiescence/observability hooks cannot invalidate the sealed
@@ -1503,7 +1515,7 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
 
 def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[str] | None = None,
                    transaction_id: str | None = None,
-                   expected_pins: Mapping[str, Mapping[str, Any]] | None = None,
+                   expected_pins: Mapping[str, Mapping[str, Any] | None] | None = None,
                    selected: Mapping[str, PackFacts] | None = None,
                    selected_roots: tuple[str | Path, ...] = (),
                    core_root: str | Path | None = None,
@@ -1511,6 +1523,8 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
                    python_packages: Mapping[str, str] | None = None,
                    refresh: Refresh | None = None,
                    consent: Callable[[Mapping[str, Any]], bool] | None = None,
+                   on_prepared: Callable[[Mapping[str, Any]], None] | None = None,
+                   expected_previous: tuple[str | None, int] | None = None,
                    boundary: Callable[[str], None] | None = None) -> GroupResult:
     """Restore selected packs from the generation retired by the active commit.
 
@@ -1519,9 +1533,21 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
     are copied from the live collection unchanged. Restored pack directories
     are copied as complete installed state, including build-hook admission and
     artifact-manifest files under ``.build``.
+
+    ``expected_previous`` binds installer recovery to its write-ahead receipt.
+    Returning to an initial (revision-zero) collection additionally requires
+    the exact active transaction, explicit ids and all expected current PINs.
+    Ordinary rollback still refuses an uncommitted previous generation.
     """
     root = _root(packs_root)
-    expected_pins = {key: dict(value) for key, value in (expected_pins or {}).items()}
+    if expected_previous is not None and (
+            not isinstance(expected_previous, tuple) or len(expected_previous) != 2
+            or type(expected_previous[1]) is not int or expected_previous[1] < 0
+            or (expected_previous[0] is None) != (expected_previous[1] == 0)
+            or (expected_previous[0] is not None and
+                (not isinstance(expected_previous[0], str) or not re.fullmatch(r"[0-9a-f]{32}", expected_previous[0])))):
+        raise PackInstallError("invalid_request", "Expected previous generation must name a complete recorded identity.")
+    expected_pins = {key: dict(value) if value is not None else None for key, value in (expected_pins or {}).items()}
     host_selected = {key: dict(value) for key, value in (selected or {}).items()}
     pins = {key: dict(value) for key, value in (release_pins or {}).items()}
     packages = dict(python_packages or {})
@@ -1533,7 +1559,12 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
             raise PackInstallError("rollback_conflict", "Rollback must name the currently active committed generation.")
         prior = _directory(root.parent / ".astrid-retired" / active_tx)
         prior_state = _state(prior)
-        if prior_state["revision"] < 1 or prior_state["transaction_id"] == active_tx:
+        previous = (prior_state["transaction_id"], prior_state["revision"])
+        if expected_previous is not None and previous != expected_previous:
+            raise PackInstallError("rollback_conflict", "The retained generation differs from the installer's prepared receipt.")
+        initial = (expected_previous == (None, 0) and transaction_id == active_tx
+                   and pack_ids is not None and set(expected_pins) == set(pack_ids))
+        if (prior_state["revision"] < 1 and not initial) or prior_state["transaction_id"] == active_tx:
             raise PackInstallError("uncommitted_generation", "The active generation has no prior committed generation to restore.")
         current_paths = _paths(root)
         prior_paths = _paths(prior)
@@ -1685,6 +1716,12 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
             _write_state(candidate, new_state)
             _sync_tree(candidate)
             _sync_directory(retired)
+            if on_prepared is not None:
+                on_prepared({"transaction_id": tx, "revision": new_state["revision"],
+                             "previous_transaction_id": active_tx,
+                             "previous_revision": state["revision"], "pack_ids": list(ids),
+                             "pins": {i: read_pin(candidate / i / "PIN")
+                                      if (candidate / i / "PIN").is_file() else None for i in ids}})
             mark("before_swap")
             for pack_id, (digest, pin) in candidate_facts.items():
                 path = candidate / pack_id
