@@ -25,6 +25,20 @@ def test_shipped_agent_witness_contract():
     assert witness["file_count"] == 64
 
 
+def test_shipped_direct_source_is_additive_and_has_no_projection_transform():
+    witness = pack_revisions._motion_release_source_witness()
+    assert witness is not None
+    assert witness["schema"] == "astrid-motion-release-source/v1"
+    assert witness["repo"] == "https://github.com/banodoco/poms_packs"
+    assert witness["upstream_subpath"] == "astrid_motion"
+    assert witness["upstream_commit"] != UPSTREAM
+    assert witness["tree_digest"] == witness["upstream_digest"] != PROJECTION
+    assert witness["file_count"] == 64
+    assert witness["transform"] == "identity"
+    assert "alias_only_digest" not in witness and "derived_from" not in witness
+    assert pack_revisions._motion_projection_witness()["tree_digest"] == PROJECTION
+
+
 def _stage(element):
     return {"effects": [{"source_pack_id": "astrid_motion", "element_root": str(element)}]}
 
@@ -242,3 +256,198 @@ def test_non_motion_legacy_release_pin_still_uses_commit(tmp_path, monkeypatch):
     assert rows[1]["comparison"] == "match"
     assert rows[1]["resolved_revision"] == rows[1]["upstream_revision"] == commit
     assert "digest_rule" not in rows[1]
+
+
+@pytest.fixture
+def direct_motion(motion):
+    """Small real source tree and independent test witness, not a release pin."""
+    helper = motion.element / "helper.ts"
+    helper.write_text("export const helper = true;\n", encoding="utf-8")
+    descriptor = motion.element / "element.yaml"
+    descriptor.write_text("id: am-type\n", encoding="utf-8")
+    digest = pack_digest(motion.root)
+    record = {
+        "schema": "astrid-motion-release-source/v1",
+        "pack_id": "astrid_motion",
+        "repo": "https://github.com/banodoco/poms_packs",
+        "upstream_commit": "c" * 40,
+        "upstream_subpath": "astrid_motion",
+        "upstream_tree": "d" * 40,
+        "digest_rule": "pack-tree-v1",
+        "upstream_digest": digest,
+        "tree_digest": digest,
+        "file_count": 4,
+        "transform": "identity",
+    }
+    path = motion.witness_path.with_name("astrid_motion_release_source.json")
+    path.write_text(json.dumps(record), encoding="utf-8")
+    return SimpleNamespace(
+        root=motion.root, element=motion.element, stage=motion.stage,
+        helper=helper, descriptor=descriptor, digest=digest, witness=record,
+        witness_path=path, legacy_path=motion.witness_path,
+        legacy_witness=motion.witness, pin_bytes=motion.pin_bytes,
+        editor={"astrid_motion": record["upstream_commit"], "astrid_motion_tree": digest},
+    )
+
+
+def test_direct_source_requires_witnessed_content_and_exact_upstream(direct_motion):
+    row = _row(direct_motion, direct_motion.editor)
+    assert row["comparison"] == "match"
+    assert row["resolved_revision"] == row["editor_revision"] == direct_motion.digest
+    assert row["upstream_revision"] == row["editor_upstream_revision"] == "c" * 40
+    assert row["derived_from"] is None
+    assert row["identity_verification"] == "agent direct-source witness and source digest verified"
+    assert (direct_motion.root / "PIN").read_bytes() == direct_motion.pin_bytes
+    wrong = _row(direct_motion, {**direct_motion.editor, "astrid_motion": "f" * 40})
+    assert wrong["comparison"] == "mismatch"
+    assert wrong["upstream_revision"] == "c" * 40
+    assert wrong["editor_upstream_revision"] == "f" * 40
+
+
+@pytest.mark.parametrize("upstream", [None, "", "C" * 40, "unknown", "c" * 39, "c" * 41])
+def test_direct_source_missing_or_invalid_editor_upstream_is_unknown(direct_motion, upstream):
+    editor = {**direct_motion.editor, "astrid_motion": upstream}
+    assert _row(direct_motion, editor)["comparison"] == "unknown"
+    if upstream is None:
+        editor.pop("astrid_motion")
+        assert _row(direct_motion, editor)["comparison"] == "unknown"
+
+
+def test_direct_source_without_editor_tree_never_falls_back_to_pin(direct_motion):
+    assert _row(direct_motion, {"astrid_motion": "c" * 40})["comparison"] == "unknown"
+    assert _row(direct_motion, None)["comparison"] == "editor revision not supplied"
+
+
+@pytest.mark.parametrize("relative", [
+    "pack.yaml", "rendering/elements/effects/am-type/component.tsx",
+    "rendering/elements/effects/am-type/helper.ts",
+    "rendering/elements/effects/am-type/element.yaml",
+])
+def test_direct_source_tampered_manifest_component_helper_or_descriptor_is_nonmatch(direct_motion, relative):
+    path = direct_motion.root / relative
+    path.write_bytes(path.read_bytes() + b"\n# changed source\n")
+    actual = pack_digest(direct_motion.root)
+    row = _row(direct_motion, direct_motion.editor)
+    assert row["comparison"] == "mismatch"
+    assert row["resolved_revision"] == actual != direct_motion.digest
+    assert row["upstream_revision"] is None and row["derived_from"] is None
+    forged = _row(direct_motion, {**direct_motion.editor, "astrid_motion_tree": actual})
+    assert forged["comparison"] == "unknown"
+
+
+@pytest.mark.parametrize("changes", [
+    {"schema": "astrid-motion-release-source/v2"},
+    {"pack_id": "other"}, {"repo": "https://example.com/pack"},
+    {"upstream_subpath": "../astrid_motion"}, {"digest_rule": "other"},
+    {"transform": "alias"}, {"alias_only_digest": "a" * 64},
+    {"derived_from": "a" * 40}, {"upstream_commit": "a" * 39},
+    {"upstream_tree": "A" * 40}, {"tree_digest": "A" * 64},
+    {"upstream_digest": "a" * 64}, {"file_count": True},
+    {"file_count": 4.0}, {"file_count": 0}, {"file_count": -1},
+    {"file_count": 5},
+])
+def test_direct_source_bad_witness_is_nonmatch(direct_motion, changes):
+    direct_motion.witness_path.write_text(
+        json.dumps({**direct_motion.witness, **changes}), encoding="utf-8")
+    row = _row(direct_motion, direct_motion.editor)
+    assert row["comparison"] == "unknown"
+    assert row["upstream_revision"] is None and row["derived_from"] is None
+    assert row["identity_verification"] == "unknown"
+
+
+@pytest.mark.parametrize("failure", ["missing", "malformed", "duplicate"])
+def test_direct_source_missing_or_ambiguous_json_never_uses_collection_claim(direct_motion, failure):
+    claim = direct_motion.root.parent / direct_motion.witness_path.name
+    claim.write_text(json.dumps(direct_motion.witness), encoding="utf-8")
+    if failure == "missing":
+        direct_motion.witness_path.unlink()
+    elif failure == "malformed":
+        direct_motion.witness_path.write_text("{", encoding="utf-8")
+    else:
+        raw = json.dumps(direct_motion.witness)
+        direct_motion.witness_path.write_text(
+            raw[:-1] + ', "file_count": 4}', encoding="utf-8")
+    write_pin(direct_motion.root / "PIN", {
+        "version": 1, "source": direct_motion.witness["repo"], "commit": "c" * 40,
+        "digest_rule": "pack-tree-v1", "digest": direct_motion.digest, "origin": "default",
+    })
+    row = _row(direct_motion, direct_motion.editor)
+    assert row["comparison"] == "unknown"
+    assert row["upstream_revision"] is None
+
+
+def test_direct_source_witness_commit_change_does_not_relabel_editor(direct_motion):
+    direct_motion.witness_path.write_text(
+        json.dumps({**direct_motion.witness, "upstream_commit": "e" * 40}), encoding="utf-8")
+    row = _row(direct_motion, direct_motion.editor)
+    assert row["comparison"] == "mismatch"
+    assert row["upstream_revision"] == "e" * 40
+    assert row["editor_upstream_revision"] == "c" * 40
+
+
+def test_direct_source_symlink_witness_is_refused(direct_motion):
+    claim = direct_motion.root.parent / direct_motion.witness_path.name
+    claim.write_bytes(direct_motion.witness_path.read_bytes())
+    direct_motion.witness_path.unlink()
+    try:
+        direct_motion.witness_path.symlink_to(claim)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable on this platform")
+    assert _row(direct_motion, direct_motion.editor)["comparison"] == "unknown"
+
+
+def test_direct_and_legacy_witnesses_with_same_digest_are_ambiguous(direct_motion):
+    direct_motion.legacy_path.write_text(json.dumps({
+        **direct_motion.legacy_witness, "tree_digest": direct_motion.digest,
+    }), encoding="utf-8")
+    row = _row(direct_motion, direct_motion.editor)
+    assert row["comparison"] == "unknown"
+    assert row["upstream_revision"] is None
+
+
+def test_direct_source_uses_actual_unambiguous_existing_selected_root(direct_motion, tmp_path):
+    import shutil
+    other = tmp_path / "other" / "astrid_motion"
+    shutil.copytree(direct_motion.root, other)
+    element = other / direct_motion.element.relative_to(direct_motion.root)
+    stage = {"effects": direct_motion.stage["effects"] + _stage(element)["effects"]}
+    row = pack_revisions.resolved_pack_revisions(stage, direct_motion.editor)[0]
+    assert row["comparison"] == "resolved upstream revision unavailable"
+    assert row["resolved_revision"] is None and row["upstream_revision"] is None
+    missing = _stage(direct_motion.element / "nonexistent")
+    row = pack_revisions.resolved_pack_revisions(missing, direct_motion.editor)[0]
+    assert row["comparison"] == "resolved upstream revision unavailable"
+    (element / "component.tsx").write_text("different root", encoding="utf-8")
+    row = pack_revisions.resolved_pack_revisions(_stage(element), direct_motion.editor)[0]
+    assert row["comparison"] == "mismatch"
+    assert row["upstream_revision"] is None
+
+
+def test_direct_source_uses_canonical_count_after_group_generates_metadata(direct_motion):
+    # The real group transaction emits .build/definitions.json. It and PIN
+    # retain the exclusions of pack-tree-v1; an extra source file does not.
+    generated = direct_motion.root / ".build" / "definitions.json"
+    generated.parent.mkdir()
+    generated.write_text('{"generated": true}\n', encoding="utf-8")
+    assert pack_digest(direct_motion.root) == direct_motion.digest
+    assert _row(direct_motion, direct_motion.editor)["comparison"] == "match"
+    (direct_motion.root / "extra-source.ts").write_text("new source\n", encoding="utf-8")
+    assert _row(direct_motion, direct_motion.editor)["comparison"] == "mismatch"
+
+
+def test_direct_commit_cannot_borrow_legacy_content_only_match(direct_motion, tmp_path):
+    root = tmp_path / "legacy" / "astrid_motion"
+    element = root / direct_motion.element.relative_to(direct_motion.root)
+    element.mkdir(parents=True)
+    (root / "pack.yaml").write_bytes((direct_motion.root / "pack.yaml").read_bytes())
+    (element / "component.tsx").write_bytes((direct_motion.element / "component.tsx").read_bytes())
+    legacy_digest = pack_digest(root)
+    assert legacy_digest == direct_motion.legacy_witness["tree_digest"]
+    editor = {"astrid_motion": UPSTREAM, "astrid_motion_tree": legacy_digest}
+    row = pack_revisions.resolved_pack_revisions(_stage(element), editor)[0]
+    assert row["comparison"] == "match"  # Genuine v1 remains usable.
+    row = pack_revisions.resolved_pack_revisions(
+        _stage(element), {**editor, "astrid_motion": direct_motion.witness["upstream_commit"]},
+    )[0]
+    assert row["comparison"] == "unknown"
+    assert row["upstream_revision"] is None
