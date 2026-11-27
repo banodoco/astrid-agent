@@ -1,651 +1,468 @@
-# Default run per push (testing plan UA.1). The heavy lanes run elsewhere: darwin_native, remotion, chrome and codex_cli
-# in the darwin-native job below; integration and opt_in nightly in .github/workflows/lanes.yml. The lanes with no job
-# (workstation, omp, gpu, app_checkout) are listed by name at the end of every run (tests/lanes.py).
-name: CI
-
+name: WS9 exact original and full-plan CPU proof
 on:
-  push:
-    branches: [main, release-1, "int/**", "release/*/main"]
-  # Plan and fix branches land in release/<N>/main by pull request; their own pushes start nothing. A pull request
-  # runs only the cheap subset: fast checks, unit shard 1 of 8 (and the unit aggregate), and boundary. The heavy jobs
-  # (windows, darwin, release wheels, shards 2-8) carry `if: github.event_name != 'pull_request'` and run on the push.
-  pull_request:
-    branches: ["release/*/main"]
   workflow_dispatch:
-
+    inputs:
+      expected_wrapper:
+        description: Exact independently reviewed wrapper commit
+        required: true
+        type: string
+permissions:
+  contents: read
+  pull-requests: read
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/int/r1' && !(startsWith(github.ref, 'refs/heads/release/') && endsWith(github.ref, '/main')) }}
-
-env:
-  PYTEST_ADDOPTS: -rA
-
+  group: ws9-5c0bb64-ecdb223-one-cpu-proof
+  cancel-in-progress: false
 jobs:
-  windows-native-and-installer:
-    if: github.event_name != 'pull_request'
-    runs-on: windows-latest
-    timeout-minutes: 90
+  proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
     env:
-      ASTRID_CI_JOB: windows-native-and-installer
+      BASE: 782df5c25ee0cfed40a32d83b73851e006a98f3e
+      HEAD_SHA: 5c0bb641d0ec6320e0306657d09798fa7fff6e19
+      PLAN: 33dee103884c027edeaba576bd4279050e23460d
+      MERGED: ecdb2232482ee34f08f838d9d6c16b1b9b4fc5a8
+      MERGED_TREE: 62523eea12196bbf3462adde734d67f843d81fcf
+      PLAN_TREE: 0c023cdd865c8f037a5c98229e06002272b701a9
+      VC_BASE: 55c3948212d23cf037fae8a4c6faad77d33e7279
+      VC_HEAD: 3ed74f2c3dbd782afdd8702d22b7c83b1c40b82a
+      VC_HEAD_TREE: bc4bce5ff6af1b63ccc7c146c48327abd21d0d11
+      RT: 686ca695469bda48cd40a70824c4ccef2a137284
+      LC: 9f88ef7640bc664f697112d966ecefa123d44340
+      DEV_SHA: 394cd8c7051d82c36fac8ea9ede9c6d4e14d5c0c
+      PROOF_REF: proof/90-ws9-5c0bb64-ecdb223
+      EXPECTED_WRAPPER: ${{ inputs.expected_wrapper }}
+      R: ${{ runner.temp }}/ws9-receipts
     steps:
+      - name: Create receipt directory and verify event
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$R"
+          printf 'repository=%s\nref=%s\nsha=%s\nrun=%s\nattempt=%s\n' \
+            "$GITHUB_REPOSITORY" "$GITHUB_REF" "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" > "$R/event.txt"
+          test "$GITHUB_REPOSITORY" = banodoco/astrid-agent
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_REF" = "refs/heads/$PROOF_REF"
+          test "$GITHUB_SHA" = "$EXPECTED_WRAPPER"
+          test "$GITHUB_RUN_ATTEMPT" = 1
+      - name: Live guards and authoritative commit trees before work
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/ws9-live-guard.sh" <<'SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          ref() { gh api "repos/$1/git/ref/heads/$2" --jq .object.sha; }
+          check_ref() {
+            local actual
+            actual=$(ref "$1" "$2")
+            printf '%s %s %s\n' "$1" "$2" "$actual"
+            test "$actual" = "$3"
+          }
+          check_pr() {
+            gh api "repos/$1/pulls/$2" | jq -e \
+              --arg head "$3" --arg branch "$4" --arg base "$5" --arg repo "$1" \
+              '.state=="open" and .draft==true and .merged==false and .head.sha==$head and .head.ref==$branch and .head.repo.full_name==$repo and .base.ref==$base and .base.repo.full_name==$repo'
+          }
+          check_ref banodoco/astrid-agent "$PROOF_REF" "$EXPECTED_WRAPPER"
+          check_ref banodoco/astrid-agent release/16/plan-94 "$PLAN"
+          check_ref banodoco/astrid-agent p90/90-WS9-requirements-preview "$HEAD_SHA"
+          check_ref banodoco/astrid-agent p90/90-WS9-full-plan-proof-candidate "$MERGED"
+          check_ref banodoco/VibeComfy release/16/plan-90 "$VC_BASE"
+          check_ref banodoco/VibeComfy p90/90-WS2-requirements-plan "$VC_HEAD"
+          check_pr banodoco/astrid-agent 689 "$HEAD_SHA" p90/90-WS9-requirements-preview release/16/plan-94
+          check_pr banodoco/VibeComfy 224 "$VC_HEAD" p90/90-WS2-requirements-plan release/16/plan-90
+          SH
+          bash "$RUNNER_TEMP/ws9-live-guard.sh" | tee "$R/live-before.txt"
+          tree() { gh api "repos/$1/git/commits/$2" --jq .tree.sha; }
+          for pair in \
+              "banodoco/astrid-agent:$BASE" "banodoco/astrid-agent:$HEAD_SHA" \
+              "banodoco/astrid-agent:$PLAN" "banodoco/astrid-agent:$MERGED" \
+              "banodoco/astrid-agent:$EXPECTED_WRAPPER" \
+              "banodoco/VibeComfy:$VC_BASE" "banodoco/VibeComfy:$VC_HEAD" \
+              "banodoco/astrid-runtime:$RT" "banodoco/runpod-lifecycle:$LC" \
+              "banodoco/astrid-dev:$DEV_SHA"; do
+            repo=${pair%%:*}; sha=${pair#*:}
+            t=$(tree "$repo" "$sha")
+            [[ "$t" =~ ^[0-9a-f]{40}$ ]]
+            printf '%s %s %s\n' "$repo" "$sha" "$t"
+          done | tee "$R/authoritative-trees.txt"
+          grep -Fx "banodoco/astrid-agent $PLAN $PLAN_TREE" "$R/authoritative-trees.txt"
+          grep -Fx "banodoco/astrid-agent $MERGED $MERGED_TREE" "$R/authoritative-trees.txt"
+          grep -Fx "banodoco/VibeComfy $VC_HEAD $VC_HEAD_TREE" "$R/authoritative-trees.txt"
       - uses: actions/checkout@v4
-      - name: Restore pip cache (C-08)
-        id: c08-agent-ci-5
-        uses: actions/cache/restore@v4
         with:
-          path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
-          key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
+          repository: banodoco/astrid-agent
+          ref: ${{ github.sha }}
+          path: agent-objects
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-dev
+          ref: 394cd8c7051d82c36fac8ea9ede9c6d4e14d5c0c
+          path: dev
+          fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
-      - name: Install package with dev extras
-        run: python -m pip install -e '.[dev]'
-      - name: Install the pinned Runtime and client
-        run: python scripts/ci_install_runtime.py
-      - name: Check native PowerShell cleanup exit codes
-        run: python -m pytest -q tests/test_installer_windows_tasks.py
-      - name: Check Windows pack-host identity and service launcher binding
-        run: python -m pytest -q tests/sdk/test_host_recovery.py tests/test_services.py -k windows
-      - name: Check Remotion admission and captured source handoff
-        run: python -m pytest -q tests/core/rendering/test_remotion_host_regressions.py
-      - name: Check native Windows process and permission behavior
-        run: >-
-          python -m pytest -q
-          tests/core/execution/test_platform_helpers.py::test_windows_scope_job_kills_descendants_after_leader_exit
-          tests/core/execution/test_platform_helpers.py::test_windows_lock_and_owner_permissions_are_native
-          tests/core/execution/test_platform_helpers.py::test_windows_scope_dies_when_owner_process_exits
-          tests/test_generic_host_child_output.py
-          tests/test_host_child_stdin.py
-          tests/test_windows_child_stdin.py -rP
-
-      - name: Save pip cache on main or int branches (C-08)
-        if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/') || (startsWith(github.ref, 'refs/heads/release/') && endsWith(github.ref, '/main'))) && steps.c08-agent-ci-5.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v4
+          python-version: '3.13'
+      - uses: astral-sh/setup-uv@v5
         with:
-          path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
-          key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
-
-  checks:
-    name: fast checks
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    env:
-      ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/astrid-runtime
-      ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/vibecomfy-checkout
-      ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/runpod-lifecycle-checkout
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Read the pinned Runtime commit
-        id: runtime-pin
-        run: echo "commit=$(python -c 'import json; print(json.load(open("runtime.lock.json"))["source_commit"])')" >> "$GITHUB_OUTPUT"
-
-      - name: Check out the Runtime (test fixtures)
-        uses: actions/checkout@v4
-        with:
-          repository: banodoco/astrid-runtime
-          ref: ${{ steps.runtime-pin.outputs.commit }}
-          path: astrid-runtime
-
-      - name: Read the pinned RunPod lifecycle revision
-        id: lifecycle-pin
+          enable-cache: false
+      - name: Install declared native prerequisite
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Verify complete native merge and source closure
+        shell: bash
         run: |
-          python3 - <<'PY' >> "$GITHUB_OUTPUT"
-          import json
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/agent-objects"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_WRAPPER"
+          test "$(git rev-parse --is-shallow-repository)" = false
+          test -z "$(git status --porcelain --untracked-files=all)"
+          test "$(git rev-list --parents -n 1 HEAD)" = "$EXPECTED_WRAPPER $MERGED"
+          test "$(git diff --name-only "$MERGED" HEAD)" = .github/workflows/ci.yml
+          git diff --binary "$MERGED" HEAD > "$R/wrapper.diff"
+          git show HEAD:.github/workflows/ci.yml > "$R/wrapper.yml"
+          sha256sum "$R/wrapper.yml" > "$R/wrapper.sha256"
+          test "$(git rev-list --parents -n 1 "$MERGED")" = "$MERGED $PLAN $HEAD_SHA"
+          test "$(git merge-base "$PLAN" "$HEAD_SHA")" = "$BASE"
+          test "$(git rev-parse "$MERGED^{tree}")" = "$MERGED_TREE"
+          test "$(git rev-parse "$PLAN^{tree}")" = "$PLAN_TREE"
+          git merge-base --is-ancestor "$BASE" "$MERGED"
+          git merge-base --is-ancestor "$HEAD_SHA" "$MERGED"
+          git merge-base --is-ancestor "$PLAN" "$MERGED"
+          git merge-tree --write-tree "$PLAN" "$HEAD_SHA" > "$R/native-merge-tree.txt"
+          test "$(cat "$R/native-merge-tree.txt")" = "$MERGED_TREE"
+          git fsck --connectivity-only --no-reflogs > "$R/agent-fsck.txt" 2>&1
+          for sha in "$BASE" "$HEAD_SHA" "$PLAN" "$MERGED"; do
+            tree=$(awk -v s="$sha" '$2==s {print $3}' "$R/authoritative-trees.txt")
+            test -n "$tree"
+            test "$(git rev-parse "$sha^{tree}")" = "$tree"
+            git ls-tree -rz --full-tree "$sha" > "$R/agent-$sha.leaves"
+          done
+          python - <<'PY' | tee "$R/full-tree-union.txt"
+          import os
           from pathlib import Path
-          source = json.loads(Path("astrid/packs/runpod/pins.json").read_text())["sources"]["lifecycle"]
-          print(f"repository={source['repository'].removeprefix('https://github.com/').removesuffix('.git')}")
-          print(f"revision={source['revision']}")
+          r = Path(os.environ["R"])
+          def leaves(sha):
+              entries = {}
+              for entry in (r / ("agent-" + sha + ".leaves")).read_bytes().split(b"\0"):
+                  if not entry:
+                      continue
+                  meta, path = entry.split(b"\t", 1)
+                  assert path not in entries
+                  entries[path] = meta  # exact mode, type, object id
+              return entries
+          b,h,p,m = (leaves(os.environ[key]) for key in ("BASE","HEAD_SHA","PLAN","MERGED"))
+          def delta(a,z):
+              return {k for k in a.keys() | z.keys() if a.get(k) != z.get(k)}
+          hd, pd = delta(b,h), delta(b,p)
+          expected_head = {x.encode() for x in (
+              "astrid/core/generation/cli.py",
+              "astrid/core/generation/preflight.py",
+              "astrid/core/generation/requirements.py",
+              "astrid/packs/generation/docs/SKILL.md",
+              "tests/core/generation/test_requirements_preview.py",
+          )}
+          expected_plan = {x.encode() for x in (
+              "astrid/core/generation/asset_gaps.py",
+              "astrid/core/generation/gpu_environment.py",
+              "tests/core/generation/test_attached_model_download.py",
+              "tests/core/generation/test_download_space_budget.py",
+              "tests/core/generation/test_gpu_compute_probe.py",
+          )}
+          assert hd == expected_head and pd == expected_plan and not hd & pd
+          expected = dict(p)
+          for k in hd:
+              if k in h: expected[k] = h[k]
+              else: expected.pop(k, None)
+          assert m == expected
+          assert delta(p,m) == hd and delta(h,m) == pd
+          print("FULL_LEAF_UNION", len(b), len(h), len(p), len(m), "head_delta", len(hd), "plan_delta", len(pd), "conflicts 0 mismatches 0")
+          selectors = ("cli_gold_075b","readiness_inputs_f04","node_approval_contract",
+                       "managed_preparation","attached_model_download","generate_align")
+          for name in selectors:
+              k = ("tests/core/generation/test_"+name+".py").encode()
+              assert b[k] == h[k] and p[k] == m[k], k
+              print("ORIGINAL_SELECTOR", k.decode(), b[k].decode(), p[k].decode())
+          for k in (b"pyproject.toml", b"tests/conftest.py", b"tests/lanes.py",
+                    b"runtime.lock.json", b"astrid/packs/vibecomfy/pins.json", b"astrid/packs/runpod/pins.json"):
+              assert b[k] == h[k] == p[k] == m[k], k
           PY
-
-      - name: Check out the pinned RunPod lifecycle (test fixtures)
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ steps.lifecycle-pin.outputs.repository }}
-          ref: ${{ steps.lifecycle-pin.outputs.revision }}
-          path: runpod-lifecycle-checkout
-
-      - name: Restore pip cache (C-08)
-        id: c08-agent-ci-4
-        uses: actions/cache/restore@v4
-        with:
-          path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
-          key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install system media tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
-
-      - name: Install package with dev extras
-        run: python -m pip install -e '.[dev]'
-
-      - name: Install the pinned Runtime and client
-        run: python scripts/ci_install_runtime.py
-
-      # The collection gate imports every test module in the same environment the shards use, so it needs the pinned
-      # VibeComfy checkout; without it every module that imports vibecomfy reports a collection error that is only this job.
-      - name: Read the pinned VibeComfy revision
-        id: vibecomfy-pin
-        run: |
-          rev="$(python3 scripts/vibecomfy_pin.py)"
-          if [[ ! "$rev" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "VibeComfy engine recipe must resolve to a full lowercase 40-hex revision" >&2
-            exit 1
-          fi
-          echo "revision=$rev" >> "$GITHUB_OUTPUT"
-
-      - name: Check out VibeComfy at the pinned engine revision
-        uses: actions/checkout@v4
-        with:
-          repository: banodoco/VibeComfy
-          ref: ${{ steps.vibecomfy-pin.outputs.revision }}
-          path: vibecomfy-checkout
-
-      - name: Install VibeComfy
-        run: python -m pip install -e ./vibecomfy-checkout
-
-      # Repo structure is gated in the default lane by a no-new-violations baseline
-      # (tests/reshape/test_compare_baselines.py; scripts/reshape/baselines/structure_astrid.json).
-
-      - name: Ruff baseline gate
-        run: make ruff
-
-      # Mypy checks the project only with the YAML stubs, and with a NumPy whose bundled stubs parse under the configured
-      # Python 3.11 target; unpinned, the latest NumPy stubs make mypy stop before it checks anything.
-      - name: Install mypy stubs and the NumPy that mypy can parse
-        if: ${{ !cancelled() }}
-        run: python -m pip install types-PyYAML 'numpy<2.4'
-
-      - name: Mypy baseline gate
-        if: ${{ !cancelled() }}
-        run: make mypy
-
-      - name: Import cycles gate
-        run: make cycles
-
-      # Root-level TLS tests are outside the PR's single unit shard. Keep the
-      # transport inventory and certificate refusal probes on every PR.
-      - name: Check Agent TLS policy and review regressions
-        if: ${{ !cancelled() }}
-        run: >-
-          python -m pytest -q -rA
-          tests/core/util/test_http_trust.py
-          tests/installer/test_tls_fallback.py
-          tests/test_721_remaining_tls_policy.py
-          tests/test_721_urllib_os_tls_policy.py
-          tests/test_721_tls_review.py
-          tests/test_721_http_policy_guard.py
-          tests/test_astrid_error_contract.py
-          --deselect=tests/test_astrid_error_contract.py::test_to_envelope_omits_code_and_source_type_when_none
-          --junitxml=tls-policy-regressions.xml
-
-      # The corrected error-envelope contract runs independently of the TLS suite.
-      # Execute it separately, even after an earlier failure, with its normal
-      # exit. Together these two steps still run every original case.
-      - name: Check independent error-envelope code-null contract
-        if: ${{ always() }}
-        run: >-
-          python -m pytest -q -rA
-          tests/test_astrid_error_contract.py::test_to_envelope_omits_code_and_source_type_when_none
-          --junitxml=tls-error-contract.xml
-
-      - name: Retain TLS policy regression results
-        if: ${{ always() && hashFiles('tls-policy-regressions.xml') != '' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: tls-policy-regressions
-          path: tls-policy-regressions.xml
-          if-no-files-found: error
-          retention-days: 30
-
-      - name: Retain independent error contract result
-        if: ${{ always() && hashFiles('tls-error-contract.xml') != '' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: tls-error-contract
-          path: tls-error-contract.xml
-          if-no-files-found: error
-          retention-days: 30
-
-      # Runs even when an earlier gate failed: a collection error stops every shard, and the ruff, mypy and cycle gates
-      # being red on this branch must not hide it.
-      - name: Collection errors gate
-        if: ${{ !cancelled() }}
-        run: make collection
-
-      - name: Save pip cache on main or int branches (C-08)
-        if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/') || (startsWith(github.ref, 'refs/heads/release/') && endsWith(github.ref, '/main'))) && steps.c08-agent-ci-4.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v4
-        with:
-          path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
-          key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
-
-  unit-shard:
-    name: unit shard ${{ matrix.group }} / 8 (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    # Shard 7 has a ~35-minute tail after ~15 minutes of tests; 60 minutes cancels healthy runs.
-    # Shards 1 and 6 were cancelled at 120 minutes on 05346e9f at 92%; shard 1 then took 2h03 of pytest on 1e94061c.
-    # With the 120 s per-test timeout a hang fails after 2 minutes, so 180 minutes is a wall, not an allowance.
-    timeout-minutes: 180
-    env:
-      # The test run's skip registry (tests/lanes.py) reads this: a lane this job provides fails, not skips, when its dependency is missing.
-      ASTRID_CI_JOB: unit-shard-${{ matrix.os }}
-      ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/astrid-runtime
-      ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/vibecomfy-checkout
-      ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/runpod-lifecycle-checkout
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest]
-        # A pull request runs shard 1 of 8 only; the job name and --splits 8 are unchanged.
-        group: ${{ fromJSON(github.event_name == 'pull_request' && '[1]' || '[1,2,3,4,5,6,7,8]') }}
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      # These release-0 rollback and launcher tests archive a pinned historical
-      # Agent source tree; the default shallow checkout does not contain it.
-      - name: Fetch release-0 Agent archive for installer rollback tests
+          git diff --binary "$BASE" "$HEAD_SHA" > "$R/original-pr.diff"
+          git diff --binary "$PLAN" "$MERGED" > "$R/integrated-pr.diff"
+          git diff --binary "$BASE" "$PLAN" > "$R/current-plan.diff"
+          git diff --name-status "$BASE" "$HEAD_SHA" > "$R/original-pr.paths"
+          git diff --name-status "$PLAN" "$MERGED" > "$R/integrated-pr.paths"
+          test "$(git -C "$GITHUB_WORKSPACE/dev" rev-parse HEAD)" = "$DEV_SHA"
+          test "$(git -C "$GITHUB_WORKSPACE/dev" rev-parse --is-shallow-repository)" = false
+          test -z "$(git -C "$GITHUB_WORKSPACE/dev" status --porcelain --untracked-files=all)"
+          test "$(git -C "$GITHUB_WORKSPACE/dev" rev-parse HEAD^{tree})" = "$(awk -v s="$DEV_SHA" '$2==s {print $3}' "$R/authoritative-trees.txt")"
+          test "$(git -C "$GITHUB_WORKSPACE/dev" hash-object env/agent-setup.sh)" = 2da3dc49bd2180f62fcabe2db787eb79bacff3d8
+          test "$(git -C "$GITHUB_WORKSPACE/dev" hash-object env/agent-pytest.sh)" = 4bd27a26c096824490aaea9711fa10f8208652a8
+          git -C "$GITHUB_WORKSPACE/dev" ls-tree -rz --full-tree HEAD > "$R/dev.leaves"
+          for side in base head current merged; do
+            case "$side" in
+              base) sha=$BASE;; head) sha=$HEAD_SHA;; current) sha=$PLAN;; merged) sha=$MERGED;;
+            esac
+            git worktree add --detach "$GITHUB_WORKSPACE/ws9-$side" "$sha"
+          done
+      - name: Run exact original and integrated selectors (all sides, no exclusions)
         shell: bash
         run: |
           set -euo pipefail
-          release0_agent=3204bb00135bec8ee2d2d3fb21eed5abfceca649
-          git fetch --no-tags --depth=1 origin "$release0_agent"
-          test "$(git rev-parse "${release0_agent}^{commit}")" = "$release0_agent"
-          git cat-file -e "${release0_agent}:astrid/installer/core.py"
-          git archive --format=tar "$release0_agent" astrid >/dev/null
-          echo "- Release-0 Agent archive: $release0_agent (tree and archive available)" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Read the pinned Runtime commit
-        id: runtime-pin
-        run: echo "commit=$(python -c 'import json; print(json.load(open("runtime.lock.json"))["source_commit"])')" >> "$GITHUB_OUTPUT"
-
-      - name: Check out the Runtime (test fixtures)
-        uses: actions/checkout@v4
-        with:
-          repository: banodoco/astrid-runtime
-          ref: ${{ steps.runtime-pin.outputs.commit }}
-          path: astrid-runtime
-
-      - name: Read the pinned RunPod lifecycle revision
-        id: lifecycle-pin
+          # Keep GitHub token out of every setup/test process. No provider secrets.
+          unset GH_TOKEN GITHUB_TOKEN GEN_DESELECT_FILE PYTEST_ADDOPTS
+          export PYTHONDONTWRITEBYTECODE=1
+          DEV="$GITHUB_WORKSPACE/dev"
+          cat > "$RUNNER_TEMP/ws9-provenance.py" <<'PY'
+          import hashlib, importlib, json, os, pathlib, subprocess, sys
+          root, envroot, vc = map(pathlib.Path, sys.argv[1:4])
+          def git(repo, *args):
+              return subprocess.check_output(["git","-C",str(repo),*args])
+          def witness(name, repo, relative=None):
+              module = importlib.import_module(name)
+              path = pathlib.Path(module.__file__).resolve()
+              rel = relative if relative is not None else path.relative_to(repo).as_posix()
+              raw = git(repo,"show","HEAD:"+rel)
+              assert path.read_bytes() == raw, (name, path, rel)
+              return {"module":name,"origin":str(path),"source_path":rel,
+                      "source_sha":git(repo,"rev-parse","HEAD").decode().strip(),
+                      "sha256":hashlib.sha256(raw).hexdigest()}
+          rows = [witness("astrid", root), witness("astrid.core.generation.cli",root),
+                  witness("astrid.core.generation.preflight",root),
+                  witness("vibecomfy",vc),
+                  witness("runtime_protocol",envroot/"runtime","runtime_protocol/__init__.py")]
+          if os.environ.get("VERIFY_SIDE") in ("head","merged"):
+              rows.extend([witness("astrid.core.generation.requirements",root),
+                           witness("vibecomfy.requirements",vc),
+                           witness("vibecomfy.requirements._plan",vc)])
+          import aiohttp, psutil
+          for mod in (aiohttp,psutil):
+              assert pathlib.Path(mod.__file__).resolve().is_relative_to(envroot/"venv"), mod.__file__
+          print(json.dumps({"python":sys.version,"executable":sys.executable,
+                            "imports":rows,"aiohttp":aiohttp.__file__,"psutil":psutil.__file__},indent=2))
+          PY
+          verify_checkout() {
+            local path=$1 sha=$2 tree
+            tree=$(awk -v s="$sha" '$2==s {print $3}' "$R/authoritative-trees.txt")
+            test -n "$tree"
+            test "$(git -C "$path" rev-parse HEAD)" = "$sha"
+            test "$(git -C "$path" rev-parse HEAD^{tree})" = "$tree"
+            test "$(git -C "$path" rev-parse --is-shallow-repository)" = false
+            test -z "$(git -C "$path" status --porcelain --untracked-files=all)"
+            git -C "$path" diff-index --quiet HEAD --
+          }
+          full_dep() {
+            local path=$1 url=$2 pin=$3
+            if [ "$(git -C "$path" rev-parse --is-shallow-repository)" = true ]; then
+              git -C "$path" fetch --unshallow "$url" "$pin"
+            else
+              git -C "$path" fetch "$url" "$pin"
+            fi
+            git -C "$path" checkout --detach "$pin"
+            verify_checkout "$path" "$pin"
+          }
+          run_side() (
+            set -Eeuo pipefail
+            side=$1; sha=$2; vc_pin=$3
+            root="$GITHUB_WORKSPACE/ws9-$side"; E="$root.env"
+            echo ENV > "$R/$side.phase"
+            cd "$root"
+            verify_checkout "$root" "$sha"
+            trap 'x=$?; set +e; verify_checkout "$root" "$sha"; a=$?; if [ -d "$E/runtime/.git" ]; then verify_checkout "$E/runtime" "$RT"; b=$?; else b=1; fi; if [ -d "$E/vibecomfy/.git" ]; then verify_checkout "$E/vibecomfy" "$vc_pin"; c=$?; else c=1; fi; if [ -d "$E/lifecycle/.git" ]; then verify_checkout "$E/lifecycle" "$LC"; d=$?; else d=1; fi; printf "%s %s %s %s\n" "$a" "$b" "$c" "$d" > "$R/$side.post-guard"; if ((a||b||c||d)); then exit 3; fi; exit "$x"' EXIT
+            test "$(python -c 'import json; print(json.load(open("runtime.lock.json"))["source_commit"])')" = "$RT"
+            test "$(python -c 'import json; print(json.load(open("astrid/packs/runpod/pins.json"))["sources"]["lifecycle"]["revision"])')" = "$LC"
+            test "$(python -c 'import json; print(json.load(open("astrid/packs/vibecomfy/pins.json"))["sources"]["vibecomfy"]["revision"])')" = "$VC_BASE"
+            bash "$DEV/env/agent-setup.sh" 2>&1 | tee "$R/$side.setup.log"
+            cp "$E/setup.txt" "$R/$side.setup.txt"
+            # The original setup is intentionally unchanged. It fetches the
+            # shipped VC pin. For candidate sides replace ONLY that disposable
+            # source checkout with the accepted producer, not Agent pins.
+            test "$(git -C "$E/vibecomfy" rev-parse HEAD)" = "$VC_BASE"
+            test "$(git -C "$E/runtime" rev-parse HEAD)" = "$RT"
+            test "$(git -C "$E/lifecycle" rev-parse HEAD)" = "$LC"
+            full_dep "$E/runtime" https://github.com/banodoco/astrid-runtime "$RT"
+            full_dep "$E/vibecomfy" https://github.com/banodoco/VibeComfy "$vc_pin"
+            full_dep "$E/lifecycle" https://github.com/banodoco/runpod-lifecycle "$LC"
+            for dep in runtime vibecomfy lifecycle; do
+              git -C "$E/$dep" ls-tree -rz --full-tree HEAD > "$R/$side.$dep.leaves"
+              git -C "$E/$dep" fsck --connectivity-only --no-reflogs > "$R/$side.$dep.fsck" 2>&1
+            done
+            # Independent provenance in the SAME import environment as the
+            # unchanged runner. Runtime installed bytes compared to source,
+            # not a path override that would hide fixture failures.
+            env -i PATH="$E/venv/bin:$(cat "$E/uv-dir"):/usr/local/bin:/usr/bin:/bin" \
+              HOME="$E/home" TMPDIR="$E/tmp" XDG_CACHE_HOME="$E/cache" LANG=C.UTF-8 \
+              PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 PYTHONSAFEPATH=1 \
+              PYTHONPATH="$E/vibecomfy" VERIFY_SIDE="$side" \
+              VIBECOMFY_SOURCE="$E/vibecomfy" ASTRID_RUNTIME_CHECKOUT="$E/runtime" \
+              ASTRID_VIBECOMFY_CHECKOUT="$E/vibecomfy" ASTRID_TEST_LIFECYCLE_CHECKOUT="$E/lifecycle" \
+              "$E/venv/bin/python" "$RUNNER_TEMP/ws9-provenance.py" "$root" "$E" "$E/vibecomfy" \
+              > "$R/$side.imports.json"
+            # Lifecycle is separately imported from its actual selected source;
+            # the original runner exposes its checkout path to tests.
+            PYTHONPATH="$E/lifecycle/src" "$E/venv/bin/python" -B -c \
+              'import pathlib,sys,runpod_lifecycle.pod_agent as p; q=pathlib.Path(p.__file__).resolve(); assert q.is_relative_to(pathlib.Path(sys.argv[1]).resolve()); print(q)' \
+              "$E/lifecycle" > "$R/$side.lifecycle-import.txt"
+            "$E/venv/bin/python" -m pip list --format=json > "$R/$side.packages.json"
+            "$E/venv/bin/python" -m pip freeze --all > "$R/$side.freeze.txt"
+            df -Pk "$E/basetemp" "$E/home" "$E/tmp" | tee "$R/$side.disk.txt"
+            free=$(df -Pk "$E/basetemp" | awk 'NR==2 {printf "%.0f",$4*1024}')
+            test "$free" -gt 2147483648
+            verify_checkout "$root" "$sha"
+            args=(tests/core/generation/test_cli_gold_075b.py
+                  tests/core/generation/test_readiness_inputs_f04.py
+                  tests/core/generation/test_node_approval_contract.py
+                  tests/core/generation/test_managed_preparation.py
+                  tests/core/generation/test_attached_model_download.py
+                  tests/core/generation/test_generate_align.py)
+            if [[ "$side" == head || "$side" == merged ]]; then
+              args+=(tests/core/generation/test_requirements_preview.py)
+            fi
+            printf '%s\n' "bash $DEV/env/agent-pytest.sh -q -rA -s --junitxml=$R/$side.xml ${args[*]}" > "$R/$side.argv.txt"
+            printf '%s %s\n' "$sha" "$vc_pin" > "$R/$side.pins.txt"
+            # Do not override runner env-i, original conftest or marker config.
+            # WS9_EXPECTED_* is not propagated by this runner; outer immutable
+            # checks establish SHA equality instead. The test's default VC SHA
+            # is the exact accepted producer.
+            echo TEST > "$R/$side.phase"
+            set +e
+            VERIFY_SIDE="$side" bash "$DEV/env/agent-pytest.sh" -q -rA -s \
+              --junitxml="$R/$side.xml" "${args[@]}" 2>&1 | tee "$R/$side.pytest.log"
+            codes=("${PIPESTATUS[@]}")
+            set -e
+            printf '%s %s\n' "${codes[0]}" "${codes[1]}" > "$R/$side.pytest-exits.txt"
+            grep '^WS9_COMMAND_RECEIPT ' "$R/$side.pytest.log" > "$R/$side.command-receipts.jsonl" || true
+            echo TEST_FINISHED > "$R/$side.phase"
+            if (( codes[1] != 0 )); then exit 3; fi
+            exit "${codes[0]}"
+          )
+          overall=0
+          for side in base head current merged; do
+            case "$side" in
+              base) sha=$BASE; vc=$VC_BASE;;
+              head) sha=$HEAD_SHA; vc=$VC_HEAD;;
+              current) sha=$PLAN; vc=$VC_BASE;;
+              merged) sha=$MERGED; vc=$VC_HEAD;;
+            esac
+            set +e
+            run_side "$side" "$sha" "$vc" 2>&1 | tee "$R/$side.full.log"
+            rc=("${PIPESTATUS[@]}")
+            set -e
+            printf '%s %s\n' "${rc[0]}" "${rc[1]}" > "$R/$side.side-exits.txt"
+            if (( rc[0] || rc[1] )); then overall=1; fi
+          done
+          printf '%s\n' "$overall" > "$R/side-overall.txt"
+          # Do not fail early: separate post guards and receipt summary must run.
+      - name: Final immutable source and live-ref guards
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          python3 - <<'PY' >> "$GITHUB_OUTPUT"
-          import json
+          set -euo pipefail
+          mkdir -p "$R"
+          test -f "$RUNNER_TEMP/ws9-live-guard.sh"
+          bash "$RUNNER_TEMP/ws9-live-guard.sh" | tee "$R/live-after.txt"
+          test -f "$R/side-overall.txt"
+          for side in base head current merged; do
+            case "$side" in
+              base) sha=$BASE; vc=$VC_BASE;;
+              head) sha=$HEAD_SHA; vc=$VC_HEAD;;
+              current) sha=$PLAN; vc=$VC_BASE;;
+              merged) sha=$MERGED; vc=$VC_HEAD;;
+            esac
+            root="$GITHUB_WORKSPACE/ws9-$side"
+            for pair in "$root:$sha" "$root.env/runtime:$RT" "$root.env/vibecomfy:$vc" "$root.env/lifecycle:$LC"; do
+              path=${pair%:*}; pin=${pair##*:}
+              tree=$(awk -v s="$pin" '$2==s {print $3}' "$R/authoritative-trees.txt")
+              test -n "$tree"
+              test "$(git -C "$path" rev-parse HEAD)" = "$pin"
+              test "$(git -C "$path" rev-parse HEAD^{tree})" = "$tree"
+              test "$(git -C "$path" rev-parse --is-shallow-repository)" = false
+              test -z "$(git -C "$path" status --porcelain --untracked-files=all)"
+              git -C "$path" diff-index --quiet HEAD --
+            done
+            test "$(cat "$R/$side.post-guard")" = '0 0 0 0'
+          done
+          test "$(git -C "$GITHUB_WORKSPACE/agent-objects" rev-parse HEAD)" = "$EXPECTED_WRAPPER"
+          test -z "$(git -C "$GITHUB_WORKSPACE/agent-objects" status --porcelain --untracked-files=all)"
+          test "$(git -C "$GITHUB_WORKSPACE/dev" rev-parse HEAD)" = "$DEV_SHA"
+          test -z "$(git -C "$GITHUB_WORKSPACE/dev" status --porcelain --untracked-files=all)"
+          echo PASS > "$R/post-guard.txt"
+      - name: Account for tests, failures and command receipts
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$R"
+          python - <<'PY' | tee "$R/summary.json"
+          import json, os, re, sys, xml.etree.ElementTree as ET
           from pathlib import Path
-          source = json.loads(Path("astrid/packs/runpod/pins.json").read_text())["sources"]["lifecycle"]
-          print(f"repository={source['repository'].removeprefix('https://github.com/').removesuffix('.git')}")
-          print(f"revision={source['revision']}")
+          r=Path(os.environ["R"])
+          def read(name):
+              p=r/name
+              return p.read_text().strip() if p.is_file() else None
+          rows={}
+          ids={}
+          good=True
+          for side in ("base","head","current","merged"):
+              phase=read(side+".phase")
+              exits=read(side+".pytest-exits.txt")
+              row={"phase":phase,"pytest_and_tee_exits":exits,"side_exits":read(side+".side-exits.txt"),
+                   "post_guard":read(side+".post-guard")}
+              xml=r/(side+".xml")
+              cases=[]
+              if xml.is_file():
+                  try: cases=list(ET.parse(xml).iter("testcase"))
+                  except ET.ParseError as exc: row["xml_error"]=str(exc)
+              ident=[(x.get("classname"),x.get("name")) for x in cases]
+              ids[side]=set(ident)
+              row.update(cases=len(cases), unique=len(ids[side]),
+                         failures=sum(x.find("failure") is not None for x in cases),
+                         errors=sum(x.find("error") is not None for x in cases),
+                         skips=sum(x.find("skipped") is not None for x in cases))
+              log=read(side+".pytest.log") or ""
+              row["reported_nonpass_counts"]=[m.group(0) for m in re.finditer(r"\b\d+ (?:deselected|xfailed|xpassed|skipped|failed|errors?)\b",log)]
+              commands=[]
+              for line in (read(side+".command-receipts.jsonl") or "").splitlines():
+                  commands.append(json.loads(line.removeprefix("WS9_COMMAND_RECEIPT ")))
+              row["command_receipts"]=len(commands)
+              expected_agent={"base":os.environ["BASE"],"head":os.environ["HEAD_SHA"],
+                              "current":os.environ["PLAN"],"merged":os.environ["MERGED"]}[side]
+              for command in commands:
+                  imports=command["imports"]
+                  assert imports["astrid.core.generation.requirements"]["sha"]==expected_agent
+                  assert imports["vibecomfy.requirements"]["sha"]==os.environ["VC_HEAD"]
+                  assert imports["runtime_protocol"]["sha"]==os.environ["RT"]
+                  assert command["unchanged"] and command["before"]==command["after"]
+                  assert command["json"]["plan"]["digest"]==command["digest"]
+              clean=(phase=="TEST_FINISHED" and exits=="0 0" and row["side_exits"]=="0 0"
+                     and row["post_guard"]=="0 0 0 0" and cases and len(ident)==len(ids[side])
+                     and not(row["failures"] or row["errors"] or row["skips"] or row["reported_nonpass_counts"])
+                     and (side not in ("head","merged") or bool(commands)))
+              row["disposition"]=("PASS_CANDIDATE_CPU_ONLY" if clean else
+                                  "ENV_OR_GUARD" if phase!="TEST_FINISHED" or row["post_guard"]!="0 0 0 0"
+                                  else "TEST_FAIL_OR_INCOMPLETE")
+              good=good and bool(clean)
+              rows[side]=row
+          missing_original=sorted(ids["base"]-ids["head"])
+          missing_integrated=sorted(ids["current"]-ids["merged"])
+          good=good and not missing_original and not missing_integrated and read("post-guard.txt")=="PASS"
+          print(json.dumps({"sides":rows,"missing_original_ids":missing_original,
+                            "missing_integrated_ids":missing_integrated,
+                            "post_guard":read("post-guard.txt"),"cpu_proof_complete":bool(good)},indent=2))
+          sys.exit(0 if good else 1)
           PY
-
-      - name: Check out the pinned RunPod lifecycle (test fixtures)
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ steps.lifecycle-pin.outputs.repository }}
-          ref: ${{ steps.lifecycle-pin.outputs.revision }}
-          path: runpod-lifecycle-checkout
-
-      - name: Record RunPod lifecycle checkout
-        shell: bash
-        env:
-          LIFECYCLE_REVISION: ${{ steps.lifecycle-pin.outputs.revision }}
-        run: |
-          set -euo pipefail
-          checked_out="$(git -C "$ASTRID_TEST_LIFECYCLE_CHECKOUT" rev-parse HEAD)"
-          test "$checked_out" = "$LIFECYCLE_REVISION"
-          echo "- RunPod lifecycle: $checked_out" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Restore pip cache (C-08)
-        id: c08-agent-ci-3
-        uses: actions/cache/restore@v4
-        with:
-          path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
-          key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Set up pinned uv
-        uses: astral-sh/setup-uv@v6
-        with:
-          version: "0.11.32"
-
-      # The product's pinned Node (.node-version), the one the installer ships: the tests run the same Node the product does.
-      - name: Set up Node.js from .node-version
-        uses: actions/setup-node@v4
-        with:
-          node-version-file: .node-version
-
-      - name: Install pinned Remotion dependencies
-        run: npm ci --prefix remotion
-
-      - name: Install system media tools and a system font
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg fonts-dejavu-core
-        shell: bash
-
-      - name: Install package with dev extras
-        run: python -m pip install -e '.[dev]'
-
-      - name: Install the pinned Runtime and client
-        run: python scripts/ci_install_runtime.py
-
-      - name: Read the pinned VibeComfy revision
-        id: vibecomfy-pin
-        run: |
-          rev="$(python3 scripts/vibecomfy_pin.py)"
-          if [[ ! "$rev" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "VibeComfy engine recipe must resolve to a full lowercase 40-hex revision" >&2
-            exit 1
-          fi
-          echo "revision=$rev" >> "$GITHUB_OUTPUT"
-
-      - name: Check out VibeComfy at the pinned engine revision
-        uses: actions/checkout@v4
-        with:
-          repository: banodoco/VibeComfy
-          ref: ${{ steps.vibecomfy-pin.outputs.revision }}
-          path: vibecomfy-checkout
-
-      - name: Record VibeComfy checkout
-        shell: bash
-        env:
-          VIBECOMFY_REVISION: ${{ steps.vibecomfy-pin.outputs.revision }}
-        run: |
-          set -euo pipefail
-          checked_out="$(git -C "$ASTRID_VIBECOMFY_CHECKOUT" rev-parse HEAD)"
-          test "$checked_out" = "$VIBECOMFY_REVISION"
-          echo "- VibeComfy: $checked_out" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Install VibeComfy
-        run: python -m pip install -e ./vibecomfy-checkout
-
-      - name: Unit tests (default lane shard)
-        # Read the committed baseline for selection; write only this shard's
-        # measured tests so the eight artifacts can be merged without stale entries.
-        env:
-          PYTHONUNBUFFERED: 1
-          ASTRID_PYTEST_HARD_EXIT_ON_LEAKED_THREADS: 1
-        run: python -m pytest -v -rA --durations=40 --splits 8 --group ${{ matrix.group }} --durations-path tests/.test_durations --store-durations --clean-durations
-
-      - name: Upload measured test durations
+      - name: Archive evidence even on failure
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          retention-days: 3
-          name: test-durations-${{ matrix.group }}-${{ matrix.os }}
-          path: tests/.test_durations
-          include-hidden-files: true
+          name: ws9-exact-proof-${{ github.run_id }}
+          path: ${{ runner.temp }}/ws9-receipts/
           if-no-files-found: error
-
-      - name: Save pip cache on main or int branches (C-08)
-        if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/') || (startsWith(github.ref, 'refs/heads/release/') && endsWith(github.ref, '/main'))) && steps.c08-agent-ci-3.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v4
-        with:
-          path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
-          key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
-
-  unit:
-    name: unit
-    if: always()
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    needs: [checks, unit-shard]
-    env:
-      CHECKS_RESULT: ${{ needs.checks.result }}
-      SHARDS_RESULT: ${{ needs.unit-shard.result }}
-    steps:
-      - name: Require all unit shards and fast checks to pass
-        run: |
-          if [[ "$CHECKS_RESULT" != success || "$SHARDS_RESULT" != success ]]; then
-            echo "::error::unit requires successful dependencies: fast checks=$CHECKS_RESULT, unit shards=$SHARDS_RESULT"
-            exit 1
-          fi
-          echo "unit passed"
-
-  darwin-native:
-    name: darwin native
-    if: github.event_name != 'pull_request'
-    runs-on: macos-latest
-    timeout-minutes: 120
-    env:
-      ASTRID_CI_JOB: darwin-native
-      # A test in both the integration and a darwin lane starts real Runtime daemons from this checkout (tests/helpers/runtime.py).
-      ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/astrid-runtime
-      ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/vibecomfy-checkout
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Read the pinned Runtime commit
-        id: runtime-pin
-        run: echo "commit=$(python3 -c 'import json; print(json.load(open("runtime.lock.json"))["source_commit"])')" >> "$GITHUB_OUTPUT"
-
-      - name: Check out the Runtime (astrid-runtime)
-        uses: actions/checkout@v4
-        with:
-          repository: banodoco/astrid-runtime
-          ref: ${{ steps.runtime-pin.outputs.commit }}
-          path: astrid-runtime
-
-      - name: Restore pip cache (C-08)
-        id: c08-agent-ci-2
-        uses: actions/cache/restore@v4
-        with:
-          path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
-          key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Restore npm cache (C-08)
-        id: c08-agent-ci-1
-        uses: actions/cache/restore@v4
-        with:
-          path: "${{ runner.os == 'Windows' && '~/AppData/Local/npm-cache' || '~/.npm' }}"
-          key: npm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('remotion/package-lock.json') }}
-      - name: Set up Node.js from .node-version
-        uses: actions/setup-node@v4
-        with:
-          node-version-file: .node-version
-
-      - name: Install ffmpeg
-        run: brew install ffmpeg
-
-      - name: Install Remotion dependencies
-        run: npm ci --prefix remotion
-
-      - name: Install package with dev extras
-        run: python -m pip install -e '.[dev]'
-
-      - name: Install the Runtime and client from the checkout
-        run: python -m pip install --no-deps -e ./astrid-runtime -e ./astrid-runtime/packages/python
-
-      - name: Read the pinned VibeComfy revision
-        id: vibecomfy-pin
-        run: |
-          rev="$(python3 scripts/vibecomfy_pin.py)"
-          if [[ ! "$rev" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "VibeComfy engine recipe must resolve to a full lowercase 40-hex revision" >&2
-            exit 1
-          fi
-          echo "revision=$rev" >> "$GITHUB_OUTPUT"
-
-      - name: Check out VibeComfy at the pinned engine revision
-        uses: actions/checkout@v4
-        with:
-          repository: banodoco/VibeComfy
-          ref: ${{ steps.vibecomfy-pin.outputs.revision }}
-          path: vibecomfy-checkout
-
-      - name: Record VibeComfy checkout
-        shell: bash
-        env:
-          VIBECOMFY_REVISION: ${{ steps.vibecomfy-pin.outputs.revision }}
-        run: |
-          set -euo pipefail
-          checked_out="$(git -C "$ASTRID_VIBECOMFY_CHECKOUT" rev-parse HEAD)"
-          test "$checked_out" = "$VIBECOMFY_REVISION"
-          echo "- VibeComfy: $checked_out" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Install VibeComfy
-        run: python -m pip install -e ./vibecomfy-checkout
-
-      - name: Provision the Remotion browser
-        run: npx remotion browser ensure
-        working-directory: remotion
-
-      - name: Install the Codex CLI (the codex_cli lane starts its native binary in the host sandbox)
-        run: npm install -g @openai/codex@0.163.0
-
-      # The lanes the default run deselects and only this job provides: native macOS, the Remotion install, headless Chromium, the Codex CLI.
-      - name: Darwin native, Remotion and browser tests
-        run: python -m pytest -q -rA -m "darwin_native or remotion or chrome or codex_cli"
-
-  # Release wheel (testing plan R-1: kept from the old m8 artifact job). Hashed build tools, one wheel,
-  # installed with only the hashed runtime lock, and the toolchain recorded next to it. It is also the
-  # one check that every Python pyproject.toml admits (>=3.11) installs and imports Astrid.
-      - name: Save npm cache on main or int branches (C-08)
-        if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/') || (startsWith(github.ref, 'refs/heads/release/') && endsWith(github.ref, '/main'))) && steps.c08-agent-ci-1.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v4
-        with:
-          path: "${{ runner.os == 'Windows' && '~/AppData/Local/npm-cache' || '~/.npm' }}"
-          key: npm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('remotion/package-lock.json') }}
-      - name: Save pip cache on main or int branches (C-08)
-        if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/') || (startsWith(github.ref, 'refs/heads/release/') && endsWith(github.ref, '/main'))) && steps.c08-agent-ci-2.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v4
-        with:
-          path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
-          key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
-
-  release:
-    name: release wheel / Python ${{ matrix.python-version }}
-    if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.11", "3.12"]
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Set up pinned uv
-        uses: astral-sh/setup-uv@v6
-        with:
-          version: "0.11.32"
-
-      - name: Install system media tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
-
-      - name: Install wheel builder
-        run: python -m pip install --disable-pip-version-check --no-input --require-hashes -r requirements/build.lock
-
-      - name: Build exactly one wheel
-        run: |
-          python -m build --wheel --no-isolation --outdir dist
-          test "$(ls dist/*.whl | wc -l)" -eq 1
-
-      - name: Install the wheel with the hashed runtime lock only
-        run: |
-          python -m venv "$RUNNER_TEMP/release-venv"
-          "$RUNNER_TEMP/release-venv/bin/python" -m pip install --disable-pip-version-check --no-input --require-hashes -r requirements/runtime.lock
-          "$RUNNER_TEMP/release-venv/bin/python" scripts/ci_install_runtime.py
-          "$RUNNER_TEMP/release-venv/bin/python" -m pip install --no-deps dist/*.whl
-          "$RUNNER_TEMP/release-venv/bin/python" -m pip check
-          cd "$RUNNER_TEMP" && "$RUNNER_TEMP/release-venv/bin/python" -c "import astrid"
-
-      # The default-lane home for "the shipped wheel works when installed" (testing plan R-1):
-      # it adopts the wheel and venv built above, so the wheel that is uploaded is the wheel that is smoked.
-      - name: Smoke the installed wheel
-        run: bash scripts/smoke_wheel_install.sh --wheel dist/*.whl --venv "$RUNNER_TEMP/release-venv"
-
-      - name: Validate locks and record the release toolchain
-        run: python -m scripts.reshape.release_reproducibility --expected-python ${{ matrix.python-version }} --output dist/toolchain.json
-
-      - name: Upload the wheel and its toolchain record
-        uses: actions/upload-artifact@v4
-        with:
-          retention-days: 14
-          name: release-wheel-${{ matrix.python-version }}
-          path: dist/
-
-  # Boundary: every vendored copy matches the immutable Runtime commit selected by runtime.lock.json.
-  # The default-lane test catches local edits; this job also verifies producer manifest and source bytes.
-  boundary:
-    name: boundary
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Read the pinned Runtime commit
-        id: runtime-pin
-        run: echo "commit=$(python -c 'import json; print(json.load(open("runtime.lock.json"))["source_commit"])')" >> "$GITHUB_OUTPUT"
-
-      - name: Check out the Runtime (producer)
-        uses: actions/checkout@v4
-        with:
-          repository: banodoco/astrid-runtime
-          ref: ${{ steps.runtime-pin.outputs.commit }}
-          path: runtime-producer
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: All vendored Runtime artifacts match the pinned producer
-        run: python scripts/vendor_lock.py check runtime.lock.json --producer runtime-producer
-
-  # A pull request into a release branch comes from a branch of that release and names what it belongs
-  # to: the plan (a plan branch does so by its name) or the astrid-dev issue. See the Release skill,
-  # "How a release runs".
-  landing-reference:
-    name: landing reference
-    if: ${{ github.event_name == 'pull_request' && startsWith(github.base_ref, 'release/') && endsWith(github.base_ref, '/main') }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: The pull request comes from a branch of this release and names its plan or issue
-        env:
-          BASE_REF: ${{ github.base_ref }}
-          HEAD_REF: ${{ github.head_ref }}
-          TITLE: ${{ github.event.pull_request.title }}
-          BODY: ${{ github.event.pull_request.body }}
-        run: |
-          release="${BASE_REF#release/}"; release="${release%/main}"
-          if ! printf '%s' "$HEAD_REF" | grep -Eq "^release/${release}/[a-z0-9][a-z0-9-]*$" || [ "$HEAD_REF" = "$BASE_REF" ]; then
-            echo "::error::A pull request into ${BASE_REF} must come from a branch of that release: release/${release}/plan-<PP> or release/${release}/<topic>. This one comes from '${HEAD_REF}'."
-            exit 1
-          fi
-          if printf '%s' "$HEAD_REF" | grep -Eq "^release/${release}/plan-[0-9]+$"; then
-            echo "Plan branch: $HEAD_REF"; exit 0
-          fi
-          if printf '%s\n%s\n' "$TITLE" "$BODY" | grep -Eiq '(plan[ -]?[0-9]+|astrid-dev#[0-9]+|astrid-dev/issues/[0-9]+)'; then
-            echo "Reference found."; exit 0
-          fi
-          echo "::error::A pull request into a release branch must name the plan or the astrid-dev issue it belongs to, for example 'Plan 55' or 'banodoco/astrid-dev#721'."
-          exit 1
+          retention-days: 7
