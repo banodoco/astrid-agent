@@ -324,6 +324,17 @@ def _parser(contextual: dict[str, Any] | None = None) -> _GenerationParser:
     command.add_argument("--json", action="store_true")
     command.add_argument("--timings", action=_TimingAction, help="Print command stage timings.")
     _common_options(command)
+    command = sub.add_parser('requirements', help='Preview exact workflow requirements without changing the target or entry.')
+    command.add_argument('source', metavar='FILE|ENTRY')
+    command.add_argument('--placement', action=_Once, default='auto')
+    command.add_argument('--add', action='append', default=[], metavar='URL[@REF]')
+    command.add_argument('--add-model', action='append', default=[], metavar='DEST=URL#sha256')
+    from .consent import consent_scope
+    command.add_argument('--consent', action='append', type=consent_scope, default=[],
+                         metavar='{user_env,code=TOKEN}',
+                         help='Check an exact code warning token; preview does not save approval.')
+    command.add_argument('--dry-run', action='store_true', help='Read-only preview (also the default).')
+    command.add_argument('--json', action='store_true')
     command = sub.add_parser('align', help='Inspect locked managed assets; apply with explicit user_env consent.')
     selection = command.add_mutually_exclusive_group()
     selection.add_argument('--entry', action=_Once, metavar='ID')
@@ -721,6 +732,9 @@ def _main_request(argv: list[str], stack, *, output=None) -> int:
     if parsed.modality == 'list':
         from astrid.core.generation.listing import main as list_main
         return list_main(argv)
+    if parsed.modality == 'requirements':
+        from astrid.core.generation.requirements import main as requirements_main
+        return requirements_main(parsed, output=output)
     if parsed.modality == 'align':
         from astrid.core.generation.asset_alignment import main as align_main
         return align_main(parsed)
@@ -1099,7 +1113,9 @@ def _main_with_errors(argv: list[str] | None = None) -> int:
     from astrid.core.generation.placement import is_runpod_placement
     selected = argv[argv.index('--placement') + 1:][:1] if '--placement' in argv else []
     kind = selected[0] if selected else ''
-    runpod = is_runpod_placement(kind)
+    requirements_preview = bool(argv and argv[0] == 'requirements')
+    # Requirements never inspects/retains paid leases or prepares a machine.
+    runpod = not requirements_preview and is_runpod_placement(kind)
     if runpod:
         try:
             from astrid.core.generation.placement import _runpod_leases
@@ -1109,7 +1125,7 @@ def _main_with_errors(argv: list[str] | None = None) -> int:
             _logger.debug("Could not snapshot leases before the command", exc_info=True)
     try:
         scope = nullcontext()
-        if '--dry-run' in argv:
+        if requirements_preview or '--dry-run' in argv:
             from astrid.core.pack.discovery import pack_discovery_scope
             scope = pack_discovery_scope()
         token = _generation_output.set(output)
