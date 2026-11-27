@@ -361,6 +361,7 @@ def test_scan_reports_pinokio_when_no_script_is_running(
         "servers": [],
         "errors": [],
         "pinokio": {"available": True, "home": str(pinokio_home)},
+        "installations": [],
     }
 
 
@@ -371,6 +372,7 @@ def test_scan_continues_when_pinokio_is_absent() -> None:
         "servers": [],
         "errors": [],
         "pinokio": {"available": False, "home": None},
+        "installations": [],
     }
 
 
