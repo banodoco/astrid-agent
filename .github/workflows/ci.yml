@@ -68,6 +68,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: 93-cat-proof-receipts
+          name: 93-c-proof-receipts
           path: ${{ runner.temp }}/receipts/
           if-no-files-found: warn
