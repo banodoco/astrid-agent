@@ -1,0 +1,183 @@
+{
+  "agent": {
+    "repo": "/tmp/r16-pack-delivery-proof",
+    "sha": "baf6b73f297865f681bfe07ca2035a53168e79d5"
+  },
+  "agent_tree": "f2749ccd7dcfcd8526e4d6bacfdc53d54b114999",
+  "core_distributions": [
+    {
+      "direct_url": {
+        "dir_info": {},
+        "url": "file:///workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/2be5c5132c6c/r"
+      },
+      "name": "astrid-runtime",
+      "version": "0.1.0"
+    },
+    {
+      "direct_url": {
+        "dir_info": {},
+        "url": "file:///workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/2be5c5132c6c/v"
+      },
+      "name": "vibecomfy",
+      "version": "2.8.0"
+    },
+    {
+      "direct_url": {
+        "dir_info": {},
+        "url": "file:///workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/2be5c5132c6c/r/packages/python"
+      },
+      "name": "astrid-runtime-client",
+      "version": "0.2.15"
+    },
+    {
+      "direct_url": {
+        "dir_info": {},
+        "url": "file:///workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/2be5c5132c6c/a"
+      },
+      "name": "astrid",
+      "version": "0.1.0"
+    },
+    {
+      "direct_url": {
+        "dir_info": {},
+        "url": "file:///workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/2be5c5132c6c/lifecycle"
+      },
+      "name": "runpod-lifecycle",
+      "version": "0.3.1.dev0"
+    }
+  ],
+  "full_inventory_sha256": "efb82882c5cd6c072998b0a87ee21d48a8e051d60e73e4b8e86b7c0f5d2b31ed",
+  "installed_git_match_count": 1038,
+  "interpreter": {
+    "executable": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/2be5c5132c6c/py/bin/python",
+    "modules": {
+      "astrid": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/2be5c5132c6c/py/lib/python3.11/site-packages/astrid/__init__.py",
+      "astrid_runtime": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/2be5c5132c6c/py/lib/python3.11/site-packages/astrid_runtime/__init__.py",
+      "runtime_protocol": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/2be5c5132c6c/py/lib/python3.11/site-packages/runtime_protocol/__init__.py"
+    },
+    "prefix": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/2be5c5132c6c/py",
+    "python": "3.11.13 (main, Oct  7 2025, 15:34:32) [Clang 20.1.4 ]"
+  },
+  "lifecycle": {
+    "repo": "https://github.com/banodoco/runpod-lifecycle.git",
+    "sha": "9f88ef7640bc664f697112d966ecefa123d44340",
+    "version": "0.3.1.dev0"
+  },
+  "mandatory_installed_git_matches": {
+    "astrid/core/pack/cli_manage.py": {
+      "git_blob": "cf8c8741272fd205364cd2a1d48283180208e3ba",
+      "sha256": "67f9d3048fc9df46c4956d43c71793613f41b0a96a544d70343c89aad51e0472"
+    },
+    "astrid/core/pack/loader.py": {
+      "git_blob": "698d123db99b8085c1faf1745ce7b91f1338c98f",
+      "sha256": "57a330278ed1e253874e555515317aa54e0892ec602f7a1a4f2f72da4e003166"
+    },
+    "astrid/core/pack/motion_source.py": {
+      "git_blob": "ab88fe151af3194788f8b952539eda6a8dd3ec51",
+      "sha256": "ea32bc1b498701af63d539b9574a9716b98506b17471a0e52030f6c05d14cce3"
+    },
+    "astrid/core/pack/release_manifest.py": {
+      "git_blob": "2b6ec2cc0cbc22a3ba17e817eeea09f5f99b23d8",
+      "sha256": "acd54054ba91299b703c5d10d49a7e86547380b680b74822a3b9a279c099fbed"
+    },
+    "astrid/core/pack/transaction.py": {
+      "git_blob": "57a78ca08f24190c6bf14359239f70a13a549d8f",
+      "sha256": "704058d8e319b1acb0cce98f9468921972202d2ee27a5bcba2084652cf99872c"
+    },
+    "astrid/installer/backend.py": {
+      "git_blob": "f16625d7b191d90cc008298015b0392d97c5adbf",
+      "sha256": "38e26b4de25a9f2f1958803fd46f1225d8dea0b285f5bb273bf1b88e309984c6"
+    },
+    "astrid/installer/boundary_handoff.py": {
+      "git_blob": "5e9b9fdd36f73442066fe121d2827bf165e19401",
+      "sha256": "2d7e88679450c9bb6c71ce7f7e86885d3e88da1439460061b3bb2e196c1c07ae"
+    },
+    "astrid/installer/core.py": {
+      "git_blob": "04a97f9190622544a1c6a16df5b2333a13d57d92",
+      "sha256": "85a54f219f825c1328e78f2d958865884681fe2f0ec7079ed4aed9be7ab405a2"
+    },
+    "astrid/installer/default_packs.py": {
+      "git_blob": "fc1c5aa34673a9541adce711230e566278bb5878",
+      "sha256": "2e23bdd3dd39e1a24e2e9f4a62e3e0c3e8515101570c20de4a2bb8e16f73f999"
+    },
+    "astrid/packs/rendering/rendering/renderers/remotion/pack_revisions.py": {
+      "git_blob": "384871142beac339e20c8cb4b02a5e2413eda0c9",
+      "sha256": "6ec6deef33dbc47508a3e6a9a2e6ddf2f1684ccff7546040e1925543093d52d0"
+    },
+    "astrid/packs/rendering/shared/element_contracts.ts": {
+      "git_blob": "8ddfcb69c5e7edab9f80f1f2f99225d8ca23294a",
+      "sha256": "020cd57e1e3c81717eb0715c0710724522f82f95e6ec609dc86466f7ac6dc341"
+    },
+    "astrid/resources/astrid_motion_release_source.json": {
+      "git_blob": "96ae68dee647ab572a505d225dbd5d2cdd128416",
+      "sha256": "a14a6152dbb14e4c73f5ca539fc1eb2219f7c8335be0085ddc6db34fdb3b6f9b"
+    }
+  },
+  "original_unchanged_blobs": {
+    "astrid/packs/runpod/pins.json": "ca2733bca0460403903def3d0756bfb5fc0d1594",
+    "pyproject.toml": "e2f86e5e47b6ce08a53b0c01f2a0d8ba43cf4aef",
+    "remotion/package-lock.json": "3d2c07bf447994de3b2b6021feb54e507b4b6dad",
+    "requirements/runtime.lock": "2d4c52fa65fb485f2fad90f8ba159a2d8d9f010f",
+    "runtime.lock.json": "0e2077c4f2365e793a808f8a52af88a03bfd4811",
+    "tests/conftest.py": "90dceb03604273cd81347326f6f8333bd4292411",
+    "tests/core/pack/test_transaction.py": "3870c078a95d3b255bfb2781e60fb7d0b6986412",
+    "tests/core/pack/test_transaction_integrity.py": "d474add245928c33fb8ae3322a530cf99a8a4fbf",
+    "tests/core/pack/test_transaction_source_contracts.py": "a69e357fc940be16bafb44c99b160a78b831ddbf",
+    "tests/lanes.py": "652be8a03de8f239d91f2442b16510184e8b0492",
+    "tests/test_boundary_handoff.py": "b09554f3b8d52aaa938c2357b0372a5c522fd50f"
+  },
+  "runtime": {
+    "repo": "/workspace/scratch/687e2e07963c/agent.env/runtime",
+    "schema_digest": "sha256:2c6a76e17b4441398ab91e3e9d6283a719fd5b08807447db9dbf2ecc5e1339a2",
+    "sha": "686ca695469bda48cd40a70824c4ccef2a137284"
+  },
+  "runtime_stopped": true,
+  "source": {
+    "astrid_motion": {
+      "commit": "23f78bfc7e3cb26e320e8d3c6bd30a8b94cd92e1",
+      "digest": "be6abd1feb9759eca56364c6a2ccded470977aaf965a8e208cdd4f1bedcf77cf",
+      "digest_rule": "pack-tree-v1",
+      "repo": "file:///tmp/r16-pack-delivery-poms"
+    }
+  },
+  "source_verification": "Independent Git-object equality of actual staged and installed bytes",
+  "staged_git_metadata_present": false,
+  "tools": {
+    "bun": {
+      "path": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/2be5c5132c6c/tools/bun/bun-linux-x64/bun",
+      "sha256": "9fd36f87e4b90b07632b987a2e4ec81ca15a62c81bf983190cea6d715be2ad74",
+      "version": "1.3.14"
+    },
+    "esbuild": {
+      "path": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/2be5c5132c6c/a/remotion/node_modules/esbuild/bin/esbuild",
+      "sha256": "c638273fcf95573ca74af586677800b4dd874c55f8f945adb54316d6902ba14b",
+      "version": "0.27.7"
+    },
+    "esbuild_api": {
+      "path": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/2be5c5132c6c/a/remotion/node_modules/esbuild/lib/main.js",
+      "sha256": "bce772de103e1cbb118f1b7313916caa81f0e85461b3b6e3531607e7ed75ec85"
+    },
+    "ffmpeg": {
+      "manifest_version": "7.0.2",
+      "observed_version": "7.1.5-0+deb13u1",
+      "path": "/usr/bin/ffmpeg",
+      "sha256": "e8a8d46f5225f3062cec7c07fb145d58ae73c603cb740dcd5bad34bfb54e455a",
+      "source": "path"
+    },
+    "ffprobe": {
+      "observed_version": "7.1.5-0+deb13u1",
+      "path": "/usr/bin/ffprobe",
+      "sha256": "cefc5f81c0b18429cdbf8fa5a89e1e9c759235e10f93f9b329ff1b2fdff26f46",
+      "source": "path"
+    },
+    "node": {
+      "path": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/2be5c5132c6c/tools/node/node-v20.19.4-linux-x64/bin/node",
+      "sha256": "43d6cf63f2a460b463eba6b19df5e9a259771c56f11b5130e04178a15bb99490",
+      "version": "v20.19.4"
+    }
+  },
+  "vibecomfy": {
+    "repo": "/workspace/scratch/687e2e07963c/agent.env/vibecomfy",
+    "sha": "55c3948212d23cf037fae8a4c6faad77d33e7279"
+  }
+}

@@ -5,6 +5,85 @@ served installer manifest, native R0/platform acceptance, or browser acceptance.
 The owning change is `p93/PACK-DELIVERY`, Agent PR 701. PACK-B separately owns the
 facade, independent release-source witness, readers, and generators in PR 700.
 
+## Completed current implementation proof
+
+The retrievable integration commit
+`baf6b73f297865f681bfe07ca2035a53168e79d5` (tree
+`f2749ccd7dcfcd8526e4d6bacfdc53d54b114999`) joins DELIVERY
+`d91d49deed96d756224484ecae423ba2515d9048` and PACK-B
+`4210932093c8c34838dbe3c7e11a14a3536c2411`. It is available on
+`p93/PACK-DELIVERY-proof`. The actual source pair is the K23f78bf candidate
+described below, matching PACK-B's committed independent witness. It is not the
+later corrected PACK-A commit, an accepted final tuple, or a new release pin.
+
+All **13 installed cases** in `native/` passed against that actual integration:
+
+| Actual proof | Cases | Result |
+| --- | ---: | --- |
+| Public CLI clean install and quarantine/repair | 2 | Exit 0, actual Runtime readiness, selected default admitted, exact reader K/D match |
+| Two real installed versions; public update SIGKILL and journal rollback | 2 | Real exit -9 after canonical publication/selection; normal CLI recovery restores the prior selection and pack identity |
+| Selected authority, receipt, admission, and user-origin negatives | 7 | Refusal/quarantine with byte-preserved selection and collection |
+| Unselected installed candidate: undeclared resource and real compiler failure | 2 | Actual child exit 1 for each intended refusal; old selected version and live collection unchanged |
+
+The two-version test uses an explicitly empty-default negative manifest for the
+second version, with the same real Agent/Runtime/tool inputs. This deliberately
+exercises canonical removal and rollback. Both prefixes were produced by the
+actual `Backend.stage`, with real noneditable packages. After SIGKILL at the
+durable `switched` journal, the public CLI restores all 64 source hashes, valid
+canonical admission, the exact old pointer, a user folder pack's four files, its
+separate removal tombstone, and the protected user document. Runtime reaches
+readiness again. This is a two-version R16 candidate fixture; it does not claim
+the separate H1 release-15-to-16 App/editor acceptance journey.
+
+The candidate refusal tests reuse the genuinely installed, unselected candidate
+as a private negative-input venue after rollback. Each input is a real local Git
+descendant of K23 with one explicit component mutation and an independently
+computed tree/digest. The candidate's version-owned manifest selects that
+negative input for `Backend.prepare_default_packs`; it is restored afterward.
+The selected old manifest is never changed. These are rejected test inputs, not
+proposed producer commits or substitutes for the repaired source.
+
+Independent Git-object comparison matched **1,038 actual staged and installed
+Python/witness files**, including all eight owned product files and all four
+PACK-B package interfaces. The original tests/conftest/configuration/lock blobs
+match untouched base44. The installer excludes `.git` from its staged source;
+identity was checked against independent real Git blobs, not inferred from a
+fabricated checkout marker. The full inventory is in the raw proof bundle;
+`native/source-inventory-summary.json` binds its SHA256 and mandatory entries.
+
+The original handoff file completed 79 passes and one CLI refusal-wording
+failure. That exact node also fails on an independently set-up untouched44.
+The five added stop/apply/select/recovery-order cases pass with the original R0
+fixture, including stop refusal. The original transaction files collected and
+executed exactly the same 203 unique node IDs, with zero skips: 202 passed and
+one lacked its required `ASTRID_RUNTIME_ADMISSION_CHECKOUT` environment input.
+That unchanged node passed with the actual pinned Runtime686ca695 checkout.
+Passing cases were not rerun for metadata. `source-regressions.json` preserves
+all counts, failed nodes, messages, and JUnit hashes; it does not label the
+broader inherited-failure suites green.
+
+The venue is Linux under observed seccomp, using the installer's existing
+explicit `--sandbox` process-control mode. All four optional setup choices were
+off. Real Runtime stop/start/readiness ran; no OS manager was simulated in this
+public CLI proof. The task's Runtime was stopped through its existing fence
+afterward. The original R0 source tests are explicitly manager simulations,
+not native R0 qualification.
+
+Actual Node 20.19.4, esbuild 0.27.7 API/native hashes, Bun 1.3.14, and the original
+Remotion lock are recorded. The unchanged manifest specifies FFmpeg 7.0.2, but
+the existing media-tool policy selected PATH FFmpeg/ffprobe 7.1.5-0+deb13u1 in
+this venue. No FFmpeg 7.0.2 asset qualification is claimed. Browser acquisition
+failed DNS; the public CLI correctly reported rendering/visualization
+unavailable. No browser, App/editor, macOS/Windows, served-wrapper, or final H1
+qualification follows from this delivery proof.
+
+The first full CLI attempt was killed with exit 137 during OMP staging, before
+selection or live collection creation. Its exact source/log receipt remains in
+the raw bundle. A fresh physical disk-backed venue completed the retry. A
+negative-proof harness initially inspected stdout while Backend correctly
+logged separate stderr; its failed assertion is retained, and the successful
+retry checks the exact new diagnostic log slice. No product checks were relaxed.
+
 ## Shipping path and scope
 
 At Agent `44d59774abb638c61ed0aae2b32653e62a5bcf66`, the installer stages the
@@ -48,9 +127,10 @@ installation also contains `PIN` and `.build/definitions.json`; these generated
 metadata files are not source files.
 
 `Backend.stage` actually installed Python 3.11.13 and the real noneditable Agent,
-Runtime, client, VibeComfy, and lifecycle packages, plus the manifest's pinned
-Node, esbuild, Bun, FFmpeg, and other tools. It used the original runtime and npm
-lockfiles. No `sys.prefix` assignment or product-module replacement was used.
+Runtime, client, VibeComfy, and lifecycle packages, plus real Node, esbuild, Bun,
+and the existing media-tool selection. The manifest names FFmpeg 7.0.2; that
+alone is not evidence that its archive was downloaded. It used the original
+runtime and npm lockfiles. No `sys.prefix` assignment or product-module replacement was used.
 The standalone verification program runs with the installed interpreter:
 
 ```text
@@ -112,5 +192,5 @@ used a relocated development venv behind a symlink, which the original managed
 path checks correctly refused. The all-marker request also reached browser
 fixtures without their required explicit tool inputs and an unavailable local
 R0 evidence fixture. Those expanded runs are unqualified, not product PASS and
-not evidence of a regression. Physical-path reruns and further installed results
-must be reported separately with their actual source identity.
+not evidence of a regression. The completed physical-path and installed results
+are recorded separately above with their actual source identity.

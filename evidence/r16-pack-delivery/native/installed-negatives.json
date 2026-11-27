@@ -1,0 +1,44 @@
+{
+  "agent": {
+    "repo": "/tmp/r16-pack-delivery-proof",
+    "sha": "baf6b73f297865f681bfe07ca2035a53168e79d5"
+  },
+  "cases": [
+    {
+      "name": "wrong-commit-refuses-without-mutation",
+      "status": "PASS"
+    },
+    {
+      "name": "wrong-digest-refuses-without-mutation",
+      "status": "PASS"
+    },
+    {
+      "name": "duplicate-json-key-refuses-without-mutation",
+      "status": "PASS"
+    },
+    {
+      "name": "aliased-selected-manifest-refuses",
+      "status": "PASS"
+    },
+    {
+      "name": "missing-preparation-receipt-refuses",
+      "status": "PASS"
+    },
+    {
+      "name": "missing-canonical-admission-quarantines",
+      "status": "PASS"
+    },
+    {
+      "name": "user-origin-conflict-refuses-without-takeover",
+      "status": "PASS"
+    }
+  ],
+  "prefix": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/2be5c5132c6c/py",
+  "result": "PASS",
+  "source": {
+    "commit": "23f78bfc7e3cb26e320e8d3c6bd30a8b94cd92e1",
+    "digest": "be6abd1feb9759eca56364c6a2ccded470977aaf965a8e208cdd4f1bedcf77cf",
+    "digest_rule": "pack-tree-v1",
+    "repo": "file:///tmp/r16-pack-delivery-poms"
+  }
+}
