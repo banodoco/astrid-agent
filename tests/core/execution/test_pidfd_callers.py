@@ -238,15 +238,15 @@ def test_sandbox_held_launch_is_signalled_through_its_popen(tmp_path, monkeypatc
 def test_sandbox_descendant_binds_runtime_identity_and_signals_through_runtime(tmp_path, monkeypatch, sandbox_mode):
     identity = {"pid": 456, "uid": 1000, "birth_id": "proc-start-ticks:77;boot:boot;pidns:1234", "process_group": 123}
     monkeypatch.setattr(platform, "process_identity", lambda pid: dict(identity) if pid == 456 else None)
-    monkeypatch.setattr(groups, "process_birth_identity", lambda pid=None: "actor" if pid is None else "boot:77")
+    monkeypatch.setattr(groups, "process_birth_identity", lambda pid=None: "actor" if pid is None else "proc-start-ticks:77;boot:boot;pidns:1234")
     sent = []
     monkeypatch.setattr(platform, "signal_process", lambda expected, sig: sent.append((expected, sig)))
     owner = custody.ProcessCustody(scope_root=tmp_path)
     owner._actor_birth = "actor"
-    owner.register(456, "boot:77")
+    owner.register(456, "proc-start-ticks:77;boot:boot;pidns:1234")
     target = owner._handles[456][1]
     assert isinstance(target, custody._CheckedPidTarget) and target.identity == identity
-    owner.signal(456, "boot:77", platform.TERM)
+    owner.signal(456, "proc-start-ticks:77;boot:boot;pidns:1234", platform.TERM)
     assert sent == [(identity, platform.TERM)]
 
 
@@ -268,13 +268,13 @@ def test_sandbox_descendant_binds_runtime_identity_and_signals_through_runtime(t
 def test_sandbox_descendant_with_unproved_scope_is_not_admitted(tmp_path, monkeypatch, sandbox_mode, runtime_birth):
     monkeypatch.setattr(platform, "process_identity",
                         lambda pid: {"pid": pid, "uid": 1000, "birth_id": runtime_birth})
-    monkeypatch.setattr(groups, "process_birth_identity", lambda pid=None: "actor" if pid is None else "boot:77")
+    monkeypatch.setattr(groups, "process_birth_identity", lambda pid=None: "actor" if pid is None else "proc-start-ticks:77;boot:boot;pidns:1234")
     monkeypatch.setattr(platform, "signal_process", lambda *_: pytest.fail("unadmitted descendant signalled"))
     owner = custody.ProcessCustody(scope_root=tmp_path)
-    owner.register(456, "boot:77")
+    owner.register(456, "proc-start-ticks:77;boot:boot;pidns:1234")
     assert 456 not in owner._handles
     with pytest.raises(custody.CustodyError, match="retained exact process"):
-        owner.signal(456, "boot:77", platform.TERM)
+        owner.signal(456, "proc-start-ticks:77;boot:boot;pidns:1234", platform.TERM)
 
 
 @pytest.mark.linux_native
@@ -289,22 +289,22 @@ def test_sandbox_retained_scope_change_prevents_runtime_signal(tmp_path, monkeyp
     identity = {"pid": 456, "uid": 1000, "birth_id": "proc-start-ticks:77;boot:boot;pidns:1234"}
     current = dict(identity)
     monkeypatch.setattr(platform, "process_identity", lambda pid: dict(current))
-    monkeypatch.setattr(groups, "process_birth_identity", lambda pid=None: "actor" if pid is None else "boot:77")
+    monkeypatch.setattr(groups, "process_birth_identity", lambda pid=None: "actor" if pid is None else "proc-start-ticks:77;boot:boot;pidns:1234")
     kill = Mock()
     monkeypatch.setattr(platform.os, "kill", kill)
     owner = custody.ProcessCustody(scope_root=tmp_path)
     owner._actor_birth = "actor"
-    owner.register(456, "boot:77")
+    owner.register(456, "proc-start-ticks:77;boot:boot;pidns:1234")
     target = owner._handles[456][1]
     assert target.identity == identity
-    owner.signal(456, "boot:77", platform.TERM)
+    owner.signal(456, "proc-start-ticks:77;boot:boot;pidns:1234", platform.TERM)
     kill.assert_called_once_with(456, platform.TERM)
     kill.reset_mock()
 
     current["birth_id"] = changed_birth
-    owner.signal(456, "boot:77", platform.KILL)  # Real Runtime recheck refuses it.
+    owner.signal(456, "proc-start-ticks:77;boot:boot;pidns:1234", platform.KILL)  # Real Runtime recheck refuses it.
     kill.assert_not_called()
-    assert owner._handles[456] == ("boot:77", target)
+    assert owner._handles[456] == ("proc-start-ticks:77;boot:boot;pidns:1234", target)
     assert target.identity == identity  # Never refresh authority to the new scope.
 
 
@@ -313,13 +313,13 @@ def test_sandbox_retained_scope_change_prevents_runtime_signal(tmp_path, monkeyp
 def test_sandbox_unreadable_runtime_identity_never_signals(tmp_path, monkeypatch, sandbox_mode, stage):
     identity = {"pid": 456, "uid": 1000, "birth_id": "proc-start-ticks:77;boot:boot;pidns:1234"}
     monkeypatch.setattr(platform, "process_identity", lambda pid: dict(identity))
-    monkeypatch.setattr(groups, "process_birth_identity", lambda pid=None: "actor" if pid is None else "boot:77")
+    monkeypatch.setattr(groups, "process_birth_identity", lambda pid=None: "actor" if pid is None else "proc-start-ticks:77;boot:boot;pidns:1234")
     kill = Mock()
     monkeypatch.setattr(platform.os, "kill", kill)
     owner = custody.ProcessCustody(scope_root=tmp_path)
     owner._actor_birth = "actor"
     if stage == "signal":
-        owner.register(456, "boot:77")
+        owner.register(456, "proc-start-ticks:77;boot:boot;pidns:1234")
 
     def unreadable(pid):
         raise PermissionError(errno.EACCES, "identity unreadable")
@@ -327,11 +327,11 @@ def test_sandbox_unreadable_runtime_identity_never_signals(tmp_path, monkeypatch
     monkeypatch.setattr(platform, "process_identity", unreadable)
     if stage == "registration":
         with pytest.raises(PermissionError, match="identity unreadable"):
-            owner.register(456, "boot:77")
+            owner.register(456, "proc-start-ticks:77;boot:boot;pidns:1234")
         assert not owner._handles
     else:
         with pytest.raises(custody.CustodyError, match="start-time-checked signal failed"):
-            owner.signal(456, "boot:77", platform.TERM)
+            owner.signal(456, "proc-start-ticks:77;boot:boot;pidns:1234", platform.TERM)
         owner.release_pidfds(only_exited=True)
         assert owner._handles[456][1].identity == identity
     kill.assert_not_called()
@@ -342,16 +342,16 @@ def test_sandbox_signal_to_an_exited_descendant_is_not_an_error(tmp_path, monkey
     identity = {"pid": 456, "uid": 1000, "birth_id": "proc-start-ticks:77;boot:boot;pidns:1234"}
     current = {"value": dict(identity)}
     monkeypatch.setattr(platform, "process_identity", lambda pid: current["value"])
-    monkeypatch.setattr(groups, "process_birth_identity", lambda pid=None: "actor" if pid is None else "boot:77")
+    monkeypatch.setattr(groups, "process_birth_identity", lambda pid=None: "actor" if pid is None else "proc-start-ticks:77;boot:boot;pidns:1234")
     owner = custody.ProcessCustody(scope_root=tmp_path)
     owner._actor_birth = "actor"
-    owner.register(456, "boot:77")
+    owner.register(456, "proc-start-ticks:77;boot:boot;pidns:1234")
 
     def changed(*_):
         raise OSError("process incarnation changed")
 
     monkeypatch.setattr(platform, "signal_process", changed)
-    owner.signal(456, "boot:77", platform.TERM)  # exited (pid maybe reused): nothing of ours to signal
+    owner.signal(456, "proc-start-ticks:77;boot:boot;pidns:1234", platform.TERM)  # exited (pid maybe reused): nothing of ours to signal
     current["value"] = {"pid": 456, "uid": 1000, "birth_id": "proc-start-ticks:500"}
     owner.release_pidfds(only_exited=True)
     assert owner._handles[456][1] is custody._PIDFD_RELEASED
@@ -359,10 +359,10 @@ def test_sandbox_signal_to_an_exited_descendant_is_not_an_error(tmp_path, monkey
     def denied(*_):
         raise PermissionError(errno.EPERM, "Operation not permitted")
 
-    owner._handles[456] = ("boot:77", custody._CheckedPidTarget(identity))
+    owner._handles[456] = ("proc-start-ticks:77;boot:boot;pidns:1234", custody._CheckedPidTarget(identity))
     monkeypatch.setattr(platform, "signal_process", denied)
     with pytest.raises(custody.CustodyError, match="start-time-checked signal failed"):
-        owner.signal(456, "boot:77", platform.TERM)
+        owner.signal(456, "proc-start-ticks:77;boot:boot;pidns:1234", platform.TERM)
 
 
 @pytest.mark.linux_native
@@ -386,7 +386,7 @@ def test_sandbox_custody_stops_a_real_tree_without_pidfds(tmp_path, monkeypatch,
         owner.register(child, child_birth)
         assert isinstance(owner._handles[child][1], custody._CheckedPidTarget)
         retained = owner._handles[child][1].identity
-        boot, _, ticks = child_birth.rpartition(":")
+        ticks, boot, _namespace = groups.linux_birth_scope(child_birth)
         namespace = Path(f"/proc/{child}/ns/pid").stat().st_ino
         assert retained["birth_id"] == f"proc-start-ticks:{ticks};boot:{boot};pidns:{namespace}"
         owner.signal(child, child_birth, platform.KILL)
@@ -409,7 +409,7 @@ def test_sandbox_custody_stops_a_real_tree_without_pidfds(tmp_path, monkeypatch,
 def test_sandbox_descendant_with_another_start_time_is_not_admitted(tmp_path, monkeypatch, sandbox_mode):
     monkeypatch.setattr(platform, "process_identity",
                         lambda pid: {"pid": pid, "uid": 1000, "birth_id": "proc-start-ticks:99"})
-    monkeypatch.setattr(groups, "process_birth_identity", lambda pid=None: "actor" if pid is None else "boot:77")
+    monkeypatch.setattr(groups, "process_birth_identity", lambda pid=None: "actor" if pid is None else "proc-start-ticks:77;boot:boot;pidns:1234")
     owner = custody.ProcessCustody(scope_root=tmp_path)
-    owner.register(456, "boot:77")
+    owner.register(456, "proc-start-ticks:77;boot:boot;pidns:1234")
     assert 456 not in owner._handles

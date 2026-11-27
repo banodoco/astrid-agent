@@ -360,35 +360,21 @@ class _LinuxSnapshotSource(_NativeSnapshotSource):
 
     @staticmethod
     def _stat(pid: int) -> tuple[int, str]:
+        from astrid.core.execution.process_group import scoped_linux_identity
         try:
-            raw = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
-        except (FileNotFoundError, ProcessLookupError) as exc:
-            raise ObservationUnavailable("process vanished during /proc observation") from exc
+            identity = scoped_linux_identity(pid)
+            if identity is None:
+                raise ObservationUnavailable("process birth/parent is unavailable")
+            return identity["parent_pid"], identity["birth_id"]
         except OSError as exc:
-            raise ObservationUnavailable("/proc process observation was denied") from exc
-        separator = raw.rfind(")")
-        if separator < 0:
-            raise ObservationUnavailable("/proc stat record is malformed")
-        fields = raw[separator + 2 :].split()
-        if len(fields) <= 19 or not fields[1].isdigit() or not fields[19].isdigit():
-            raise ObservationUnavailable("/proc process birth/parent is unavailable")
-        return int(fields[1]), fields[19]
+            raise ObservationUnavailable("process observation was denied") from exc
 
     def _table(self) -> dict[int, tuple[int, str]]:
-        table: dict[int, tuple[int, str]] = {}
-        try:
-            entries = list(Path("/proc").iterdir())
-        except OSError as exc:
-            raise ObservationUnavailable("/proc cannot be enumerated") from exc
-        for entry in entries:
-            if not entry.name.isdigit():
-                continue
-            try:
-                table[int(entry.name)] = self._stat(int(entry.name))
-            except ObservationUnavailable as exc:
-                if "vanished" in str(exc):
-                    continue
-                raise
+        from runtime_protocol import process_binding
+        observed = process_binding.census()
+        if observed.status != "complete":
+            raise ObservationUnavailable("process census incomplete")
+        table = {pid: (row["parent_pid"], row["birth_id"]) for pid, row in observed.live.items()}
         if len(table) > self.max_processes:
             raise ObservationUnavailable("process table exceeds bounded observation capacity")
         return table
@@ -408,10 +394,17 @@ class _LinuxSnapshotSource(_NativeSnapshotSource):
         except KeyError as exc:
             raise ObservationUnavailable("process escaped the bounded process table") from exc
         parent_birth = table[parent_pid][1] if parent_pid in table else None
+        if parent_birth is not None and self._stat(parent_pid) != table[parent_pid]:
+            raise ObservationUnavailable("parent changed after census")
+        if self._stat(pid) != table[pid]:
+            raise ObservationUnavailable("process changed after census")
+        executable = self._exe(pid)
+        if self._stat(pid) != table[pid] or (parent_birth is not None and self._stat(parent_pid) != table[parent_pid]):
+            raise ObservationUnavailable("process or parent changed during observation")
         return self._identity(
             pid=pid,
             birth_id=birth,
-            executable=self._exe(pid),
+            executable=executable,
             parent_pid=parent_pid if parent_pid in table else None,
             parent_birth_id=parent_birth,
             discovery_id=f"linux-proc-v1:{pid}:{birth}",

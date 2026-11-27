@@ -657,30 +657,36 @@ def _flock_reliable(fd):
 
 
 def _owner_process_state(marker):
-    """Return positive incarnation evidence; an unreadable pid proves nothing."""
+    """Return positive scoped incarnation evidence; legacy markers are diagnostic."""
+    from astrid.core.execution.process_group import linux_birth_scope
+
     pod_id = marker.get("pod_id")
     current_pod = os.environ.get("RUNPOD_POD_ID")
+    process = marker.get("process")
+    if process is not None and (not isinstance(process, dict) or set(process) != {"pid", "birth_id"}
+                                or linux_birth_scope(process["birth_id"]) is None):
+        return "unknown", "none"
     if (isinstance(pod_id, str) and isinstance(current_pod, str)
             and re.fullmatch(r"[a-zA-Z0-9_-]{1,128}", pod_id)
             and re.fullmatch(r"[a-zA-Z0-9_-]{1,128}", current_pod) and pod_id != current_pod):
         return "dead", "different_pod"
-    process = marker.get("process")
-    if not isinstance(process, dict) or set(process) != {"pid", "birth_id"}:
+    if process is None:
         return "unknown", "none"
     pid, birth = process["pid"], process["birth_id"]
-    if (type(pid) is not int or pid <= 0 or not isinstance(birth, str)
-            or re.fullmatch(r"[0-9a-f-]{36}:[0-9]+", birth) is None):
+    scope = linux_birth_scope(birth)
+    if type(pid) is not int or pid <= 0 or scope is None:
         return "unknown", "none"
-    current = process_birth_identity()
-    if not current:
+    current = linux_birth_scope(process_birth_identity())
+    if current is None or scope[2] != current[2]:
         return "unknown", "none"
-    if birth.split(":")[0] != current.split(":")[0]:
+    if scope[1] != current[1]:
         return "dead", "boot_id"
     observed = process_birth_identity(pid) or process_birth_identity(pid)
     if observed:
-        return ("alive" if observed == birth else "dead"), "pid_start_ticks"
-    # The shared helper deliberately collapses absent, zombie and unreadable.
-    # Only ENOENT or a witnessed zombie disambiguates death from failed reads.
+        match = native.process_birth_matches(birth, observed)
+        if match is not None:
+            return ("alive" if match else "dead"), "pid_start_ticks"
+        return "unknown", "none"
     if _zombie_birth_identity(pid) == birth:
         return "dead", "pid_start_ticks"
     try:
@@ -1026,9 +1032,11 @@ def _command(value, deadline):
 
 
 def _vibe_birth(pid):
-    # VibeComfy's Linux session registry uses /proc start ticks (native custody
-    # independently retains boot+ticks and pidfds). This is observation only.
-    return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19]
+    from astrid.core.execution.vibecomfy_engine_adapter import linux_registry_birth
+    ticks = linux_registry_birth(pid)
+    if ticks is None:
+        raise OSError("VibeComfy registry process is not live")
+    return ticks
 
 
 def _listener_owned(process, port):

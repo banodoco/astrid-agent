@@ -291,11 +291,23 @@ class SelectedSourceObserver:
         validate_selected_observation_sources(self.module, self.pins)
         if fact not in _SOURCE_FACTS or (fact == "_process_start_identity" and (type(pid) is not int or pid < 1)) or (fact != "_process_start_identity" and pid is not None):
             raise EngineAdapterError("selected source fact is invalid")
-        value = self.functions[fact](pid) if fact == "_process_start_identity" else self.functions[fact]()
+        if fact == "_process_start_identity" and sys.platform.startswith("linux"):
+            value = linux_registry_birth(pid)
+        else:
+            value = self.functions[fact](pid) if fact == "_process_start_identity" else self.functions[fact]()
         validate_selected_observation_sources(self.module, self.pins)
         if value is not None and (not isinstance(value, str) or not value or len(value.encode("utf-8")) > 1024):
             raise EngineAdapterError("selected source fact is not compact")
         return value
+
+
+def linux_registry_birth(pid: int) -> str | None:
+    """VibeComfy registry compatibility only; never a custody birth."""
+    from runtime_protocol import process_binding
+    try:
+        return process_binding.birth_ticks(pid)
+    except (OSError, AttributeError) as exc:
+        raise EngineAdapterError("Linux registry birth observation unavailable") from exc
 
 
 def install_selected_observation_boundary(module: Any, pins: Mapping[str, Any], control: Any) -> None:

@@ -130,6 +130,12 @@ def _host_pid_alive(pid: Any) -> bool:
         return False
     if value <= 0:
         return False
+    if sys.platform.startswith("linux"):
+        from astrid.core.execution.process_group import scoped_linux_identity
+        try:
+            return scoped_linux_identity(value) is not None
+        except OSError as exc:
+            raise PackHostBootstrapError("host native state observation unavailable") from exc
     if sys.platform == "win32":
         return platform.process_identity(value) is not None
     if sys.platform == "darwin":
@@ -297,6 +303,9 @@ def _host_birth_identity(pid: Any) -> str:
         return ""
     if value <= 0:
         return ""
+    if sys.platform.startswith("linux"):
+        from astrid.core.execution.process_group import process_birth_identity
+        return process_birth_identity(value)
     if sys.platform == "win32":
         identity = platform.process_identity(value)
         return str(identity["birth_id"]) if identity is not None else ""
@@ -390,7 +399,8 @@ def _parked_host_identity_matches(state: Mapping[str, Any]) -> bool:
         str(state.get("boot_manifest_path") or ""),
         str(state.get("boot_manifest_hash") or ""),
     )
-    return all(value and value in command for value in required)
+    return (all(value and value in command for value in required)
+            and _host_birth_identity(pid) == expected_birth)
 
 
 def _host_failure_cause(log_path: Path, *, max_chars: int = 400) -> str:
@@ -572,8 +582,12 @@ def _descendant_snapshot(pid: int) -> dict[int, tuple[str, int]]:
     """Descendant birth/PGID pairs of *pid*; empty when it has no children."""
     try:
         snapshot = _process_snapshot()
-    except (CleanupUncertainError, OSError, ValueError):
-        return {}
+    except (CleanupUncertainError, OSError, ValueError) as exc:
+        raise PackHostBootstrapError("host descendant census unavailable") from exc
+    if sys.platform.startswith("linux"):
+        from astrid.core.execution.process_group import _census_complete
+        if not _census_complete(snapshot):
+            raise PackHostBootstrapError("host descendant census incomplete")
     descendants: dict[int, tuple[str, int]] = {}
     frontier = [pid]
     while frontier:
@@ -605,6 +619,10 @@ def _registered_host_status(state: Mapping[str, Any]) -> str:
     birth = str(state.get("process_birth_id") or "")
     if pid <= 1 or not birth:
         return "reused"
+    if sys.platform.startswith("linux"):
+        from astrid.core.execution.process_group import linux_birth_scope
+        if linux_birth_scope(birth) is None:
+            raise PackHostBootstrapError("legacy or unscoped host journal is diagnostic only; retirement blocked")
     if sys.platform == "win32":
         # Windows has no POSIX process-group census. Runtime binds identity to
         # a kernel process handle (including the creation FILETIME), so use
@@ -675,7 +693,12 @@ def _registered_host_status(state: Mapping[str, Any]) -> str:
             return "foreign"
         return "ours"
     try:
-        info = _process_snapshot().get(pid)
+        snapshot = _process_snapshot()
+        info = snapshot.get(pid)
+        if sys.platform.startswith("linux") and info is None:
+            from astrid.core.execution.process_group import _census_complete
+            if not _census_complete(snapshot) and getattr(snapshot, "exited", {}).get(pid) != birth:
+                raise PackHostBootstrapError("host absence unproved by incomplete census")
     except CleanupUncertainError as exc:
         raise PackHostBootstrapError("process census unavailable; field=registered_host") from exc
     if info is None:
@@ -688,6 +711,8 @@ def _registered_host_status(state: Mapping[str, Any]) -> str:
     if info.pgid != pid or not support_root:
         return "foreign"
     command = _ps_command(pid)
+    if sys.platform.startswith("linux") and _host_birth_identity(pid) != birth:
+        raise PackHostBootstrapError("host birth changed during command observation")
     return "ours" if f" -m {_HOST_MODULE} " in f"{command} " and support_root in command else "foreign"
 
 
@@ -818,6 +843,12 @@ def _group_survivors(pgid: int, *, leader_birth: str | None = None) -> list[int]
         census = _process_snapshot()
     except CleanupUncertainError as exc:
         raise PackHostBootstrapError("process census unavailable; field=process_group") from exc
+    if sys.platform.startswith("linux"):
+        from astrid.core.execution.process_group import _census_complete, linux_birth_scope
+        if leader_birth is not None and linux_birth_scope(leader_birth) is None:
+            raise PackHostBootstrapError("legacy or unscoped host journal is diagnostic only")
+        if not _census_complete(census):
+            raise PackHostBootstrapError("process group census incomplete")
     leader = census.get(pgid)
     observed_leader_birth = (str(leader.birth) if leader is not None else
                              getattr(census, "exited", {}).get(pgid))
@@ -846,6 +877,10 @@ def _stop_group(pgid: int, *, grace: float | None = None, leader_birth: str | No
     """
     if pgid <= 1 or pgid == platform.process_group(os.getpid()):
         raise PackHostBootstrapError("refusing to signal an unsafe process group")
+    if sys.platform.startswith("linux"):
+        from astrid.core.execution.process_group import linux_birth_scope
+        if linux_birth_scope(leader_birth) is None:
+            raise PackHostBootstrapError("legacy or unscoped host journal is diagnostic only")
     grace = _GROUP_GRACE_SECONDS if grace is None else grace
     forced = False
     for sig, wait in ((platform.TERM, grace), (platform.KILL, 3.0)):
@@ -859,12 +894,12 @@ def _stop_group(pgid: int, *, grace: float | None = None, leader_birth: str | No
                 forced = True
         except ProcessLookupError:
             pass
-        except PermissionError as exc:
-            raise PackHostBootstrapError("prior host group cannot be signalled") from exc
+        except OSError as exc:
+            raise PackHostBootstrapError("prior host group cannot be signalled safely") from exc
         deadline = time.monotonic() + wait
-        while time.monotonic() < deadline and _group_survivors(pgid):
+        while time.monotonic() < deadline and _group_survivors(pgid, leader_birth=leader_birth):
             time.sleep(0.05)
-    if _group_survivors(pgid):
+    if _group_survivors(pgid, leader_birth=leader_birth):
         raise PackHostBootstrapError("prior host group survived SIGKILL; replacement blocked")
     return forced
 
@@ -970,6 +1005,10 @@ def _terminate_old_host(state: Mapping[str, Any], *, foreground: bool = False,
                         current_runtime_instance_id: str | None = None,
                         attach_reason: str | None = None) -> bool:
     """Stop the registered host group and return whether shutdown sent SIGKILL."""
+    if sys.platform.startswith("linux"):
+        from astrid.core.execution.process_group import linux_birth_scope
+        if linux_birth_scope(state.get("process_birth_id")) is None:
+            raise PackHostBootstrapError("legacy or unscoped host journal is diagnostic only; retirement blocked")
     status = _registered_host_status(state) if status is None else status
     if status == "foreign":
         raise PackHostBootstrapError("registered pid is not this Astrid pack host; not signalled")
@@ -1127,7 +1166,10 @@ def _host_idle(pid: int, support_root: Path | None = None) -> bool:
     for check in range(_IDLE_CHECKS):
         if check:
             time.sleep(_IDLE_CHECK_INTERVAL_SECONDS)
-        if any(pgid != pid for _birth, pgid in _descendant_snapshot(pid).values()):
+        try:
+            if any(pgid != pid for _birth, pgid in _descendant_snapshot(pid).values()):
+                return False
+        except PackHostBootstrapError:
             return False
     return True
 

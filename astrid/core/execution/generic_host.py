@@ -17369,6 +17369,10 @@ def _selected_birth_matches(observed: Any, retained: Any) -> bool:
     """Compare the selected Vibe representation to the same retained birth."""
     if not isinstance(observed, str) or not observed or not isinstance(retained, str) or not retained:
         return False
+    if sys.platform.startswith("linux"):
+        from astrid.core.execution.process_group import linux_birth_scope
+        scope = linux_birth_scope(retained)
+        return scope is not None and observed == scope[0]
     if observed == retained:
         return True
     return sys.platform == "darwin" and retained.startswith("ps-lstart:") and observed == retained[len("ps-lstart:"):]
@@ -17586,7 +17590,16 @@ class _NativeEngineGraph:
                 retained = self.listener.role_authority.reference()["target"]
             if retained is None or retained.get("pid") != pid or not isinstance(retained.get("birth_id"), str):
                 raise HostError("selected process observation differs from admitted custody")
+        if retained is not None and sys.platform.startswith("linux"):
+            from astrid.core.execution.process_group import scoped_linux_identity
+            before = scoped_linux_identity(pid)
+            if before is None or before["birth_id"] != retained["birth_id"]:
+                raise HostError("selected registry birth no longer matches retained incarnation")
         value = self._source_observer.observe(fact, pid)
+        if retained is not None and sys.platform.startswith("linux"):
+            after = scoped_linux_identity(pid)
+            if after is None or after["birth_id"] != retained["birth_id"]:
+                raise HostError("selected registry birth changed during observation")
         if (actor.verify() != identity or self.engine.role_authority.reference()["target"] != target
                 or (retained is not None and not _selected_birth_matches(value, retained["birth_id"]))):
             raise HostError("selected source observation changed its retained incarnation")
@@ -17677,6 +17690,10 @@ class _NativeEngineGraph:
         marker = json.loads((root / "launch.json").read_text(encoding="utf-8"))
         launch = self.profile["engine_launch"]
         listener_identity = default_process_identity(listener_pid)
+        if sys.platform.startswith("linux"):
+            from astrid.core.execution.process_group import _linux_parent_edge
+            _linux_parent_edge(self.process.pid, self.process._astrid_process_birth,
+                               listener_pid, self.custody._handles[listener_pid][0])
         if (data["pid"] != str(self.process.pid) or data["comfy_pid"] != str(listener_pid)
                 or data["url"] != self.profile["engine_endpoint"] or marker.get("launch_token") != nonce
                 or marker.get("pid") != self.process.pid or marker.get("url") != data["url"]
@@ -17691,6 +17708,9 @@ class _NativeEngineGraph:
             observation = subprocess.run(["lsof", *(["-O"] if sys.platform == "darwin" else []), "-nP", "-a", "-p", str(listener_pid), "-iTCP:" + str(endpoint.port), "-sTCP:LISTEN"], stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=2, check=False)
             if observation.returncode != 0 or f":{endpoint.port} (LISTEN)" not in observation.stdout:
                 raise HostError("selected listener socket ownership is uncertain")
+        if sys.platform.startswith("linux"):
+            _linux_parent_edge(self.process.pid, self.process._astrid_process_birth,
+                               listener_pid, self.custody._handles[listener_pid][0])
         for broker in (self.engine, self.listener):
             if broker.state == "sealed":
                 broker.bind_ready_token(expected_pid=int(broker.registration["pid"]), expected_identity=broker.registration["identity"])

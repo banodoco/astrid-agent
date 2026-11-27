@@ -11,7 +11,7 @@ from astrid.core.execution import custody_broker as custody
 from astrid.core.execution import process_group as groups
 
 
-def _observed_process(monkeypatch, *, root_birth="boot:100", child_birth="boot:500"):
+def _observed_process(monkeypatch, *, root_birth="proc-start-ticks:100;boot:boot;pidns:1234", child_birth="proc-start-ticks:500;boot:boot;pidns:1234"):
     monkeypatch.setattr(groups.sys, "platform", "linux")
     observations = []
     process = SimpleNamespace(
@@ -26,11 +26,11 @@ def _observed_process(monkeypatch, *, root_birth="boot:100", child_birth="boot:5
     return process, observations
 
 
-def _replacement_snapshot(*, child_birth="boot:900", child_parent=1):
+def _replacement_snapshot(*, child_birth="proc-start-ticks:900;boot:boot;pidns:1234", child_parent=1):
     return {
-        100: groups._ProcessInfo(100, 1, 100, "boot:100"),
+        100: groups._ProcessInfo(100, 1, 100, "proc-start-ticks:100;boot:boot;pidns:1234"),
         200: groups._ProcessInfo(200, child_parent, 200, child_birth),
-        300: groups._ProcessInfo(300, 200, 200, "boot:901"),
+        300: groups._ProcessInfo(300, 200, 200, "proc-start-ticks:901;boot:boot;pidns:1234"),
     }
 
 
@@ -38,15 +38,15 @@ def test_later_linux_pid_without_handle_retires_only_the_old_incarnation(monkeyp
     process, observations = _observed_process(monkeypatch)
     monkeypatch.setattr(groups, "_process_snapshot", _replacement_snapshot)
 
-    assert groups.observe_tree(process) == {100: "boot:100"}
-    assert process._astrid_tree_members == {100: "boot:100"}
-    assert process._astrid_tree_exited[(200, "boot:500")] == "boot:900"
-    assert observations == [{100: "boot:100"}]
+    assert groups.observe_tree(process) == {100: "proc-start-ticks:100;boot:boot;pidns:1234"}
+    assert process._astrid_tree_members == {100: "proc-start-ticks:100;boot:boot;pidns:1234"}
+    assert process._astrid_tree_exited[(200, "proc-start-ticks:500;boot:boot;pidns:1234")] == "proc-start-ticks:900;boot:boot;pidns:1234"
+    assert observations == [{100: "proc-start-ticks:100;boot:boot;pidns:1234"}]
     assert not hasattr(process, "_astrid_tree_uncertain")
-    assert groups.observe_tree(process) == {100: "boot:100"}
+    assert groups.observe_tree(process) == {100: "proc-start-ticks:100;boot:boot;pidns:1234"}
 
 
-@pytest.mark.parametrize("replacement", ["boot:400", "boot:0500", "other-boot:900", "boot:invalid"])
+@pytest.mark.parametrize("replacement", ["proc-start-ticks:400;boot:boot;pidns:1234", "proc-start-ticks:0500;boot:boot;pidns:1234", "proc-start-ticks:900;boot:other-boot;pidns:1234", "boot:invalid"])
 def test_unproved_reuse_names_the_disagreeing_identity(monkeypatch, replacement):
     process, observations = _observed_process(monkeypatch)
     monkeypatch.setattr(groups, "_process_snapshot", lambda: _replacement_snapshot(child_birth=replacement))
@@ -54,17 +54,17 @@ def test_unproved_reuse_names_the_disagreeing_identity(monkeypatch, replacement)
     with pytest.raises(groups.CleanupUncertainError, match="owned process identity was reused") as caught:
         groups.observe_tree(process)
     message = str(caught.value)
-    for detail in ("pid=200", "expected_birth=boot:500", f"observed_birth={replacement}",
+    for detail in ("pid=200", "expected_birth=proc-start-ticks:500;boot:boot;pidns:1234", f"observed_birth={replacement}",
                    "parent_pid=1", "root=False", "handle=none"):
         assert detail in message
     assert observations == []
-    assert process._astrid_tree_members[200] == "boot:500"
+    assert process._astrid_tree_members[200] == "proc-start-ticks:500;boot:boot;pidns:1234"
 
 
 def test_later_linux_pid_never_proves_an_unreaped_root_exit(monkeypatch):
     process, observations = _observed_process(monkeypatch)
     snapshot = _replacement_snapshot()
-    snapshot[100] = groups._ProcessInfo(100, 1, 100, "boot:900")
+    snapshot[100] = groups._ProcessInfo(100, 1, 100, "proc-start-ticks:900;boot:boot;pidns:1234")
     monkeypatch.setattr(groups, "_process_snapshot", lambda: snapshot)
 
     with pytest.raises(groups.CleanupUncertainError, match="identity was reused") as caught:
@@ -78,9 +78,9 @@ def test_later_pid_with_live_owned_ancestry_is_admitted_as_a_new_process(monkeyp
     process, observations = _observed_process(monkeypatch)
     monkeypatch.setattr(groups, "_process_snapshot", lambda: _replacement_snapshot(child_parent=100))
 
-    assert groups.observe_tree(process) == {100: "boot:100", 200: "boot:900", 300: "boot:901"}
-    assert process._astrid_tree_exited[(200, "boot:500")] == "boot:900"
-    assert observations == [{100: "boot:100", 200: "boot:900", 300: "boot:901"}]
+    assert groups.observe_tree(process) == {100: "proc-start-ticks:100;boot:boot;pidns:1234", 200: "proc-start-ticks:900;boot:boot;pidns:1234", 300: "proc-start-ticks:901;boot:boot;pidns:1234"}
+    assert process._astrid_tree_exited[(200, "proc-start-ticks:500;boot:boot;pidns:1234")] == "proc-start-ticks:900;boot:boot;pidns:1234"
+    assert observations == [{100: "proc-start-ticks:100;boot:boot;pidns:1234", 200: "proc-start-ticks:900;boot:boot;pidns:1234", 300: "proc-start-ticks:901;boot:boot;pidns:1234"}]
 
 
 def test_later_birth_rule_does_not_apply_to_darwin_tokens(monkeypatch):
@@ -97,7 +97,7 @@ def test_missing_owned_leader_without_exit_witness_stays_uncertain(monkeypatch):
     process, observations = _observed_process(monkeypatch)
     process._astrid_tree_members = {}
     monkeypatch.setattr(groups, "_process_snapshot", lambda: {
-        900: groups._ProcessInfo(900, 1, 900, "boot:900"),
+        900: groups._ProcessInfo(900, 1, 900, "proc-start-ticks:900;boot:boot;pidns:1234"),
     })
 
     with pytest.raises(groups.CleanupUncertainError, match="leader exited before ancestry capture"):
@@ -107,14 +107,14 @@ def test_missing_owned_leader_without_exit_witness_stays_uncertain(monkeypatch):
 
 def test_later_birth_does_not_bypass_an_unproved_retained_handle(monkeypatch):
     process, observations = _observed_process(monkeypatch)
-    process._astrid_custody._handles[200] = ("boot:500", 42)
+    process._astrid_custody._handles[200] = ("proc-start-ticks:500;boot:boot;pidns:1234", 42)
     process._astrid_custody.retained_incarnation_exited = lambda *_: False
     monkeypatch.setattr(groups, "_process_snapshot", _replacement_snapshot)
 
     with pytest.raises(groups.CleanupUncertainError, match="handle=int"):
         groups.observe_tree(process)
     assert observations == []
-    assert process._astrid_tree_members[200] == "boot:500"
+    assert process._astrid_tree_members[200] == "proc-start-ticks:500;boot:boot;pidns:1234"
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux pidfds")
@@ -132,8 +132,8 @@ def test_registration_replaces_only_a_proven_exited_pidfd(monkeypatch, released)
         assert owner.retained_incarnation_exited(old.pid, birth)
         if released:
             owner.release_pidfds(only_exited=True)
-        boot, tick = birth.split(":")
-        later_birth = f"{boot}:{int(tick) + 1}"
+        tick, boot, namespace = groups.linux_birth_scope(birth)
+        later_birth = groups.platform.linux_birth_id(str(int(tick) + 1), boot_id=boot, pidns_inode=int(namespace))
         # Model reuse of the numeric selector; the retained descriptors and
         # their exit/liveness checks still use real kernel processes.
         real_identify = groups.process_birth_identity
@@ -168,13 +168,50 @@ def test_registration_keeps_a_live_old_handle_at_a_later_numeric_pid(monkeypatch
         birth = groups.process_birth_identity(child.pid)
         owner.register(child.pid, birth)
         entry = owner._handles[child.pid]
-        boot, tick = birth.split(":")
+        tick, boot, namespace = groups.linux_birth_scope(birth)
         monkeypatch.setattr(groups.platform, "pidfd_open", lambda *_: pytest.fail("rebound a live handle"))
         with pytest.raises(custody.CustodyError, match="registered process identity was reused"):
-            owner.register(child.pid, f"{boot}:{int(tick) + 1}")
+            owner.register(child.pid, groups.platform.linux_birth_id(str(int(tick) + 1), boot_id=boot, pidns_inode=int(namespace)))
         assert owner._handles[child.pid] == entry
         assert child.poll() is None
     finally:
         child.kill()
         child.wait()
         owner.release_pidfds()
+
+
+@pytest.mark.parametrize("during", ["adoption", "signal"])
+def test_parent_replacement_after_census_never_adopts_or_signals(monkeypatch, during):
+    process, observations = _observed_process(monkeypatch)
+    parent = process._astrid_process_birth
+    child = "proc-start-ticks:900;boot:boot;pidns:1234"
+    snapshot = groups._Census(_replacement_snapshot(child_parent=100))
+    snapshot.status = "complete"
+    process._astrid_tree_members = {100: parent}
+    process._astrid_custody._handles = {100: (parent, object())}
+    process._astrid_custody.signal = lambda *_a, **_k: pytest.fail("changed parent authorized signal")
+    replacement = "proc-start-ticks:999;boot:boot;pidns:1234"
+    monkeypatch.setattr(groups, "scoped_linux_identity", lambda pid: {
+        "pid": pid, "uid": 1000, "parent_pid": 100 if pid == 200 else 1,
+        "birth_id": child if pid == 200 else replacement,
+    })
+    if during == "adoption":
+        monkeypatch.setattr(groups, "_process_snapshot", lambda: snapshot)
+        with pytest.raises(groups.CleanupUncertainError, match="parent or child identity changed"):
+            groups.observe_tree(process)
+        assert observations == []
+        assert 200 not in process._astrid_tree_members
+    else:
+        with pytest.raises(groups.CleanupUncertainError, match="parent or child identity changed"):
+            groups._signal_valid_tree_members(process, {200: child}, 15, snapshot, strict=True)
+
+
+@pytest.mark.parametrize("legacy", ["77", "boot:77", "proc-start-ticks:77;boot:boot"])
+def test_legacy_group_journal_never_authorizes_signal(monkeypatch, legacy):
+    from astrid.core.execution import platform_helpers
+
+    monkeypatch.setattr(groups.sys, "platform", "linux")
+    monkeypatch.setattr(groups.platform, "signal_process", lambda *_a: pytest.fail("legacy journal signalled"))
+    monkeypatch.setattr(groups, "_process_snapshot", lambda: pytest.fail("legacy journal reached census"))
+    with pytest.raises(OSError, match="legacy or unscoped"):
+        platform_helpers._signal_linux_observed_group(1234, 15, legacy)
