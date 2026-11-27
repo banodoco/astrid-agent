@@ -232,10 +232,17 @@ and target unchanged. Do not advertise an apply command before it exists and
 has passed the approved exact-plan contract. Never substitute align or
 fetch-models apply for this plan.
 
-The pre-WS2 pin does not provide this producer. If the command reports
-`missing_dependency` or `requirements_contract_pending`, report that it is
-blocked; do not manufacture a plan or instruct the user to install arbitrary
-code to satisfy it.
+The command is read-only even without `--dry-run`. `--add` resolves a source
+ref to its exact commit, not an approval; `--add-model` binds a destination and
+source hash, not a guessed size. A saved ENTRY retains its actual manifest and
+existing P56 approval records. A Python workflow without an already admitted
+workflow object is explicitly blocked: do not execute Python just to preview.
+A matching `--consent code=...` can recheck the exact P56 record in memory, but
+never creates a persisted approval or actor grant. A bare/stale code is refused.
+A selected remote machine without verified paths, an unknown capacity or disk
+peak, unresolved package/source, and conflicting destinations remain blocked.
+Do not advertise apply or rent a machine to get a preview. If the canonical
+producer is missing or invalid, report the dependency block, not a fake plan.
 
 ## Workflow setup: missing packs or models
 
