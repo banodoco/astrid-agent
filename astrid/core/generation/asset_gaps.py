@@ -505,27 +505,51 @@ def _hard_links_supported(folder: Path) -> bool:
                 pass
 
 
-def _publish(staged: Path, final: Path, *, hard_links: bool) -> None:
-    """Give the verified staged file its final name without ever overwriting another file.
+def _rename_noreplace(staged: Path, final: Path) -> None:
+    """Same-volume atomic publication, or refuse without touching the destination."""
+    if sys.platform == 'win32':
+        # Windows os.rename (unlike os.replace) fails if the destination exists.
+        os.rename(staged, final)
+        return
+    import ctypes
 
-    Without hard links, an exclusive create claims the final name first; the staged file then replaces that placeholder.
-    """
-    if hard_links:
-        try:
-            os.link(staged, final)  # fails if the file appeared meanwhile: never overwrites
-            return
-        except FileExistsError as exc:
-            raise AttachedDownloadRefused('file_exists', f'{final} appeared while downloading; left untouched.') from exc
-        except OSError:
-            pass  # no hard links on this folder: claim the name exclusively instead
+    libc = ctypes.CDLL(None, use_errno=True)
+    source, destination = os.fsencode(staged), os.fsencode(final)
+    if sys.platform.startswith('linux') and hasattr(libc, 'renameat2'):
+        rename = libc.renameat2
+        rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        rename.restype = ctypes.c_int
+        result = rename(-100, source, -100, destination, 1)  # AT_FDCWD, RENAME_NOREPLACE
+    elif sys.platform == 'darwin' and hasattr(libc, 'renamex_np'):
+        rename = libc.renamex_np
+        rename.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+        rename.restype = ctypes.c_int
+        result = rename(source, destination, 0x00000004)  # RENAME_EXCL
+    else:
+        raise OSError(errno.ENOTSUP, 'Atomic no-replace publication is unavailable', str(final))
+    if result != 0:
+        code = ctypes.get_errno()
+        raise OSError(code, os.strerror(code), str(final))
+
+
+def _publish(staged: Path, final: Path, *, hard_links: bool) -> None:
+    """Publish only verified bytes, never clobber another file or expose a placeholder."""
     try:
-        os.close(os.open(final, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644))
+        if hard_links:
+            try:
+                os.link(staged, final)
+                return
+            except OSError as exc:
+                if exc.errno not in {errno.EPERM, errno.ENOTSUP, errno.ENOSYS, errno.EXDEV, errno.EMLINK}:
+                    raise
+        _rename_noreplace(staged, final)
     except FileExistsError as exc:
         raise AttachedDownloadRefused('file_exists', f'{final} appeared while downloading; left untouched.') from exc
-    try:
-        os.replace(staged, final)
-    except BaseException:
-        final.unlink(missing_ok=True)  # our own placeholder only: the name was claimed exclusively above
+    except OSError as exc:
+        if exc.errno in {errno.ENOTSUP, errno.ENOSYS, errno.EINVAL}:
+            raise AttachedDownloadRefused('atomic_publish_unavailable',
+                'This model folder cannot atomically publish without replacing files. '
+                'Choose a model folder on a filesystem that supports hard links or exclusive rename.') from exc
         raise
 
 

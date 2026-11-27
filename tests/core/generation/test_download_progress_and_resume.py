@@ -150,3 +150,49 @@ def test_apply_prints_resume_and_total_once(tmp_path, monkeypatch, capsys, retai
     assert [line for line in out.err.splitlines() if line.startswith("Downloading models:")] == [
         "Downloading models: 10 bytes of 30 bytes", "Downloading models: 30 bytes of 30 bytes"]
     assert result["total_bytes"] == 30
+
+
+def test_no_hardlink_concurrent_final_is_never_overwritten(tmp_path, monkeypatch):
+    staged, final = tmp_path / "staged", tmp_path / "asset.safetensors"
+    staged.write_bytes(DATA)
+    native = asset_gaps._rename_noreplace
+
+    def competing_writer(source, destination):
+        # The foreign file arrives after verification, at the actual native
+        # publication boundary. Run the real exclusive rename, not a fake.
+        destination.write_bytes(b"foreign file")
+        return native(source, destination)
+
+    monkeypatch.setattr(asset_gaps, "_rename_noreplace", competing_writer)
+    with pytest.raises(asset_gaps.AttachedDownloadRefused) as caught:
+        asset_gaps._publish(staged, final, hard_links=False)
+    assert caught.value.code == "file_exists"
+    assert final.read_bytes() == b"foreign file"
+    assert staged.read_bytes() == DATA
+
+
+def test_no_hardlink_native_success_never_creates_placeholder(tmp_path):
+    staged, final = tmp_path / "staged", tmp_path / "asset.safetensors"
+    staged.write_bytes(DATA)
+    asset_gaps._publish(staged, final, hard_links=False)
+    assert final.read_bytes() == DATA and not staged.exists()
+
+
+@pytest.mark.parametrize("err", [errno.EIO, errno.ENOSPC, errno.ENOTSUP])
+def test_no_hardlink_publication_failure_preserves_concurrent_foreign_file(tmp_path, monkeypatch, err):
+    staged, final = tmp_path / "staged", tmp_path / "asset.safetensors"
+    staged.write_bytes(DATA)
+
+    def fail(source, destination):
+        destination.write_bytes(b"foreign file")
+        raise OSError(err, "native publication failed")
+
+    monkeypatch.setattr(asset_gaps, "_rename_noreplace", fail)
+    expected = asset_gaps.AttachedDownloadRefused if err == errno.ENOTSUP else OSError
+    with pytest.raises(expected) as caught:
+        asset_gaps._publish(staged, final, hard_links=False)
+    if err == errno.ENOTSUP:
+        assert caught.value.code == "atomic_publish_unavailable"
+    else:
+        assert caught.value.errno == err
+    assert final.read_bytes() == b"foreign file" and staged.read_bytes() == DATA
