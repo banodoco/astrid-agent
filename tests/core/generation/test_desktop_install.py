@@ -333,6 +333,21 @@ def test_two_distinct_data_roots_remain_two_choices():
     assert desktop.select_candidate(observations, [])["outcome"] == "several"
 
 
+def test_all_complete_registrations_share_changed_port_evidence():
+    fixture = load("running")
+    registration = fixture["registration"]
+    other = {**registration, "executable": r"C:\Other\ComfyUI.exe",
+             "data_dir": r"C:\Other\data", "server_port": 9000}
+    fixture["responders"]["9000"] = fixture["responders"].pop("8000")
+    observations = desktop.observe_installations(
+        registrations=[registration, other], exists=lambda path: True,
+        get_json=get_json_for(fixture),
+    )
+    assert observations[0]["state"] == "running"
+    assert observations[0]["endpoint"] == "http://127.0.0.1:9000"
+    assert observations[1]["state"] == "wrong_responder"
+
+
 def test_select_none_one_and_mixed_layouts():
     closed = _observe(load("closed"))
     running = _observe(load("running"))
