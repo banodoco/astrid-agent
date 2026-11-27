@@ -4,7 +4,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "gpu_sanity.py"
+SCRIPT = Path(__file__).resolve().parents[2] / "astrid" / "packs" / "runpod" / "gpu_sanity.py"
 CUDA = "/usr/local/cuda-13.0/lib64"
 
 
@@ -40,14 +40,19 @@ def test_env_comes_from_engine_child_env_and_ignores_caller_ld_library_path(tmp_
 
     monkeypatch.setattr(module, "engine_child_env", spy)
     monkeypatch.setattr(module.subprocess, "run", fake_run)
-    venv = str(tmp_path / "venv")
+    venv = str(tmp_path / "engine" / "runtime" / "venv")
     assert module.run(venv) == 0
-    assert calls == [(venv, {})]  # the caller's environment is never passed in
+    # Only the engine-owned bytecode-cache overlay is supplied, never caller env.
+    cache = str(tmp_path / "engine" / ".astrid-engine" / "pycache")
+    assert calls == [(venv, {"PYTHONPYCACHEPREFIX": cache})]
+    assert seen["env"]["PYTHONPYCACHEPREFIX"] == cache
     assert CUDA not in seen["env"]["LD_LIBRARY_PATH"]
     assert seen["argv"][0] == venv + "/bin/python"
     for dtype in ("bfloat16", "float16", "float32"):
         assert dtype in seen["argv"][2]
     assert "libcublasLt" in seen["argv"][2] or "libcublas" in seen["argv"][2]
+    assert "c = a @ b" in seen["argv"][2]
+    assert "F.linear(a, b)" in seen["argv"][2]
 
 
 def test_failing_python_exits_2_with_message_and_lib_paths(tmp_path):
@@ -71,6 +76,8 @@ def test_missing_interpreter_and_relative_venv_fail_closed(tmp_path):
     for venv in (str(tmp_path / "nope"), "relative/venv"):
         r = subprocess.run([sys.executable, str(SCRIPT), "--venv", venv], capture_output=True, text=True)
         assert r.returncode == 2, venv
+        assert "gpu_sanity: FAILED" in r.stderr
+        assert "libs: (none loaded)" in r.stderr
 
 
 def test_passing_stub_exits_0(tmp_path):

@@ -237,8 +237,12 @@ def make_args(tmp_path, extra=()):
         (sources / name).mkdir(parents=True, exist_ok=True)
         (sources / name / "file.txt").write_text(name)
     agent = tmp_path / "agent"
-    (agent / "scripts").mkdir(parents=True, exist_ok=True)
-    (agent / "scripts" / "gpu_sanity.py").write_text("print('x')")
+    # Track the shipped sanity program and its package-relative helper in the fixture.
+    for relative in ("astrid/packs/runpod/gpu_sanity.py",
+                     "astrid/core/generation/_engine_python_bootstrap.py"):
+        target = agent / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(SCRIPT.parents[1] / relative, target)
     (agent / "tests").mkdir(exist_ok=True)
     (agent / "tests" / "t.py").write_text("t")
     git_env = {k: v for k, v in os.environ.items() if not k.upper().startswith("GIT_")}
@@ -884,7 +888,9 @@ def test_bundle_contents_and_size_check(tmp_path, video):
     with tarfile.open(tmp_path / "work" / "pod-src.tgz") as tar:
         names = tar.getnames()
     assert {n.split("/")[0] for n in names} == set(ps.BUNDLE_TREES) | {".pod-source.json"}
-    assert "astrid-agent/scripts/gpu_sanity.py" in names
+    assert "astrid-agent/astrid/packs/runpod/gpu_sanity.py" in names
+    assert "astrid-agent/astrid/core/generation/_engine_python_bootstrap.py" in names
+    assert "astrid-agent/scripts/gpu_sanity.py" not in names
     assert "astrid-agent/tests/t.py" in names
     assert all(f"{name}/.git/HEAD" in names for name in ps.BUNDLE_TREES)
     assert not any("/.git/config.worktree" in n or "/.git/hooks/" in n for n in names)
@@ -1038,13 +1044,13 @@ def test_install_sets_the_gpu_sanity_command(tmp_path, video):
     session, pod, code, _ = run_session(tmp_path, video)
     assert code == 0
     install = job_commands(pod, "install")[0]
-    sanity = "/opt/astrid/bin/python /root/bundle/src/astrid-agent/scripts/gpu_sanity.py"
+    sanity = "/opt/astrid/bin/python /root/bundle/src/astrid-agent/astrid/packs/runpod/gpu_sanity.py"
     assert f"export ASTRID_ENGINE_SANITY_CMD='{sanity}'" in install
     assert ("--root /root/astrid/engines/comfyui" in install and "--deadline 14400" in install
             and "engines install comfyui --placement local" in install)
     # the export comes before the install command, and the script the command names ships in this repo
     assert install.index("ASTRID_ENGINE_SANITY_CMD") < install.index("astrid engines install")
-    assert (SCRIPT.parent / "gpu_sanity.py").is_file()
+    assert (SCRIPT.parents[1] / "astrid/packs/runpod/gpu_sanity.py").is_file()
     assert "ASTRID_ENGINE_SANITY_CMD" in job_commands(pod, "rerun")[0]
     assert "ASTRID_ENGINE_SANITY_CMD" not in job_commands(pod, "status")[0]
 
