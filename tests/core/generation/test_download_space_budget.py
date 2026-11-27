@@ -1,4 +1,7 @@
 """CPU-only proof of the attached download peak budget and write ordering."""
+import hashlib
+import json
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -122,3 +125,65 @@ def test_apply_probes_each_folder_before_fetch(machine, monkeypatch):
     result = machine.apply(plan["plan_sha256"])
     assert calls == [("probe", "a"), ("probe", "b"), ("fetch", "one", True), ("fetch", "two", False)]
     assert len(result["downloaded"]) == 2
+
+
+def test_per_volume_budget_is_independent(machine, monkeypatch):
+    """A surplus on one volume cannot satisfy a shortage on the other."""
+    a, b = machine.root / "a", machine.root / "b"
+    devices = {str(a): 101, str(b): 202}
+    # Replace only the module's stat lookup, not pathlib's real filesystem calls.
+    monkeypatch.setattr(asset_gaps, "os", SimpleNamespace(
+        stat=lambda path: SimpleNamespace(st_dev=devices[str(path)]),
+        path=os.path, access=os.access, W_OK=os.W_OK,
+    ))
+    margin = asset_gaps.DOWNLOAD_MARGIN_BYTES
+    free = {str(a): 200 + margin, str(b): 300 + margin}
+    monkeypatch.setattr(asset_gaps.shutil, "disk_usage",
+                        lambda path: SimpleNamespace(free=free[str(path)]))
+    before = snapshot(machine.root)
+    monkeypatch.setattr(asset_gaps, "_hard_links_supported",
+                        lambda *a: pytest.fail("preview/refusal probed"))
+    monkeypatch.setattr(asset_gaps, "_fetch_into_folder",
+                        lambda *a, **k: pytest.fail("refusal fetched"))
+    plan = machine.plan()
+    assert plan["peak_bytes"] == 500
+    assert plan["space_ok"] is True
+    free[str(a)] -= 1
+    free[str(b)] += 1000
+    assert machine.plan()["space_ok"] is False
+    with pytest.raises(asset_gaps.AttachedDownloadRefused) as caught:
+        machine.apply(plan["plan_sha256"])
+    assert caught.value.code == "insufficient_space"
+    free[str(a)] += 1
+    free[str(b)] = 300 + margin - 1
+    assert machine.plan()["space_ok"] is False
+    assert snapshot(machine.root) == before
+
+
+def test_digest_matches_original_confirmation_body(machine):
+    plan = machine.plan()
+    wanted = sorted(
+        ({key: f[key] for key in ("file", "folder", "url", "bytes", "sha256")}
+         for f in plan["files"] + plan["present"]),
+        key=lambda f: (f["folder"], f["file"]),
+    )
+    body = {"entry": "entry", "mode": "mode", "target": "http://127.0.0.1:8188",
+            "wanted": wanted, "manual": []}
+    expected = hashlib.sha256(json.dumps(
+        body, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    assert plan["plan_sha256"] == expected
+
+
+@pytest.mark.parametrize(("digest", "code"), [
+    (None, "confirmation_required"), ("0" * 64, "plan_changed"),
+])
+def test_refused_confirmation_never_probes_or_fetches(machine, monkeypatch, digest, code):
+    before = snapshot(machine.root)
+    monkeypatch.setattr(asset_gaps, "_hard_links_supported",
+                        lambda *a: pytest.fail("refusal probed"))
+    monkeypatch.setattr(asset_gaps, "_fetch_into_folder",
+                        lambda *a, **k: pytest.fail("refusal fetched"))
+    with pytest.raises(asset_gaps.AttachedDownloadRefused) as caught:
+        machine.apply(digest)
+    assert caught.value.code == code
+    assert snapshot(machine.root) == before
