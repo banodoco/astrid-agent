@@ -81,3 +81,27 @@ def test_fresh_install_custody_uses_receipt_models_root(tmp_path, monkeypatch, f
     assert engine_runner.engine_status(recipe.engine, platform=recipe.platform, placement="local",
         root=str(root), context=context, deadline=time.monotonic() + 30).status == "installed"
     assert len(started.read_text().splitlines()) == 2
+
+
+def test_managed_transaction_guard_precedes_stop_and_receipt_write(fresh_cpu_install):
+    from astrid.core.engine_cli import ManagedOfferRejected
+    client, _payload, recipe, root, started, _program = fresh_cpu_install
+    receipt_path = root / ".astrid-engine/install.json"
+    before = receipt_path.read_bytes()
+    launch_before = started.read_bytes()
+    adapter = platform_adapter(recipe.platform)
+    context = LocalLinuxExecutionContext(engine=recipe.engine, platform=recipe.platform,
+                                         root=str(root), adapter=adapter, service_client=client)
+    plan = engine_runner.plan_install(recipe, root=str(root), placement="local")
+    seen = []
+    def refuse():
+        seen.append("guard")
+        raise ManagedOfferRejected("insufficient_disk")
+    with pytest.raises(ManagedOfferRejected):
+        engine_runner.install_engine(plan, context=context, adapter=adapter,
+                                     deadline=time.monotonic() + 30,
+                                     managed_offer_sha256="ab" * 32, before_managed_install=refuse)
+    assert seen == ["guard"]
+    assert receipt_path.read_bytes() == before and started.read_bytes() == launch_before
+    assert engine_runner.engine_status(recipe.engine, platform=recipe.platform, placement="local",
+        root=str(root), context=context, deadline=time.monotonic() + 30).status == "installed"

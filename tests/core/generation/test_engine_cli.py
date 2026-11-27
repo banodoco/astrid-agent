@@ -574,3 +574,127 @@ def test_failed_engine_command_prints_fixed_reason_without_command_output(capsys
                                        'recovery_handle': None, 'message': 'Engine operation failed.',
                                        'reason': 'engine command exited with a nonzero status'}
     assert 'support.lock' not in err and 'Resolved 183 packages' not in err and 'comfy-kitchen' not in err
+
+
+# These profiles are CPU contract fixtures, not a production Linux measurement.
+@pytest.fixture
+def measured_managed_offer(tmp_path, monkeypatch):
+    from astrid.core.generation.engine_recipe import recipe_digest, load_recipe
+    root = tmp_path.resolve() / 'stage'
+    temp = tmp_path.resolve() / 'scratch'
+    temp.mkdir()
+    previous = tmp_path.resolve() / 'last-working'
+    previous.mkdir()
+    (previous / 'keep').write_bytes(b'last working bytes')
+    monkeypatch.setattr(engine_cli, '_linux_supported', lambda plan: True)
+    monkeypatch.setattr(engine_cli, '_managed_locations', lambda plan: {'root': plan.root, 'temp': str(temp)})
+    monkeypatch.setattr('astrid.core.generation.engine_local_endpoint.default_engine_root', lambda engine: str(previous))
+    monkeypatch.delenv('ASTRID_INSTALL_UV', raising=False)
+    components = dict(download_bytes=10, unpack_bytes=20, environment_bytes=30,
+                      model_bytes=0, cleanup_reserve_bytes=4, concurrent_bytes=6)
+    profile = dict(recipe_sha256=recipe_digest(load_recipe('comfyui', 'linux-x86_64-cu130')),
+                   receipt_sha256='ab' * 32, measured_seconds=50, estimated_seconds=60,
+                   retained_working_copy_sample_bytes=200, bootstrap_kind='system_pip',
+                   locations={'root': dict(components), 'temp': dict(components)})
+    monkeypatch.setattr(engine_cli, '_LINUX_MANAGED_MEASUREMENT', profile)
+    free = {'root': 1000, 'temp': 1000}
+    devices = {'root': 1, 'temp': 2}
+    def anchor(path):
+        role = 'temp' if path == str(temp) else 'root'
+        actual = str(temp) if role == 'temp' else str(root) if root.is_dir() else str(root.parent)
+        return actual, devices[role], 1, free[role]
+    monkeypatch.setattr(engine_cli, '_disk_anchor', anchor)
+    return SimpleNamespace(root=root, previous=previous, temp=temp, profile=profile,
+                           free=free, devices=devices, args=['install', 'comfyui', '--root', str(root)])
+
+
+def managed_preview(case, capsys):
+    rc, out, err = invoke(case.args + ['--dry-run'], capsys,
+                          backend_factory=lambda **kw: pytest.fail('preview built backend'))
+    assert rc == 0 and not err
+    return json.loads(out)['managed_offer']
+
+
+def test_unmeasured_managed_preview_does_not_offer_floor_as_peak(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(engine_cli, '_linux_supported', lambda plan: True)
+    monkeypatch.setattr(engine_cli, '_LINUX_MANAGED_MEASUREMENT', None)
+    root = tmp_path / 'missing'
+    args = ['install', 'comfyui', '--root', str(root)]
+    rc, out, err = invoke(args + ['--dry-run'], capsys, backend_factory=lambda **kw: pytest.fail('backend'))
+    offer = json.loads(out)['managed_offer']
+    assert rc == 0 and not err and not root.exists()
+    assert offer['reason'] == 'measurement_unavailable' and not offer['available']
+    assert offer['offer_sha256'] is None and offer['estimated_seconds'] is None
+    assert offer['peak_additional_bytes'] is None and offer['model_download_bytes'] == 0
+    rc, out, err = invoke(args + ['--apply', 'ab' * 32], capsys,
+                          backend_factory=lambda **kw: pytest.fail('unmeasured apply'))
+    assert rc == 1 and not out and json.loads(err)['error']['reason'] == 'measurement_unavailable'
+    assert not root.exists()
+
+
+def test_managed_volume_peak_and_digest_are_separate_from_free_space(measured_managed_offer, capsys):
+    case = measured_managed_offer
+    offer = managed_preview(case, capsys)
+    assert offer['available'] and offer['cost_usd'] == 0 and offer['models_included'] is False
+    assert offer['location'] == str(case.root) and offer['estimated_seconds'] == 60
+    assert offer['peak_additional_bytes'] == 140 and offer['previous_root'] == str(case.previous)
+    assert [row['required_bytes'] for row in offer['volumes']] == [70, 70]
+    assert offer['retained_working_copy_sample_bytes'] == 200
+    assert offer['apply_argv'][-2:] == ['--apply', offer['offer_sha256']]
+    case.free['temp'] = 69
+    blocked = managed_preview(case, capsys)
+    assert not blocked['available'] and blocked['reason'] == 'insufficient_disk'
+    assert blocked['offer_sha256'] == offer['offer_sha256']
+    assert blocked['apply_argv'] is None and not case.root.exists()
+    case.free['temp'] = 1000
+    case.devices['temp'] = 1
+    combined = managed_preview(case, capsys)
+    assert combined['available'] and combined['offer_sha256'] != offer['offer_sha256']
+    assert len(combined['volumes']) == 1 and combined['volumes'][0]['required_bytes'] == 140
+    case.free['temp'] = 139
+    assert managed_preview(case, capsys)['reason'] == 'insufficient_disk'
+
+
+@pytest.mark.parametrize('change', ['duration', 'budget', 'capacity', 'foreign'])
+def test_managed_apply_rejects_changed_offer_before_backend(measured_managed_offer, monkeypatch, capsys, change):
+    case = measured_managed_offer
+    digest = managed_preview(case, capsys)['offer_sha256']
+    if change == 'duration':
+        case.profile['estimated_seconds'] += 1
+    elif change == 'budget':
+        case.profile['locations']['root']['unpack_bytes'] += 1
+    elif change == 'capacity':
+        case.free['temp'] = 1
+    else:
+        case.root.mkdir()
+        (case.root / 'foreign').write_bytes(b'not ours')
+    rc, out, err = invoke(case.args + ['--apply', digest], capsys,
+                          backend_factory=lambda **kw: pytest.fail('refused apply reached backend'))
+    expected = {'duration': 'offer_changed', 'budget': 'offer_changed',
+                'capacity': 'insufficient_disk', 'foreign': 'root_not_owned_or_empty'}[change]
+    assert rc == 1 and not out and json.loads(err)['error']['reason'] == expected
+    assert (case.previous / 'keep').read_bytes() == b'last working bytes'
+    if change == 'foreign':
+        assert list(case.root.iterdir()) == [case.root / 'foreign']
+        assert (case.root / 'foreign').read_bytes() == b'not ours'
+    else:
+        assert not case.root.exists()
+
+
+def test_managed_apply_passes_exact_digest_and_rechecks_before_transaction(measured_managed_offer, monkeypatch, capsys):
+    case = measured_managed_offer
+    digest = managed_preview(case, capsys)['offer_sha256']
+    seen = []
+    def install(plan, *, context, adapter, deadline, managed_offer_sha256, before_managed_install):
+        assert managed_offer_sha256 == digest and plan.root == str(case.root)
+        case.free['temp'] = 1
+        before_managed_install()
+        pytest.fail('lost capacity was accepted')
+    monkeypatch.setattr(engine_cli, 'install_engine', install)
+    monkeypatch.setattr('astrid.core.generation.engine_local_endpoint.record_engine_root',
+                        lambda *a: pytest.fail('failed install changed selection'))
+    rc, out, err = invoke(case.args + ['--apply', digest], capsys,
+                          backend_factory=lambda **kw: (seen.append(kw) or object(), object()))
+    assert rc == 1 and not out and json.loads(err)['error']['reason'] == 'insufficient_disk'
+    assert len(seen) == 1 and not case.root.exists()
+    assert (case.previous / 'keep').read_bytes() == b'last working bytes'
