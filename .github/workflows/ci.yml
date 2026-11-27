@@ -26,6 +26,8 @@ jobs:
         with:
           python-version: '3.13'
       - uses: astral-sh/setup-uv@v5
+      - name: Install declared native setup prerequisite
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - name: Guard and test exact trees
         shell: bash
         env:
