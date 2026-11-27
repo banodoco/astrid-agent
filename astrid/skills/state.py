@@ -9,6 +9,7 @@ testing.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import tempfile
 from contextlib import contextmanager
@@ -52,14 +53,45 @@ def _empty_state() -> dict[str, Any]:
     }
 
 
-def load(path: Path | None = None) -> dict[str, Any]:
-    target = path or state_path()
-    if not target.exists():
-        return _empty_state()
+def _reconcile_defaults(data: dict[str, Any], *, present: bool) -> None:
     try:
-        data = json.loads(target.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return _empty_state()
+        from astrid.core import user_choices
+
+        result = user_choices.reconcile_skills(
+            file_present=present, file_value=data["disabled_defaults"]
+        )
+        if result is not None and result.source != "file":
+            for harness in HARNESSES:
+                data["disabled_defaults"][harness] = result.value[harness]
+    except Exception:  # noqa: BLE001 - Runtime is best-effort.
+        logging.getLogger(__name__).debug("Could not reconcile skill opt-outs", exc_info=True)
+
+
+def _push_defaults(data: dict[str, Any]) -> None:
+    try:
+        from astrid.core import user_choices
+
+        user_choices.push_skills(data["disabled_defaults"])
+    except Exception:  # noqa: BLE001 - the file remains the rollback mirror.
+        logging.getLogger(__name__).debug("Could not push skill opt-outs", exc_info=True)
+
+
+def load(path: Path | None = None) -> dict[str, Any]:
+    explicit = path is not None
+    target = path or state_path()
+    present = target.exists()
+    data = _empty_state()
+    if present:
+        try:
+            data = json.loads(target.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            # A failed read is not a deliberate empty opt-out list.  Treat the
+            # mirror as unavailable so fallback defaults cannot erase Runtime
+            # choices during reconciliation.
+            present = False
+    if not isinstance(data, dict):
+        data = _empty_state()
+        present = False
     # Defensive: backfill missing top-level keys for forward-compat.
     if not isinstance(data, dict):
         return _empty_state()
@@ -73,6 +105,8 @@ def load(path: Path | None = None) -> dict[str, Any]:
         installs.setdefault(harness, {})
         disabled_defaults.setdefault(harness, [])
         data["skills"].setdefault(harness, {"synced_at": None, "skills": {}})
+    if not explicit:
+        _reconcile_defaults(data, present=present)
     return data
 
 
@@ -81,6 +115,8 @@ def save(data: dict[str, Any], path: Path | None = None) -> None:
     content = json.dumps(data, indent=2, sort_keys=True) + "\n"
     try:
         if target.read_text(encoding="utf-8") == content:
+            if path is None:
+                _push_defaults(data)
             return
     except OSError:
         pass
@@ -89,6 +125,8 @@ def save(data: dict[str, Any], path: Path | None = None) -> None:
         tmp.write(content)
         name = tmp.name
     os.replace(name, target)
+    if path is None:
+        _push_defaults(data)
 
 
 @contextmanager
