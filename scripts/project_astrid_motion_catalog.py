@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate only the motion descriptors from a verified RN-5b-min pack."""
+"""Generate only the motion descriptors from a verified source profile."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ OPEN = "Object.freeze(\n"
 CLOSE = "\n);\n"
 
 
-def motion_rows(root: Path) -> list[dict]:
+def motion_rows(root: Path, *, profile: str = "legacy-projection") -> list[dict]:
     # Import the actual product admission, registry and descriptor functions,
     # not a second implementation of the element fingerprint algorithm.
     if str(ROOT) not in sys.path:
@@ -22,10 +22,10 @@ def motion_rows(root: Path) -> list[dict]:
     from astrid.core.element.catalog import _element_descriptor
     from astrid.core.element.registry import _load_pack_elements_with_diagnostics
     from astrid.core.pack import ELEMENT_KIND_REGISTRY, load_pack_manifest
-    from scripts.project_astrid_motion import _check_digest, witness
+    from scripts.project_astrid_motion import check_profile, profile_witness
 
     root = root.resolve(strict=True)
-    _check_digest(root, witness()["tree_digest"], "projection")
+    check_profile(root, profile_witness(profile), profile)
     pack = load_pack_manifest(root / "pack.yaml", expected_pack_id=PACK_ID)
     elements, skipped = _load_pack_elements_with_diagnostics(
         (pack,), element_kind_registry=ELEMENT_KIND_REGISTRY
@@ -86,12 +86,17 @@ def replace_motion_rows(source: str, rows: list[dict]) -> str:
 
 
 def main() -> int:
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    from scripts.project_astrid_motion import PROFILES
+
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--profile", choices=PROFILES, default="legacy-projection")
     parser.add_argument("--projection", required=True, type=Path)
     parser.add_argument("--source-catalog", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
-    rows = motion_rows(args.projection)
+    rows = motion_rows(args.projection, profile=args.profile)
     source = args.source_catalog.read_bytes().decode("utf-8")
     result = replace_motion_rows(source, rows)
     if args.output.resolve().is_relative_to(args.projection.resolve()):
