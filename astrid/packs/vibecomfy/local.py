@@ -256,6 +256,7 @@ def _probe_server(
     *,
     timeout: float = 2,
     require_comfyui_shape: bool = False,
+    check_shape: bool = False,
     deadline: float | None = None,
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
     url = f"http://127.0.0.1:{port}"
@@ -279,11 +280,13 @@ def _probe_server(
             errors.append(_error(port, "/system_stats", exc))
         return None, errors
 
-    if require_comfyui_shape and not (
+    if (require_comfyui_shape or check_shape) and not (
         isinstance(stats, dict)
         and isinstance(stats.get("system"), dict)
         and isinstance(stats.get("devices"), list)
     ):
+        if check_shape and not require_comfyui_shape:
+            errors.append({"port": port, "endpoint": "/system_stats", "error": "responder is not ComfyUI"})
         return None, errors
 
     system = stats.get("system", {}) if isinstance(stats, dict) else {}
@@ -437,7 +440,7 @@ def scan(ports: list[int]) -> dict[str, Any]:
     errors: list[dict[str, Any]] = []
     base_ports = list(dict.fromkeys(ports))
     for port in base_ports:
-        server, port_errors = _probe_server(port)
+        server, port_errors = _probe_server(port, check_shape=True)
         errors.extend(port_errors)
         if server is not None:
             servers.append(server)
@@ -458,10 +461,14 @@ def scan(ports: list[int]) -> dict[str, Any]:
             server["pinokio_apps"] = pinokio_apps[port]
     servers.extend(extra_servers)
     errors.extend(extra_errors)
+    from astrid.core.generation import desktop_install
+
+    installations = desktop_install.observe_installations(ports=base_ports)
     return {
         "servers": servers,
         "errors": errors,
         "pinokio": {"available": pinokio_info is not None, "home": pinokio_home},
+        "installations": installations,
     }
 
 

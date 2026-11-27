@@ -138,11 +138,8 @@ def target_selection(client: Any = None, request: str = "auto", repo: Any = None
     """
     from astrid.core.generation import targets
 
-    selection = targets.resolve_target(request, repo=repo)
-    endpoint = runtime_placement_endpoint(client) if request == "auto" else None
-    if endpoint is not None and selection.source in {"repo", "global", "discovery"}:
-        return targets.TargetSelection(targets.normalize_target({"endpoint": endpoint}), "settings", True)
-    return selection
+    return targets.resolve_target(request, repo=repo,
+                                  settings_endpoint=lambda: runtime_placement_endpoint(client))
 
 
 def placement_block(selection: Any) -> dict[str, Any]:

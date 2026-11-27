@@ -379,8 +379,14 @@ def save_target(value: TargetRecord | Mapping[str, Any], *, path: str | Path | N
 
 
 def resolve_target(request: str = "auto", *, path: str | Path | None = None,
-                   repo: str | Path | None = None, environ: Mapping[str, str] | None = None) -> TargetSelection:
-    """Read-only request > env > supplied repo > global > discovery selection."""
+                   repo: str | Path | None = None, environ: Mapping[str, str] | None = None,
+                   settings_endpoint: Callable[[], str | None] | None = None) -> TargetSelection:
+    """Read-only request > env > optional Runtime endpoint > repo > global > discovery.
+
+    The Runtime callback is lazy so an explicit request or environment override
+    cannot be displaced by lower-priority settings, nor can stale TOML targets
+    displace the Runtime endpoint. Standalone callers omit the callback.
+    """
     if request == "managed":
         return TargetSelection(None, "request:managed", True)
     if request != "auto":
@@ -391,6 +397,10 @@ def resolve_target(request: str = "auto", *, path: str | Path | None = None,
         # A transient address is a new human attachment; no cached ownership,
         # root, Python or launch facts are transferred from another address.
         return TargetSelection(normalize_target({"endpoint": override}), "env", True)
+    if settings_endpoint is not None:
+        endpoint = settings_endpoint()
+        if endpoint is not None:
+            return TargetSelection(normalize_target({"endpoint": endpoint}), "settings", True)
     for source, candidate in (("repo", Path(repo) / "vibecomfy.toml" if repo is not None else None),
                               ("global", Path(path) if path is not None else config_path())):
         if candidate is None:
