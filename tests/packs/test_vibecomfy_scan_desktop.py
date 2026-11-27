@@ -9,6 +9,8 @@ from astrid.core.generation import desktop_install as desktop
 from astrid.packs.vibecomfy import local
 from tests.packs.test_vibecomfy_local import _non_comfy_server, _server
 
+_read_registrations = desktop.read_registrations
+
 
 @pytest.fixture(autouse=True)
 def _no_uncontrolled_discovery(monkeypatch):
@@ -204,3 +206,40 @@ def test_healthy_server_without_folder_evidence_is_ambiguous(tmp_path, monkeypat
     assert len(result["servers"]) == 1
     assert result["installations"][0]["state"] == "ambiguous"
     assert result["installations"][0]["responder"]["matches_install"] is None
+
+
+@pytest.mark.parametrize("registry_present", [False, True])
+def test_scan_incomplete_config_is_neither_stale_nor_empty(tmp_path, monkeypatch, registry_present):
+    config = tmp_path / "ComfyUI" / "config.json"
+    config.parent.mkdir()
+    config.write_text("{broken", encoding="utf-8")
+    executable = tmp_path / "ComfyUI.exe"
+    executable.touch()
+    entry = {"DisplayIcon": str(executable)} if registry_present else None
+
+    def registrations(*args, **kwargs):
+        return _read_registrations(
+            {"APPDATA": str(tmp_path)}, registry=lambda: entry,
+        )
+
+    def get_json(url, timeout=2):
+        assert url == local._PINOKIO_INFO_URL, "incomplete Desktop registration must not be probed"
+        raise URLError(ConnectionRefusedError("refused"))
+
+    monkeypatch.setattr(desktop, "read_registrations", registrations)
+    monkeypatch.setattr(local, "_get_json", get_json)
+    result = local.scan([])
+    assert result["servers"] == []
+    assert result["errors"] == []
+    assert result["pinokio"] == {"available": False, "home": None}
+    assert len(result["installations"]) == 1
+    observation = result["installations"][0]
+    assert observation["state"] == "ambiguous"
+    assert observation["recorded"] == {
+        "executable": str(executable) if registry_present else None,
+        "data_dir": None,
+    }
+    assert observation["files"] == {"executable": registry_present, "data_dir": False}
+    assert desktop.select_candidate(result["installations"], result["servers"]) == {
+        "outcome": "none", "choices": [], "not_running": [observation],
+    }
