@@ -21,6 +21,7 @@ import sys
 import tempfile
 import threading
 import time
+import weakref
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -872,17 +873,44 @@ def _incarnation(identity: Mapping[str, object], token: Mapping[str, object]) ->
             "audit_token_sha256": token["sha256"], "audit_token_pidversion": token["pidversion"]}
 
 
+def _retained_actor_call(authority, method, *args):
+    """Normalize named native errors, not unrelated programming failures."""
+    from runtime_protocol import process_binding
+    from runtime_protocol.errors import ConflictError
+
+    try:
+        return getattr(authority, method)(*args)
+    except (process_binding.ProcessBindingError, OSError) as exc:
+        raise CustodyError("retained peer native authority is unavailable") from exc
+    except ConflictError as exc:
+        if process_binding.backend() != "windows":
+            raise
+        from runtime_protocol.windows_handoff import WindowsBindingError
+        if not isinstance(exc, WindowsBindingError):
+            raise
+        raise CustodyError("retained Windows peer native authority is unavailable") from exc
+    except RuntimeError as exc:
+        if process_binding.backend() != "darwin":
+            raise
+        from runtime_protocol.darwin_process_binding import DarwinBindingError
+        if not isinstance(exc, DarwinBindingError):
+            raise
+        raise CustodyError("retained Darwin peer native authority is unavailable") from exc
+
+
 class AuthenticatedCleanupActor:
     """An actor pinned from our own kernel identity or a retained private peer.
 
-    RPC payloads never construct this object. The retained channel (or our own
-    process) supplies the token again at each use, including replay.
+    RPC payloads never construct this object. A private peer owns the Runtime
+    provider's original native reference, not a serialized token or reopened PID.
+    Self identity is observation only; role authority is checked separately.
     """
 
     def __init__(self, token_reader: Callable[[], Mapping[str, object]],
                  identity_provider: Callable[[int], Mapping[str, object] | None]) -> None:
         self._token_reader = token_reader
         self._identity_provider = identity_provider
+        self._native_close: weakref.finalize | None = None
         token = dict(token_reader())
         identity = identity_provider(int(token.get("pid", 0)))
         if identity is None:
@@ -891,20 +919,66 @@ class AuthenticatedCleanupActor:
 
     @classmethod
     def current(cls, *, identity_provider: Callable[[int], Mapping[str, object] | None] | None = None) -> AuthenticatedCleanupActor:
-        return cls(lambda: current_process_audit_token(os.getpid()),
-                   identity_provider or default_process_identity)
+        if sys.platform == "darwin":
+            reader = lambda: current_process_audit_token(os.getpid())
+        else:
+            from runtime_protocol import process_binding
+            reader = lambda: process_binding.token(os.getpid())
+        return cls(reader, identity_provider or default_process_identity)
 
     @classmethod
     def private_peer(cls, channel: socket.socket,
                      *, identity_provider: Callable[[int], Mapping[str, object] | None] | None = None) -> AuthenticatedCleanupActor:
-        return cls(lambda: _peer_token(channel), identity_provider or default_process_identity)
+        from runtime_protocol import process_binding
+
+        try:
+            retained = process_binding.retain_peer(channel)
+        except (OSError, process_binding.ProcessBindingError) as exc:
+            raise CustodyError("original peer native authority is unavailable") from exc
+        try:
+            # A handle's own verified identity is authoritative; Windows in
+            # particular must not reopen the observed PID to authenticate it.
+            # Optional callers may impose an additional independent predicate.
+            actor = cls(lambda: _retained_actor_call(retained, "verify"),
+                        identity_provider or (lambda _pid: retained.identity))
+            _retained_actor_call(retained, "verify", actor._pinned)
+            actor._native_close = weakref.finalize(actor, _retained_actor_call, retained, "close")
+            return actor
+        except BaseException as exc:
+            try:
+                _retained_actor_call(retained, "close")
+            except BaseException as close_error:
+                exc.add_note(f"native peer close also failed: {close_error}")
+            raise
 
     def verify(self) -> dict[str, object]:
-        token = dict(self._token_reader())
-        identity = self._identity_provider(int(self._pinned["pid"]))
+        if self._native_close is not None and not self._native_close.alive:
+            raise CustodyError("retained cleanup actor is closed")
+        from runtime_protocol import process_binding
+
+        try:
+            token = dict(self._token_reader())
+            identity = self._identity_provider(int(self._pinned["pid"]))
+        except (OSError, process_binding.ProcessBindingError) as exc:
+            raise CustodyError("designated cleanup actor incarnation changed or is unknown") from exc
         if identity is None or _incarnation(identity, token) != self._pinned:
             raise CustodyError("designated cleanup actor incarnation changed or is unknown")
         return dict(self._pinned)
+
+    def close(self) -> None:
+        if self._native_close is not None:
+            self._native_close()
+
+    def __enter__(self) -> AuthenticatedCleanupActor:
+        return self
+
+    def __exit__(self, _kind, primary, _tb) -> None:
+        try:
+            self.close()
+        except BaseException as close_error:
+            if primary is None:
+                raise
+            primary.add_note(f"native peer close also failed: {close_error}")
 
 
 class RetainedChildActor:
@@ -1582,8 +1656,9 @@ def default_process_identity(pid: int, *, timeout: float = 1.0) -> dict[str, obj
 
     if timeout <= 0:
         raise CustodyError("process identity observation deadline expired")
-    if sys.platform == "win32":
-        return platform.process_identity(pid)
+    if sys.platform == "win32" or sys.platform.startswith("linux"):
+        from runtime_protocol import process_binding
+        return process_binding.identity(pid, timeout=timeout)
     if sys.platform == "darwin":
         rows = _darwin_process_records(pid)
         if not rows:
@@ -2942,24 +3017,15 @@ class _CheckedPidTarget:
 
 
 def _checked_pid_target(pid: int, birth: str, *, held: bool) -> _CheckedPidTarget | None:
-    """Bind a sandbox registration to Runtime's identity; None when it is gone or differs."""
+    """Bind a sandbox registration to the exact scoped Runtime birth."""
     if held:
         return _CheckedPidTarget(None)
+    from astrid.core.execution.process_group import linux_birth_scope
+    if linux_birth_scope(birth) is None:
+        return None
     identity = platform.process_identity(pid)
-    if identity is None:
+    if identity is None or identity.get("pid") != pid or identity.get("birth_id") != birth:
         return None
-    # Agent records boot UUID:start ticks; Runtime also captures the target's
-    # PID namespace. Require the complete, unambiguous native scope at admission
-    # and agree on BOTH Agent fields. Tick-only evidence cannot prove the boot.
-    runtime_birth = identity.get("birth_id")
-    scoped = (
-        re.fullmatch(r"proc-start-ticks:([0-9]+);boot:([^;:]+);pidns:[1-9][0-9]*", runtime_birth)
-        if isinstance(runtime_birth, str) else None
-    )
-    if scoped is None or f"{scoped[2]}:{scoped[1]}" != birth:
-        return None
-    # Keep every scope for Runtime's exact recheck immediately before signalling;
-    # a changed or unreadable boot/namespace must never become signal authority.
     return _CheckedPidTarget(identity)
 
 
@@ -3255,9 +3321,21 @@ class ProcessCustody:
                 else:
                     from astrid.core.execution.process_group import (
                         _PidfdExitProof,
+                        _linux_parent_edge,
                         held_child_birth_identity,
                         process_birth_identity,
                     )
+                    parent_anchor = (_observation.get("linux_parent") if isinstance(_observation, Mapping) else None)
+
+                    def revalidate_parent():
+                        if parent_anchor is None:
+                            return
+                        parent, expected = parent_anchor
+                        entry = self._handles.get(parent)
+                        if entry is None or entry[0] != expected:
+                            raise CustodyError("census parent lacks retained matching custody")
+                        _linux_parent_edge(parent, expected, pid, birth)
+
                     # Our own unreaped launch may already be a zombie; any other
                     # candidate that exited (or whose pid was reused) between the
                     # census and now is simply absent: nothing is left to signal,
@@ -3268,6 +3346,7 @@ class ProcessCustody:
                         if held:
                             raise CustodyError("launch registration identity is uncertain")
                         return
+                    revalidate_parent()
                     stage = "pidfd-bind"
                     try:
                         descriptor = platform.pidfd_open(pid)
@@ -3283,6 +3362,7 @@ class ProcessCustody:
                             if held:
                                 raise CustodyError("launch changed during sandbox registration") from exc
                             return
+                        revalidate_parent()
                         self._handles[pid] = (birth, target)
                         return
                     retained = False
@@ -3304,6 +3384,7 @@ class ProcessCustody:
                         proof = _PidfdExitProof(descriptor)
                         proofs[pid] = proof
                         proof_registered = True
+                        revalidate_parent()
                         terminal_births.pop(pid, None)
                         self._handles[pid] = (birth, descriptor)
                         retained = True
@@ -3462,6 +3543,49 @@ class ProcessCustody:
         other registration failures retain their existing semantics.
         """
         broker = getattr(self, "_launch_broker", None)
+        if sys.platform.startswith("linux"):
+            # A census row is observation only. Admit a new candidate only
+            # through its actual retained immediate parent, in ancestry order.
+            # register() brackets that edge again across native capture.
+            with self._lock:
+                if self._uncertain is not None:
+                    raise CustodyError("custody registration or observation is unresolved") from self._uncertain
+                pending = dict(members)
+                admitted = {}
+                try:
+                    while pending:
+                        progressed = False
+                        for pid, birth in tuple(pending.items()):
+                            entry = self._handles.get(pid)
+                            if entry is not None and entry[0] == birth:
+                                admitted[pid] = birth
+                            else:
+                                row = census.get(pid)
+                                if row is None or row.get("birth_id") != birth:
+                                    raise CustodyError("census candidate lacks matching birth")
+                                parent = row["parent_pid"]
+                                parent_entry = self._handles.get(parent)
+                                if parent_entry is None:
+                                    continue
+                                parent_row = census.get(parent)
+                                if parent_row is None or parent_row.get("birth_id") != parent_entry[0]:
+                                    raise CustodyError("census parent lacks retained matching birth")
+                                self.register(pid, birth, _observation={"linux_parent": (parent, parent_entry[0])})
+                                if self._handles.get(pid, (None,))[0] == birth:
+                                    admitted[pid] = birth
+                                else:
+                                    # Candidate disappeared before capture: do
+                                    # not silently turn the missing capability
+                                    # into proof of absence or follow its children.
+                                    raise CustodyError("census candidate exited before retained admission")
+                            del pending[pid]
+                            progressed = True
+                        if not progressed:
+                            raise CustodyError("census candidate ancestry lacks retained authority")
+                    return admitted
+                except BaseException as error:
+                    self._uncertain = error
+                    raise
         if (sys.platform != "darwin" or not isinstance(broker, RoleBoundCustodyBroker)
                 or broker.role != "command"):
             if sys.platform == "darwin" and deadline is not None:

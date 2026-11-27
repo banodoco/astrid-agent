@@ -1138,3 +1138,12 @@ def test_execution_profile_defaults_to_installed_for_wheel_and_installer(monkeyp
     assert host_bootstrap._execution_profile() == "installed"
     monkeypatch.setenv("ASTRID_HOST_EXECUTION_PROFILE", "source")
     assert host_bootstrap._execution_profile() == "source"
+
+
+@pytest.mark.parametrize("legacy", ["123", "boot:123", "proc-start-ticks:123;boot:boot"])
+def test_linux_legacy_host_journal_blocks_retirement(monkeypatch, legacy):
+    monkeypatch.setattr(host_bootstrap.sys, "platform", "linux")
+    monkeypatch.setattr(host_bootstrap, "_stop_group", lambda *_a, **_k: pytest.fail("legacy host signalled"))
+    state = {"pid": 12345, "process_birth_id": legacy}
+    with pytest.raises(host_bootstrap.PackHostBootstrapError, match="diagnostic only"):
+        host_bootstrap._terminate_old_host(state, status="gone")

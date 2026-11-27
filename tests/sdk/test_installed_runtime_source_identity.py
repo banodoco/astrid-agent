@@ -60,6 +60,19 @@ def test_exact_installed_pair_passes_real_origin_and_child_checks(installed_pair
     assert all(Path(origin).is_relative_to(site) for origin in origins.values())
     closure = source_checkout_closure(site)
     assert {"runtime_protocol", "astrid_runtime"} <= {row["component"] for row in closure["components"]}
+    # Measure through both independent implementations in the selected child.
+    parity = subprocess.run(
+        [python, "-I", "-B", "-c",
+         "import sys; from pathlib import Path; "
+         "from astrid.core.source_identity import source_checkout_closure as agent; "
+         "a = agent(Path(sys.argv[1])); "
+         "assert not {'runtime_protocol', 'astrid_runtime'} & sys.modules.keys(); "
+         "from runtime_protocol.verified_host_launch import source_checkout_closure as runtime; "
+         "assert a == runtime(Path(sys.argv[1])); print(a['digest'])", str(site)],
+        cwd=neutral, env=env, text=True, capture_output=True, timeout=30,
+    )
+    assert parity.returncode == 0, parity.stderr
+    assert parity.stdout.strip() == closure["digest"]
     child = _host_import(installed_pair, closure["digest"])
     assert child.returncode == 0, child.stderr
     assert "astrid-generic-host" in child.stdout

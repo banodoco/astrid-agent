@@ -16809,7 +16809,8 @@ class LocalExecutionPreparation:
         if _handoff_digest(launch) != profile["session_config_digest"]:
             raise HostError("host-only launch configuration digest differs")
         peer = self._retained_relay_actor
-        if peer is None or any(peer.verify().get(k) != request["runtime_owner"].get(k) for k in ("pid", "uid", "birth_id")):
+        verified = peer.verify() if peer is not None else {}
+        if any(verified.get(k) != request["runtime_owner"].get(k) for k in ("pid", "uid", "birth_id")) or peer is None:
             raise HostError("host-only preparation is not from original Runtime peer")
         for name in ("profile_digest", "release_digest", "session_config_digest", "host_artifact_digest"):
             if not isinstance(profile[name], str) or not _ACTIVATION_DIGEST.fullmatch(profile[name]):
@@ -17305,16 +17306,28 @@ class LocalExecutionPreparation:
         if descriptor < 3:
             raise HostError("local host-control descriptor is invalid")
         def serve():
-            control = socket.socket(fileno=descriptor)
+            control = None
+            actor = None
             try:
+                # Preserve the authenticated original owner handle on Windows;
+                # a bare socket reconstructed from the fd has no provider pin.
+                control = platform.handoff_adopt_socket(descriptor)
                 from astrid.core.execution import custody_broker as custody_module
 
                 # This is the retained Runtime relay -> host channel. It does
                 # not authenticate B; it pins the real relay peer so protected
                 # relay designation/transition evidence can be checked later.
-                self._retained_relay_actor = custody_module.AuthenticatedCleanupActor.private_peer(control)
+                actor = custody_module.AuthenticatedCleanupActor.private_peer(control)
+                self._retained_relay_actor = actor
                 while True:
                     frame = _read_activation_frame(control, limit=1024 * 1024)
+                    verified = actor.verify()
+                    if frame.get("command") == "prepare_local_execution":
+                        owner = frame.get("runtime_owner")
+                        if not isinstance(owner, Mapping) or any(
+                                owner.get(k) != verified.get(k) or type(owner.get(k)) is not type(verified.get(k))
+                                for k in ("pid", "uid", "birth_id")):
+                            raise HostError("local preparation is not from original Runtime peer")
                     if frame.get("command") == "abort_local_execution":
                         # Every cleanup protocol owns the CLI exit barrier,
                         # including native cleanup before a claim host exists.
@@ -17349,7 +17362,17 @@ class LocalExecutionPreparation:
             except BaseException as exc:
                 self.control_error = exc
             finally:
-                control.close()
+                try:
+                    if actor is not None:
+                        actor.close()
+                except BaseException as exc:
+                    if self.control_error is None:
+                        self.control_error = exc
+                    else:
+                        self.control_error.add_note(f"native peer close also failed: {exc}")
+                finally:
+                    if control is not None:
+                        control.close()
         thread = threading.Thread(target=serve, name="astrid-host-control", daemon=True)
         thread.start()
         return thread
@@ -17369,6 +17392,10 @@ def _selected_birth_matches(observed: Any, retained: Any) -> bool:
     """Compare the selected Vibe representation to the same retained birth."""
     if not isinstance(observed, str) or not observed or not isinstance(retained, str) or not retained:
         return False
+    if sys.platform.startswith("linux"):
+        from astrid.core.execution.process_group import linux_birth_scope
+        scope = linux_birth_scope(retained)
+        return scope is not None and observed == scope[0]
     if observed == retained:
         return True
     return sys.platform == "darwin" and retained.startswith("ps-lstart:") and observed == retained[len("ps-lstart:"):]
@@ -17586,7 +17613,16 @@ class _NativeEngineGraph:
                 retained = self.listener.role_authority.reference()["target"]
             if retained is None or retained.get("pid") != pid or not isinstance(retained.get("birth_id"), str):
                 raise HostError("selected process observation differs from admitted custody")
+        if retained is not None and sys.platform.startswith("linux"):
+            from astrid.core.execution.process_group import scoped_linux_identity
+            before = scoped_linux_identity(pid)
+            if before is None or before["birth_id"] != retained["birth_id"]:
+                raise HostError("selected registry birth no longer matches retained incarnation")
         value = self._source_observer.observe(fact, pid)
+        if retained is not None and sys.platform.startswith("linux"):
+            after = scoped_linux_identity(pid)
+            if after is None or after["birth_id"] != retained["birth_id"]:
+                raise HostError("selected registry birth changed during observation")
         if (actor.verify() != identity or self.engine.role_authority.reference()["target"] != target
                 or (retained is not None and not _selected_birth_matches(value, retained["birth_id"]))):
             raise HostError("selected source observation changed its retained incarnation")
@@ -17677,6 +17713,10 @@ class _NativeEngineGraph:
         marker = json.loads((root / "launch.json").read_text(encoding="utf-8"))
         launch = self.profile["engine_launch"]
         listener_identity = default_process_identity(listener_pid)
+        if sys.platform.startswith("linux"):
+            from astrid.core.execution.process_group import _linux_parent_edge
+            _linux_parent_edge(self.process.pid, self.process._astrid_process_birth,
+                               listener_pid, self.custody._handles[listener_pid][0])
         if (data["pid"] != str(self.process.pid) or data["comfy_pid"] != str(listener_pid)
                 or data["url"] != self.profile["engine_endpoint"] or marker.get("launch_token") != nonce
                 or marker.get("pid") != self.process.pid or marker.get("url") != data["url"]
@@ -17691,6 +17731,9 @@ class _NativeEngineGraph:
             observation = subprocess.run(["lsof", *(["-O"] if sys.platform == "darwin" else []), "-nP", "-a", "-p", str(listener_pid), "-iTCP:" + str(endpoint.port), "-sTCP:LISTEN"], stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=2, check=False)
             if observation.returncode != 0 or f":{endpoint.port} (LISTEN)" not in observation.stdout:
                 raise HostError("selected listener socket ownership is uncertain")
+        if sys.platform.startswith("linux"):
+            _linux_parent_edge(self.process.pid, self.process._astrid_process_birth,
+                               listener_pid, self.custody._handles[listener_pid][0])
         for broker in (self.engine, self.listener):
             if broker.state == "sealed":
                 broker.bind_ready_token(expected_pid=int(broker.registration["pid"]), expected_identity=broker.registration["identity"])

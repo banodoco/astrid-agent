@@ -1,5 +1,9 @@
 {
   "files": {
+    "astrid/core/execution/host-source-closure-v1.json": {
+      "from": "runtime_protocol/schemas/host-source-closure-v1.json",
+      "sha256": "sha256:5bf56adc79b3b5c3bf1c04698776b7ead17d85e3c32b2e5538d16ecc4290377c"
+    },
     "astrid/core/timeline/schema/timeline-config.schema.json": {
       "from": "contract/schemas/timeline-config.schema.json",
       "sha256": "sha256:599f6fc2ff76a3385f99427f5861a81f3eb1b5c4232a5017fc143f0a154741cf"
@@ -67,6 +71,6 @@
   },
   "manifest": "contract/artifacts.json",
   "producer": "astrid-runtime",
-  "producer_version": "sha256:69cdb4b75760f238114ec5032f4794e3d33bf5f8a090d41ade8b5b207593aed1",
-  "source_commit": "686ca695469bda48cd40a70824c4ccef2a137284"
+  "producer_version": "sha256:b334d616c2fd49ad0437ad1d8b18aee2690c4229bbdb15dec4cfa62aff996f4c",
+  "source_commit": "e1fb47bfa328e70a99f4a2e0e0eaac4168f37682"
 }

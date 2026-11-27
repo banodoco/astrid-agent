@@ -393,9 +393,16 @@ class LiveProcessProbe:
 
     @staticmethod
     def _linux_identity(pid: int) -> tuple[str, Path]:
-        raw = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
-        fields = raw[raw.rfind(")") + 2 :].split()
-        return fields[19], Path(f"/proc/{pid}/exe").resolve(strict=True)
+        from astrid.core.execution.process_group import scoped_linux_identity
+        before = scoped_linux_identity(pid)
+        if before is None:
+            raise ProcessLookupError(pid)
+        birth = before["birth_id"]
+        executable = Path(f"/proc/{pid}/exe").resolve(strict=True)
+        after = scoped_linux_identity(pid)
+        if after is None or after["birth_id"] != birth:
+            raise RuntimeError("Linux incarnation changed during executable observation")
+        return birth, executable
 
     @staticmethod
     def _mac_executable(pid: int) -> Path:
@@ -566,13 +573,30 @@ class LiveProcessProbe:
         ):
             raise RuntimeError("positive native process PID/birth identity is required")
         if os_name == "linux":
-            try:
-                current, _path = self._linux_identity(pid)
-            except (FileNotFoundError, ProcessLookupError):
+            from runtime_protocol import platform, process_binding
+            from astrid.core.execution.process_group import linux_birth_scope, scoped_linux_identity
+            expected_scope = linux_birth_scope(birth_id)
+            if expected_scope is None:
+                raise RuntimeError("legacy or unscoped process journal is diagnostic only")
+            observed = process_binding.census()
+            if observed.status != "complete":
+                raise RuntimeError("Linux process absence is not observable")
+            row = observed.live.get(pid)
+            if row is not None:
+                match = platform.process_birth_matches(birth_id, row["birth_id"])
+                if match is None:
+                    raise RuntimeError("Linux process birth scopes are incomparable")
+                return not match
+            zombie = observed.exited.get(pid)
+            if zombie is not None:
+                if platform.process_birth_matches(birth_id, zombie) is None:
+                    raise RuntimeError("Linux zombie birth scopes are incomparable")
                 return True
-            except (OSError, IndexError) as exc:
-                raise RuntimeError("Linux process absence is not observable") from exc
-            return current != birth_id
+            # An absent PID is meaningful only in the journal's namespace.
+            own = scoped_linux_identity(os.getpid())
+            if own is None or expected_scope[2] != linux_birth_scope(own["birth_id"])[2]:
+                raise RuntimeError("Linux process absence scope is unavailable")
+            return True
         if os_name == "macos":
             result = self.runner.run(["ps", "-p", str(pid), "-o", "lstart="], timeout=10)
             if result.returncode == 1:
@@ -602,17 +626,16 @@ class LiveProcessProbe:
         executable = Path(action[0]).resolve(strict=True)
         rows: list[Mapping[str, Any]] = []
         if os_name == "linux":
-            for entry in Path("/proc").iterdir():
-                if not entry.name.isdigit():
-                    continue
-                try:
-                    birth, path = self._linux_identity(int(entry.name))
-                except (FileNotFoundError, ProcessLookupError, IndexError):
-                    continue
-                except OSError as exc:
-                    raise RuntimeError("Linux owned-process enumeration was denied") from exc
+            from runtime_protocol import process_binding
+            observed = process_binding.census()
+            if observed.status != "complete":
+                raise RuntimeError("Linux owned-process census incomplete")
+            for pid, identity in observed.live.items():
+                birth, path = self._linux_identity(pid)
+                if birth != identity["birth_id"]:
+                    raise RuntimeError("Linux process changed after census")
                 if path == executable:
-                    rows.append({"pid": int(entry.name), "process_birth_id": birth})
+                    rows.append({"pid": pid, "process_birth_id": birth})
             return rows
         if os_name == "macos":
             library = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)

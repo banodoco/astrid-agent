@@ -155,19 +155,33 @@ def signal_observed_group(pgid: int, signum: int, *, leader_birth: str | None) -
 
 
 def _signal_linux_observed_group(pgid: int, signum: int, leader_birth: str) -> None:
-    from .process_group import process_birth_identity
+    from .process_group import _census_complete, _process_snapshot, linux_birth_scope, scoped_linux_identity
 
-    leader = platform.process_identity(pgid)
-    if leader is not None:
-        if process_birth_identity(pgid) != leader_birth:
-            raise ProcessLookupError("process group leader was replaced")
-        if leader.get("process_group") != pgid:
-            leader = None  # the leader left its group: signal only the members
-    try:
-        platform.signal_observed_group(pgid, signum, leader=leader)
-    except ProcessLookupError as exc:
-        if exc.strerror != "no process in the group could be signalled":
-            raise  # nothing left to signal was a quiet no-op here before
+    if linux_birth_scope(leader_birth) is None:
+        raise OSError("legacy or unscoped process group journal cannot authorize signalling")
+    snapshot = _process_snapshot()
+    if not _census_complete(snapshot):
+        raise OSError("process group census incomplete")
+    members = {pid: row for pid, row in snapshot.items() if row.pgid == pgid}
+    if not members:
+        return
+
+    def verify_leader():
+        leader = scoped_linux_identity(pgid)
+        if leader is None or leader["birth_id"] != leader_birth or leader["process_group"] != pgid:
+            raise OSError("process group leader is absent or changed")
+        return leader
+
+    verify_leader()
+    # A journal is not a retained handle. Never widen a historical group
+    # observation to a new leader; recheck its full birth around each member.
+    for pid, row in sorted(members.items(), key=lambda item: item[0] == pgid):
+        verify_leader()
+        identity = scoped_linux_identity(pid)
+        if identity is None or identity["birth_id"] != row.birth or identity["process_group"] != pgid:
+            raise OSError("process group member changed")
+        verify_leader()
+        platform.signal_process(identity, signum)
 
 
 _configure_from_environment()

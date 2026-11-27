@@ -138,7 +138,11 @@ def _preflight_tree(tmp_path):
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("raise AssertionError('carrier executed before preflight')\n")
-    (root / 'astrid/core/source_identity.py').write_bytes(Path(source_identity.__file__).read_bytes())
+    identity = Path(source_identity.__file__)
+    (root / 'astrid/core/source_identity.py').write_bytes(identity.read_bytes())
+    definition = Path('execution/host-source-closure-v1.json')
+    (root / 'astrid/core' / definition).write_bytes(
+        (identity.parent / definition).read_bytes())
     return root, source_identity.source_checkout_closure_digest(root)
 
 
@@ -195,6 +199,7 @@ def test_installed_sdk_validation_passes_existing_launch_closure(tmp_path, monke
 @pytest.mark.parametrize('mutation', [
     'foreign-astrid', 'foreign-runtime', 'generator-link', 'generator-ancestor',
     'root-alias', 'missing-generator', 'changed-generator', 'changed-runtime',
+    'missing-definition', 'changed-definition', 'definition-link',
 ])
 def test_installed_preflight_refuses_before_product_imports(tmp_path, monkeypatch, mutation):
     root, digest = _preflight_tree(tmp_path)
@@ -222,6 +227,16 @@ def test_installed_preflight_refuses_before_product_imports(tmp_path, monkeypatc
         search = [str(alias)]
     elif mutation == 'missing-generator':
         generator.unlink()
+    elif mutation in ('missing-definition', 'changed-definition', 'definition-link'):
+        definition = root / 'astrid/core/execution/host-source-closure-v1.json'
+        if mutation == 'missing-definition':
+            definition.unlink()
+        elif mutation == 'changed-definition':
+            definition.write_bytes(definition.read_bytes() + b' ')
+        else:
+            target = root / 'foreign-definition.json'
+            definition.rename(target)
+            definition.symlink_to(target)
     else:
         path = generator if mutation == 'changed-generator' else root / 'runtime_protocol/platform.py'
         path.write_text("raise AssertionError('changed carrier executed')\n")

@@ -26,45 +26,67 @@ def _source_digest(root: Path) -> str:
     return _canonical_digest(entries)
 
 
-def source_checkout_closure(checkout: str | Path) -> dict[str, Any]:
-    """Measure the executable host closure owned by this checkout.
+def _reject_alias(path: Path) -> None:
+    for ancestor in (path, *path.parents):
+        if ancestor.is_symlink():
+            raise ValueError(f"source closure contains a symlink: {ancestor}")
 
-    The legacy pack digest remains the capability-admission identity.  This
-    separate receipt covers the process host, Astrid core, SDK/bootstrap,
-    package entrypoints, launcher, vendored workspace-client files, and the
-    Runtime packages in an installed pair that can change execution.
+
+def _closure_definition() -> dict[str, Any]:
+    """Read the Runtime-owned vendored definition without importing Runtime."""
+    path = Path(__file__).absolute().with_name("execution") / "host-source-closure-v1.json"
+    _reject_alias(path)
+    try:
+        definition = json.loads(path.read_text(encoding="utf-8"))
+        if definition["schema_version"] != 1:
+            raise ValueError("unsupported source closure definition version")
+        if not isinstance(definition["components"], dict) or not isinstance(
+            definition["installed_pair"]["components"], dict
+        ):
+            raise ValueError("invalid source closure component mapping")
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        raise ValueError("source closure definition is unavailable or invalid") from exc
+    return definition
+
+
+def source_checkout_closure(checkout: str | Path) -> dict[str, Any]:
+    """Independently measure the executable host closure before Runtime imports.
+
+    The component definition is produced and vendored by Runtime's artifact
+    lock; the legacy pack admission digest remains separate.
     """
-    root = Path(checkout).expanduser().resolve()
-    components = {
-        "host": root / "astrid" / "core" / "execution" / "generic_host.py",
-        "core": root / "astrid" / "core",
-        "sdk": root / "astrid" / "sdk",
-        "launcher": root / "astrid" / "omp_agent.py",
-        "astrid_entrypoint": root / "astrid" / "__init__.py",
-        "astrid_version": root / "astrid" / "version.py",
-        "astrid_main": root / "astrid" / "__main__.py",
-        "astrid_runtime_cli": root / "astrid" / "runtime_cli.py",
-        "vendored_workspace_client": root / "astrid_runtime_client",
-    }
-    # Source checkouts keep their existing Agent closure. An installed pair
-    # contributes both Runtime packages to the same existing digest carrier.
-    runtime_names = ("runtime_protocol", "astrid_runtime")
-    if any((root / name).exists() or (root / name).is_symlink() for name in runtime_names):
-        components.update({name: root / name for name in runtime_names})
+    root = Path(checkout).expanduser().absolute()
+    if ".." in root.parts:
+        raise ValueError("source closure root is not canonical")
+    _reject_alias(root)
+    definition = _closure_definition()
+    components = definition["components"].copy()
+    pair = definition["installed_pair"]["components"]
+    if any((root / relative).exists() or (root / relative).is_symlink()
+           for relative in pair.values()):
+        for relative in pair.values():
+            path = root / relative
+            _reject_alias(path)
+            if not path.is_dir():
+                raise ValueError("source closure installed pair component is missing or not a directory")
+        components.update(pair)
+
     measured: list[dict[str, str]] = []
-    for name, path in components.items():
-        if path.is_symlink() or not path.exists():
-            raise ValueError(f"source closure component is missing or symlinked: {name}")
+    for name, relative in components.items():
+        path = root / relative
+        _reject_alias(path)
+        if not path.exists():
+            raise ValueError(f"source closure component is missing: {name}")
         if path.is_dir() and any(child.is_symlink() for child in path.rglob("*")):
             raise ValueError(f"source closure component contains a symlink: {name}")
         measured.append({
             "component": name,
-            "path": path.relative_to(root).as_posix(),
+            "path": relative,
             "sha256": _source_digest(path),
         })
     measured.sort(key=lambda item: item["component"])
     return {
-        "schema_version": 1,
+        "schema_version": definition["schema_version"],
         "components": measured,
         "digest": _canonical_digest(measured),
     }

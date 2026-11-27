@@ -7,6 +7,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 import traceback
 from pathlib import Path
 from types import SimpleNamespace
@@ -39,6 +40,7 @@ from .core import (
     pending_transaction,
     read_json,
     separate_roots,
+    update_required,
     write_json,
 )
 from .installation import Installation, State
@@ -370,6 +372,36 @@ def _download_manifest(root: Path, destination: Path) -> None:
     prior = current(root)
     require_git(recorded=prior.env.get("ASTRID_GIT_EXECUTABLE") if prior else None)
     download("https://astrid.haus/install-manifest.json", destination)
+
+
+def _preflight_update_manifest(backend, mode, installed, data, manifest_path, *, on_detached=None):
+    """Resolve the install-line update before touching its owned pending work.
+
+    A remote manifest is downloaded to disposable scratch for classification;
+    the installation's manifest/claims are published only after admission.
+    Healthy same-release repair keeps its existing lifecycle path.
+    """
+    legacy = getattr(backend, "_legacy_linux_update", None)
+    if not callable(legacy) or not legacy(installed):
+        return None
+    if mode not in {"install", "update", "app-update"}:
+        return None
+    if manifest_path is not None:
+        manifest = validate_manifest(read_json(manifest_path))
+    else:
+        with tempfile.TemporaryDirectory(prefix="astrid-update-inspect-") as folder:
+            path = Path(folder) / "manifest.json"
+            _download_manifest(backend.root, path)
+            manifest = validate_manifest(read_json(path))
+    if mode in {"update", "app-update"} or update_required(mode, manifest, installed, managed_by=backend.managed_by):
+        try:
+            backend.preflight_update(installed, data)
+        except RuntimeOperationError as exc:
+            if (on_detached is None or mode == "app-update" or not isinstance(exc.details, dict)
+                    or not exc.details.get("deferred_until_quiescent")):
+                raise
+            on_detached(manifest)
+    return manifest
 
 
 def _retained_r0_roots(service) -> list[Path]:
@@ -926,6 +958,22 @@ def main(argv: list[str] | None = None) -> int:
                         return run.finish()
                 pending_update = pending_transaction(root)
                 if mode in {"install", "update"} and pending_update:
+                    if pending_update.get("deferred_update"):
+                        from .deferred import launch_continuation
+
+                        if args.update_job:
+                            raise ValueError("The deferred transaction belongs to its normal launch controller.")
+                        run.manifest(validate_manifest(pending_update["deferred_update"]["manifest"]))
+                        # The pinned candidate owns this operation. Release
+                        # our broad lock before its fixed entry re-acquires the
+                        # normal lock order and repeats all admission checks.
+                        platform.unlock_file(lock.fileno())
+                        locked = False
+                        launch_continuation(root)
+                        continued = read_json(root / "update-transaction.json")
+                        run.reason = ("recovered-previous-version" if continued.get("step") == "rolled_back"
+                                      or continued.get("outcome") == "recovered_before_stop" else None)
+                        return run.finish()
                     if pending_update.get("transaction_kind") == "app":
                         # Pinokio recovery starts the retained foreground app.
                         # Drop the broad installer lock first; recover_app
@@ -947,16 +995,33 @@ def main(argv: list[str] | None = None) -> int:
                         print(RECOVERED_PREVIOUS_VERSION)
                     run.reason = "recovered-previous-version"
                     return run.finish()
-                if mode in {"install", "update", "app-update"} and marker.get("owner") == LABEL:
-                    # Sweep only jobs and artifacts named by Astrid's durable
-                    # ownership record. Active and unqueryable objects remain.
-                    update_job.sweep_owned_jobs(root, locked=True)
-                    marker = read_json(root / "install.json")
                 if mode == "uninstall" and not marker and recorded.get("owner") != LABEL:
                     raise ValueError("No managed Astrid installation was found to uninstall.")
                 installed = current(root)
                 if installed is not None and not installed.python.is_file():
                     installed = None
+                deferred = False
+                def defer_detached(manifest):
+                    nonlocal deferred
+                    from .app_update import locked as app_locked
+                    from .deferred import prepare as prepare_deferred
+
+                    if args.update_job:
+                        raise ValueError("The existing update job cannot be replaced by detached continuation.")
+                    with app_locked(root / ".app-update.lock"):
+                        run.installer = Installer(root, data, backend, say=say, managed_by=managed_by)
+                        deferred = prepare_deferred(run.installer, installed, manifest)
+                early_manifest = _preflight_update_manifest(backend, mode, installed, data, args.manifest,
+                                                            on_detached=defer_detached)
+                if deferred:
+                    run.manifest(early_manifest)
+                    run.reason = "update-deferred"
+                    return run.finish()
+                if mode in {"install", "update", "app-update"} and marker.get("owner") == LABEL:
+                    # Sweep only jobs and artifacts named by Astrid's durable
+                    # ownership record. Active and unqueryable objects remain.
+                    update_job.sweep_owned_jobs(root, locked=True)
+                    marker = read_json(root / "install.json")
                 update_job_record: dict | None = None
                 if args.update_job:
                     update_job_record, accepted_old = update_job.admit_worker(
@@ -985,10 +1050,17 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Using your workspace at {data}.")
                 manifest = {}
                 if mode not in {"uninstall", "doctor"}:
-                    if not args.manifest:
+                    if early_manifest is not None:
+                        manifest = early_manifest
+                        if not args.manifest:
+                            args.manifest = root / "install-manifest.json"
+                            write_json(args.manifest, manifest)
+                    elif not args.manifest:
                         args.manifest = root / "install-manifest.json"
                         _download_manifest(root, args.manifest)
-                    manifest = validate_manifest(read_json(args.manifest))
+                        manifest = validate_manifest(read_json(args.manifest))
+                    else:
+                        manifest = validate_manifest(read_json(args.manifest))
                     if settled:
                         run.manifest(manifest)
                 bundle = None

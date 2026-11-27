@@ -1,0 +1,229 @@
+{
+  "schema_version": 1,
+  "components": {
+    "host": "astrid/core/execution/generic_host.py",
+    "core": "astrid/core",
+    "sdk": "astrid/sdk",
+    "launcher": "astrid/omp_agent.py",
+    "astrid_entrypoint": "astrid/__init__.py",
+    "astrid_version": "astrid/version.py",
+    "astrid_main": "astrid/__main__.py",
+    "astrid_runtime_cli": "astrid/runtime_cli.py",
+    "vendored_workspace_client": "astrid_runtime_client"
+  },
+  "installed_pair": {
+    "components": {
+      "runtime_protocol": "runtime_protocol",
+      "astrid_runtime": "astrid_runtime"
+    },
+    "rule": "if either path exists (or is a symlink) beside astrid/, both are measured and both must be real directories"
+  },
+  "digest_rule": "Each component's sha256 is the file hash, or for a directory the sha256 of compact sorted-key JSON of the list of [posix path relative to the directory, file sha256] pairs sorted by path parts, skipping any path with a __pycache__ part; the closure digest is the sha256 of compact sorted-key JSON of the component rows {component, path, sha256} sorted by component.",
+  "vectors": [
+    {
+      "name": "source-checkout",
+      "files": {
+        "astrid/core/execution/generic_host.py": "host\n",
+        "astrid/core/nested/deep.py": "nested\n",
+        "astrid/core/nested.py": "sibling\n",
+        "astrid/core/__pycache__/x.pyc": "ignored\n",
+        "astrid/sdk/__init__.py": "sdk\n",
+        "astrid/omp_agent.py": "launcher\n",
+        "astrid/__init__.py": "entrypoint\n",
+        "astrid/version.py": "version\n",
+        "astrid/__main__.py": "main\n",
+        "astrid/runtime_cli.py": "runtime cli\n",
+        "astrid_runtime_client/__init__.py": "client\n"
+      },
+      "symlinks": {},
+      "expect": {
+        "components": [
+          {
+            "component": "astrid_entrypoint",
+            "path": "astrid/__init__.py",
+            "sha256": "f6d1bc67af4bc5da1b69cc0a3d81ec20494277767d5a719eef518033b5e59f08"
+          },
+          {
+            "component": "astrid_main",
+            "path": "astrid/__main__.py",
+            "sha256": "6403203dd5a0867eb14d104ee8a73730bd72dd9ad92e78d996a6dba0a5dcfc01"
+          },
+          {
+            "component": "astrid_runtime_cli",
+            "path": "astrid/runtime_cli.py",
+            "sha256": "2e18630f1bad0b5fad7629072752fd52afa7cfbdab24a98f4cce606eb5fbda98"
+          },
+          {
+            "component": "astrid_version",
+            "path": "astrid/version.py",
+            "sha256": "91273cc4099ac13654a758f3e7d26e9da71cc2a8342fbbcf4e1277416c59e036"
+          },
+          {
+            "component": "core",
+            "path": "astrid/core",
+            "sha256": "31447f7ea2cf38088443e6cc221068363c0943ed83ee255fcc188f4c6531d1d0"
+          },
+          {
+            "component": "host",
+            "path": "astrid/core/execution/generic_host.py",
+            "sha256": "d329be9e3aea365ba02a318d9392e22abd64076bb7e33eaaacd8b3f29b7f6de8"
+          },
+          {
+            "component": "launcher",
+            "path": "astrid/omp_agent.py",
+            "sha256": "2a3bb778a7c23f95b8aeaa10989471f42313993322e731a22138bb6f3c81f3c8"
+          },
+          {
+            "component": "sdk",
+            "path": "astrid/sdk",
+            "sha256": "0fb0c520b8a9e9fd5b5d3b85bac44e7359be047f71b492f61045021b9a4a7e23"
+          },
+          {
+            "component": "vendored_workspace_client",
+            "path": "astrid_runtime_client",
+            "sha256": "d5546013c72ee8f4c50dfcaf5347d6e640a8b6210408e0f87096bb0ce9bad92f"
+          }
+        ],
+        "digest": "3596a3e171744f47b436b85838aa62401e129a75bf9ebf6f69ad83101d22126b"
+      }
+    },
+    {
+      "name": "installed-pair",
+      "files": {
+        "astrid/core/execution/generic_host.py": "host\n",
+        "astrid/core/nested/deep.py": "nested\n",
+        "astrid/core/nested.py": "sibling\n",
+        "astrid/core/__pycache__/x.pyc": "ignored\n",
+        "astrid/sdk/__init__.py": "sdk\n",
+        "astrid/omp_agent.py": "launcher\n",
+        "astrid/__init__.py": "entrypoint\n",
+        "astrid/version.py": "version\n",
+        "astrid/__main__.py": "main\n",
+        "astrid/runtime_cli.py": "runtime cli\n",
+        "astrid_runtime_client/__init__.py": "client\n",
+        "runtime_protocol/__init__.py": "protocol\n",
+        "runtime_protocol/schemas/a.json": "{}\n",
+        "astrid_runtime/__init__.py": "runtime\n"
+      },
+      "symlinks": {},
+      "expect": {
+        "components": [
+          {
+            "component": "astrid_entrypoint",
+            "path": "astrid/__init__.py",
+            "sha256": "f6d1bc67af4bc5da1b69cc0a3d81ec20494277767d5a719eef518033b5e59f08"
+          },
+          {
+            "component": "astrid_main",
+            "path": "astrid/__main__.py",
+            "sha256": "6403203dd5a0867eb14d104ee8a73730bd72dd9ad92e78d996a6dba0a5dcfc01"
+          },
+          {
+            "component": "astrid_runtime",
+            "path": "astrid_runtime",
+            "sha256": "e3477980effbe6c7cac8d13da29e3c2166b59d2c20399620626eb7cbdeba2a3e"
+          },
+          {
+            "component": "astrid_runtime_cli",
+            "path": "astrid/runtime_cli.py",
+            "sha256": "2e18630f1bad0b5fad7629072752fd52afa7cfbdab24a98f4cce606eb5fbda98"
+          },
+          {
+            "component": "astrid_version",
+            "path": "astrid/version.py",
+            "sha256": "91273cc4099ac13654a758f3e7d26e9da71cc2a8342fbbcf4e1277416c59e036"
+          },
+          {
+            "component": "core",
+            "path": "astrid/core",
+            "sha256": "31447f7ea2cf38088443e6cc221068363c0943ed83ee255fcc188f4c6531d1d0"
+          },
+          {
+            "component": "host",
+            "path": "astrid/core/execution/generic_host.py",
+            "sha256": "d329be9e3aea365ba02a318d9392e22abd64076bb7e33eaaacd8b3f29b7f6de8"
+          },
+          {
+            "component": "launcher",
+            "path": "astrid/omp_agent.py",
+            "sha256": "2a3bb778a7c23f95b8aeaa10989471f42313993322e731a22138bb6f3c81f3c8"
+          },
+          {
+            "component": "runtime_protocol",
+            "path": "runtime_protocol",
+            "sha256": "bdd1ccb80e91bb078a00e5a9c0b4db23e7135c7038f90e0a152825317456128f"
+          },
+          {
+            "component": "sdk",
+            "path": "astrid/sdk",
+            "sha256": "0fb0c520b8a9e9fd5b5d3b85bac44e7359be047f71b492f61045021b9a4a7e23"
+          },
+          {
+            "component": "vendored_workspace_client",
+            "path": "astrid_runtime_client",
+            "sha256": "d5546013c72ee8f4c50dfcaf5347d6e640a8b6210408e0f87096bb0ce9bad92f"
+          }
+        ],
+        "digest": "6cb2a4cb458d5c7e2a7b893955f8b5841d86f38a70db2786968ade1b419c12e5"
+      }
+    },
+    {
+      "name": "pair-missing-one",
+      "files": {
+        "astrid/core/execution/generic_host.py": "host\n",
+        "astrid/core/nested/deep.py": "nested\n",
+        "astrid/core/nested.py": "sibling\n",
+        "astrid/core/__pycache__/x.pyc": "ignored\n",
+        "astrid/sdk/__init__.py": "sdk\n",
+        "astrid/omp_agent.py": "launcher\n",
+        "astrid/__init__.py": "entrypoint\n",
+        "astrid/version.py": "version\n",
+        "astrid/__main__.py": "main\n",
+        "astrid/runtime_cli.py": "runtime cli\n",
+        "astrid_runtime_client/__init__.py": "client\n",
+        "runtime_protocol/__init__.py": "protocol\n"
+      },
+      "symlinks": {},
+      "expect_refusal": "missing"
+    },
+    {
+      "name": "symlinked-component",
+      "files": {
+        "astrid/core/execution/generic_host.py": "host\n",
+        "astrid/core/nested/deep.py": "nested\n",
+        "astrid/core/nested.py": "sibling\n",
+        "astrid/core/__pycache__/x.pyc": "ignored\n",
+        "astrid/omp_agent.py": "launcher\n",
+        "astrid/__init__.py": "entrypoint\n",
+        "astrid/version.py": "version\n",
+        "astrid/__main__.py": "main\n",
+        "astrid/runtime_cli.py": "runtime cli\n",
+        "astrid_runtime_client/__init__.py": "client\n"
+      },
+      "symlinks": {
+        "astrid/sdk": "core"
+      },
+      "expect_refusal": "symlink"
+    },
+    {
+      "name": "symlink-inside-component",
+      "files": {
+        "astrid/core/execution/generic_host.py": "host\n",
+        "astrid/core/nested/deep.py": "nested\n",
+        "astrid/core/nested.py": "sibling\n",
+        "astrid/core/__pycache__/x.pyc": "ignored\n",
+        "astrid/sdk/__init__.py": "sdk\n",
+        "astrid/omp_agent.py": "launcher\n",
+        "astrid/__init__.py": "entrypoint\n",
+        "astrid/version.py": "version\n",
+        "astrid/__main__.py": "main\n",
+        "astrid/runtime_cli.py": "runtime cli\n",
+        "astrid_runtime_client/__init__.py": "client\n"
+      },
+      "symlinks": {
+        "astrid/core/alias.py": "../version.py"
+      },
+      "expect_refusal": "symlink"
+    }
+  ]
+}
