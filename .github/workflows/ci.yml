@@ -43,18 +43,22 @@ jobs:
           test "$(git rev-parse "$base^{tree}")" = cffcb894c4bd15d0d86224a43cc3e0a46cc1cc8e || exit 3
           test "$(git rev-parse "$head^{tree}")" = ab99a7037b4535dc008a7c3ebc25d5e6aed50f55 || exit 3
           for sha in "$base" "$head"; do test "$(git rev-parse "$sha:tests/core/generation/test_attached_model_download.py")" = 848df40f33f29f00b70eaafb9fa58902f6b981c7 || exit 3; done
+          git worktree add --detach "$GITHUB_WORKSPACE/base" "$base" || exit 3
           for side in base head; do
-            sha=$base; [ "$side" = head ] && sha=$head
-            git checkout -q --detach "$sha" || exit 3
+            sha=$base; root="$GITHUB_WORKSPACE/base"
+            if [ "$side" = head ]; then sha=$head; root="$GITHUB_WORKSPACE/agent"; fi
+            cd "$root" || exit 3
             test "$(git rev-parse HEAD)" = "$sha" || exit 3
+            test -z "$(git status --porcelain --untracked-files=all)" || exit 3
             echo "SIDE=$side COMMIT=$sha TREE=$(git rev-parse HEAD^{tree})"
             test "$(python -c 'import json; print(json.load(open("runtime.lock.json"))["source_commit"])')" = 686ca695469bda48cd40a70824c4ccef2a137284 || exit 3
             test "$(python -c 'import json; print(json.load(open("astrid/packs/vibecomfy/pins.json"))["sources"]["vibecomfy"]["revision"])')" = 55c3948212d23cf037fae8a4c6faad77d33e7279 || exit 3
             test "$(python -c 'import json; print(json.load(open("astrid/packs/runpod/pins.json"))["sources"]["lifecycle"]["revision"])')" = 9f88ef7640bc664f697112d966ecefa123d44340 || exit 3
             bash "$GITHUB_WORKSPACE/dev/env/agent-setup.sh" || exit 3
-            envroot="$GITHUB_WORKSPACE/agent.env"
+            envroot="$root.env"
             for pair in runtime:686ca695469bda48cd40a70824c4ccef2a137284 vibecomfy:55c3948212d23cf037fae8a4c6faad77d33e7279 lifecycle:9f88ef7640bc664f697112d966ecefa123d44340; do repo=${pair%%:*}; pin=${pair#*:}; test "$(git -C "$envroot/$repo" rev-parse HEAD)" = "$pin" || exit 3; done
             "$envroot/venv/bin/python" -c 'import sys, aiohttp, astrid, runtime_protocol; print("python",sys.version); print("aiohttp",aiohttp.__file__); print("astrid",astrid.__file__); print("runtime_protocol",runtime_protocol.__file__)' || exit 3
+            PYTHONPATH="$envroot/vibecomfy" "$envroot/venv/bin/python" -c 'import vibecomfy; print("vibecomfy",vibecomfy.__file__)' || exit 3
             PYTHONPATH="$envroot/lifecycle/src" "$envroot/venv/bin/python" -c 'import runpod_lifecycle.pod_agent; print("lifecycle",runpod_lifecycle.pod_agent.__file__)' || exit 3
             free=$(df -Pk "$envroot/basetemp" | awk 'NR==2 {printf "%.0f",$4*1024}')
             echo "FREE_BYTES_AFTER_SETUP=$free"
