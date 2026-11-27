@@ -1,0 +1,9 @@
+{
+  "schema": "astrid.comfy-portable-pin.v1",
+  "platform": "win32",
+  "supported_gpu_patterns": [
+    "RTX (20|30|40|50)\\d\\d"
+  ],
+  "release": null,
+  "note": "No release is pinned until its URL, size and SHA-256 are taken from the official release page (plan 94, ER-L0). Until then the install refuses."
+}
