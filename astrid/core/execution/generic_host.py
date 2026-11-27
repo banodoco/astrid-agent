@@ -16809,7 +16809,8 @@ class LocalExecutionPreparation:
         if _handoff_digest(launch) != profile["session_config_digest"]:
             raise HostError("host-only launch configuration digest differs")
         peer = self._retained_relay_actor
-        if peer is None or any(peer.verify().get(k) != request["runtime_owner"].get(k) for k in ("pid", "uid", "birth_id")):
+        verified = peer.verify() if peer is not None else {}
+        if any(verified.get(k) != request["runtime_owner"].get(k) for k in ("pid", "uid", "birth_id")) or peer is None:
             raise HostError("host-only preparation is not from original Runtime peer")
         for name in ("profile_digest", "release_digest", "session_config_digest", "host_artifact_digest"):
             if not isinstance(profile[name], str) or not _ACTIVATION_DIGEST.fullmatch(profile[name]):
@@ -17306,15 +17307,24 @@ class LocalExecutionPreparation:
             raise HostError("local host-control descriptor is invalid")
         def serve():
             control = socket.socket(fileno=descriptor)
+            actor = None
             try:
                 from astrid.core.execution import custody_broker as custody_module
 
                 # This is the retained Runtime relay -> host channel. It does
                 # not authenticate B; it pins the real relay peer so protected
                 # relay designation/transition evidence can be checked later.
-                self._retained_relay_actor = custody_module.AuthenticatedCleanupActor.private_peer(control)
+                actor = custody_module.AuthenticatedCleanupActor.private_peer(control)
+                self._retained_relay_actor = actor
                 while True:
                     frame = _read_activation_frame(control, limit=1024 * 1024)
+                    verified = actor.verify()
+                    if frame.get("command") == "prepare_local_execution":
+                        owner = frame.get("runtime_owner")
+                        if not isinstance(owner, Mapping) or any(
+                                owner.get(k) != verified.get(k) or type(owner.get(k)) is not type(verified.get(k))
+                                for k in ("pid", "uid", "birth_id")):
+                            raise HostError("local preparation is not from original Runtime peer")
                     if frame.get("command") == "abort_local_execution":
                         # Every cleanup protocol owns the CLI exit barrier,
                         # including native cleanup before a claim host exists.
@@ -17349,7 +17359,16 @@ class LocalExecutionPreparation:
             except BaseException as exc:
                 self.control_error = exc
             finally:
-                control.close()
+                try:
+                    if actor is not None:
+                        actor.close()
+                except BaseException as exc:
+                    if self.control_error is None:
+                        self.control_error = exc
+                    else:
+                        self.control_error.add_note(f"native peer close also failed: {exc}")
+                finally:
+                    control.close()
         thread = threading.Thread(target=serve, name="astrid-host-control", daemon=True)
         thread.start()
         return thread

@@ -21,6 +21,7 @@ import sys
 import tempfile
 import threading
 import time
+import weakref
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -875,14 +876,16 @@ def _incarnation(identity: Mapping[str, object], token: Mapping[str, object]) ->
 class AuthenticatedCleanupActor:
     """An actor pinned from our own kernel identity or a retained private peer.
 
-    RPC payloads never construct this object. The retained channel (or our own
-    process) supplies the token again at each use, including replay.
+    RPC payloads never construct this object. A private peer owns the Runtime
+    provider's original native reference, not a serialized token or reopened PID.
+    Self identity is observation only; role authority is checked separately.
     """
 
     def __init__(self, token_reader: Callable[[], Mapping[str, object]],
                  identity_provider: Callable[[int], Mapping[str, object] | None]) -> None:
         self._token_reader = token_reader
         self._identity_provider = identity_provider
+        self._native_close: weakref.finalize | None = None
         token = dict(token_reader())
         identity = identity_provider(int(token.get("pid", 0)))
         if identity is None:
@@ -891,20 +894,60 @@ class AuthenticatedCleanupActor:
 
     @classmethod
     def current(cls, *, identity_provider: Callable[[int], Mapping[str, object] | None] | None = None) -> AuthenticatedCleanupActor:
-        return cls(lambda: current_process_audit_token(os.getpid()),
-                   identity_provider or default_process_identity)
+        if sys.platform == "darwin":
+            reader = lambda: current_process_audit_token(os.getpid())
+        else:
+            from runtime_protocol import process_binding
+            reader = lambda: process_binding.token(os.getpid())
+        return cls(reader, identity_provider or default_process_identity)
 
     @classmethod
     def private_peer(cls, channel: socket.socket,
                      *, identity_provider: Callable[[int], Mapping[str, object] | None] | None = None) -> AuthenticatedCleanupActor:
-        return cls(lambda: _peer_token(channel), identity_provider or default_process_identity)
+        from runtime_protocol import process_binding
+
+        try:
+            retained = process_binding.retain_peer(channel)
+        except (OSError, RuntimeError) as exc:
+            raise CustodyError("original peer native authority is unavailable") from exc
+        try:
+            # A handle's own verified identity is authoritative; Windows in
+            # particular must not reopen the observed PID to authenticate it.
+            # Optional callers may impose an additional independent predicate.
+            actor = cls(retained.verify, identity_provider or (lambda _pid: retained.identity))
+            retained.verify(actor._pinned)
+            actor._native_close = weakref.finalize(actor, retained.close)
+            return actor
+        except BaseException as exc:
+            try:
+                retained.close()
+            except BaseException as close_error:
+                exc.add_note(f"native peer close also failed: {close_error}")
+            if isinstance(exc, (OSError, RuntimeError)) and not isinstance(exc, CustodyError):
+                raise CustodyError("original peer native authority cannot be verified") from exc
+            raise
 
     def verify(self) -> dict[str, object]:
-        token = dict(self._token_reader())
-        identity = self._identity_provider(int(self._pinned["pid"]))
+        if self._native_close is not None and not self._native_close.alive:
+            raise CustodyError("retained cleanup actor is closed")
+        try:
+            token = dict(self._token_reader())
+            identity = self._identity_provider(int(self._pinned["pid"]))
+        except (OSError, RuntimeError) as exc:
+            raise CustodyError("designated cleanup actor incarnation changed or is unknown") from exc
         if identity is None or _incarnation(identity, token) != self._pinned:
             raise CustodyError("designated cleanup actor incarnation changed or is unknown")
         return dict(self._pinned)
+
+    def close(self) -> None:
+        if self._native_close is not None:
+            self._native_close()
+
+    def __enter__(self) -> AuthenticatedCleanupActor:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
 
 
 class RetainedChildActor:
@@ -1582,8 +1625,9 @@ def default_process_identity(pid: int, *, timeout: float = 1.0) -> dict[str, obj
 
     if timeout <= 0:
         raise CustodyError("process identity observation deadline expired")
-    if sys.platform == "win32":
-        return platform.process_identity(pid)
+    if sys.platform == "win32" or sys.platform.startswith("linux"):
+        from runtime_protocol import process_binding
+        return process_binding.identity(pid, timeout=timeout)
     if sys.platform == "darwin":
         rows = _darwin_process_records(pid)
         if not rows:
