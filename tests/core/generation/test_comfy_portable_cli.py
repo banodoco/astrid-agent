@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 import sys
 from types import SimpleNamespace
 
@@ -147,7 +148,7 @@ def test_confirm_attaches_and_second_apply_is_safe(command, case, capsys, tmp_pa
         "endpoint": "http://127.0.0.1:8188",
         "kept_previous": None,
         "previous_target": previous.as_dict(),
-        "undo": "astrid generate settings unset placement",
+        "undo": payload["undo"],
         "next_action": {"who": "person",
                         "text": f"Start ComfyUI by opening {script}. Then ask me to check again."},
         "then": "astrid generate targets --json",
@@ -165,13 +166,18 @@ def test_confirm_attaches_and_second_apply_is_safe(command, case, capsys, tmp_pa
     version = settings.read().version
     assert command(*args) == 0
     again = capsys.readouterr()
-    assert json.loads(again.out) == {**payload, "status": "already_installed",
-                                     "previous_target": record.as_dict()}
+    assert json.loads(again.out) == {**payload, "status": "already_installed"}
     assert "Downloading ComfyUI:" not in again.err
     assert "Unpacking ComfyUI" not in again.err
     assert snapshot(tmp_path) == before
     assert settings.read().version == version
     assert case.fake.work_calls == (1, 1)
+    undo = shlex.split(payload["undo"])
+    assert undo[:2] == ["astrid", "generate"]
+    assert cli.main(undo[2:]) == 0
+    assert targets.read_target() == previous
+    assert settings.placement_default() == {}
+    assert case.root.is_dir()
 
 
 def test_wrong_digest_reports_new_offer_and_writes_nothing(command, case, capsys, tmp_path):

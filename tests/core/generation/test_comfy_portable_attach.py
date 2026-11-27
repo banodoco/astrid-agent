@@ -1,10 +1,11 @@
 """Proof of attaching a finished Portable install without launching it."""
 
 from pathlib import Path
+import shlex
 
 import pytest
 
-from astrid.core.generation import comfy_portable, settings, target_launch, targets
+from astrid.core.generation import cli, comfy_portable, settings, target_launch, targets
 
 
 @pytest.fixture
@@ -98,7 +99,7 @@ def test_attach_retains_choice_and_exact_launch_facts(tmp_path, installed, pin, 
         "placement": placement,
         "previous_target": previous_target,
         "previous_placement": previous_placement,
-        "undo": "astrid generate settings unset placement",
+        "undo": attached["undo"],
         "start": {
             "who": "person", "script": script,
             "text": f"Start ComfyUI by opening {script}. Then ask me to check again.",
@@ -117,12 +118,18 @@ def test_attach_retains_choice_and_exact_launch_facts(tmp_path, installed, pin, 
     before = config.read_bytes(), config.stat().st_mtime_ns
     version = settings.read().version
     again = comfy_portable.attach_installation(installed, pin=pin, port=port)
-    assert again == {**attached, "previous_target": expected.as_dict(),
-                     "previous_placement": placement}
+    assert again == attached
     assert targets.read_target() == expected
     assert settings.placement_default() == placement
     assert (config.read_bytes(), config.stat().st_mtime_ns) == before
     assert settings.read().version == version
+    undo = shlex.split(again["undo"])
+    assert undo[:2] == ["astrid", "generate"]
+    assert cli.main(undo[2:]) == 0
+    restored = targets.read_target()
+    assert (restored.as_dict() if restored else None) == previous_target
+    assert settings.placement_default() == previous_placement
+    assert Path(installed["root"]).is_dir()
 
 
 @pytest.mark.parametrize("relative", ["python_embeded/python.exe", "ComfyUI/main.py"])

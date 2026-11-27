@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -32,6 +33,7 @@ MARGIN_BYTES = 1 << 30
 _PIN_SCHEMA = "astrid.comfy-portable-pin.v1"
 _OFFER_SCHEMA = "astrid.comfy-install-offer.v1"
 _JOURNAL_SCHEMA = "astrid.comfy-install-journal.v1"
+_ATTACHMENT_SCHEMA = "astrid.comfy-attachment.v1"
 _REQUIRED = {"python_embeded/python.exe", "ComfyUI/main.py"}
 _SUPPORTED = "a computer with an NVIDIA RTX 20, 30, 40 or 50 series card, or your own running ComfyUI"
 
@@ -565,6 +567,150 @@ def install_portable(destination, consent, *, pin=None, steps, platform=None, gp
 
 
 
+def _attachment_path(destination):
+    destination = Path(destination)
+    metadata = destination / ".astrid-install"
+    path = metadata / "attachment.json"
+    for directory in (destination, metadata):
+        if not directory.is_absolute() or _redirected(directory) or (directory.exists() and not directory.is_dir()):
+            raise PortableError("attachment_changed", "The attachment folder changed.")
+    for file in (path, metadata / "lock"):
+        if _redirected(file) or (file.exists() and (not file.is_file() or file.stat().st_nlink != 1)):
+            raise PortableError("attachment_changed", "The attachment record changed.")
+    return path
+
+
+def _attachment_digest(receipt):
+    content = {key: value for key, value in receipt.items() if key not in ("phase", "sha256")}
+    return hashlib.sha256(json.dumps(content, sort_keys=True, allow_nan=False).encode()).hexdigest()
+
+
+def _read_attachment(destination):
+    from astrid.core.contracts.errors import AstridError
+    from astrid.core.generation import settings, targets
+
+    path = _attachment_path(destination)
+    try:
+        receipt = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        raise PortableError("attachment_changed", "The attachment record cannot be read.") from exc
+    try:
+        if (
+            receipt["schema"] != _ATTACHMENT_SCHEMA
+            or receipt["phase"] not in ("prepared", "attached", "restoring", "restored")
+            or receipt["destination"] != str(destination)
+            or receipt["config_path"] != str(targets.config_path().absolute())
+            or receipt["sha256"] != _attachment_digest(receipt)
+        ):
+            raise ValueError("attachment identity changed")
+        for name in ("previous", "replacement"):
+            pair = receipt[name]
+            if set(pair) != {"target", "placement"}:
+                raise ValueError("invalid attachment pair")
+            targets.target_from_snapshot(pair["target"])
+            settings.validate_document({"placement": pair["placement"]})
+    except (KeyError, TypeError, ValueError, AstridError) as exc:
+        raise PortableError("attachment_changed", "The attachment record does not match this user and install.") from exc
+    return receipt
+
+
+def _write_attachment(destination, receipt, phase):
+    # The existing durable writer also syncs the containing directory. Keep
+    # this receipt separate from C1's install/consent journal and its phases.
+    from astrid.core.foundation.atomic_io import write_json_atomic
+
+    record = {**receipt, "phase": phase}
+    write_json_atomic(_attachment_path(destination), record)
+    return record
+
+
+def _attachment_pair(client=None):
+    from astrid.core.generation import settings, targets
+
+    # Observing prior absence must neither import legacy defaults nor mistake
+    # an unavailable Runtime for an empty setting.
+    try:
+        snapshot = settings.read(client, migrate=False)
+    except Exception as exc:
+        raise PortableError("attachment_unavailable", "The Runtime placement could not be read; your choices were kept.") from exc
+    if snapshot.source != "runtime":
+        raise PortableError("attachment_unavailable", "The Runtime must be reachable to preserve your previous choice.")
+    return {"target": targets.target_snapshot(), "placement": copy.deepcopy(snapshot.content["placement"])}
+
+
+def _require_attachment_pair(receipt, pair, *, exact=None):
+    if exact is not None:
+        matches = pair == receipt[exact]
+    else:
+        matches = all(pair[key] in (receipt["previous"][key], receipt["replacement"][key])
+                      for key in ("target", "placement"))
+    if not matches:
+        raise PortableError("attachment_choice_changed", "Your target or placement changed after this attachment; that later choice was kept.")
+
+
+def _undo_command(destination, receipt):
+    argv = ["astrid", "generate", "install-comfyui", "--destination", str(destination),
+            "--restore", receipt["sha256"]]
+    if os.name == "nt":
+        # PowerShell literal paths also handle spaces and apostrophes.
+        argv[4] = "'" + argv[4].replace("'", "''") + "'"
+        return " ".join(argv)
+    return shlex.join(argv)
+
+
+def _restore_attachment_pair(destination, receipt, client=None, *, keep_later=False):
+    from astrid.core.generation import settings, targets
+
+    current = _attachment_pair(client)
+    if not keep_later:
+        _require_attachment_pair(receipt, current)
+    receipt = _write_attachment(destination, receipt, "restoring")
+    before, after = receipt["previous"], receipt["replacement"]
+    # Reverse the two writes. Each owner rechecks its component at commit;
+    # a crash or a transport failure leaves this same receipt for retry.
+    if current["placement"] == after["placement"] and current["placement"] != before["placement"]:
+        settings.restore_placement(before["placement"], after["placement"], client)
+    current = _attachment_pair(client)
+    if not keep_later:
+        _require_attachment_pair(receipt, current)
+    if current["target"] == after["target"] and current["target"] != before["target"]:
+        targets.restore_target_snapshot(before["target"], after["target"])
+    _require_attachment_pair(receipt, _attachment_pair(client), exact="previous")
+    return _write_attachment(destination, receipt, "restored")
+
+
+def restore_attachment(destination, token, *, client=None):
+    """Run the printed undo after process exit, restoring only this saved pair."""
+    destination = Path(destination).expanduser().absolute()
+    receipt = _read_attachment(destination)
+    if receipt is None or token != receipt["sha256"]:
+        raise PortableError("attachment_changed", "The saved attachment does not match this restore command.")
+    current = _attachment_pair(client)
+    recovering = receipt["phase"] in ("prepared", "restoring")
+    if not recovering:
+        _require_attachment_pair(receipt, current, exact="previous" if receipt["phase"] == "restored" else None)
+    if receipt["phase"] != "restored":
+        try:
+            with FileLock(str(_attachment_path(destination).parent / "lock"), timeout=0):
+                receipt = _read_attachment(destination)
+                if receipt is None or token != receipt["sha256"]:
+                    raise PortableError("attachment_changed")
+                receipt = _restore_attachment_pair(destination, receipt, client, keep_later=recovering)
+        except Timeout as exc:
+            raise PortableError("install_in_progress") from exc
+        except PortableError:
+            raise
+        except Exception as exc:
+            raise PortableError("attachment_recovery_required", f"Restore was interrupted; retry {_undo_command(destination, receipt)}") from exc
+    from astrid.core.generation import targets
+
+    previous = targets.target_from_snapshot(receipt["previous"]["target"])
+    return {"status": "restored", "target": previous.as_dict() if previous else None,
+            "placement": receipt["previous"]["placement"]}
+
+
 def attach_installation(result: InstallResult, *, pin=None, port=8188, client=None):
     """Select a finished Portable install without starting it or probing it."""
     from astrid.core.generation import settings, targets
@@ -586,9 +732,16 @@ def attach_installation(result: InstallResult, *, pin=None, port=8188, client=No
     if release["tag"] != result["release"]:
         raise PortableError("pin_invalid", "The pin does not describe the installed release.")
 
-    previous = targets.read_target()
-    previous_target = previous.as_dict() if previous is not None else None
-    previous_placement = settings.placement_default(client)
+    root = Path(result["root"]).absolute()
+    destination = root.parents[len(PurePosixPath(release["inner_directory"]).parts) - 1]
+    if (root != destination / release["inner_directory"] or comfy_dir != root / "ComfyUI"
+            or python != root / "python_embeded" / "python.exe"):
+        raise PortableError("not_installed", "The installed paths do not match the Portable layout.")
+    path = _attachment_path(destination)
+    receipt = _read_attachment(destination)
+    current = _attachment_pair(client)
+    previous_pair = receipt["previous"] if receipt is not None else current
+    previous = targets.target_from_snapshot(previous_pair["target"])
     endpoint = f"http://127.0.0.1:{port}"
     script = str(Path(result["root"]) / release["start_script"])
     record = targets.TargetRecord(
@@ -607,15 +760,56 @@ def attach_installation(result: InstallResult, *, pin=None, port=8188, client=No
         prefer="attached" if previous is not None and previous.prefer is not None else None,
     )
     record = targets.normalize_target(record)
-    if previous != record:
-        targets.save_target(record)
-    placement = settings.set_placement(endpoint, client)["placement"]
+    replacement = {"target": targets.target_snapshot_after_save(record, previous_pair["target"]),
+                   "placement": settings.attached_placement(endpoint, previous_pair["placement"])}
+    if receipt is not None:
+        if replacement != receipt["replacement"]:
+            raise PortableError("attachment_changed", "This install already has a different attachment receipt.")
+        if receipt["phase"] in ("attached", "restored"):
+            _require_attachment_pair(receipt, current,
+                                     exact="replacement" if receipt["phase"] == "attached" else "previous")
+    if receipt is None or receipt["phase"] != "attached":
+        path.parent.mkdir(exist_ok=True)
+        try:
+            with FileLock(str(path.parent / "lock"), timeout=0):
+                locked = _read_attachment(destination)
+                if locked != receipt:
+                    raise PortableError("attachment_changed", "The attachment record changed; retry.")
+                if receipt is None:
+                    if _attachment_pair(client) != previous_pair:
+                        raise PortableError("attachment_choice_changed", "Your previous choice changed; retry attachment.")
+                    receipt = {"schema": _ATTACHMENT_SCHEMA, "destination": str(destination),
+                               "config_path": str(targets.config_path().absolute()),
+                               "previous": previous_pair, "replacement": replacement}
+                    receipt["sha256"] = _attachment_digest(receipt)
+                    receipt = _write_attachment(destination, receipt, "prepared")
+                else:
+                    # Recover a process exit/failed undo first. Never recapture
+                    # a partly written pair as the user's original choice.
+                    receipt = _restore_attachment_pair(destination, receipt, client, keep_later=True)
+                    receipt = _write_attachment(destination, receipt, "prepared")
+                try:
+                    if previous_pair["target"] != replacement["target"]:
+                        targets.save_target(record, expected_snapshot=previous_pair["target"])
+                    with settings.expect_placement(previous_pair["placement"]):
+                        settings.set_placement(endpoint, client)
+                    _require_attachment_pair(receipt, _attachment_pair(client), exact="replacement")
+                    receipt = _write_attachment(destination, receipt, "attached")
+                except Exception as exc:
+                    try:
+                        _restore_attachment_pair(destination, receipt, client, keep_later=True)
+                    except Exception as recovery:
+                        raise PortableError("attachment_recovery_required",
+                                            f"Attachment stopped; recover with {_undo_command(destination, receipt)}") from recovery
+                    raise PortableError("attachment_failed", "Attachment stopped and your previous choice was restored. Retry the confirmed install to attach it.") from exc
+        except Timeout as exc:
+            raise PortableError("install_in_progress") from exc
     return {
         "target": record.as_dict(),
-        "placement": placement,
-        "previous_target": previous_target,
-        "previous_placement": previous_placement,
-        "undo": "astrid generate settings unset placement",
+        "placement": replacement["placement"],
+        "previous_target": previous.as_dict() if previous is not None else None,
+        "previous_placement": previous_pair["placement"],
+        "undo": _undo_command(destination, receipt),
         "start": {
             "who": "person",
             "script": script,
@@ -808,13 +1002,21 @@ def main(parsed, *, steps=None, stderr=None):
     stderr = sys.stderr if stderr is None else stderr
     destination = parsed.destination
     try:
+        if getattr(parsed, "restore", None) is not None:
+            restored = restore_attachment(destination, parsed.restore)
+            print(json.dumps(restored) if parsed.json else "Your previous target and placement are restored. The Portable install was kept.")
+            return 0
         # Keep the offer, installer and attachment on the same release pin.
         pin = load_pin()
         options = {"pin": pin, "disk_usage": shutil.disk_usage}
-        offer = build_offer(destination, **options)
         if parsed.apply is None:
+            offer = build_offer(destination, **options)
             print(json.dumps(offer) if parsed.json else render_offer(offer))
             return 0 if offer["status"] == "offered" else 2
+        # Use the same consent gate as the installer before inspecting the
+        # destination for progress/display (C1's validated offer producer).
+        offer, _ = _build_offer(destination, **options, platform=None, gpu=None,
+                                environ=None, consent=parsed.apply)
 
         def progress(stage, done, total):
             if stage == "download":
@@ -863,7 +1065,7 @@ def main(parsed, *, steps=None, stderr=None):
         print(f"Endpoint: {payload['endpoint']}.")
         print(f"Previous install kept: {payload['kept_previous'] or 'none'}.")
         print(f"Previous target: {json.dumps(payload['previous_target'])}.")
-        print(f"Undo: {payload['undo']}.")
+        print(f"Undo: {payload['undo']}")
         print(payload["next_action"]["text"])
         print(f"Then: {payload['then']}")
     return 0
