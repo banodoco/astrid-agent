@@ -1391,11 +1391,13 @@ class GenerationFacade:
             from astrid.core.generation import listing as generation_listing
             # Inspect and save the same selection. Discovery is never a binding.
             selection = generation_listing.target_selection(client, placement, repo=project_root)
-            if save and (not selection.bound or selection.record is None):
+            if save and not selection.bound:
                 raise ValueError('select an explicit target before saving discovered defaults')
             record = selection.record
             if record is None and placement == 'managed':
                 record = targets.TargetRecord(owner='astrid')
+            if save and record is None:
+                raise ValueError('select an explicit target before saving')
             if record is not None and record.owner == 'human' and record.endpoint:
                 from astrid.core.generation import preflight
                 selection, ladder, installation, choices = preflight.inspect_existing_selection(selection)
