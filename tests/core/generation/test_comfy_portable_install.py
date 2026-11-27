@@ -450,16 +450,41 @@ def test_changed_pin_cannot_claim_other_install_paths(tmp_path, case, phase, fie
         personal = case.archive.parent / "personal.zip"
         personal.write_bytes(b"never downloaded by this install")
     changed_kwargs = {**case.kwargs, "pin": changed_pin}
-    # The pre-existing consent format is retained, including its original tests.
-    assert portable.build_offer(case.destination, **changed_kwargs)["offer_sha256"] == case.consent
     before = snapshot(tmp_path)
+    journal_before = case.journal.read_bytes()
     calls_before = case.fake.work_calls
+    personal_files = (
+        [path for path in personal.rglob("*") if path.is_file()]
+        if personal.is_dir() else [personal]
+    )
+    personal_before = {path: path.read_bytes() for path in personal_files}
+
+    def assert_unchanged():
+        assert snapshot(tmp_path) == before
+        assert case.journal.read_bytes() == journal_before
+        assert case.fake.work_calls == calls_before
+        assert personal.exists()
+        assert {path: path.read_bytes() for path in personal_files} == personal_before
+
+    preview = portable.build_offer(case.destination, **changed_kwargs)
+    assert_unchanged()
+    current_digest = preview["offer_sha256"]
+    assert current_digest != case.consent
+    assert preview["status"] == "refused"
+    assert preview["refusal"]["code"] == "destination_changed"
+
     with pytest.raises(portable.PortableError) as caught:
         apply(case, pin=changed_pin)
+    assert caught.value.code == "consent_mismatch"
+    assert_unchanged()
+
+    # A refused preview exposes identity, not permission to install.
+    with pytest.raises(portable.PortableError) as caught:
+        portable.install_portable(
+            case.destination, current_digest, steps=case.fake.steps, **changed_kwargs
+        )
     assert caught.value.code == "destination_changed"
-    assert snapshot(tmp_path) == before
-    assert case.fake.work_calls == calls_before
-    assert personal.exists()
+    assert_unchanged()
 
 
 @pytest.mark.parametrize("location", ["metadata", "archive", "staging", "root"])

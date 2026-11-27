@@ -149,19 +149,25 @@ def test_load_valid_pin_and_peak(tmp_path, pin):
 @pytest.mark.parametrize("kind", ["rtx5070ti", "rtx4090"])
 def test_offered_exact_consent(machine, pin, offer_for, kind):
     gpu = fake_gpu(kind)
-    offer = offer_for(gpu=gpu)
-    expected_peak = 13_000_000_000 + MARGIN_BYTES
+    expected_margin = 1 << 30
+    expected_peak = 13_000_000_000 + expected_margin
     identity = {
+        "schema": "astrid.comfy-install-consent.v2",
         "destination": str(machine.destination),
-        "release": "test-release",
-        "archive_sha256": "a" * 64,
+        "release": copy.deepcopy(pin["release"]),
         "platform": "win32",
+        "gpu_devices": list(gpu["devices"]),
+        "download_bytes": 4_000_000_000,
+        "installed_bytes": 9_000_000_000,
         "peak_bytes": expected_peak,
-        "gpu_devices": gpu["devices"],
+        "margin_bytes": expected_margin,
+        "minutes": 15,
+        "cost_usd": 0,
     }
     digest = hashlib.sha256(
         json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
+    offer = offer_for(gpu=gpu)
     assert offer == {
         "schema": "astrid.comfy-install-offer.v1",
         "status": "offered",
