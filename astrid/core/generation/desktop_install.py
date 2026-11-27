@@ -35,7 +35,8 @@ def path_equal(a, b):
 
 
 def parent_dir(path):
-    return _path_module(path).dirname(path)
+    module = _path_module(path)
+    return module.dirname(module.normpath(path))
 
 
 def _join(path, *parts):
@@ -167,7 +168,7 @@ def _folder_base(folders):
     if not isinstance(custom_nodes, list):
         return None
     path = next((item for item in custom_nodes if _string(item)), None)
-    return parent_dir(path) or None if path else None
+    return (parent_dir(path) or None) if path else None
 
 
 def _default_get_json(port, path):
@@ -281,6 +282,7 @@ def observe_installations(
         registrations = read_registrations(environ, registry=registry, read_text=read_text)
     exists = _exists if exists is None else exists
     observations = []
+    expected_ports = []
     seen = set()
     # Reuse the same evidence for each complete registration; no Desktop
     # requests for a missing/inaccessible registration or its recorded files.
@@ -311,6 +313,24 @@ def observe_installations(
                 [port for port in candidates if port not in responders], get_json=get_json
             ))
         observations.append(classify(registration, files=files, responders=responders))
+        expected_ports.append(registration["server_port"])
+
+    # If distinct registered executables share the same observed data root,
+    # folder evidence alone cannot distinguish which executable owns it.
+    running = [item for item in observations if item["state"] == "running"]
+    for item, expected in zip(observations, expected_ports):
+        if item["state"] != "running":
+            continue
+        recorded = item["recorded"]
+        if any(
+            other is not item
+            and path_equal(recorded["data_dir"], other["recorded"]["data_dir"])
+            and not path_equal(recorded["executable"], other["recorded"]["executable"])
+            for other in running
+        ):
+            item["state"] = "ambiguous"
+            item["endpoint"] = f"http://127.0.0.1:{expected}"
+            item["responder"]["matches_install"] = None
     return observations
 
 
