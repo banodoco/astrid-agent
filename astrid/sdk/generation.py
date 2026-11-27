@@ -284,7 +284,7 @@ def _generation_controls(*, engine, consent):
 
 
 def _runpod_preferences(client):
-    """The saved RunPod placement policy, read from the caller's Runtime connection when it has one."""
+    """Read the effective RunPod policy without migration, using the caller's Runtime if available."""
     from astrid.core.generation import settings
     from astrid.packs.runpod.target_selection import read_runpod_preferences
 
@@ -556,6 +556,8 @@ def _runpod_operation(operation, *, client, wait, include_quote=False, preferenc
     if operation == "claim" or fresh_claim:
         _require_runpod_claim_host(client)
     # Cleanup addresses retained custody, never mutable or unreadable settings.
+    # Plain status leaves preferences unset so the retained owner wins; a
+    # quote reads effective preferences without migrating the legacy document.
     selected = ({} if operation in {"ls", "release"} else
                 None if operation == "status" and not include_quote and preferences is None else
                 preferences if preferences is not None else _runpod_preferences(client))

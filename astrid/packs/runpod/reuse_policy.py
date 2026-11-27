@@ -11,14 +11,19 @@ class RunPodPolicyMismatch(ValueError):
     """Policy cannot authorize this retained owner or create request."""
 
 
-def current_policy() -> RunPodPreferences:
-    """Read positively known settings; an unavailable store is never a default."""
+def current_policy(*, migrate_legacy: bool = True) -> RunPodPreferences:
+    """Read positively known settings; an unavailable store is never a default.
+
+    Paid authority keeps the existing explicit migration/validation contract.
+    Status and notices only project legacy values and must never write them.
+    """
     from astrid.core.generation import settings
 
     from .target_selection import RunPodPreferences
 
     try:
-        snapshot = settings.read()
+        reader = settings.read if migrate_legacy else settings.read_snapshot
+        snapshot = reader()
     except Exception:  # noqa: BLE001 - every settings transport failure must refuse paid authority, without exposing its data.
         raise RunPodPolicyMismatch("RunPod settings store unreadable; invoke runpod.setup before spending") from None
     if snapshot.source != "runtime":
@@ -76,7 +81,7 @@ def saved_policy_notice(record: Mapping[str, Any] | None) -> dict[str, Any] | No
     if not record or record.get("state") != "claimed":
         return None
     try:
-        saved = current_policy()
+        saved = current_policy(migrate_legacy=False)
     except RunPodPolicyMismatch:
         return None  # Observation cannot revoke the recorded claim's bounds.
     paid = record.get("paid_limits", {})

@@ -389,12 +389,16 @@ def readiness_envelope(*, entry=None, target=None, issues=(), fixes=(), attempt_
             issue = {"code": code, "severity": "error",
                      "message": stop["message"] or f"{rung} was not observed",
                      "details": {"rung": rung, "reason": stop["reason"], "field": "target"}}
-            matching = next((item for item in issues
-                             if item["code"] == code and item["details"].get("rung") == rung), None)
-            if matching is None:
+            matching = [index for index, item in enumerate(issues)
+                        if item["code"] == code and item["details"].get("rung") == rung]
+            if not matching:
                 issues.append(issue)
-            elif matching["severity"] != "error":
-                matching["severity"] = "error"
+            else:
+                # Current rung evidence owns this issue, even when callers compose
+                # duplicate issues or carry one from an earlier observation.
+                issues[matching[0]] = issue
+                for index in reversed(matching[1:]):
+                    del issues[index]
             if next_action is None:
                 endpoint = (target_payload or {}).get("endpoint") or "auto"
                 next_action = make_next_action(
