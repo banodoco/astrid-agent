@@ -313,7 +313,9 @@ def _isolate_incompatible_packs(
     # Managed installs consume their own selected version manifest. Acquisition
     # declarations remain the explicit source-checkout/legacy policy only.
     from astrid.core.pack.source_setup import declarations_from_json
-    from astrid.core.pack.release_manifest import installed_release_manifest, release_pins as manifest_pins, verify_release_default
+    from astrid.core.pack.release_manifest import (
+        admitted_pack_pin, installed_release_manifest, release_pins as manifest_pins, verify_release_default,
+    )
     from astrid.core.pack.identity import read_pin
     from astrid.core.pack.install import PackInstallError
     installed = installed_release_manifest()
@@ -370,13 +372,19 @@ def _isolate_incompatible_packs(
             try:
                 pin_path = pack.root / "PIN"
                 pin = read_pin(pin_path) if pin_path.exists() else {}
-                # PINs describe installed provenance; only the independent
-                # selected manifest authorizes a managed default. User-origin
-                # packs retain inventory semantics and are never relabelled.
+                # A canonical admission binds provenance independently of the
+                # mutable PIN. Missing/relabelled PINs cannot opt an admitted
+                # default out of the selected release's authority. A genuinely
+                # unadmitted user folder keeps ordinary inventory semantics.
+                admitted = None
+                if installed_pins is not None and pack.root.parent == Path.home() / "Astrid/packs":
+                    admitted = admitted_pack_pin(pack.root)
+                    if admitted is not None and pin != admitted:
+                        raise ValueError("Pack PIN differs from its independently bound canonical admission.")
                 if pin:
                     selected[pack.id].update(origin=pin["origin"], commit=pin["commit"],
                                              installed_digest=pin["digest"])
-                if installed_pins is not None and pin.get("origin") == "default":
+                if installed_pins is not None and (admitted or pin).get("origin") == "default":
                     expected = installed[1]["packs"].get(pack.id)
                     if expected is None or pack.root.parent != Path.home() / "Astrid/packs":
                         raise ValueError("Installed defaults require the selected release's canonical collection.")

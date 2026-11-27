@@ -117,3 +117,130 @@ def test_removed_default_has_explicit_absence_pin_in_receipt(tmp_path):
                    expected_pins=record["pins"], expected_previous=(initial.transaction_id, initial.revision))
     assert set(read_group(root).paths) == {"default_one", "default_two"}
     assert read_pin(root / "default_two/PIN")["origin"] == "default"
+
+
+def _all_user_bytes(root):
+    return {p.relative_to(root).as_posix():
+            ("link", os.readlink(p)) if p.is_symlink() else
+            ("directory", None) if p.is_dir() else ("file", p.read_bytes())
+            for p in root.rglob("*")}
+
+
+def _removed_default(tmp_path):
+    repo = Repository(tmp_path / "repo")
+    root = tmp_path / "home/Astrid/packs"
+    initial = install_release_manifest(manifest=repo.defaults_manifest(), packs_root=root)
+    receipts = []
+    changed = install_release_manifest(manifest=repo.defaults_manifest(("default_one",)), packs_root=root,
+                                       on_prepared=receipts.append)
+    record, = receipts
+    assert record["pins"]["default_two"] is None
+    assert not (root / "default_two").exists()
+    return root, dict(packs_root=root, transaction_id=changed.transaction_id,
+                     pack_ids=record["pack_ids"], expected_pins=record["pins"],
+                     expected_previous=(initial.transaction_id, initial.revision))
+
+
+def _recreate_user_path(root, kind):
+    from astrid.core.pack.transaction import collection_write_custody
+    target = root / "default_two"
+    if kind == "public-new":
+        ran = subprocess.run([sys.executable, "-B", "-m", "astrid.core.pack.cli", "new", "default_two",
+                              "--destination", str(target), "--role", "action"],
+                             capture_output=True, text=True, timeout=60)
+        assert ran.returncode == 0, ran.stdout + ran.stderr
+    with collection_write_custody(root):
+        if kind == "file":
+            target.write_bytes(b"user file at the removed pack's name\x00\xff")
+        elif kind == "dangling-link":
+            target.symlink_to(root.parent / "user-selected-missing-target")
+        elif kind == "empty-directory":
+            target.mkdir()
+        else:
+            target.mkdir(exist_ok=True)
+            if kind != "public-new":
+                (target / "pack.yaml").write_text(
+                    "schema_version: 3\nid: default_two\nname: User\nversion: 1.0.0\n"
+                    'pack_api: "2.0"\ndocumentation: {kind: none, reason: User pack.}\n')
+            (target / "user-sentinel.bin").write_bytes(b"new user work\x00\xff\n")
+    assert not (target / "PIN").exists()
+
+
+@pytest.mark.parametrize("kind", ["public-new", "unpinned-pack", "file", "empty-directory", "dangling-link"])
+def test_absence_receipt_refuses_every_present_named_object_and_preserves_user_bytes(tmp_path, kind):
+    root, request = _removed_default(tmp_path)
+    state = (root / ".group.json").read_bytes()
+    _recreate_user_path(root, kind)
+    before = _all_user_bytes(root)
+    with pytest.raises(PackInstallError) as refused:
+        rollback_group(**request)
+    assert refused.value.code == "rollback_conflict"
+    assert (root / ".group.json").read_bytes() == state
+    assert read_group(root).transaction_id == request["transaction_id"]
+    assert _all_user_bytes(root) == before
+
+
+def test_absence_receipt_rechecks_after_prepared_callback(tmp_path):
+    root, request = _removed_default(tmp_path)
+    state = (root / ".group.json").read_bytes()
+    written = []
+
+    def on_prepared(_receipt):
+        _recreate_user_path(root, "unpinned-pack")
+        written.append(_all_user_bytes(root))
+
+    with pytest.raises(PackInstallError) as refused:
+        rollback_group(**request, on_prepared=on_prepared)
+    assert refused.value.code == "rollback_conflict"
+    assert len(written) == 1
+    assert _all_user_bytes(root) == written[0]
+    assert (root / ".group.json").read_bytes() == state
+
+
+@pytest.mark.parametrize("also_write_published", [False, True], ids=["retired-write", "both-generations-written"])
+def test_absence_receipt_rechecks_the_exchanged_generation_and_keeps_late_user_bytes(
+        tmp_path, monkeypatch, also_write_published):
+    from astrid.core.pack import transaction
+    root, request = _removed_default(tmp_path)
+    state = (root / ".group.json").read_bytes()
+    publish = transaction._publish_collection
+    authored = []
+
+    def race(candidate, live, *, restore=False):
+        if not restore:
+            # This is after the last prepublication check, immediately before
+            # the actual exchange. Both exchanges still use the real primitive.
+            _recreate_user_path(live, "unpinned-pack")
+            authored.append(_all_user_bytes(live))
+        publish(candidate, live, restore=restore)
+        if not restore and also_write_published:
+            (live / "default_two/new-generation-user.txt").write_bytes(b"user write after exchange\n")
+
+    monkeypatch.setattr(transaction, "_publish_collection", race)
+    with pytest.raises(PackInstallError) as refused:
+        rollback_group(**request)
+    assert refused.value.code == "rollback_conflict"
+    assert len(authored) == 1
+    assert _all_user_bytes(root) == authored[0]
+    assert (root / ".group.json").read_bytes() == state
+    if also_write_published:
+        retained = list((root.parent / ".astrid-retired").glob("refused-*/default_two/new-generation-user.txt"))
+        assert len(retained) == 1
+        assert retained[0].read_bytes() == b"user write after exchange\n"
+        assert str(retained[0].parent.parent) in str(refused.value)
+
+
+def test_absent_tombstoned_target_stays_removed_on_receipt_rollback(tmp_path):
+    from astrid.core.pack.transaction import install_group
+    repo = Repository(tmp_path / "repo")
+    root = tmp_path / "home/Astrid/packs"
+    first = install_release_manifest(manifest=repo.defaults_manifest(), packs_root=root)
+    receipts = []
+    removed = install_group(source="", packs={}, packs_root=root, python_packages={},
+                            remove=("default_two",), on_prepared=receipts.append)
+    record, = receipts
+    rollback_group(packs_root=root, transaction_id=removed.transaction_id, pack_ids=record["pack_ids"],
+                   expected_pins=record["pins"], expected_previous=(first.transaction_id, first.revision))
+    assert not (root / "default_two").exists()
+    assert read_group(root).removals == ("default_two",)
+    assert read_pin(root / "default_one/PIN")["origin"] == "default"
