@@ -702,22 +702,19 @@ def _portable_preview_argv():
             str(destination), "--json"]
 
 
-def _linux_preview_argv():
+def _linux_preview_argv(root):
     from pathlib import Path
-    from .engine_local_endpoint import default_engine_root, recorded_engine_root
 
-    root = Path(default_engine_root("comfyui"))
-    # The default may be the current working installation. A separate copy
-    # must not request that root for replacement. The engine owner validates
-    # the proposed sibling and refuses foreign or unqualified state.
-    if recorded_engine_root("comfyui") == str(root):
-        root = root.with_name(root.name + "-separate")
+    # D's consented install requires an explicit target-native root. Do not
+    # guess a destination, reuse a current registered root, or make a folder.
+    if not isinstance(root, str) or not Path(root).is_absolute():
+        return None
     return ["astrid", "engines", "install", "comfyui", "--platform",
             "linux-x86_64-cu130", "--placement", "local", "--root",
-            str(root), "--dry-run"]
+            root, "--dry-run"]
 
 
-def separate_copy_preview():
+def separate_copy_preview(*, install_root=None):
     """Return only a genuinely offered, read-only producer preview command.
 
     No installer, attachment, placement write, or synthetic release/measurement
@@ -749,7 +746,9 @@ def separate_copy_preview():
             preview = getattr(engine_cli, "_managed_preview", None)
             if preview is None:
                 return None
-            argv = _linux_preview_argv()
+            argv = _linux_preview_argv(install_root)
+            if argv is None:
+                return None
             args = engine_cli._parser().parse_args(argv[2:])
             recipe = engine_cli.load_recipe(args.engine, args.platform)
             plan = engine_cli.plan_install(recipe, root=engine_cli._root(args),
@@ -770,7 +769,7 @@ def separate_copy_preview():
     return None
 
 
-def install_offer_action(action, *, declined_endpoint=None):
+def install_offer_action(action, *, declined_endpoint=None, install_root=None):
     """Enrich only P93's eligible action, or an explicit current attach decline.
 
     The decline names the exact currently proposed endpoint. It is not saved
@@ -786,7 +785,7 @@ def install_offer_action(action, *, declined_endpoint=None):
                 or action["argv"][-1] != endpoint):
             raise ValueError("decline must name the currently proposed attach endpoint")
         alternative = _separate_copy()
-        argv = separate_copy_preview()
+        argv = separate_copy_preview(install_root=install_root)
         if argv is None:
             return make_next_action(
                 "person", "Keep your current choice; a separate install offer is not available here.",
@@ -803,7 +802,7 @@ def install_offer_action(action, *, declined_endpoint=None):
     if (alternative.get("kind") != "separate_copy"
             or alternative.get("owner") != "plan-94"):
         return action
-    argv = separate_copy_preview()
+    argv = separate_copy_preview(install_root=install_root)
     if argv is None:
         return action
     result = deepcopy(action)

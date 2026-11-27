@@ -354,6 +354,8 @@ def _parser(contextual: dict[str, Any] | None = None) -> _GenerationParser:
     command.add_argument('--through', action=_Once, choices=('compatible', 'computes'), default='compatible')
     command.add_argument('--decline-attach', action=_Once, metavar='ENDPOINT',
                          help='Request a separate preview after declining the current attach proposal; no install consent.')
+    command.add_argument('--install-root', action=_Once, metavar='ROOT',
+                         help='Person-selected absolute root for a separate Linux install preview.')
     command.add_argument('--compute-device', action=_Once, metavar='DEVICE')
     command.add_argument('--compute-backend', action=_Once, choices=('cuda', 'mps'), default='cuda')
     command.add_argument('--required-operation', action='append', default=None,
@@ -441,10 +443,10 @@ def _targets_command(parsed):
     inspection = {}
     if (parsed.through != 'compatible' or parsed.decline_attach is not None
             or parsed.compute_device is not None or parsed.compute_backend != 'cuda'
-            or parsed.required_operation is not None):
+            or parsed.required_operation is not None or parsed.install_root is not None):
         inspection.update(through=parsed.through, decline_attach=parsed.decline_attach,
                           compute_device=parsed.compute_device, compute_backend=parsed.compute_backend,
-                          required_operations=parsed.required_operation)
+                          required_operations=parsed.required_operation, install_root=parsed.install_root)
     payload = _generate_facade().targets(placement=parsed.placement, engine=parsed.engine,
         save=parsed.save, inputs=merge_input_values(assignments=parsed.input), **inspection)
     print(json.dumps(payload, indent=2, sort_keys=True))
