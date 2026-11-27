@@ -13,10 +13,6 @@ def _unexpected_request(*args, **kwargs):
     pytest.fail("missing or inaccessible registration must not be probed")
 
 
-def _refused(*args, **kwargs):
-    raise URLError(ConnectionRefusedError("refused"))
-
-
 def test_read_registry_and_config_with_windows_paths():
     environ = {
         "APPDATA": r"C:\Users\redacted\AppData\Roaming",
@@ -98,6 +94,7 @@ def test_normalized_paths_are_platform_specific():
     assert not desktop.path_equal("", "")
     assert desktop.parent_dir(r"C:\Users\Creator\ComfyUI\custom_nodes") == r"C:\Users\Creator\ComfyUI"
     assert desktop.parent_dir("/home/creator/ComfyUI/custom_nodes") == "/home/creator/ComfyUI"
+    assert desktop.parent_dir("/home/creator/ComfyUI/custom_nodes/") == "/home/creator/ComfyUI"
 
 
 @pytest.mark.parametrize("name", FIXTURE_NAMES)
@@ -303,6 +300,37 @@ def test_duplicate_registrations_and_ports_are_observed_once():
     assert observations[0]["state"] == "running"
     assert requests == [(8000, "/system_stats"), (8000, "/internal/folder_paths"),
                         (8188, "/system_stats")]
+
+
+def test_shared_data_root_cannot_identify_distinct_registered_executables():
+    fixture = load("running")
+    registration = fixture["registration"]
+    other = {**registration, "executable": r"C:\Other\ComfyUI.exe"}
+    observations = desktop.observe_installations(
+        registrations=[registration, other], exists=lambda path: True,
+        get_json=get_json_for(fixture),
+    )
+    assert len(observations) == 2
+    assert all(item["state"] == "ambiguous" for item in observations)
+    assert all(item["responder"]["matches_install"] is None for item in observations)
+    assert desktop.select_candidate(observations, [])["outcome"] == "none"
+
+
+def test_two_distinct_data_roots_remain_two_choices():
+    fixture = load("running")
+    registration = fixture["registration"]
+    other = {**registration, "executable": r"C:\Other\ComfyUI.exe",
+             "data_dir": r"C:\Other\data", "server_port": 8188}
+    fixture["responders"]["8188"] = deepcopy(fixture["responders"]["8000"])
+    fixture["responders"]["8188"]["folder_paths"] = {
+        "custom_nodes": [r"C:\Other\data\custom_nodes"]
+    }
+    observations = desktop.observe_installations(
+        registrations=[registration, other], exists=lambda path: True,
+        get_json=get_json_for(fixture),
+    )
+    assert [item["state"] for item in observations] == ["running", "running"]
+    assert desktop.select_candidate(observations, [])["outcome"] == "several"
 
 
 def test_select_none_one_and_mixed_layouts():
