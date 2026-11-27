@@ -13,6 +13,12 @@ export type {
   TransitionComponentResult as TransitionResult,
 } from '@banodoco/timeline-composition/theme-api';
 
+export type {
+  ComponentCapabilityContext,
+  ComponentFrameSupport,
+  PreparedComponentCapability,
+} from '@banodoco/timeline-composition/evaluation';
+
 // Contract for effect element components (text-card, model-trends, etc.).
 // The registry calls components with `params: unknown` because the upstream
 // EffectComponent registry can't know each effect's params shape. Components
