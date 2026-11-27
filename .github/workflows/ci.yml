@@ -1,651 +1,600 @@
-# Default run per push (testing plan UA.1). The heavy lanes run elsewhere: darwin_native, remotion, chrome and codex_cli
-# in the darwin-native job below; integration and opt_in nightly in .github/workflows/lanes.yml. The lanes with no job
-# (workstation, omp, gpu, app_checkout) are listed by name at the end of every run (tests/lanes.py).
-name: CI
-
-on:
-  push:
-    branches: [main, release-1, "int/**", "release/*/main"]
-  # Plan and fix branches land in release/<N>/main by pull request; their own pushes start nothing. A pull request
-  # runs only the cheap subset: fast checks, unit shard 1 of 8 (and the unit aggregate), and boundary. The heavy jobs
-  # (windows, darwin, release wheels, shards 2-8) carry `if: github.event_name != 'pull_request'` and run on the push.
-  pull_request:
-    branches: ["release/*/main"]
-  workflow_dispatch:
-
+name: R93-D exact base and head proof (disposable)
+run-name: R93-D c511aaac exact proof v3
+'on': workflow_dispatch
+permissions:
+  contents: read
+  pull-requests: read
+  actions: read
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/int/r1' && !(startsWith(github.ref, 'refs/heads/release/') && endsWith(github.ref, '/main')) }}
-
-env:
-  PYTEST_ADDOPTS: -rA
-
+  group: r93-d-c511aaac-v3-proof
+  cancel-in-progress: false
 jobs:
-  windows-native-and-installer:
-    if: github.event_name != 'pull_request'
-    runs-on: windows-latest
-    timeout-minutes: 90
-    env:
-      ASTRID_CI_JOB: windows-native-and-installer
-    steps:
-      - uses: actions/checkout@v4
-      - name: Restore pip cache (C-08)
-        id: c08-agent-ci-5
-        uses: actions/cache/restore@v4
-        with:
-          path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
-          key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - name: Install package with dev extras
-        run: python -m pip install -e '.[dev]'
-      - name: Install the pinned Runtime and client
-        run: python scripts/ci_install_runtime.py
-      - name: Check native PowerShell cleanup exit codes
-        run: python -m pytest -q tests/test_installer_windows_tasks.py
-      - name: Check Windows pack-host identity and service launcher binding
-        run: python -m pytest -q tests/sdk/test_host_recovery.py tests/test_services.py -k windows
-      - name: Check Remotion admission and captured source handoff
-        run: python -m pytest -q tests/core/rendering/test_remotion_host_regressions.py
-      - name: Check native Windows process and permission behavior
-        run: >-
-          python -m pytest -q
-          tests/core/execution/test_platform_helpers.py::test_windows_scope_job_kills_descendants_after_leader_exit
-          tests/core/execution/test_platform_helpers.py::test_windows_lock_and_owner_permissions_are_native
-          tests/core/execution/test_platform_helpers.py::test_windows_scope_dies_when_owner_process_exits
-          tests/test_generic_host_child_output.py
-          tests/test_host_child_stdin.py
-          tests/test_windows_child_stdin.py -rP
-
-      - name: Save pip cache on main or int branches (C-08)
-        if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/') || (startsWith(github.ref, 'refs/heads/release/') && endsWith(github.ref, '/main'))) && steps.c08-agent-ci-5.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v4
-        with:
-          path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
-          key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
-
-  checks:
-    name: fast checks
+  proof:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 100
     env:
-      ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/astrid-runtime
-      ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/vibecomfy-checkout
-      ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/runpod-lifecycle-checkout
-
+      BASE_SHA: 44d59774abb638c61ed0aae2b32653e62a5bcf66
+      BASE_TREE: 7f580eb0d59121108f36ababb3f1dfdc625b2a3a
+      HEAD_SHA: c511aaac4801edf1b6b2dbb1c20dc76fed3e75b9
+      HEAD_TREE: a1c32337b83378779be8190707218d7d06c46010
+      DEV_SHA: 21feb35007210df7bc23a03c6226e2c5873fdab1
+      DEV_TREE: 700a4a21af4f9ede7a09995863ae07dbf441a4a2
+      PROOF_REF: proof/93-d-c511aaac-v3
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Read the pinned Runtime commit
-        id: runtime-pin
-        run: echo "commit=$(python -c 'import json; print(json.load(open("runtime.lock.json"))["source_commit"])')" >> "$GITHUB_OUTPUT"
-
-      - name: Check out the Runtime (test fixtures)
-        uses: actions/checkout@v4
-        with:
-          repository: banodoco/astrid-runtime
-          ref: ${{ steps.runtime-pin.outputs.commit }}
-          path: astrid-runtime
-
-      - name: Read the pinned RunPod lifecycle revision
-        id: lifecycle-pin
-        run: |
-          python3 - <<'PY' >> "$GITHUB_OUTPUT"
-          import json
-          from pathlib import Path
-          source = json.loads(Path("astrid/packs/runpod/pins.json").read_text())["sources"]["lifecycle"]
-          print(f"repository={source['repository'].removeprefix('https://github.com/').removesuffix('.git')}")
-          print(f"revision={source['revision']}")
-          PY
-
-      - name: Check out the pinned RunPod lifecycle (test fixtures)
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ steps.lifecycle-pin.outputs.repository }}
-          ref: ${{ steps.lifecycle-pin.outputs.revision }}
-          path: runpod-lifecycle-checkout
-
-      - name: Restore pip cache (C-08)
-        id: c08-agent-ci-4
-        uses: actions/cache/restore@v4
-        with:
-          path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
-          key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install system media tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
-
-      - name: Install package with dev extras
-        run: python -m pip install -e '.[dev]'
-
-      - name: Install the pinned Runtime and client
-        run: python scripts/ci_install_runtime.py
-
-      # The collection gate imports every test module in the same environment the shards use, so it needs the pinned
-      # VibeComfy checkout; without it every module that imports vibecomfy reports a collection error that is only this job.
-      - name: Read the pinned VibeComfy revision
-        id: vibecomfy-pin
-        run: |
-          rev="$(python3 scripts/vibecomfy_pin.py)"
-          if [[ ! "$rev" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "VibeComfy engine recipe must resolve to a full lowercase 40-hex revision" >&2
-            exit 1
-          fi
-          echo "revision=$rev" >> "$GITHUB_OUTPUT"
-
-      - name: Check out VibeComfy at the pinned engine revision
-        uses: actions/checkout@v4
-        with:
-          repository: banodoco/VibeComfy
-          ref: ${{ steps.vibecomfy-pin.outputs.revision }}
-          path: vibecomfy-checkout
-
-      - name: Install VibeComfy
-        run: python -m pip install -e ./vibecomfy-checkout
-
-      # Repo structure is gated in the default lane by a no-new-violations baseline
-      # (tests/reshape/test_compare_baselines.py; scripts/reshape/baselines/structure_astrid.json).
-
-      - name: Ruff baseline gate
-        run: make ruff
-
-      # Mypy checks the project only with the YAML stubs, and with a NumPy whose bundled stubs parse under the configured
-      # Python 3.11 target; unpinned, the latest NumPy stubs make mypy stop before it checks anything.
-      - name: Install mypy stubs and the NumPy that mypy can parse
-        if: ${{ !cancelled() }}
-        run: python -m pip install types-PyYAML 'numpy<2.4'
-
-      - name: Mypy baseline gate
-        if: ${{ !cancelled() }}
-        run: make mypy
-
-      - name: Import cycles gate
-        run: make cycles
-
-      # Root-level TLS tests are outside the PR's single unit shard. Keep the
-      # transport inventory and certificate refusal probes on every PR.
-      - name: Check Agent TLS policy and review regressions
-        if: ${{ !cancelled() }}
-        run: >-
-          python -m pytest -q -rA
-          tests/core/util/test_http_trust.py
-          tests/installer/test_tls_fallback.py
-          tests/test_721_remaining_tls_policy.py
-          tests/test_721_urllib_os_tls_policy.py
-          tests/test_721_tls_review.py
-          tests/test_721_http_policy_guard.py
-          tests/test_astrid_error_contract.py
-          --deselect=tests/test_astrid_error_contract.py::test_to_envelope_omits_code_and_source_type_when_none
-          --junitxml=tls-policy-regressions.xml
-
-      # The corrected error-envelope contract runs independently of the TLS suite.
-      # Execute it separately, even after an earlier failure, with its normal
-      # exit. Together these two steps still run every original case.
-      - name: Check independent error-envelope code-null contract
-        if: ${{ always() }}
-        run: >-
-          python -m pytest -q -rA
-          tests/test_astrid_error_contract.py::test_to_envelope_omits_code_and_source_type_when_none
-          --junitxml=tls-error-contract.xml
-
-      - name: Retain TLS policy regression results
-        if: ${{ always() && hashFiles('tls-policy-regressions.xml') != '' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: tls-policy-regressions
-          path: tls-policy-regressions.xml
-          if-no-files-found: error
-          retention-days: 30
-
-      - name: Retain independent error contract result
-        if: ${{ always() && hashFiles('tls-error-contract.xml') != '' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: tls-error-contract
-          path: tls-error-contract.xml
-          if-no-files-found: error
-          retention-days: 30
-
-      # Runs even when an earlier gate failed: a collection error stops every shard, and the ruff, mypy and cycle gates
-      # being red on this branch must not hide it.
-      - name: Collection errors gate
-        if: ${{ !cancelled() }}
-        run: make collection
-
-      - name: Save pip cache on main or int branches (C-08)
-        if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/') || (startsWith(github.ref, 'refs/heads/release/') && endsWith(github.ref, '/main'))) && steps.c08-agent-ci-4.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v4
-        with:
-          path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
-          key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
-
-  unit-shard:
-    name: unit shard ${{ matrix.group }} / 8 (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    # Shard 7 has a ~35-minute tail after ~15 minutes of tests; 60 minutes cancels healthy runs.
-    # Shards 1 and 6 were cancelled at 120 minutes on 05346e9f at 92%; shard 1 then took 2h03 of pytest on 1e94061c.
-    # With the 120 s per-test timeout a hang fails after 2 minutes, so 180 minutes is a wall, not an allowance.
-    timeout-minutes: 180
-    env:
-      # The test run's skip registry (tests/lanes.py) reads this: a lane this job provides fails, not skips, when its dependency is missing.
-      ASTRID_CI_JOB: unit-shard-${{ matrix.os }}
-      ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/astrid-runtime
-      ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/vibecomfy-checkout
-      ASTRID_TEST_LIFECYCLE_CHECKOUT: ${{ github.workspace }}/runpod-lifecycle-checkout
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest]
-        # A pull request runs shard 1 of 8 only; the job name and --splits 8 are unchanged.
-        group: ${{ fromJSON(github.event_name == 'pull_request' && '[1]' || '[1,2,3,4,5,6,7,8]') }}
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      # These release-0 rollback and launcher tests archive a pinned historical
-      # Agent source tree; the default shallow checkout does not contain it.
-      - name: Fetch release-0 Agent archive for installer rollback tests
+      - name: Initialize receipt
         shell: bash
         run: |
           set -euo pipefail
-          release0_agent=3204bb00135bec8ee2d2d3fb21eed5abfceca649
-          git fetch --no-tags --depth=1 origin "$release0_agent"
-          test "$(git rev-parse "${release0_agent}^{commit}")" = "$release0_agent"
-          git cat-file -e "${release0_agent}:astrid/installer/core.py"
-          git archive --format=tar "$release0_agent" astrid >/dev/null
-          echo "- Release-0 Agent archive: $release0_agent (tree and archive available)" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Read the pinned Runtime commit
-        id: runtime-pin
-        run: echo "commit=$(python -c 'import json; print(json.load(open("runtime.lock.json"))["source_commit"])')" >> "$GITHUB_OUTPUT"
-
-      - name: Check out the Runtime (test fixtures)
-        uses: actions/checkout@v4
+          mkdir -p "$RUNNER_TEMP/r93-d-receipts"
+          printf 'run=%s attempt=%s event=%s ref=%s sha=%s workflow_sha=%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_EVENT_NAME" "$GITHUB_REF" "$GITHUB_SHA" "$GITHUB_WORKFLOW_SHA" > "$RUNNER_TEMP/r93-d-receipts/event.txt"
+          test "$GITHUB_REPOSITORY" = banodoco/astrid-agent
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_REF" = "refs/heads/$PROOF_REF"
+          test "$GITHUB_RUN_ATTEMPT" = 1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        id: wrapper
         with:
-          repository: banodoco/astrid-runtime
-          ref: ${{ steps.runtime-pin.outputs.commit }}
-          path: astrid-runtime
-
-      - name: Read the pinned RunPod lifecycle revision
-        id: lifecycle-pin
-        run: |
-          python3 - <<'PY' >> "$GITHUB_OUTPUT"
-          import json
-          from pathlib import Path
-          source = json.loads(Path("astrid/packs/runpod/pins.json").read_text())["sources"]["lifecycle"]
-          print(f"repository={source['repository'].removeprefix('https://github.com/').removesuffix('.git')}")
-          print(f"revision={source['revision']}")
-          PY
-
-      - name: Check out the pinned RunPod lifecycle (test fixtures)
-        uses: actions/checkout@v4
+          ref: ${{ github.sha }}
+          path: wrapper
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        id: base
         with:
-          repository: ${{ steps.lifecycle-pin.outputs.repository }}
-          ref: ${{ steps.lifecycle-pin.outputs.revision }}
-          path: runpod-lifecycle-checkout
-
-      - name: Record RunPod lifecycle checkout
-        shell: bash
-        env:
-          LIFECYCLE_REVISION: ${{ steps.lifecycle-pin.outputs.revision }}
-        run: |
-          set -euo pipefail
-          checked_out="$(git -C "$ASTRID_TEST_LIFECYCLE_CHECKOUT" rev-parse HEAD)"
-          test "$checked_out" = "$LIFECYCLE_REVISION"
-          echo "- RunPod lifecycle: $checked_out" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Restore pip cache (C-08)
-        id: c08-agent-ci-3
-        uses: actions/cache/restore@v4
+          ref: 44d59774abb638c61ed0aae2b32653e62a5bcf66
+          path: base
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        id: head
         with:
-          path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
-          key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
-      - name: Set up Python
-        uses: actions/setup-python@v5
+          ref: c511aaac4801edf1b6b2dbb1c20dc76fed3e75b9
+          path: head
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        id: dev
         with:
-          python-version: "3.11"
-
-      - name: Set up pinned uv
-        uses: astral-sh/setup-uv@v6
+          repository: banodoco/astrid-dev
+          ref: 21feb35007210df7bc23a03c6226e2c5873fdab1
+          path: dev
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        id: python
         with:
-          version: "0.11.32"
-
-      # The product's pinned Node (.node-version), the one the installer ships: the tests run the same Node the product does.
-      - name: Set up Node.js from .node-version
-        uses: actions/setup-node@v4
+          python-version: '3.13'
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86
+        id: uv
         with:
-          node-version-file: .node-version
-
-      - name: Install pinned Remotion dependencies
-        run: npm ci --prefix remotion
-
-      - name: Install system media tools and a system font
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg fonts-dejavu-core
-        shell: bash
-
-      - name: Install package with dev extras
-        run: python -m pip install -e '.[dev]'
-
-      - name: Install the pinned Runtime and client
-        run: python scripts/ci_install_runtime.py
-
-      - name: Read the pinned VibeComfy revision
-        id: vibecomfy-pin
-        run: |
-          rev="$(python3 scripts/vibecomfy_pin.py)"
-          if [[ ! "$rev" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "VibeComfy engine recipe must resolve to a full lowercase 40-hex revision" >&2
-            exit 1
-          fi
-          echo "revision=$rev" >> "$GITHUB_OUTPUT"
-
-      - name: Check out VibeComfy at the pinned engine revision
-        uses: actions/checkout@v4
-        with:
-          repository: banodoco/VibeComfy
-          ref: ${{ steps.vibecomfy-pin.outputs.revision }}
-          path: vibecomfy-checkout
-
-      - name: Record VibeComfy checkout
-        shell: bash
-        env:
-          VIBECOMFY_REVISION: ${{ steps.vibecomfy-pin.outputs.revision }}
-        run: |
-          set -euo pipefail
-          checked_out="$(git -C "$ASTRID_VIBECOMFY_CHECKOUT" rev-parse HEAD)"
-          test "$checked_out" = "$VIBECOMFY_REVISION"
-          echo "- VibeComfy: $checked_out" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Install VibeComfy
-        run: python -m pip install -e ./vibecomfy-checkout
-
-      - name: Unit tests (default lane shard)
-        # Read the committed baseline for selection; write only this shard's
-        # measured tests so the eight artifacts can be merged without stale entries.
-        env:
-          PYTHONUNBUFFERED: 1
-          ASTRID_PYTEST_HARD_EXIT_ON_LEAKED_THREADS: 1
-        run: python -m pytest -v -rA --durations=40 --splits 8 --group ${{ matrix.group }} --durations-path tests/.test_durations --store-durations --clean-durations
-
-      - name: Upload measured test durations
+          enable-cache: false
+      - name: Guard, setup, collect and execute both exact payloads
+        id: execute
         if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          retention-days: 3
-          name: test-durations-${{ matrix.group }}-${{ matrix.os }}
-          path: tests/.test_durations
-          include-hidden-files: true
-          if-no-files-found: error
-
-      - name: Save pip cache on main or int branches (C-08)
-        if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/') || (startsWith(github.ref, 'refs/heads/release/') && endsWith(github.ref, '/main'))) && steps.c08-agent-ci-3.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v4
-        with:
-          path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
-          key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
-
-  unit:
-    name: unit
-    if: always()
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    needs: [checks, unit-shard]
-    env:
-      CHECKS_RESULT: ${{ needs.checks.result }}
-      SHARDS_RESULT: ${{ needs.unit-shard.result }}
-    steps:
-      - name: Require all unit shards and fast checks to pass
-        run: |
-          if [[ "$CHECKS_RESULT" != success || "$SHARDS_RESULT" != success ]]; then
-            echo "::error::unit requires successful dependencies: fast checks=$CHECKS_RESULT, unit shards=$SHARDS_RESULT"
-            exit 1
-          fi
-          echo "unit passed"
-
-  darwin-native:
-    name: darwin native
-    if: github.event_name != 'pull_request'
-    runs-on: macos-latest
-    timeout-minutes: 120
-    env:
-      ASTRID_CI_JOB: darwin-native
-      # A test in both the integration and a darwin lane starts real Runtime daemons from this checkout (tests/helpers/runtime.py).
-      ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/astrid-runtime
-      ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/vibecomfy-checkout
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Read the pinned Runtime commit
-        id: runtime-pin
-        run: echo "commit=$(python3 -c 'import json; print(json.load(open("runtime.lock.json"))["source_commit"])')" >> "$GITHUB_OUTPUT"
-
-      - name: Check out the Runtime (astrid-runtime)
-        uses: actions/checkout@v4
-        with:
-          repository: banodoco/astrid-runtime
-          ref: ${{ steps.runtime-pin.outputs.commit }}
-          path: astrid-runtime
-
-      - name: Restore pip cache (C-08)
-        id: c08-agent-ci-2
-        uses: actions/cache/restore@v4
-        with:
-          path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
-          key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Restore npm cache (C-08)
-        id: c08-agent-ci-1
-        uses: actions/cache/restore@v4
-        with:
-          path: "${{ runner.os == 'Windows' && '~/AppData/Local/npm-cache' || '~/.npm' }}"
-          key: npm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('remotion/package-lock.json') }}
-      - name: Set up Node.js from .node-version
-        uses: actions/setup-node@v4
-        with:
-          node-version-file: .node-version
-
-      - name: Install ffmpeg
-        run: brew install ffmpeg
-
-      - name: Install Remotion dependencies
-        run: npm ci --prefix remotion
-
-      - name: Install package with dev extras
-        run: python -m pip install -e '.[dev]'
-
-      - name: Install the Runtime and client from the checkout
-        run: python -m pip install --no-deps -e ./astrid-runtime -e ./astrid-runtime/packages/python
-
-      - name: Read the pinned VibeComfy revision
-        id: vibecomfy-pin
-        run: |
-          rev="$(python3 scripts/vibecomfy_pin.py)"
-          if [[ ! "$rev" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "VibeComfy engine recipe must resolve to a full lowercase 40-hex revision" >&2
-            exit 1
-          fi
-          echo "revision=$rev" >> "$GITHUB_OUTPUT"
-
-      - name: Check out VibeComfy at the pinned engine revision
-        uses: actions/checkout@v4
-        with:
-          repository: banodoco/VibeComfy
-          ref: ${{ steps.vibecomfy-pin.outputs.revision }}
-          path: vibecomfy-checkout
-
-      - name: Record VibeComfy checkout
+        timeout-minutes: 75
         shell: bash
         env:
-          VIBECOMFY_REVISION: ${{ steps.vibecomfy-pin.outputs.revision }}
+          GH_TOKEN: ${{ github.token }}
+          ACTION_OUTCOMES: ${{ steps.wrapper.outcome }} ${{ steps.base.outcome }} ${{ steps.head.outcome }} ${{ steps.dev.outcome }} ${{ steps.python.outcome }} ${{ steps.uv.outcome }}
         run: |
           set -euo pipefail
-          checked_out="$(git -C "$ASTRID_VIBECOMFY_CHECKOUT" rev-parse HEAD)"
-          test "$checked_out" = "$VIBECOMFY_REVISION"
-          echo "- VibeComfy: $checked_out" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Install VibeComfy
-        run: python -m pip install -e ./vibecomfy-checkout
-
-      - name: Provision the Remotion browser
-        run: npx remotion browser ensure
-        working-directory: remotion
-
-      - name: Install the Codex CLI (the codex_cli lane starts its native binary in the host sandbox)
-        run: npm install -g @openai/codex@0.163.0
-
-      # The lanes the default run deselects and only this job provides: native macOS, the Remotion install, headless Chromium, the Codex CLI.
-      - name: Darwin native, Remotion and browser tests
-        run: python -m pytest -q -rA -m "darwin_native or remotion or chrome or codex_cli"
-
-  # Release wheel (testing plan R-1: kept from the old m8 artifact job). Hashed build tools, one wheel,
-  # installed with only the hashed runtime lock, and the toolchain recorded next to it. It is also the
-  # one check that every Python pyproject.toml admits (>=3.11) installs and imports Astrid.
-      - name: Save npm cache on main or int branches (C-08)
-        if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/') || (startsWith(github.ref, 'refs/heads/release/') && endsWith(github.ref, '/main'))) && steps.c08-agent-ci-1.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v4
-        with:
-          path: "${{ runner.os == 'Windows' && '~/AppData/Local/npm-cache' || '~/.npm' }}"
-          key: npm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('remotion/package-lock.json') }}
-      - name: Save pip cache on main or int branches (C-08)
-        if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/') || (startsWith(github.ref, 'refs/heads/release/') && endsWith(github.ref, '/main'))) && steps.c08-agent-ci-2.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v4
-        with:
-          path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
-          key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
-
-  release:
-    name: release wheel / Python ${{ matrix.python-version }}
-    if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.11", "3.12"]
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Set up pinned uv
-        uses: astral-sh/setup-uv@v6
-        with:
-          version: "0.11.32"
-
-      - name: Install system media tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
-
-      - name: Install wheel builder
-        run: python -m pip install --disable-pip-version-check --no-input --require-hashes -r requirements/build.lock
-
-      - name: Build exactly one wheel
-        run: |
-          python -m build --wheel --no-isolation --outdir dist
-          test "$(ls dist/*.whl | wc -l)" -eq 1
-
-      - name: Install the wheel with the hashed runtime lock only
-        run: |
-          python -m venv "$RUNNER_TEMP/release-venv"
-          "$RUNNER_TEMP/release-venv/bin/python" -m pip install --disable-pip-version-check --no-input --require-hashes -r requirements/runtime.lock
-          "$RUNNER_TEMP/release-venv/bin/python" scripts/ci_install_runtime.py
-          "$RUNNER_TEMP/release-venv/bin/python" -m pip install --no-deps dist/*.whl
-          "$RUNNER_TEMP/release-venv/bin/python" -m pip check
-          cd "$RUNNER_TEMP" && "$RUNNER_TEMP/release-venv/bin/python" -c "import astrid"
-
-      # The default-lane home for "the shipped wheel works when installed" (testing plan R-1):
-      # it adopts the wheel and venv built above, so the wheel that is uploaded is the wheel that is smoked.
-      - name: Smoke the installed wheel
-        run: bash scripts/smoke_wheel_install.sh --wheel dist/*.whl --venv "$RUNNER_TEMP/release-venv"
-
-      - name: Validate locks and record the release toolchain
-        run: python -m scripts.reshape.release_reproducibility --expected-python ${{ matrix.python-version }} --output dist/toolchain.json
-
-      - name: Upload the wheel and its toolchain record
-        uses: actions/upload-artifact@v4
-        with:
-          retention-days: 14
-          name: release-wheel-${{ matrix.python-version }}
-          path: dist/
-
-  # Boundary: every vendored copy matches the immutable Runtime commit selected by runtime.lock.json.
-  # The default-lane test catches local edits; this job also verifies producer manifest and source bytes.
-  boundary:
-    name: boundary
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Read the pinned Runtime commit
-        id: runtime-pin
-        run: echo "commit=$(python -c 'import json; print(json.load(open("runtime.lock.json"))["source_commit"])')" >> "$GITHUB_OUTPUT"
-
-      - name: Check out the Runtime (producer)
-        uses: actions/checkout@v4
-        with:
-          repository: banodoco/astrid-runtime
-          ref: ${{ steps.runtime-pin.outputs.commit }}
-          path: runtime-producer
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: All vendored Runtime artifacts match the pinned producer
-        run: python scripts/vendor_lock.py check runtime.lock.json --producer runtime-producer
-
-  # A pull request into a release branch comes from a branch of that release and names what it belongs
-  # to: the plan (a plan branch does so by its name) or the astrid-dev issue. See the Release skill,
-  # "How a release runs".
-  landing-reference:
-    name: landing reference
-    if: ${{ github.event_name == 'pull_request' && startsWith(github.base_ref, 'release/') && endsWith(github.base_ref, '/main') }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: The pull request comes from a branch of this release and names its plan or issue
+          export R="$RUNNER_TEMP/r93-d-receipts"
+          mkdir -p "$R"
+          token=$GH_TOKEN
+          unset GH_TOKEN GITHUB_TOKEN GEN_DESELECT_FILE PYTEST_ADDOPTS VERIFY_SIDE
+          driver="$RUNNER_TEMP/r93-d-driver.sh"
+          cat > "$driver" <<'DRIVER'
+          set -euo pipefail
+          W=$GITHUB_WORKSPACE
+          A=repos/banodoco/astrid-agent
+          check_checkout() {
+            local path=$1 sha=$2 tree=$3 status
+            test "$(git -C "$path" rev-parse HEAD)" = "$sha"
+            test "$(git -C "$path" rev-parse 'HEAD^{tree}')" = "$tree"
+            status=$(git -C "$path" status --porcelain --untracked-files=all)
+            printf '%s HEAD=%s TREE=%s STATUS=%s\n' "$path" "$sha" "$tree" "$status"
+            test -z "$status"
+          }
+          guard() {
+            test "$GITHUB_REPOSITORY" = banodoco/astrid-agent
+            test "$GITHUB_EVENT_NAME" = workflow_dispatch
+            test "$GITHUB_REF" = "refs/heads/$PROOF_REF"
+            test "$GITHUB_WORKFLOW_REF" = "banodoco/astrid-agent/.github/workflows/ci.yml@refs/heads/$PROOF_REF"
+            test "$GITHUB_WORKFLOW_SHA" = "$GITHUB_SHA"
+            test "$GITHUB_RUN_ATTEMPT" = 1
+            test "$(gh api "$A/git/ref/heads/$PROOF_REF" --jq .object.sha)" = "$GITHUB_SHA"
+            test "$(gh api "$A/git/ref/heads/release/16/plan-93" --jq .object.sha)" = "$BASE_SHA"
+            test "$(gh api "$A/git/ref/heads/p93/R93-D" --jq .object.sha)" = "$HEAD_SHA"
+            pr=$(gh api "$A/pulls/696" --jq '[.state,.draft,.merged,.base.repo.full_name,.base.ref,.base.sha,.head.repo.full_name,.head.ref,.head.sha] | @tsv')
+            printf 'PR696=%s\n' "$pr"
+            test "$pr" = "$(printf 'open\ttrue\tfalse\tbanodoco/astrid-agent\trelease/16/plan-93\t%s\tbanodoco/astrid-agent\tp93/R93-D\t%s' "$BASE_SHA" "$HEAD_SHA")"
+            test "$(gh api "$A/git/commits/$BASE_SHA" --jq .tree.sha)" = "$BASE_TREE"
+            test "$(gh api "$A/git/commits/$HEAD_SHA" --jq .tree.sha)" = "$HEAD_TREE"
+            wrapper_tree=$(gh api "$A/git/commits/$GITHUB_SHA" --jq .tree.sha)
+            check_checkout "$W/wrapper" "$GITHUB_SHA" "$wrapper_tree"
+            test "$(git -C "$W/wrapper" rev-list --parents -n 1 HEAD)" = "$GITHUB_SHA $HEAD_SHA"
+            test "$(git -C "$W/wrapper" diff --name-only "$HEAD_SHA" "$GITHUB_SHA")" = .github/workflows/ci.yml
+            git -C "$W/wrapper" rev-parse HEAD:.github/workflows/ci.yml
+            sha256sum "$W/wrapper/.github/workflows/ci.yml"
+            run=$(gh api "$A/actions/runs/$GITHUB_RUN_ID" --jq '[.event,.head_branch,.head_sha,.workflow_id,.run_attempt] | @tsv')
+            test "$run" = "$(printf 'workflow_dispatch\t%s\t%s\t282274792\t1' "$PROOF_REF" "$GITHUB_SHA")"
+            ids=$(gh api --paginate "$A/actions/workflows/282274792/runs?branch=proof%2F93-d-c511aaac-v3&event=workflow_dispatch&per_page=100" --jq '.workflow_runs[].id')
+            printf 'dispatch_ids=%s\n' "$ids"
+            test "$ids" = "$GITHUB_RUN_ID"
+            check_checkout "$W/base" "$BASE_SHA" "$BASE_TREE"
+            check_checkout "$W/head" "$HEAD_SHA" "$HEAD_TREE"
+            check_checkout "$W/dev" "$DEV_SHA" "$DEV_TREE"
+            test "$(git -C "$W/dev" hash-object env/agent-setup.sh)" = 2da3dc49bd2180f62fcabe2db787eb79bacff3d8
+            test "$(git -C "$W/dev" hash-object env/agent-pytest.sh)" = 4bd27a26c096824490aaea9711fa10f8208652a8
+            test "$(git -C "$W/dev" hash-object env/agent-pytest-pod.sh)" = c55ba94bef3b0434651d4b2d57dd7574b49e1ebe
+          }
+          deps() {
+            local side=$1 E="$W/$1.env" pair repo pin tree free
+            if test "$side" = base; then
+              check_checkout "$W/base" "$BASE_SHA" "$BASE_TREE"
+            else
+              test "$side" = head
+              check_checkout "$W/head" "$HEAD_SHA" "$HEAD_TREE"
+            fi
+            check_checkout "$W/dev" "$DEV_SHA" "$DEV_TREE"
+            for pair in runtime:686ca695469bda48cd40a70824c4ccef2a137284 vibecomfy:55c3948212d23cf037fae8a4c6faad77d33e7279 lifecycle:9f88ef7640bc664f697112d966ecefa123d44340; do
+              repo=$(cut -d: -f1 <<< "$pair"); pin=$(cut -d: -f2 <<< "$pair")
+              tree=$(git -C "$E/$repo" rev-parse "$pin^{tree}")
+              check_checkout "$E/$repo" "$pin" "$tree"
+            done
+            cat "$E/setup.txt"
+            "$E/venv/bin/python" -c 'import sys; assert sys.version_info[:2] == (3,13); print(sys.version)'
+            free=$(df -Pk "$E/basetemp" | awk 'NR==2 {print $4}')
+            printf 'free_KiB=%s\n' "$free"
+            test "$free" -gt 2097152
+          }
+          case "$1" in
+            guard) guard ;;
+            prerequisites)
+              printf 'action_outcomes=%s\n' "$ACTION_OUTCOMES"
+              test "$ACTION_OUTCOMES" = 'success success success success success success'
+              for tool in gh git uv python; do command -v "$tool"; done
+              if ! command -v ffmpeg || ! command -v ffprobe; then
+                sudo apt-get update
+                sudo apt-get install -y ffmpeg
+              fi
+              ffmpeg -version; ffprobe -version; uv --version; python --version; df -Pk "$W"
+              ;;
+            setup)
+              cd "$W/$2"
+              bash "$W/dev/env/agent-setup.sh"
+              ;;
+            deps) deps "$2" ;;
+            collect|test)
+              mode=$1; side=$2; label=${3:-$side}; cd "$W/$side"
+              base_node=tests/test_onboarding_one_home.py::test_shipped_skills_run_astrid_through_the_launcher_not_python_m
+              if test "$side" = base && test "$label" = base-fixtures; then
+                selectors=(tests/test_setup_skill_branches.py::test_runpod_machine_entry_refuses_a_job_without_a_claimed_machine tests/test_setup_skill_branches.py::test_runpod_setup_from_pristine_settings_preserves_choices_and_quotes_without_claim)
+              elif test "$side" = base && test "$label" = base; then
+                selectors=("$base_node")
+              elif test "$side" = head && test "$label" = head; then
+                selectors=(tests/test_ladder_skill_wiring.py tests/test_ladder_wording.py tests/test_installer_maintained_guides.py tests/test_onboarding_one_home.py tests/test_setup_skill_branches.py tests/test_setup_skill_pack.py)
+              else
+                exit 64
+              fi
+              export VERIFY_SIDE="$side" PYTEST_ADDOPTS=-rA
+              unset GEN_DESELECT_FILE
+              printf 'mode=%s side=%s receipt=%s selectors=' "$mode" "$side" "$label"; printf '%q ' "${selectors[@]}"; printf '\n'
+              if test "$mode" = collect; then
+                bash "$W/dev/env/agent-pytest.sh" --collect-only -q "${selectors[@]}"
+              else
+                bash "$W/dev/env/agent-pytest.sh" -q --junitxml="$R/$label.xml" "${selectors[@]}"
+              fi
+              ;;
+            *) exit 64 ;;
+          esac
+          DRIVER
+          cat > "$RUNNER_TEMP/r93-d-log.sh" <<'LOGGER'
+          logged() {
+            local label=$1; shift
+            local -a ps
+            set +e
+            "$@" 2>&1 | tee "$R/$label.log"
+            ps=("${PIPESTATUS[@]}")
+            set -e
+            printf '%s %s\n' "${ps[0]}" "${ps[1]}" > "$R/$label.exit"
+          }
+          good() { test -f "$R/$1.exit" && grep -qx '0 0' "$R/$1.exit"; }
+          LOGGER
+          source "$RUNNER_TEMP/r93-d-log.sh"
+          logged preflight env GH_TOKEN="$token" bash "$driver" guard
+          if good preflight; then
+            logged prerequisites bash "$driver" prerequisites
+            if good prerequisites; then
+              for side in base head; do
+                logged "$side-setup" bash "$driver" setup "$side"
+                if good "$side-setup"; then
+                  logged "$side-deps-before" bash "$driver" deps "$side"
+                  if good "$side-deps-before"; then
+                    logged "$side-collect" bash "$driver" collect "$side"
+                    logged "$side-test" bash "$driver" test "$side"
+                    if test "$side" = base; then
+                      logged base-fixtures-deps-before bash "$driver" deps base
+                      if good base-fixtures-deps-before; then
+                        logged base-fixtures-collect bash "$driver" collect base base-fixtures
+                        logged base-fixtures-test bash "$driver" test base base-fixtures
+                        logged base-fixtures-deps-after bash "$driver" deps base
+                      fi
+                    fi
+                  fi
+                fi
+              done
+            fi
+          fi
+      - name: Final guards and classify actual receipts
+        if: always()
+        timeout-minutes: 10
+        shell: bash
         env:
-          BASE_REF: ${{ github.base_ref }}
-          HEAD_REF: ${{ github.head_ref }}
-          TITLE: ${{ github.event.pull_request.title }}
-          BODY: ${{ github.event.pull_request.body }}
+          GH_TOKEN: ${{ github.token }}
+          EXECUTE_OUTCOME: ${{ steps.execute.outcome }}
         run: |
-          release="${BASE_REF#release/}"; release="${release%/main}"
-          if ! printf '%s' "$HEAD_REF" | grep -Eq "^release/${release}/[a-z0-9][a-z0-9-]*$" || [ "$HEAD_REF" = "$BASE_REF" ]; then
-            echo "::error::A pull request into ${BASE_REF} must come from a branch of that release: release/${release}/plan-<PP> or release/${release}/<topic>. This one comes from '${HEAD_REF}'."
+          set -euo pipefail
+          export R="$RUNNER_TEMP/r93-d-receipts"
+          mkdir -p "$R"
+          token=$GH_TOKEN
+          unset GH_TOKEN GITHUB_TOKEN GEN_DESELECT_FILE PYTEST_ADDOPTS VERIFY_SIDE
+          driver="$RUNNER_TEMP/r93-d-driver.sh"
+          if ! test -s "$driver" || ! test -s "$RUNNER_TEMP/r93-d-log.sh"; then
+            printf '{"qualification":"NOT_QUALIFIED","reason":"execution driver unavailable"}\n' > "$R/summary.json"
             exit 1
           fi
-          if printf '%s' "$HEAD_REF" | grep -Eq "^release/${release}/plan-[0-9]+$"; then
-            echo "Plan branch: $HEAD_REF"; exit 0
-          fi
-          if printf '%s\n%s\n' "$TITLE" "$BODY" | grep -Eiq '(plan[ -]?[0-9]+|astrid-dev#[0-9]+|astrid-dev/issues/[0-9]+)'; then
-            echo "Reference found."; exit 0
-          fi
-          echo "::error::A pull request into a release branch must name the plan or the astrid-dev issue it belongs to, for example 'Plan 55' or 'banodoco/astrid-dev#721'."
-          exit 1
+          source "$RUNNER_TEMP/r93-d-log.sh"
+          for side in base head; do
+            if good "$side-setup"; then
+              logged "$side-deps-after" bash "$driver" deps "$side"
+            fi
+          done
+          logged postflight env GH_TOKEN="$token" bash "$driver" guard
+          cat > "$R/expected-inventory.json" <<'INVENTORY'
+          {
+            "expected_head": {
+              "tests/test_ladder_skill_wiring.py": [
+                "test_both_guides_follow_one_target_action",
+                "test_vibe_reasons_and_copy_agree_with_producer",
+                "test_guide_commands_parse_and_placement_is_not_duplicated",
+                "test_setup_mirror_is_generated"
+              ],
+              "tests/test_ladder_wording.py": [
+                "test_desktop_copy_is_the_single_public_action[closed-closed-I found your ComfyUI Desktop. It is closed at http://127.0.0.1:8000.-Open ComfyUI Desktop yourself, then I will check the same address again.]",
+                "test_desktop_copy_is_the_single_public_action[stale-stale_registration-Your ComfyUI Desktop registration points to missing files.-Reinstall ComfyUI Desktop without deleting your existing files, then I will check again.]",
+                "test_desktop_copy_is_the_single_public_action[denied-access_denied-Access to http://127.0.0.1:8000 was denied.-I'll retry the same check through the normal permission request.]",
+                "test_running_desktop_copy_does_not_claim_compute_or_delivery",
+                "test_choices_and_unsupported_copy"
+              ],
+              "tests/test_installer_maintained_guides.py": [
+                "test_maintained_setup_guides_explain_approved_default_execution",
+                "test_setup_guides_have_one_approved_installer_command_per_platform",
+                "test_skill_journey_steps_run_in_order",
+                "test_install_journey_hands_over_to_generation",
+                "test_generation_setup_routes_capability_and_consent",
+                "test_generation_commands_include_platform_launchers_and_paid_bounds",
+                "test_skill_command_steps_have_one_block_per_os_success_line_and_doctor_fallback",
+                "test_skill_never_names_a_bare_astrid_command",
+                "test_bare_astrid_check_catches_prose_chained_and_fenced_forms",
+                "test_skill_entry_routes_appear_once_each_in_order",
+                "test_quoted_installer_first_lines_exist_in_installer_outcome",
+                "test_existing_install_route_keeps_saved_choices_and_passes_no_choice_flags",
+                "test_app_brief_route_shows_the_brief_values_and_runs_its_command_as_given",
+                "test_success_first_lines_start_with_a_quoted_prefix_in_step_2",
+                "test_step_2_labels_the_full_flag_command_for_fresh_install_only",
+                "test_step_1_keeps_the_brief_values_and_applies_a_changed_choice_alone",
+                "test_getting_started_tells_existing_installs_to_run_the_plain_line",
+                "test_readme_banner_ends_with_connected_check_and_names_no_missing_heading",
+                "test_readme_banner_keeps_saved_choices_for_an_existing_install",
+                "test_setup_choices_recommend_current_settings"
+              ],
+              "tests/test_onboarding_one_home.py": [
+                "test_runpod_machine_commands_live_only_in_the_runpod_skill",
+                "test_setup_generate_commands_have_the_same_form_in_the_generation_skill",
+                "test_each_concept_section_has_one_home_and_the_others_only_link_to_it",
+                "test_runpod_section_in_the_generation_skill_is_one_line_and_a_link",
+                "test_skills_reach_the_scan_through_the_launcher_and_never_the_pack_module",
+                "test_user_facing_scan_strings_name_the_generate_scan_command",
+                "test_generation_skill_names_cancel_through_the_launcher_and_mcp",
+                "test_shipped_skills_run_astrid_through_the_launcher_not_python_m"
+              ],
+              "tests/test_setup_skill_branches.py": [
+                "test_generation_skill_fenced_scan_command_uses_real_cli_parser",
+                "test_setup_engine_fenced_command_reaches_real_parser_through_fake_launcher",
+                "test_nvidia_fenced_command_and_csv_cross_the_12_decimal_gb_boundary[11445-True]",
+                "test_nvidia_fenced_command_and_csv_cross_the_12_decimal_gb_boundary[11444-False]",
+                "test_engine_readiness_parser_uses_its_distinct_query",
+                "test_runpod_machine_entry_refuses_a_job_without_a_claimed_machine",
+                "test_runpod_machine_refuses_claim_without_paid_consent",
+                "test_runpod_setter_guide_command_uses_hidden_prompt_without_key_in_argv_or_env",
+                "test_runpod_setup_commands_reach_real_generation_parsers",
+                "test_runpod_lease_guide_commands_parse_without_provider_access",
+                "test_install_and_paid_run_commands_are_locally_gated_by_the_guide",
+                "test_sensitive_command_gate_assertion_fails_when_yes_wording_is_removed",
+                "test_runpod_setup_guide_explains_the_persisted_policy",
+                "test_runpod_setup_from_pristine_settings_preserves_choices_and_quotes_without_claim",
+                "test_generation_defaults_step_offers_four_answers_each_with_one_undo",
+                "test_generation_defaults_commands_parse_through_real_cli_and_never_queue_a_run",
+                "test_generation_defaults_preview_and_save_run_against_fakes",
+                "test_generation_defaults_fetch_saved_workflow_read_only_then_pins_it",
+                "test_setup_skill_has_one_hand_off_sentence_and_no_runpod_walkthrough",
+                "test_setup_skill_generate_commands_all_parse_through_the_real_cli",
+                "test_setup_skill_placement_commands_run_against_a_fake_store",
+                "test_setup_skill_fetch_models_plan_and_apply_are_in_separate_blocks",
+                "test_route_zero_detects_a_pinokio_install_before_a_fresh_install",
+                "test_pinokio_launcher_resolved_from_the_skill_runs_with_its_arguments",
+                "test_launcher_paths_list_the_pinokio_launcher_for_each_os",
+                "test_generation_defaults_undo_is_the_restore_command_defaults_set_prints",
+                "test_generation_steps_3_and_6_save_and_undo_a_placement_with_settings_set_and_unset",
+                "test_work_folder_is_defined_before_first_use_and_windows_fetch_uses_curl_exe"
+              ],
+              "tests/test_setup_skill_pack.py": [
+                "test_setup_pack_is_default_and_mirror_is_current",
+                "test_generic_sync_name_preserves_existing_targets",
+                "test_declared_name_is_generic_and_rejects_unsafe_paths",
+                "test_setup_is_materialised_in_view",
+                "test_custom_name_is_not_pruned_as_an_orphan",
+                "test_setup_is_selected_and_visible_in_default_sync",
+                "test_preinstalled_managed_setup_copy_is_adopted_by_sync",
+                "test_preinstall_helper_writes_durable_marker_and_default_sync_adopts_it",
+                "test_preinstall_helper_preserves_unmanaged_harness_entry",
+                "test_documented_preinstall_launcher_form_runs_with_local_helper",
+                "test_sync_rejects_colliding_names_before_mutation",
+                "test_prune_recorded_custom_name_only_with_matching_source",
+                "test_prune_custom_name_preserves_retargeted_link",
+                "test_sync_prunes_removed_custom_name_from_record",
+                "test_install_and_uninstall_reject_collisions_before_mutation"
+              ]
+            },
+            "expected_deselected": [],
+            "expected_skips": [],
+            "historical_offenders": [
+              "astrid/packs/runpod/docs/SKILL.md:69: Opt in to full per-job re-verification with `\"models\": {\"trust_unchanged\": false}` in that same document (`python3 -m astrid generate settings checkout --file \"$WORK/generation.json\"`, edit, then `python3 -m astrid generate settings checkin \"$WORK/generation.json\"`)."
+            ]
+          }
+          INVENTORY
+          python3 - "$R" "$EXECUTE_OUTCOME" "$GITHUB_WORKSPACE" <<'PY'
+          import collections, json, pathlib, re, sys, xml.etree.ElementTree as ET
+          
+          r = pathlib.Path(sys.argv[1])
+          workspace = pathlib.Path(sys.argv[3])
+          spec = json.loads(r.joinpath("expected-inventory.json").read_text())
+          historical_node = "tests/test_onboarding_one_home.py::test_shipped_skills_run_astrid_through_the_launcher_not_python_m"
+          expected_head = [file + "::" + name for file, names in spec["expected_head"].items() for name in names]
+          assert len(expected_head) == len(set(expected_head)) == 80
+          assert historical_node in expected_head
+          expected_fixtures = ["tests/test_setup_skill_branches.py::test_runpod_machine_entry_refuses_a_job_without_a_claimed_machine","tests/test_setup_skill_branches.py::test_runpod_setup_from_pristine_settings_preserves_choices_and_quotes_without_claim"]
+          assert len(set(expected_fixtures)) == 2 and set(expected_fixtures) <= set(expected_head)
+          assert spec["expected_deselected"] == spec["expected_skips"] == []
+          historical_offenders = spec["historical_offenders"]
+          
+          def counter_difference(expected, actual):
+              return {"missing": sorted((collections.Counter(expected) - collections.Counter(actual)).elements()),
+                      "unexpected": sorted((collections.Counter(actual) - collections.Counter(expected)).elements())}
+          
+          def identity(node):
+              file, name = node.split("::", 1)
+              assert file.startswith("tests/") and file.endswith(".py")
+              return file[:-3].replace("/", "."), name
+          
+          def inventory_errors(expected, collected, executed, skipped, totals):
+              # Executed JUnit identities must be unique and exactly equal to
+              # both the independent inventory and selected collection multiset.
+              differences = {
+                  "expected_vs_collected": counter_difference(expected, collected),
+                  "collected_vs_executed": counter_difference(collected, executed),
+              }
+              complete = (all(not any(d.values()) for d in differences.values())
+                          and len(collected) == len(set(collected))
+                          and len(executed) == len(set(executed))
+                          and not skipped
+                          and totals == (len(expected), len(expected), 0))
+              return complete, differences
+          
+          def collect_inventory(text):
+              nodes = [line for line in text.splitlines()
+                       if re.fullmatch(r"tests/[^:\r\n]+\.py::test_[^\r\n]+", line)]
+              totals = []
+              for line in text.splitlines():
+                  m = re.fullmatch(r"(\d+) tests? collected in [\d.]+s", line)
+                  if m:
+                      count = int(m[1])
+                      totals.append((count, count, 0))
+                  m = re.fullmatch(r"(\d+)/(\d+) tests? collected \((\d+) deselected\) in [\d.]+s", line)
+                  if m:
+                      totals.append(tuple(map(int, m.groups())))
+              if len(totals) != 1:
+                  raise ValueError("expected exactly one explicit collection summary, got " + repr(totals))
+              return nodes, totals[0]
+          
+          def historical_message(message, offenders):
+              # pytest puts the full user assertion message before its first
+              # assertion-rewrite line. A second offender is a second line here.
+              user, sep, rewritten = message.partition("\nassert ")
+              return bool(sep and rewritten and offenders == historical_offenders
+                          and user == "AssertionError: " + "\n".join(historical_offenders))
+          
+          def scan_offenders(root):
+              # Independent read-only repeat of the ORIGINAL test's complete
+              # guide inventory and matching rule, not a substitute for pytest.
+              exclusions = {"astrid/packs/developer/docs/SKILL.md",
+                            "astrid/packs/_core/docs/pack-builder/SKILL.md",
+                            "astrid/packs/_core/docs/pack-testing/SKILL.md",
+                            "docs/setup/release-recipe.md"}
+              guides = sorted({*root.glob("astrid/packs/*/docs/**/SKILL.md"),
+                               *root.glob("docs/setup/*.md")})
+              paths = [p.relative_to(root).as_posix() for p in guides]
+              if len(paths) != 34 or not exclusions.issubset(paths) or "astrid/packs/_core/docs/SKILL.md" not in paths:
+                  raise ValueError("guide inventory drift: " + repr(paths))
+              found = []
+              for p, path in zip(guides, paths):
+                  if path in exclusions:
+                      continue
+                  for number, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
+                      if re.search(r"\bpython3?\s+-m\s+astrid(?![\w.])", line):
+                          found.append(f"{path}:{number}: {line.strip()}")
+              return paths, found
+          
+          def parse_cases(path, expected):
+              inverse = {identity(node): node for node in expected}
+              if len(inverse) != len(expected):
+                  raise ValueError("ambiguous normalization")
+              root = ET.parse(path).getroot()
+              suites = [root] if root.tag == "testsuite" else list(root.findall("testsuite"))
+              if len(suites) != 1:
+                  raise ValueError("expected exactly one JUnit suite")
+              suite = suites[0]
+              cases = list(suite.findall("testcase"))
+              if len(cases) != len(list(root.iter("testcase"))):
+                  raise ValueError("nested/unaccounted testcase")
+              executed, failed, errors, skipped = [], [], [], []
+              historical_failure_message = None
+              error_details = {}
+              for case in cases:
+                  pair = (case.get("classname"), case.get("name"))
+                  node = inverse.get(pair, "UNRECOGNIZED:" + repr(pair))
+                  executed.append(node)
+                  outcomes = [e for e in case if e.tag in ("failure", "error", "skipped")]
+                  if len(outcomes) > 1:
+                      raise ValueError("multiple outcomes for " + node)
+                  if outcomes:
+                      event = outcomes[0]
+                      {"failure": failed, "error": errors, "skipped": skipped}[event.tag].append(node)
+                      if event.tag == "error":
+                          error_details[node] = {"message": event.get("message", ""), "body": event.text or ""}
+                      if event.tag == "failure" and node == historical_node:
+                          historical_failure_message = event.get("message", "")
+              for name, actual in (("tests", len(cases)), ("failures", len(failed)), ("errors", len(errors)), ("skipped", len(skipped))):
+                  if int(suite.attrib[name]) != actual:
+                      raise ValueError("JUnit aggregate disagrees: " + name)
+              return executed, failed, errors, skipped, historical_failure_message, error_details
+          
+          def fixture_setup_error(detail, root):
+              # Match the actual v2 setup-error form, not any error mentioning this fixture.
+              body = detail["body"]
+              lines = body.splitlines()
+              reported = [line for line in lines if line.startswith("E ")]
+              trace = str(root/"tests/packs/runpod/test_target_selection.py")
+              return (detail["message"] == 'failed on setup with "' + body + '"'
+                      and reported == ["E       fixture 'acknowledged_watchdog' not found"]
+                      and "file " + trace + ", line 20" in lines
+                      and "  def case(tmp_path, monkeypatch, pod_watchdog_transport, acknowledged_watchdog):" in lines
+                      and bool(lines) and lines[-1] == trace + ":20")
+          
+          def fixture_diagnostic_result(complete, rc, failed, errors, skipped, details, root):
+              if not complete or not rc or rc[1] != 0:
+                  return "INCOMPLETE_OR_LOG_FAILURE"
+              if rc == [0,0] and not failed and not errors and not skipped:
+                  return "BASE_FIXTURE_DIAGNOSTICS_PASSED"
+              if (rc == [1,0] and not failed and not skipped
+                      and collections.Counter(errors) == collections.Counter(expected_fixtures)
+                      and set(details) == set(expected_fixtures)
+                      and all(fixture_setup_error(d, root) for d in details.values())):
+                  return "BASE_FIXTURE_SETUP_ERRORS_ONLY"
+              return "FAILED_OR_INCOMPLETE"
+
+          def selfcheck():
+              # Positive and adversarial accounting checks; no product test execution.
+              a, b = historical_node, expected_head[0]
+              normal = (2, 2, 0)
+              assert inventory_errors([a,b], [a,b], [b,a], [], normal)[0]
+              assert not inventory_errors([a,b], [a,b], [a,a], [], normal)[0]
+              assert not inventory_errors([a,b], [a], [a], [], (1,1,0))[0]
+              assert not inventory_errors([a,b], [a,b], [a,b], [b], normal)[0]
+              assert not inventory_errors([a,b], [a,b], [a,b], [], (2,3,1))[0]
+              assert not inventory_errors([a,b], [a,b], [a,"UNRECOGNIZED"], [], normal)[0]
+              message = "AssertionError: " + historical_offenders[0] + "\nassert ['x'] == []"
+              assert historical_message(message, historical_offenders)
+              assert not historical_message(message.replace("\nassert ", "\nextra.py:1: extra\nassert "), historical_offenders)
+              assert not historical_message(message, historical_offenders + ["extra.py:1: extra"])
+              assert not historical_message(message.replace("checkout", "new checkout"), historical_offenders)
+              assert collect_inventory(a + "\n1 test collected in 0.01s\n") == ([a], (1,1,0))
+              assert collect_inventory(a + "\n1/2 tests collected (1 deselected) in 0.01s\n") == ([a], (1,2,1))
+              assert len({identity(node) for node in expected_head}) == 80
+              root = workspace/"base"
+              trace = str(root/"tests/packs/runpod/test_target_selection.py")
+              body = "file " + trace + ", line 20\n  def case(tmp_path, monkeypatch, pod_watchdog_transport, acknowledged_watchdog):\nE       fixture 'acknowledged_watchdog' not found\n" + trace + ":20"
+              detail = {"message": 'failed on setup with "' + body + '"', "body": body}
+              details = {node: detail for node in expected_fixtures}
+              assert fixture_diagnostic_result(True, [1,0], [], expected_fixtures, [], details, root) == "BASE_FIXTURE_SETUP_ERRORS_ONLY"
+              assert fixture_diagnostic_result(True, [0,0], [], [], [], {}, root) == "BASE_FIXTURE_DIAGNOSTICS_PASSED"
+              assert fixture_diagnostic_result(False, [1,0], [], expected_fixtures, [], details, root) == "INCOMPLETE_OR_LOG_FAILURE"
+              assert fixture_diagnostic_result(True, [1,1], [], expected_fixtures, [], details, root) == "INCOMPLETE_OR_LOG_FAILURE"
+              assert fixture_diagnostic_result(True, [1,0], [], expected_fixtures[:1], [], details, root) == "FAILED_OR_INCOMPLETE"
+              assert fixture_diagnostic_result(True, [1,0], [a], expected_fixtures, [], details, root) == "FAILED_OR_INCOMPLETE"
+              assert not fixture_setup_error({**detail, "message": "failed on call with " + body}, root)
+              other = body.replace("fixture 'acknowledged_watchdog' not found", "fixture 'other' not found")
+              assert not fixture_setup_error({"message": 'failed on setup with "' + other + '"', "body": other}, root)
+              extra = body.replace("\nE ", "\nE       another error\nE ")
+              assert not fixture_setup_error({"message": 'failed on setup with "' + extra + '"', "body": extra}, root)
+              print("classifier self-checks passed (synthetic receipts only)")
+          
+          selfcheck()
+          stages, malformed = {}, []
+          for path in sorted(r.glob("*.exit")):
+              try:
+                  parts = [int(x) for x in path.read_text().split()]
+                  if len(parts) != 2 or any(x < 0 or x > 255 for x in parts):
+                      raise ValueError("invalid exit pair")
+                  stages[path.stem] = parts
+              except (OSError, ValueError) as exc:
+                  malformed.append({"file": path.name, "error": str(exc)})
+          required = ["preflight", "prerequisites", "postflight", "base-fixtures-deps-before", "base-fixtures-collect", "base-fixtures-deps-after"]
+          for side in ("base", "head"):
+              required += [f"{side}-{s}" for s in ("setup","deps-before","collect","deps-after")]
+          infra = [s for s in required if stages.get(s) != [0,0]]
+          if sys.argv[2] != "success":
+              infra.append("execute-step-" + sys.argv[2])
+          if malformed:
+              infra.append("malformed-stage-receipts")
+          summary = {"stage_exits_producer_tee": stages, "infrastructure_failures": infra,
+                     "malformed_exit_receipts": malformed,
+                     "expected_deselected": spec["expected_deselected"], "expected_skips": spec["expected_skips"]}
+          for side in ("base","base-fixtures","head"):
+              expected = [historical_node] if side == "base" else expected_fixtures if side == "base-fixtures" else expected_head
+              data = {"test_exit": stages.get(f"{side}-test"), "expected_nodes": expected}
+              try:
+                  nodes, totals = collect_inventory((r/f"{side}-collect.log").read_text())
+                  executed, failed, errors, skipped, message, error_details = parse_cases(r/f"{side}.xml", expected)
+                  root = workspace/("base" if side == "base-fixtures" else side)
+                  paths, offenders = scan_offenders(root)
+                  complete, differences = inventory_errors(expected, nodes, executed, skipped, totals)
+                  same = failed == [historical_node] and not errors and not skipped and historical_message(message or "", offenders)
+                  data.update(collected_nodes=nodes, executed_nodes=executed,
+                              collection_selected=totals[0], collection_total=totals[1],
+                              configured_deselected=totals[2], differences=differences,
+                              failures=failed, errors=errors, skipped=skipped,
+                              passed=sorted(set(executed)-set(failed)-set(errors)-set(skipped)),
+                              complete=complete, historical_only=bool(same),
+                              guide_inventory=paths, actual_offenders=offenders,
+                              historical_assertion_message=message, error_details=error_details)
+                  rc = data["test_exit"]
+                  if side == "base-fixtures":
+                      data["result"] = fixture_diagnostic_result(complete, rc, failed, errors, skipped, error_details, root)
+                  elif not complete or not rc or rc[1] != 0:
+                      data["result"] = "INCOMPLETE_OR_LOG_FAILURE"
+                  elif rc == [0,0] and not failed and not errors and not offenders:
+                      data["result"] = "DEFAULT_LANE_PASSED"
+                  elif rc == [1,0] and same:
+                      data["result"] = "HISTORICAL_LAUNCHER_FAILURE_ONLY"
+                  else:
+                      data["result"] = "FAILED_OR_INCOMPLETE"
+              except (OSError, ET.ParseError, ValueError, KeyError, AssertionError) as exc:
+                  data.update(result="MISSING_OR_INVALID_RECEIPT", detail=str(exc))
+              summary[side] = data
+          ok = (not infra and summary["base"]["result"] in ("DEFAULT_LANE_PASSED","HISTORICAL_LAUNCHER_FAILURE_ONLY")
+                and summary["base-fixtures"]["result"] in ("BASE_FIXTURE_DIAGNOSTICS_PASSED", "BASE_FIXTURE_SETUP_ERRORS_ONLY")
+                and summary["head"]["result"] == "DEFAULT_LANE_PASSED")
+          summary["qualification"] = "HEAD_DEFAULT_LANE_PASSED" if ok else "NOT_QUALIFIED"
+          result = json.dumps(summary, indent=2, sort_keys=True)
+          (r/"summary.json").write_text(result+"\n")
+          print(json.dumps({k: summary[k]["result"] for k in ("base","base-fixtures","head")}, sort_keys=True))
+          print("qualification=" + summary["qualification"])
+          sys.exit(0 if ok else 1)
+          PY
+      - name: Preserve bounded proof receipts even on failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r93-d-c511aaac-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/r93-d-receipts/
+          if-no-files-found: error
+          retention-days: 14
