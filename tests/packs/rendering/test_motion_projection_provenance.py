@@ -25,6 +25,20 @@ def test_shipped_agent_witness_contract():
     assert witness["file_count"] == 64
 
 
+def test_shipped_direct_source_is_additive_and_has_no_projection_transform():
+    witness = pack_revisions._motion_release_source_witness()
+    assert witness is not None
+    assert witness["schema"] == "astrid-motion-release-source/v1"
+    assert witness["repo"] == "https://github.com/banodoco/poms_packs"
+    assert witness["upstream_subpath"] == "astrid_motion"
+    assert witness["upstream_commit"] != UPSTREAM
+    assert witness["tree_digest"] == witness["upstream_digest"] != PROJECTION
+    assert witness["file_count"] == 64
+    assert witness["transform"] == "identity"
+    assert "alias_only_digest" not in witness and "derived_from" not in witness
+    assert pack_revisions._motion_projection_witness()["tree_digest"] == PROJECTION
+
+
 def _stage(element):
     return {"effects": [{"source_pack_id": "astrid_motion", "element_root": str(element)}]}
 
