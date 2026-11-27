@@ -407,3 +407,33 @@ def test_direct_source_uses_actual_unambiguous_existing_selected_root(direct_mot
     row = pack_revisions.resolved_pack_revisions(_stage(element), direct_motion.editor)[0]
     assert row["comparison"] == "mismatch"
     assert row["upstream_revision"] is None
+
+
+def test_direct_source_uses_canonical_count_after_group_generates_metadata(direct_motion):
+    # The real group transaction emits .build/definitions.json. It and PIN
+    # retain the exclusions of pack-tree-v1; an extra source file does not.
+    generated = direct_motion.root / ".build" / "definitions.json"
+    generated.parent.mkdir()
+    generated.write_text('{"generated": true}\n', encoding="utf-8")
+    assert pack_digest(direct_motion.root) == direct_motion.digest
+    assert _row(direct_motion, direct_motion.editor)["comparison"] == "match"
+    (direct_motion.root / "extra-source.ts").write_text("new source\n", encoding="utf-8")
+    assert _row(direct_motion, direct_motion.editor)["comparison"] == "mismatch"
+
+
+def test_direct_commit_cannot_borrow_legacy_content_only_match(direct_motion, tmp_path):
+    root = tmp_path / "legacy" / "astrid_motion"
+    element = root / direct_motion.element.relative_to(direct_motion.root)
+    element.mkdir(parents=True)
+    (root / "pack.yaml").write_bytes((direct_motion.root / "pack.yaml").read_bytes())
+    (element / "component.tsx").write_bytes((direct_motion.element / "component.tsx").read_bytes())
+    legacy_digest = pack_digest(root)
+    assert legacy_digest == direct_motion.legacy_witness["tree_digest"]
+    editor = {"astrid_motion": UPSTREAM, "astrid_motion_tree": legacy_digest}
+    row = pack_revisions.resolved_pack_revisions(_stage(element), editor)[0]
+    assert row["comparison"] == "match"  # Genuine v1 remains usable.
+    row = pack_revisions.resolved_pack_revisions(
+        _stage(element), {**editor, "astrid_motion": direct_motion.witness["upstream_commit"]},
+    )[0]
+    assert row["comparison"] == "unknown"
+    assert row["upstream_revision"] is None

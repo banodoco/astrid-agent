@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RN-5b-min: materialize the reviewed motion pack projection, never install it."""
+"""Materialize the witnessed motion source profile, never install it."""
 
 from __future__ import annotations
 

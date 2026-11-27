@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate only the motion descriptors from a verified RN-5b-min pack."""
+"""Generate only the motion descriptors from a verified source profile."""
 
 from __future__ import annotations
 

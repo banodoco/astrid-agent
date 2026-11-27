@@ -110,7 +110,8 @@ def _motion_source_row(
 ) -> dict[str, Any]:
     """Direct source match requires both witnessed bytes and upstream identity."""
     row = _motion_projection_row(editor, observed, witness)
-    row["identity_verification"] = "agent direct-source witness and source digest verified"
+    if row["upstream_revision"] is not None:
+        row["identity_verification"] = "agent direct-source witness and source digest verified"
     if row["comparison"] == "match":
         upstream = editor.get(_MOTION_PACK)
         if not isinstance(upstream, str) or not _COMMIT.fullmatch(upstream):
@@ -212,6 +213,13 @@ def resolved_pack_revisions(stage: Mapping[str, Any], editor: Mapping[str, str] 
             # provenance. Do not select whichever happens to be loaded first.
             witness = candidates[0] if len(candidates) == 1 else None
             if witness is direct and direct is not None and motion_count != direct["file_count"]:
+                witness = None
+            if direct is not None and (
+                editor_revisions.get(_MOTION_PACK) == direct["upstream_commit"]
+                or editor_revisions.get(_MOTION_TREE_KEY) == direct["tree_digest"]
+            ) and witness is not direct:
+                # A request identifying the new source cannot borrow the
+                # legacy profile's deliberately content-only comparison.
                 witness = None
             if projection_requested or candidates:
                 if witness is direct and direct is not None:
