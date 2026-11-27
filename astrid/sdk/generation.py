@@ -1406,6 +1406,7 @@ class GenerationFacade:
                 if save and stop is not None and stop["reason"] in {
                     "not_this_install", "cannot_tell_which_install", "not_comfyui",
                     "several_installs", "discovery_incomplete", "not_supported_here",
+                    "installation_access_denied",
                 }:
                     raise ValueError("refusing to save an unidentified ComfyUI target: " + stop["reason"])
                 action = preflight.ladder_next_action(
