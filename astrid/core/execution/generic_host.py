@@ -17306,9 +17306,12 @@ class LocalExecutionPreparation:
         if descriptor < 3:
             raise HostError("local host-control descriptor is invalid")
         def serve():
-            control = socket.socket(fileno=descriptor)
+            control = None
             actor = None
             try:
+                # Preserve the authenticated original owner handle on Windows;
+                # a bare socket reconstructed from the fd has no provider pin.
+                control = platform.handoff_adopt_socket(descriptor)
                 from astrid.core.execution import custody_broker as custody_module
 
                 # This is the retained Runtime relay -> host channel. It does
@@ -17368,7 +17371,8 @@ class LocalExecutionPreparation:
                     else:
                         self.control_error.add_note(f"native peer close also failed: {exc}")
                 finally:
-                    control.close()
+                    if control is not None:
+                        control.close()
         thread = threading.Thread(target=serve, name="astrid-host-control", daemon=True)
         thread.start()
         return thread

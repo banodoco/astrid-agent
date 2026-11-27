@@ -873,6 +873,31 @@ def _incarnation(identity: Mapping[str, object], token: Mapping[str, object]) ->
             "audit_token_sha256": token["sha256"], "audit_token_pidversion": token["pidversion"]}
 
 
+def _retained_actor_call(authority, method, *args):
+    """Normalize named native errors, not unrelated programming failures."""
+    from runtime_protocol import process_binding
+    from runtime_protocol.errors import ConflictError
+
+    try:
+        return getattr(authority, method)(*args)
+    except (process_binding.ProcessBindingError, OSError) as exc:
+        raise CustodyError("retained peer native authority is unavailable") from exc
+    except ConflictError as exc:
+        if process_binding.backend() != "windows":
+            raise
+        from runtime_protocol.windows_handoff import WindowsBindingError
+        if not isinstance(exc, WindowsBindingError):
+            raise
+        raise CustodyError("retained Windows peer native authority is unavailable") from exc
+    except RuntimeError as exc:
+        if process_binding.backend() != "darwin":
+            raise
+        from runtime_protocol.darwin_process_binding import DarwinBindingError
+        if not isinstance(exc, DarwinBindingError):
+            raise
+        raise CustodyError("retained Darwin peer native authority is unavailable") from exc
+
+
 class AuthenticatedCleanupActor:
     """An actor pinned from our own kernel identity or a retained private peer.
 
@@ -908,32 +933,33 @@ class AuthenticatedCleanupActor:
 
         try:
             retained = process_binding.retain_peer(channel)
-        except (OSError, RuntimeError) as exc:
+        except (OSError, process_binding.ProcessBindingError) as exc:
             raise CustodyError("original peer native authority is unavailable") from exc
         try:
             # A handle's own verified identity is authoritative; Windows in
             # particular must not reopen the observed PID to authenticate it.
             # Optional callers may impose an additional independent predicate.
-            actor = cls(retained.verify, identity_provider or (lambda _pid: retained.identity))
-            retained.verify(actor._pinned)
-            actor._native_close = weakref.finalize(actor, retained.close)
+            actor = cls(lambda: _retained_actor_call(retained, "verify"),
+                        identity_provider or (lambda _pid: retained.identity))
+            _retained_actor_call(retained, "verify", actor._pinned)
+            actor._native_close = weakref.finalize(actor, _retained_actor_call, retained, "close")
             return actor
         except BaseException as exc:
             try:
-                retained.close()
+                _retained_actor_call(retained, "close")
             except BaseException as close_error:
                 exc.add_note(f"native peer close also failed: {close_error}")
-            if isinstance(exc, (OSError, RuntimeError)) and not isinstance(exc, CustodyError):
-                raise CustodyError("original peer native authority cannot be verified") from exc
             raise
 
     def verify(self) -> dict[str, object]:
         if self._native_close is not None and not self._native_close.alive:
             raise CustodyError("retained cleanup actor is closed")
+        from runtime_protocol import process_binding
+
         try:
             token = dict(self._token_reader())
             identity = self._identity_provider(int(self._pinned["pid"]))
-        except (OSError, RuntimeError) as exc:
+        except (OSError, process_binding.ProcessBindingError) as exc:
             raise CustodyError("designated cleanup actor incarnation changed or is unknown") from exc
         if identity is None or _incarnation(identity, token) != self._pinned:
             raise CustodyError("designated cleanup actor incarnation changed or is unknown")
@@ -946,8 +972,13 @@ class AuthenticatedCleanupActor:
     def __enter__(self) -> AuthenticatedCleanupActor:
         return self
 
-    def __exit__(self, *_exc: object) -> None:
-        self.close()
+    def __exit__(self, _kind, primary, _tb) -> None:
+        try:
+            self.close()
+        except BaseException as close_error:
+            if primary is None:
+                raise
+            primary.add_note(f"native peer close also failed: {close_error}")
 
 
 class RetainedChildActor:
