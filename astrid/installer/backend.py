@@ -15,6 +15,7 @@ import urllib.parse
 import urllib.request
 import uuid
 import webbrowser
+from contextlib import ExitStack, contextmanager
 from dataclasses import replace
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -63,6 +64,67 @@ def open_astrid_browser(url: str = "https://astrid.haus/?connect=1") -> None:
             webbrowser.open(url)
     except OSError:
         pass
+
+
+class _LegacyStopAdmission:
+    """Ephemeral installer/C1 join; no serialized process authority."""
+    def __init__(self, backend, version, data, inspection, supervisor):
+        self.backend, self.version, self.data = backend, version, data
+        self.inspection = inspection
+        self.owner = inspection.owner
+        self.supervisor = supervisor
+        self.record = backend.service.recorded()
+        self.on_admitted = None
+        self.on_validate = None
+        self.admitted = False
+        self.consumed = False
+        operation = getattr(backend, "_update_job_operation_id", None)
+        self.job = read_json(backend.root / "install.json").get("update_job") if operation else None
+        if operation and (not isinstance(self.job, dict) or self.job.get("operation_id") != operation
+                          or self.job.get("state") != "active"):
+            raise RuntimeOperationError("The accepted update job is no longer the active worker operation.",
+                                        details={"safe": False})
+
+    def validate(self, inspection):
+        if self.consumed or inspection != self.inspection:
+            raise RuntimeOperationError("The admitted legacy Runtime owner or realm selection changed; update deferred.",
+                                        details={"safe": False})
+        if (self.backend.service.recorded() != self.record
+                or current(self.backend.root) != self.version):
+            raise RuntimeOperationError("The selected installation changed before update stop.",
+                                        details={"safe": False})
+        if self.job is not None and read_json(self.backend.root / "install.json").get("update_job") != self.job:
+            raise RuntimeOperationError("The accepted update job changed before the final stop fence.",
+                                        details={"safe": False})
+        if self.on_validate is not None:
+            self.on_validate(inspection)
+        self.backend._validate_legacy_foreground(inspection)
+        if self.supervisor is not None:
+            self.supervisor.validate(inspection.owner)
+        elif inspection.owner is not None:
+            raise RuntimeOperationError("A detached legacy Runtime has no retained stop authority.",
+                                        details={"safe": False, "deferred_until_quiescent": True})
+
+    def admit(self):
+        # Publish transaction intent once, inside the final Runtime fence.
+        if self.admitted:
+            raise RuntimeOperationError("The update stop admission was already consumed.")
+        self.admitted = True
+        if self.on_admitted is not None:
+            self.on_admitted()
+
+    def stop(self, owner):
+        if self.supervisor is None:
+            raise RuntimeOperationError("Detached legacy warm update remains unavailable.")
+        self.supervisor.stop(owner)
+
+    def verify_stopped(self):
+        if self.supervisor is not None:
+            self.supervisor.assert_stopped()
+
+    @property
+    def systemd_enabled(self):
+        return getattr(self.supervisor, "enabled_state", None)
 
 
 class _HttpsRedirect(urllib.request.HTTPRedirectHandler):
@@ -1123,6 +1185,159 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         except Exception as exc:
             raise self._stop_failure(exc) from exc
 
+    def preflight_update(self, version: Version | None, data: Path) -> None:
+        """Explicit update entry only; ordinary lifecycle preflight is unchanged."""
+        try:
+            with self.legacy_update_stop(version, data):
+                pass
+        except Exception as exc:
+            raise self._stop_failure(exc) from exc
+
+    def _legacy_linux_update(self, version: Version | None) -> bool:
+        return (version is not None and version.release == 15 and version.managed_by is None
+                and self.managed_by != "pinokio" and self.service.system == "linux")
+
+    def _managed_update_version(self, version):
+        update = getattr(self, "_update_transaction", None)
+        if (update is None or version is None or version.managed_by is not None
+                or self.managed_by == "pinokio" or self.service.system != "linux"):
+            return False
+        transaction = update[0]
+        return (transaction.get("transaction_kind") in {None, "migration"}
+                and Version.load(transaction["old"]).release == 15
+                and version.document() in (Version.load(transaction["old"]).document(), transaction.get("candidate")))
+
+    @contextmanager
+    def legacy_update_stop(self, version: Version | None, data: Path, *, realm=None):
+        """Read-only R15 admission before update staging, retaining its manager.
+
+        A detached predecessor is deliberately left running with all existing
+        selection/data/journal bytes intact. Retry the normal update after its
+        ordinary lifecycle exit; that retry must independently prove quiescence.
+        No new pending ledger or automatic reboot/old-CLI stop is introduced.
+        """
+        if not (self._legacy_linux_update(version) or self._managed_update_version(version)):
+            yield None
+            return
+        from astrid_runtime.bootstrap import inspect_upgrade_stop
+        from astrid_runtime.paths import RuntimePaths
+        from astrid_runtime.runtime_boundary import LocalRuntimeBoundary
+
+        active = getattr(self, "_legacy_stop_admission", None)
+        boundary = getattr(self, "_stop_boundary", None)
+        if boundary is None:
+            boundary = self._stop_boundary = LocalRuntimeBoundary()
+        inspection = inspect_upgrade_stop(RuntimePaths.current(data_root=data), boundary)
+        selected = current(self.root)
+        if version != selected and self._managed_update_version(version):
+            # Before switching, a migration may use the candidate offline.
+            # Only independently quiescent recovery may select the actual old
+            # registered version instead of that offline command's version.
+            if inspection.owner is not None or not self._managed_update_version(selected):
+                raise RuntimeOperationError("The live managed update version changed before stop.", details={"safe": False})
+            version = selected
+        self._validate_legacy_foreground(inspection)
+        if realm is not None and (inspection.realm_id != realm["realm_id"]
+                                  or str(inspection.realm_root) != realm["realm_root"]):
+            raise RuntimeOperationError("The update workspace changed before stop admission.",
+                                        details={"safe": False})
+        owner = inspection.owner
+        process = getattr(boundary, "_process", None)
+        retained = getattr(process, "_runtime_native_authority", None)
+        registration = os.path.lexists(self.service.path) or bool(self.service._systemd_links())
+        if (owner is not None and retained is not None and getattr(process, "pid", None) == owner["pid"]
+                and not registration and getattr(self, "_systemd_update_session", None) is None):
+            # Preserve PR130's existing original-child path. Only its already
+            # retained native object qualifies; do not reacquire from a PID or
+            # promote a foreground selection/Popen observation into authority.
+            retained.verify({"pid": owner["pid"], "birth_id": owner["process_birth_id"],
+                             "uid": platform.current_user()})
+            yield None
+            return
+        if active is not None and not active.consumed and active.version == version and active.data == data:
+            active.validate(inspection)
+            yield active
+            return
+        with self._legacy_update_manager(version, data, owner) as supervisor:
+            admission = _LegacyStopAdmission(self, version, data, inspection, supervisor)
+            admission.validate(inspection)
+            previous = getattr(self, "_legacy_stop_admission", None)
+            self._legacy_stop_admission = admission
+            try:
+                yield admission
+            finally:
+                self._legacy_stop_admission = previous
+
+    def _validate_legacy_foreground(self, inspection):
+        """A saved foreground claim can veto, never authorize, an update."""
+        foreground = self.service.recorded().get("foreground")
+        if foreground is None:
+            return
+        if (not isinstance(foreground, dict) or type(foreground.get("pid")) is not int
+                or foreground["pid"] <= 0 or not isinstance(foreground.get("birth_id"), str)
+                or not foreground["birth_id"]):
+            raise RuntimeOperationError("The retained foreground identity is incomplete.", details={"safe": False})
+        owner = inspection.owner
+        if owner is not None:
+            if (foreground["pid"] != owner["pid"]
+                    or platform.process_birth_matches(foreground["birth_id"], owner["process_birth_id"]) is not True):
+                raise RuntimeOperationError("The foreground claim differs from the authenticated Runtime owner.",
+                                            details={"safe": False})
+        else:
+            boundary = self._stop_boundary
+            try:
+                if boundary.is_pid_alive(foreground["pid"]) or boundary.process_birth_identity(foreground["pid"]) is not None:
+                    raise ValueError("retained PID is present or reused")
+            except Exception as exc:
+                raise RuntimeOperationError("The retained foreground process is present, reused or unobservable; update refused.",
+                                            details={"safe": False}) from exc
+
+    @contextmanager
+    def _legacy_update_manager(self, version, data, owner):
+        """Read-only manager admission, also used with existing RestoreSelection."""
+        from .choices import resolve_choices
+
+        with ExitStack() as lifetime:
+            record = self.service.recorded()
+            supervisor = None
+            # A recorded foreground process has no independently retained
+            # authority in a fresh updater. A configured unit must authenticate
+            # its real manager; manager absence must not downgrade to PID stop.
+            registration = os.path.lexists(self.service.path) or bool(self.service._systemd_links())
+            if registration and (not self.service.path.is_file() or self.service.path.is_symlink()
+                                 or record.get("foreground")):
+                raise RuntimeOperationError("The legacy systemd registration changed or is ambiguous; update refused.",
+                                            details={"safe": False})
+            if registration:
+                update = getattr(self, "_update_transaction", None)
+                recovery = ({"recovery": update} if owner is None and update is not None
+                            and update[1] is True and update[0].get("step") in {"recovering", "rollback_selected"}
+                            and isinstance(update[0].get("candidate"), dict)
+                            and update[0].get("transaction_kind") in {None, "migration"}
+                            else {})
+                session = getattr(self, "_systemd_update_session", None)
+                options = {**recovery, **({"session": session} if session is not None else {})}
+                retained = getattr(self, "_update_authority", None)
+                holder = retained if retained is not None else lifetime
+                supervisor = holder.enter_context(
+                    self.service.prepare_supervised_upgrade_stop(version, data, owner, **options))
+                admitted_session = getattr(supervisor, "session", None)
+                if session is None and admitted_session is not None:
+                    self._systemd_update_session = admitted_session
+                    holder.callback(setattr, self, "_systemd_update_session", None)
+            elif not isinstance(record.get("foreground"), dict) and resolve_choices(
+                    saved=record.get("choices"), existing_install=True)["autostart"]:
+                raise RuntimeOperationError("The enabled legacy service has no verifiable registration; update refused.",
+                                            details={"safe": False})
+            elif owner is not None:
+                raise RuntimeOperationError(
+                    "Update deferred: this detached Release 15 Runtime has no retained stop authority. "
+                    "Let it finish its normal lifecycle, then run the normal update at restart; "
+                    "selection, workspace and pending work are preserved.",
+                    details={"safe": False, "deferred_until_quiescent": True},
+                )
+            yield supervisor
+
     def pinokio_stopped(self, data: Path) -> bool:
         """Admit a receipt-free old Stop only under stopped-update custody.
 
@@ -1152,14 +1367,41 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         """Refresh the selected install's launch action before its first C1 stop."""
         if self.managed_by == "pinokio":
             return
+        session = getattr(self, "_systemd_update_session", None)
+        if session is not None:
+            # Preserve the admitted stopped definition until the single C2
+            # register step. Never issue a fresh systemctl reload here.
+            session.guard()
+            return
         self.service.publish_launch_admission(version, data)
+
+    def check_update_manager(self):
+        session = getattr(self, "_systemd_update_session", None)
+        if session is not None:
+            session.guard()
 
     def stop(self, version: Version | None, data: Path, *, stop_manager=None) -> dict | None:
         """Run Runtime's single fenced stop and validated manager handoff.
 
         Returns C1's result; callers that ignore it are unaffected.
         """
+        lifetime = ExitStack()
         try:
+            # This adapter belongs only to an explicitly entered update or
+            # recovery context. Repair/uninstall/ordinary retained-child stop
+            # keep Runtime's existing (PR130 fail-closed) authority path.
+            update = getattr(self, "_update_transaction", None)
+            active = getattr(self, "_legacy_stop_admission", None)
+            admission = None
+            restore_selection = self._pending_restore_selection(data)
+            supervised = self._legacy_linux_update(version) or self._managed_update_version(version)
+            legacy_restore = restore_selection is not None and supervised
+            restore_manager = (lifetime.enter_context(self._legacy_update_manager(version, data, None))
+                               if legacy_restore else None)
+            if (restore_selection is None and supervised
+                    and (update is not None or active is not None)):
+                realm = update[0]["realm"] if update is not None else None
+                admission = lifetime.enter_context(self.legacy_update_stop(version, data, realm=realm))
             from astrid_runtime.bootstrap import down
             from astrid_runtime.paths import RuntimePaths
             from astrid_runtime.runtime_boundary import LocalRuntimeBoundary
@@ -1186,7 +1428,6 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             # The pinned Runtime's C1 fence proves matching stale publications
             # before cleanup and refuses inconsistent or uncertain identities.
             # It never signals the process that reused the recorded PID.
-            restore_selection = self._pending_restore_selection(data)
             foreground = (record or {}).get("foreground")
             if foreground is not None and not isinstance(foreground, dict):
                 raise ValueError("The selected foreground process record is malformed.")
@@ -1208,7 +1449,7 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             # refusals are downstream-classified. C1 busy admission runs later in
             # down(), so a probe refusal can be reported before the busy message.
             launchd_identity = None
-            if self.managed_by != "pinokio":
+            if self.managed_by != "pinokio" and admission is None and not legacy_restore:
                 launchd_identity = self.service.validate_stop_target(version, data, owner_pid=owner_pid)
             def stop_selected_manager():
                 current_record = self.service.recorded()
@@ -1219,7 +1460,18 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                 if ((current_record or {}).get("foreground") != foreground
                         or (record and not current_record)):
                     raise ValueError("The selected service owner changed before manager stop.")
-                if self.managed_by != "pinokio":
+                if legacy_restore:
+                    # RestoreSelection owns realm/publication absence even
+                    # across a missing catalog. Keep manager admission read-only:
+                    # never turn that absence into a mutable-label stop.
+                    if restore_manager is not None:
+                        restore_manager.validate(None)
+                        restore_manager.assert_stopped()
+                elif admission is not None:
+                    # The exact supervisor invocation already stopped under
+                    # C1. Never follow it with a mutable-label stop/disable.
+                    admission.verify_stopped()
+                elif self.managed_by != "pinokio":
                     if not current_record:
                         if self.service.login_service_exists():
                             raise ValueError("No selected service record authorizes this stop.")
@@ -1249,12 +1501,33 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                     raise ValueError("The foreground selection changed before signal; refusing to stop it.")
                 self.service.stop_foreground(expected=foreground)
 
+            extra = ({"supervised_stop": admission, "on_stop_admitted": admission.admit}
+                     if admission is not None else {})
             result = down(paths, boundary, stop_manager=stop_selected_manager,
                           stop_foreground=(stop_selected_foreground
-                                           if restore_selection is None and isinstance(foreground, dict) else None),
-                          restore_selection=restore_selection)
+                                           if admission is None and restore_selection is None and isinstance(foreground, dict) else None),
+                          restore_selection=restore_selection, **extra)
+            completed_supervisor = admission.supervisor if admission is not None else restore_manager
+            completed_session = getattr(completed_supervisor, "session", None)
+            if completed_session is not None:
+                try:
+                    completed_session.c1_complete(completed_supervisor)
+                except Exception as exc:
+                    raise self._downstream_stop_failure(exc) from exc
+            if admission is not None:
+                admission.consumed = True
+                if update is not None and admission.systemd_enabled is not None:
+                    # Refresh actual enablement only after fresh cold C1. A
+                    # stale saved choice/journal must not change the service.
+                    update[0]["legacy_systemd_enabled"] = admission.systemd_enabled
+            if legacy_restore and restore_manager is not None and update is not None:
+                # The existing recovery writer persists this preference after
+                # its absence fence; it grants no stop authority.
+                update[0]["legacy_systemd_enabled"] = restore_manager.enabled_state
         except Exception as exc:
             raise self._stop_failure(exc) from exc
+        finally:
+            lifetime.close()
 
         # The Runtime fence has been released and C1 succeeded. Keep failures
         # from local bookkeeping downstream of the original lifecycle report.
@@ -1819,6 +2092,10 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             # The current install context is authoritative for hand-built or
             # legacy Version objects that predate the identity field.
             version = replace(version, managed_by=self.managed_by)
+        session = getattr(self, "_systemd_update_session", None)
+        update = getattr(self, "_update_transaction", None)
+        if session is not None:
+            session.begin_registration(version, data, update[0] if update else None)
         self.persist_identity(version)
         chat_cwd, chat_options = self._prior_chat_settings(version)
         if chat_cwd == data / "chat":
@@ -1829,13 +2106,20 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                 "data_root": str(data), "managed_by": "pinokio",
             })
         else:
-            self.service.register(version, data)
+            update = getattr(self, "_update_transaction", None)
+            preserved = update[0].get("legacy_systemd_enabled") if update is not None else None
+            options = ({"preserve_systemd_enablement": preserved} if preserved is not None else {})
+            if session is not None:
+                options.update(manager_session=session, preserve_systemd_enablement=session.enabled_state)
+            self.service.register(version, data, **options)
         realm = self.workspace(version, data)
         record = self.service.recorded()
         settings = {"ASTRID_ACP_CWD": str(chat_cwd), **chat_options} if chat_cwd else {}
         write_json(self.service.selection, {**record,
                                            "realm_id": realm["realm_id"],
                                            "realm_root": realm["realm_root"], "chat_settings": settings})
+        if session is not None:
+            session.finish_registration(version, data)
 
     def persist_identity(self, version: Version, *, persist_choices: bool = True) -> None:
         """Upgrade legacy version and selection records without service changes."""
@@ -1857,7 +2141,12 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
     def start(self, version: Version, data: Path) -> None:
         if self.managed_by == "pinokio":
             raise RuntimeError("Start Astrid in Pinokio.")
-        if not self.service.start():
+        session = getattr(self, "_systemd_update_session", None)
+        if session is not None:
+            update = getattr(self, "_update_transaction", None)
+            self.service.start(manager_session=session, version=version, data=data,
+                               transaction=update[0] if update else None)
+        elif not self.service.start():
             self.service.start_foreground(version, data)
 
     def restart_required(self) -> bool:

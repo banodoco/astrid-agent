@@ -105,6 +105,7 @@ REASONS = {
     "declined": "you declined the setup, so nothing was changed.",
     "recovered-previous-version": "an earlier update was interrupted and Astrid restored the version before it; run the same command again to update.",
     "runtime-not-running": "the new release was installed, but the running Astrid did not restart onto it.",
+    "update-deferred": "the update is prepared and is waiting for the old Runtime's normal lifecycle to finish.",
     "refused": "the installer could not continue.",
     "error": "setup stopped with an error.",
     "installer-bug": "the installer finished without installing the new release. This is a bug in Astrid, not something you did.",
@@ -186,7 +187,9 @@ class Outcome:
                 first += f"; {release(self.target)} is available." if self.target is not None else "."
             # Only a run that installed nothing may say nothing was changed: a release that was
             # installed but is not running is a change.
-            safe = ("Your projects are safe." if self.reason == "runtime-not-running"
+            safe = ("Your projects are safe. The prepared update is kept for your next normal start."
+                    if self.reason == "update-deferred" else
+                    "Your projects are safe." if self.reason == "runtime-not-running"
                     else "Your projects are safe — nothing was changed.")
             return [first, f"Why: {why}", safe]
         if self.kind == "rolled-back":
@@ -242,6 +245,7 @@ NEXT_STEPS = {
                 "and accept the setup choices.",
     "recovered-previous-version": "Next: Run the same command again to finish updating.",
     "runtime-not-running": "Next: run the same command again so Astrid restarts on the new release.",
+    "update-deferred": "Next: after the old Runtime exits normally, start Astrid with the astrid command to continue the prepared update.",
     "refused": "Next: fix what the message above names, then run the same command again.",
     "error": NEXT_STEP,
     "installer-bug": NEXT_STEP,
@@ -392,6 +396,9 @@ def settle(request: Request, before, resolver, *, failure: BaseException | None 
         start = before.selected_release
     target = request.target
     source = request.target_source
+    if failure is None and request.reason == "update-deferred":
+        return Outcome("not-updated", live if live is not None else start, start, target, request.reason,
+                       request.mode, target_source=source, runtime_running=runtime_running)
     others = [r for r in (getattr(after, "live_runtimes", ()) or ()) if r.alive and not r.selected]
     refusal = _refusal_reason(failure)
     if refusal is not None:
