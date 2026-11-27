@@ -30,24 +30,25 @@ routes documented below remain available as compatibility conveniences.
 
 Use this when the user wants to generate with their own ComfyUI: "use my
 ComfyUI", "with my portrait workflow", "my saved workflow", "on my GPU". Their
-ComfyUI is already running; Astrid attaches to it as the `attached` placement.
+ComfyUI may already be running; Astrid uses it as the `attached` placement only after the checks below.
 You never launch, restart or manage it, never unload its models, and never
 touch its queue beyond your own prompt. No API key is involved. First-time
 setup (finding it and choosing defaults) is the generation skill's
 [Set up my generation](../../generation/docs/SKILL.md#set-up-my-generation).
 
 The flow is: find their ComfyUI → pick a saved workflow → read it → run it on
-`attached` → follow → show the result. Ask the user only on real ambiguity, and
+`attached` → follow → show the result. Ask the user on real ambiguity, before saving or changing placement, and
 before installing anything.
 
 ### Find their ComfyUI
 
-If the generation settings already name a ComfyUI address, check it with one
-scan. Otherwise discover. Both use the same read-only command, through the
-launcher (its path is in the setup skill's [Launcher paths](../../setup/docs/SKILL.md#launcher-paths); the blocks show
-the Linux one):
+Check the selected target first, through the launcher (its path is in the setup
+skill's [Launcher paths](../../setup/docs/SKILL.md#launcher-paths); the blocks show
+the Linux one). Use the scan for saved workflow names and additional evidence,
+not as a second decision about which ComfyUI to use:
 
 ```sh
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate targets --json
 "${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate scan --json                # ports 8188 and 8000
 "${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate scan --ports 8188 --json   # health-check a saved address
 ```
@@ -56,32 +57,83 @@ On Windows, replace the Linux prefix with `& "$env:LOCALAPPDATA\Astrid\run-astri
 for example `& "$env:LOCALAPPDATA\Astrid\run-astrid.cmd" generate scan --json`.
 PowerShell continues lines with a backtick, not `\`.
 
-It reads `/system_stats`, `/internal/folder_paths` (model folders and
+The scan reads `/system_stats`, `/internal/folder_paths` (model folders and
 `custom_nodes`, whose parent is the ComfyUI base) and `/userdata?dir=workflows`,
 and prints one JSON object: `servers[]` with `url`, `base_dir`, `output_dir`
 (`--output-directory` if set, else `<base>/output`), `workflows` (saved
 names), `manager_present` and `python` (their ComfyUI's interpreter, if
 found); `errors[]` per port and endpoint; and `pinokio.available` plus
 `pinokio.home` when Pinokio's optional scan completes within its short budget.
-A matching server includes its `pinokio_apps`. The scan only reads; it never
-starts or changes anything.
+A matching server includes its `pinokio_apps`. The additive `installations[]`
+records have `layout`, `state`, `version`, `endpoint`, `recorded` executable
+and data directory, `files` observations and `responder` evidence. A recorded
+path or answering port alone does not identify Desktop. ComfyUI Desktop's
+port varies; use the selected endpoint, not a guessed default. The scan only
+reads; it never starts or changes anything.
 
-If no ComfyUI is found and `pinokio.available` is true, ask the person to
-start ComfyUI in Pinokio, then rescan. Its ComfyUI tree is
+Use the `generate targets` payload as the decision: read `status`,
+`ladder.through`, `ladder.stopped_at`, the stopped rung's `reason` and
+`message`, and the single `next_action`. With `through=compatible`, `ready`
+only means the endpoint prefix passed, not that compute, workflow or delivery
+passed. A bound running Desktop has no next action; say its summary and use
+that endpoint for the subsequent checks. An unbound compatible candidate
+has an attach action; ask before saving it.
+
+On a block, report the stopped message and follow only the emitted action.
+For `who=person`, say its `step`, wait for the person to act, then run
+`then_argv` if present. If `choices` are present, show their labels and
+endpoints, ask which, and check the chosen endpoint; never choose silently.
+For `who=agent`, use its exact `argv` through the installed launcher
+(replace the leading `astrid` token; preserve the rest). If
+`requires_consent=attach_existing`, ask for an explicit yes to that endpoint
+before running the placement command. On no, leave the selection unchanged.
+An absent action is not permission to change anything. An
+`alternative` with `available=false` is not executable; a separate copy
+is optional and must have its own fresh consent when actually available.
+Do not invent an install script, a retry, or a second action.
+
+Read the reason in the payload, not an independent state inferred from the scan:
+
+- `closed`: “I found your ComfyUI Desktop. It is closed at {url}.”
+  “Open ComfyUI Desktop yourself, then I will check the same address again.”
+  Wait for the person and run the emitted recheck; never start it yourself.
+- `stale_registration`: “Your ComfyUI Desktop registration points to missing
+  files.” “Reinstall ComfyUI Desktop without deleting your existing files,
+  then I will check again.” A separate copy is only an optional alternative
+  if available, not an instruction to install.
+- `several_installs`: “I found more than one ComfyUI.” “Which one should I
+  use?” Show the emitted choices.
+- `not_supported_here`: “Astrid can only discover ComfyUI Desktop installations
+  on Windows.” Ask for the address of a running Portable, Git or Pinokio copy.
+- `not_this_install`: the responder is not the registered Desktop; ask for
+  the intended address.
+- `cannot_tell_which_install`: identity is uncertain; ask which ComfyUI to use.
+- `files_missing`: the recorded folder is missing; ask for the intended address.
+- `not_answering`: ask the person to start their ComfyUI at the selected
+  address, then recheck as emitted.
+- `access_denied`: `Operation not permitted` / `Permission denied` may
+  mean the agent's sandbox blocked loopback access. Retry the same command
+  through the agent's normal permission-request flow; don't change permission
+  defaults or tell the user to restart ComfyUI. A denied request means report
+  the access block.
+- `installation_access_denied`: the registration or files could not be
+  verified; retry the emitted read through the normal permission request.
+- `not_comfyui`: another service is answering; ask for the intended address,
+  without closing that service.
+- `api_unsupported`: ask the person to update their ComfyUI, then recheck.
+- `no_install_found`: complete local discovery found no candidate; ask for
+  an existing address and respect the optional alternative's availability.
+- `discovery_incomplete`: unknown is not absence; ask for the exact address
+  if known, without proposing installation.
+- `timeout`: a timed-out check does not establish absence; ask the person to
+  check that the endpoint responds, then retry as emitted.
+
+If the person explicitly chooses Pinokio, ask them to start ComfyUI in
+Pinokio if needed, then check their selected endpoint. Its ComfyUI tree is
 `<pinokio.home>/api/comfy.git/app`, Python is `<tree>/env/bin/python` (on
 Windows, `<tree>\env\Scripts\python.exe`), and output is `<tree>/output`.
-
-- Saved setup and scan agree: carry on. They disagree (other address, workflow
-  gone, nothing on that port): rediscover, use what is true now, and update
-  the settings after the next success.
-- `Operation not permitted` / `Permission denied`: the agent's sandbox may
-  have blocked loopback access. Retry the same command through the agent's
-  normal permission-request flow; don't change permission defaults or tell
-  the user to restart ComfyUI. A denied request means report the access block.
-- No server (connection refused or timed out): ComfyUI isn't running, or it's
-  on another port. Ask them to start it, or for the port
-  (`--ports 8188,8000,PORT`). ComfyUI Desktop's port varies.
-- Several servers: ask which one.
+If needed, scan extra ports with `--ports 8188,8000,PORT` after the person's
+choice; a scan disagreement is not permission to switch placement.
 - VibeComfy package missing: don't install it. It ships with Astrid, so tell
   the user to run the normal Astrid update in a terminal outside chat
   (`curl -fsSL https://astrid.haus/install | sh -s -- --update`; in PowerShell
@@ -229,16 +281,15 @@ check a Wan2GP folder without running anything, use
 
 ### Remember the setup
 
-After the first successful run, save the machine facts (the ComfyUI address as
-the `attached` placement, its folders, their ComfyUI's Python, the saved
-workflow names that worked) to the generation settings document without asking,
-and say so in one line ("I saved your ComfyUI setup, so next time is instant").
-Update them when a health check finds they've changed. Save taste (sizes,
-defaults, local versus cloud) only when the user asks, or offer once and save
-on yes. Store saved workflow names, not absolute workflow paths. Never store
-secrets, tokens or API keys.
+After a successful run, remember observed machine facts (folders, verified
+ComfyUI Python and saved workflow names) for the same selected installation.
+Do not guess missing facts or silently save or switch the placement after
+success or a health check. Save taste (sizes, defaults, local versus cloud)
+only when the user asks, or offer once and save on yes. Store saved workflow
+names, not absolute workflow paths. Never store secrets, tokens or API keys.
 
-Save the placement with `settings set placement`, and undo it with
+Only after the person's explicit yes to that exact endpoint, use the emitted
+placement command (shown below as an example). Undo it on request with
 `settings unset placement`:
 
 ```sh
