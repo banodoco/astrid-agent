@@ -4,6 +4,7 @@ import importlib.metadata
 import importlib.util
 import json
 import math
+import os
 import subprocess
 import sys
 from unittest.mock import MagicMock, call
@@ -33,6 +34,8 @@ def report(*, required=OPERATIONS, **changes):
         "interpreter": sys.executable,
         "backend": "cuda",
         "device": "cuda:0",
+        "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
+        "cuda_device_order": os.environ.get("CUDA_DEVICE_ORDER"),
         "required_operations": list(required),
         "torch": "2.5.1+cu124",
         "cuda": "12.4",
@@ -83,6 +86,8 @@ def failed(stage="matmul_fp16", message="a CUDA operation failed"):
          "driver_too_old", ("12.4", "2.5.1+cu124", "too old")),
         (report(ok=False, devices=[], operations={}, error=failed("cuda", "CUDA driver version is insufficient")),
          {}, "driver_too_old", ("12.4", "2.5.1+cu124", "too old")),
+        (report(ok=False, error=failed(message="out of memory")), {"stderr": "driver too old"},
+         "out_of_memory", ("matmul_fp16", "5070 Ti")),
         (report(ok=False, error=failed()), {"stderr": "CUDA out of memory"}, "out_of_memory",
          ("2.5.1+cu124", "matmul_fp16", "5070 Ti")),
         (report(ok=False, error=failed("conv2d_fp16")), {}, "operation_failed",
@@ -130,6 +135,8 @@ def test_classify_malformed_does_not_raise(raw):
     {"device": "cuda:1"},
     {"backend": "mps"},
     {"required_operations": ["matmul_fp32"]},
+    {"cuda_visible_devices": "different-visibility"},
+    {"cuda_device_order": "different-order"},
 ])
 def test_wrong_selection_is_never_reused(change):
     result = classify(report(**change))
@@ -175,7 +182,7 @@ def test_selected_engine_environment_is_not_replaced_with_host_environment(monke
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
     monkeypatch.setenv("LD_LIBRARY_PATH", "/ambient")
     runner = MagicMock(return_value=subprocess.CompletedProcess(
-        [], 0, json.dumps(report(cuda_visible_devices="3,2")), "",
+        [], 0, json.dumps(report(cuda_visible_devices="3,2", cuda_device_order=None)), "",
     ))
     result = gpu.probe_compute(**CONTEXT, run=runner, environ={
         "CUDA_VISIBLE_DEVICES": "3,2", "LD_LIBRARY_PATH": "/selected", "PYTHONPATH": "discard",
@@ -379,6 +386,34 @@ def test_selected_second_gpu_compatible_arch_and_optional_bf16(torch_mock, capsy
     assert torch_mock.cuda.synchronize.call_args_list == [call("cuda:1")] * len(operations)
     assert all(transfer.kwargs["device"] == "cuda:1" for transfer in torch_mock.transfers)
     assert all(transfer.kwargs["dtype"] != "bfloat16" for transfer in torch_mock.transfers)
+
+
+def test_other_gpu_inventory_failure_does_not_disqualify_selected_device(torch_mock, capsys, monkeypatch):
+    torch_mock.cuda.device_count.return_value = 2
+    torch_mock.cuda.get_device_name.side_effect = [RuntimeError("unselected GPU unavailable"), OTHER["name"]]
+    torch_mock.cuda.get_device_capability.return_value = OTHER["capability"]
+    operations = ("matmul_fp32",)
+    raw = execute_script(capsys, monkeypatch, device="cuda:1", operations=operations)
+    result = classify(raw, device="cuda:1", required_operations=operations)
+    assert result["ok"]
+    assert result["selected_device"] == OTHER
+    assert result["device_inventory_errors"] == [{"index": 0, "message": "unselected GPU unavailable"}]
+    torch_mock.cuda.synchronize.assert_called_once_with("cuda:1")
+
+
+@pytest.mark.parametrize("device,dtype", [("cuda:1", "float32"), ("cuda:0", "float16")])
+def test_wrong_output_device_or_dtype_cannot_pass(torch_mock, capsys, monkeypatch, device, dtype):
+    output = torch_mock.tensor([[2., 7.], [6., 15.]], dtype=dtype)
+    output.device = device
+    torch_mock.matmul.side_effect = None
+    torch_mock.matmul.return_value = output
+    operations = ("matmul_fp32",)
+    raw = execute_script(capsys, monkeypatch, operations=operations)
+    result = classify(raw, required_operations=operations)
+    assert result["cause"] == "operation_failed"
+    assert result["operations"] == {"matmul_fp32": False}
+    assert "different device or dtype" in raw["error"]["message"]
+    assert result["numeric_outputs"] == {}
 
 
 def test_required_bf16_failure_cannot_be_optional(torch_mock, capsys, monkeypatch):
