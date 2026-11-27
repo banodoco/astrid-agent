@@ -281,12 +281,9 @@ def observe_installations(
     if registrations is None:
         registrations = read_registrations(environ, registry=registry, read_text=read_text)
     exists = _exists if exists is None else exists
-    observations = []
-    expected_ports = []
+    checked = []
     seen = set()
-    # Reuse the same evidence for each complete registration; no Desktop
-    # requests for a missing/inaccessible registration or its recorded files.
-    responders = {}
+    candidates = {}
     for raw in registrations:
         registration = dict(raw)
         key = (
@@ -306,19 +303,23 @@ def observe_installations(
                 files[field] = False
                 registration["_denied"] = True
         if not registration.get("_denied") and all(files.values()):
-            candidates = dict.fromkeys(
-                (registration["server_port"], *DESKTOP_CANDIDATE_PORTS, *ports)
-            )
-            responders.update(probe_ports(
-                [port for port in candidates if port not in responders], get_json=get_json
-            ))
-        observations.append(classify(registration, files=files, responders=responders))
-        expected_ports.append(registration["server_port"])
+            candidates.setdefault(registration["server_port"], None)
+        checked.append((registration, files))
+
+    # Share one complete observation set across registrations. Missing or
+    # inaccessible registrations cannot trigger Desktop network requests.
+    if candidates:
+        candidates.update(dict.fromkeys((*DESKTOP_CANDIDATE_PORTS, *ports)))
+    responders = probe_ports(candidates, get_json=get_json) if candidates else {}
+    observations = [
+        classify(registration, files=files, responders=responders)
+        for registration, files in checked
+    ]
 
     # If distinct registered executables share the same observed data root,
     # folder evidence alone cannot distinguish which executable owns it.
     running = [item for item in observations if item["state"] == "running"]
-    for item, expected in zip(observations, expected_ports):
+    for item, (registration, _) in zip(observations, checked):
         if item["state"] != "running":
             continue
         recorded = item["recorded"]
@@ -329,7 +330,7 @@ def observe_installations(
             for other in running
         ):
             item["state"] = "ambiguous"
-            item["endpoint"] = f"http://127.0.0.1:{expected}"
+            item["endpoint"] = f"http://127.0.0.1:{registration['server_port']}"
             item["responder"]["matches_install"] = None
     return observations
 
