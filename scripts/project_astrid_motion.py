@@ -13,6 +13,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 WITNESS_PATH = ROOT / "astrid/resources/astrid_motion_projection.json"
+RELEASE_SOURCE_PATH = ROOT / "astrid/resources/astrid_motion_release_source.json"
+PROFILES = ("legacy-projection", "direct-source")
 # identity.py is stdlib-only; loading the leaf avoids requiring the full Agent
 # environment merely to generate browser vendor inputs.
 _spec = importlib.util.spec_from_file_location(
@@ -22,6 +24,12 @@ assert _spec is not None and _spec.loader is not None
 _identity = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_identity)
 pack_digest = _identity.pack_digest
+_source_spec = importlib.util.spec_from_file_location(
+    "_astrid_motion_source", ROOT / "astrid/core/pack/motion_source.py"
+)
+assert _source_spec is not None and _source_spec.loader is not None
+_motion_source = importlib.util.module_from_spec(_source_spec)
+_source_spec.loader.exec_module(_motion_source)
 
 ALIASES = {
     "rendering/elements/_shared/am.tsx": b"../../../../rendering/shared/element_contracts",
@@ -41,6 +49,14 @@ def witness() -> dict:
     return json.loads(WITNESS_PATH.read_text(encoding="utf-8"))
 
 
+def profile_witness(profile: str = "legacy-projection") -> dict:
+    if profile == "legacy-projection":
+        return witness()
+    if profile == "direct-source":
+        return _motion_source.read_release_source(RELEASE_SOURCE_PATH)
+    raise ValueError(f"Unknown motion source profile: {profile}")
+
+
 def _git(repo: Path, *args: str) -> bytes:
     return subprocess.check_output(
         ["git", "-C", str(repo), *args], stderr=subprocess.PIPE
@@ -51,6 +67,14 @@ def _check_digest(root: Path, expected: str, stage: str) -> None:
     actual = pack_digest(root)
     if actual != expected:
         raise ValueError(f"{stage} digest mismatch: expected {expected}, got {actual}")
+
+
+def check_profile(root: Path, record: dict, profile: str) -> None:
+    _check_digest(root, record["tree_digest"], "projection")
+    if profile == "direct-source":
+        count = _motion_source.source_file_count(root, _identity._EXCLUDED_DIRS)
+        if count != record["file_count"]:
+            raise ValueError(f"Unexpected direct source file count {count}")
 
 
 def _source(repo: Path, destination: Path, record: dict) -> None:
@@ -111,7 +135,7 @@ def _manifest(root: Path) -> None:
     path.write_bytes(projected)
 
 
-def project(repo: Path, output: Path) -> dict:
+def project(repo: Path, output: Path, *, profile: str = "legacy-projection") -> dict:
     """Read the immutable Git tree and publish only verified projected bytes."""
     repo = repo.resolve(strict=True)
     output = output.absolute()
@@ -123,23 +147,25 @@ def project(repo: Path, output: Path) -> dict:
         raise ValueError("Projection output must be outside both Agent checkouts")
     if output.exists() or output.is_symlink():
         raise FileExistsError(output)
-    record = witness()
+    record = profile_witness(profile)
     with tempfile.TemporaryDirectory(prefix=".motion-projection-", dir=parent) as temporary:
         staged = Path(temporary) / "astrid_motion"
         staged.mkdir()
         _source(repo, staged, record)
-        _aliases(staged)
-        _check_digest(staged, record["alias_only_digest"], "alias-only")
-        _manifest(staged)
-        _check_digest(staged, record["tree_digest"], "projection")
+        if profile == "legacy-projection":
+            _aliases(staged)
+            _check_digest(staged, record["alias_only_digest"], "alias-only")
+            _manifest(staged)
+        check_profile(staged, record, profile)
         # copytree refuses an existing output; never replace a pack or collection.
         shutil.copytree(staged, output)
-    _check_digest(output, record["tree_digest"], "published projection")
+    check_profile(output, record, profile)
     return record
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--profile", choices=PROFILES, default="legacy-projection")
     parser.add_argument("--upstream-repo", type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--check", action="store_true", help="Verify an existing projection; do not write")
@@ -147,12 +173,12 @@ def main() -> int:
     if args.check:
         if args.upstream_repo is not None:
             parser.error("--check does not take --upstream-repo")
-        record = witness()
-        _check_digest(args.output, record["tree_digest"], "projection")
+        record = profile_witness(args.profile)
+        check_profile(args.output, record, args.profile)
     else:
         if args.upstream_repo is None:
             parser.error("--upstream-repo is required when generating")
-        record = project(args.upstream_repo, args.output)
+        record = project(args.upstream_repo, args.output, profile=args.profile)
     # Witness goes to stdout, outside the hashed pack; never write a synthetic PIN.
     print(json.dumps(record, indent=2, sort_keys=True))
     return 0

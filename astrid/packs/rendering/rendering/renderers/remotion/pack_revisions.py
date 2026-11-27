@@ -12,7 +12,8 @@ from typing import Any, Mapping
 import yaml
 
 from astrid.core.foundation.paths import PACKAGE_ROOT
-from astrid.core.pack.identity import pack_digest, read_pin
+from astrid.core.pack.identity import _EXCLUDED_DIRS, pack_digest, read_pin
+from astrid.core.pack.motion_source import RESOURCE, read_release_source, source_file_count
 
 _COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 _TREE_DIGEST = re.compile(r"[0-9a-f]{64}\Z")
@@ -95,7 +96,33 @@ def _motion_projection_row(
     return row
 
 
+def _motion_release_source_witness() -> Mapping[str, Any] | None:
+    """Read the additive witness from the running Agent, never a pack claim."""
+    try:
+        return read_release_source(PACKAGE_ROOT / "resources" / RESOURCE)
+    except (OSError, UnicodeError, ValueError, RuntimeError):
+        return None
+
+
+def _motion_source_row(
+    editor: Mapping[str, str], observed: str | None,
+    witness: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Direct source match requires both witnessed bytes and upstream identity."""
+    row = _motion_projection_row(editor, observed, witness)
+    row["identity_verification"] = "agent direct-source witness and source digest verified"
+    if row["comparison"] == "match":
+        upstream = editor.get(_MOTION_PACK)
+        if not isinstance(upstream, str) or not _COMMIT.fullmatch(upstream):
+            row["comparison"] = "unknown"
+        elif upstream != witness["upstream_commit"]:
+            row["comparison"] = "mismatch"
+    return row
+
+
 def _pack_root(element_root: Path, pack_id: str) -> Path | None:
+    if not element_root.is_dir():
+        return None
     for root in (element_root, *element_root.parents):
         manifest = root / "pack.yaml"
         if not manifest.is_file():
@@ -169,14 +196,28 @@ def resolved_pack_revisions(stage: Mapping[str, Any], editor: Mapping[str, str] 
         expected = editor_revisions.get(pack_id) if pack_id != _MOTION_TREE_KEY else None
         motion_digest = None
         if pack_id == _MOTION_PACK:
-            witness = _motion_projection_witness()
+            legacy = _motion_projection_witness()
+            direct = _motion_release_source_witness()
+            motion_count = None
             if root is not None:
                 try:
                     motion_digest = pack_digest(root)
+                    if direct is not None and motion_digest == direct["tree_digest"]:
+                        motion_count = source_file_count(root, _EXCLUDED_DIRS)
                 except (OSError, UnicodeError, ValueError, RuntimeError):
                     pass
-            if projection_requested or (witness is not None and motion_digest == witness["tree_digest"]):
-                rows.append(_motion_projection_row(editor_revisions, motion_digest, witness))
+            candidates = [record for record in (legacy, direct)
+                          if record is not None and motion_digest == record["tree_digest"]]
+            # A digest shared by distinct witness profiles has ambiguous
+            # provenance. Do not select whichever happens to be loaded first.
+            witness = candidates[0] if len(candidates) == 1 else None
+            if witness is direct and direct is not None and motion_count != direct["file_count"]:
+                witness = None
+            if projection_requested or candidates:
+                if witness is direct and direct is not None:
+                    rows.append(_motion_source_row(editor_revisions, motion_digest, direct))
+                else:
+                    rows.append(_motion_projection_row(editor_revisions, motion_digest, witness))
                 continue
         row: dict[str, Any] = {"pack_id": pack_id, "editor_revision": expected,
                                "resolved_revision": None, "derived_from": None,
