@@ -85,7 +85,10 @@ def main(argv: list[str] | None = None, *, started_at: float | None = None) -> i
     marks = _STARTUP_MARKS.get()
     token = _STARTUP_MARKS.set(marks if marks is not None else (entry, "command entry", None, None))
     try:
-        return _main_impl(raw)
+        from astrid._pack_discovery_scope import consume_gateway_handoff, pack_discovery_scope
+
+        with pack_discovery_scope(fresh=not consume_gateway_handoff()):
+            return _main_impl(raw)
     except SystemExit as exc:
         # Product-family argparse parsers use SystemExit for their normal
         # command-line result. Normalize only integer/empty exit codes at the

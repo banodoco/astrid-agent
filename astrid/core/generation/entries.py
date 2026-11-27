@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from astrid.core.generation.workflows import InputRequirements
+    from astrid.sdk.invocation import _PreparedDiscovery
 
 logger = logging.getLogger(__name__)
 
@@ -225,8 +226,7 @@ _DEFAULT_READY_ENTRY_ROWS = _ready_entry_rows
 def action_entries(discovery: Any | None = None) -> list[dict[str, Any]]:
     """Project action entry declarations and their authoritative input ports."""
     if discovery is None:
-        from astrid.core.pack.discovery import reuse_pack_projection
-        return reuse_pack_projection(_discover_action_entries)
+        return _discover_default_action_entries()
     rows = []
     for capability in discovery.actions:
         definition = getattr(capability, "definition", {})
@@ -263,9 +263,26 @@ def action_entries(discovery: Any | None = None) -> list[dict[str, Any]]:
     return rows
 
 
-def _discover_action_entries() -> list[dict[str, Any]]:
+def _discover_default_action_entries() -> list[dict[str, Any]]:
+    from astrid._pack_discovery_scope import _active_discovery_cache
+
+    if _active_discovery_cache() is None:
+        return _discover_action_entries()
+
+    from astrid.core.pack.discovery import reuse_pack_projection
+    from astrid.sdk.invocation import _prepare_discovery
+
+    prepared = _prepare_discovery()
+    inputs = prepared.projection_inputs()
+    if inputs is None:
+        return _discover_action_entries(prepared)
+    return reuse_pack_projection(_discover_action_entries, prepared, inputs=inputs)
+
+
+def _discover_action_entries(prepared: _PreparedDiscovery | None = None) -> list[dict[str, Any]]:
     from astrid.sdk.invocation import discover
-    return action_entries(discover())
+
+    return action_entries(discover() if prepared is None else discover(_prepared=prepared))
 
 
 def bundle_path(entry: dict[str, Any]) -> Path:

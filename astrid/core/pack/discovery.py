@@ -20,14 +20,17 @@ import hashlib
 import logging
 import os
 import stat
-from contextlib import contextmanager
-from contextvars import ContextVar
-from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
-from threading import Lock
 from typing import Any, Callable
 
+from astrid._pack_discovery_scope import (
+    _CACHE_MISS,
+    _DiscoveryCache as _DiscoveryCache,
+    _active_discovery_cache,
+    _discovery_cache as _discovery_cache,
+    pack_discovery_scope,
+)
 from astrid.core.foundation.paths import PACKAGE_ROOT, REPO_ROOT
 from astrid.core.pack import (
     PackDefinition,
@@ -38,6 +41,7 @@ from astrid.core.pack import (
     iter_orchestrator_roots,
     loader,
 )
+from astrid.core.pack import canonical as canonical_pack
 from astrid.core.pack.canonical import (
     CanonicalPackEntry,
     CanonicalPackValidationError,
@@ -58,62 +62,50 @@ LOCAL_PACK_ID = ExternalPackSource.LOCAL.value
 MANAGED_SOURCE_KIND = "managed"
 ASTRID_PACKS_PATH_ENV = "ASTRID_PACKS_PATH"
 
-# Opt-in, request-local reuse for generation input resolution. Other discovery
-# callers continue to scan normally. Never retain an inventory across requests.
-class _DiscoveryCache(dict):
-    """A shared owner that can revoke caches held by copied contexts."""
+class _RootSnapshot:
+    """Remember tree membership and Linux metadata for inexpensive rechecks."""
 
-    def __init__(self):
-        super().__init__()
-        self.active = True
-        self._lock = Lock()
+    def __init__(self, root: Path):
+        self.entries = {}
+        self.identity = None
 
-    def read(self, key):
-        with self._lock:
-            if self.active and key in self:
-                return deepcopy(self[key])
-            return _CACHE_MISS
+        def visit(path):
+            try:
+                info = path.lstat()
+            except FileNotFoundError:
+                self.entries[path] = None
+                return
+            self.entries[path] = self._signature(info)
+            if stat.S_ISDIR(info.st_mode):
+                for child in sorted(path.iterdir()):
+                    visit(child)
+            elif not stat.S_ISREG(info.st_mode):
+                raise OSError(f"cannot fingerprint non-regular pack resource: {path}")
 
-    def publish(self, key, value):
-        snapshot = deepcopy(value)
-        with self._lock:
-            if self.active:
-                self[key] = snapshot
+        visit(root)
 
-    def revoke(self):
-        with self._lock:
-            self.active = False
-            self.clear()
+    @staticmethod
+    def _signature(info):
+        return (info.st_dev, info.st_ino, info.st_mode, info.st_size,
+                info.st_mtime_ns, info.st_ctime_ns)
 
-
-_CACHE_MISS = object()
-_discovery_cache: ContextVar[_DiscoveryCache | None] = ContextVar("pack_discovery_cache", default=None)
-
-
-def _active_discovery_cache() -> _DiscoveryCache | None:
-    cache = _discovery_cache.get()
-    return cache if cache is not None and cache.active else None
-
-
-@contextmanager
-def pack_discovery_scope():
-    """Reuse admitted packs only while their complete discovery inputs match."""
-    if _active_discovery_cache() is not None:
-        yield
-        return
-    cache = _DiscoveryCache()
-    token = _discovery_cache.set(cache)
-    try:
-        yield
-    finally:
-        cache.revoke()
-        _discovery_cache.reset(token)
+    def unchanged(self):
+        for path, signature in self.entries.items():
+            try:
+                current = self._signature(path.lstat())
+            except FileNotFoundError:
+                current = None
+            except OSError:
+                return False
+            if current != signature:
+                return False
+        return True
 
 
 def _tree_fingerprint(root: Path) -> str:
     """Read contents, names and file kinds, including untracked resources.
 
-    A stat-only key misses same-size edits with restored timestamps. Tracking
+    An mtime-only key misses same-size edits with restored timestamps. Tracking
     the entire tree also covers added manifests, alternate manifests, deleted
     resources and new symlinks that canonical admission must reject.
     """
@@ -131,9 +123,7 @@ def _tree_fingerprint(root: Path) -> str:
             add(b"missing")
             return
         add(str(mode).encode())
-        if stat.S_ISLNK(mode):
-            add(os.fsencode(os.readlink(path)))
-        elif stat.S_ISDIR(mode):
+        if stat.S_ISDIR(mode):
             for child in sorted(path.iterdir()):
                 visit(child)
         elif stat.S_ISREG(mode):
@@ -146,59 +136,31 @@ def _tree_fingerprint(root: Path) -> str:
     return digest.hexdigest()
 
 
-def _discovery_fingerprint(
-    project_root, extra_pack_roots, managed_inventory, scan, *, include_hidden=False,
-    personal_packs_root=None,
-):
-    from astrid.core.pack import loader
-
-    # Preserve registry-specific scanner seams; their arbitrary inputs cannot
-    # be fingerprinted by the normal filesystem discovery implementation.
-    if scan is not loader.discover_packs:
-        return None
-    project_root = Path(project_root).resolve()
-    raw_env = os.environ.get(ASTRID_PACKS_PATH_ENV, "")
-    roots = [loader.packs_root(), Path.home() / "Astrid" / "packs", project_root / "astrid" / "packs",
-             Path(__file__).with_name("schemas")]
-    if personal_packs_root is not None:
-        roots.append(Path(personal_packs_root).expanduser())
-    roots.extend(source.pack_root for source in managed_inventory.sources)
-    for raw_root in (*extra_pack_roots, *filter(None, raw_env.split(os.pathsep))):
-        root = Path(raw_root).expanduser()
-        roots.append(root if root.is_absolute() else project_root / root)
+def _discovery_fingerprint(cache: _DiscoveryCache, *roots: Path, scan=_default_discover_packs):
+    if scan is not _default_discover_packs or scan is not loader.discover_packs:
+        return None  # Injected scanners may have inputs outside these roots.
     try:
-        trees = tuple((str(root), str(root.resolve()), _tree_fingerprint(root.resolve()))
-                      for root in dict.fromkeys(roots))
-    except OSError:
-        return None  # Unreadable/racing inputs use ordinary admission and its errors.
-    return (str(project_root), tuple(extra_pack_roots), raw_env, managed_inventory.identity,
-            bool(include_hidden), str(personal_packs_root) if personal_packs_root is not None else None, trees)
+        return tuple((root, cache.tree_fingerprint(root))
+                     for root in (Path(path).expanduser().resolve() for path in roots))
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return None  # Inputs we cannot fingerprint use ordinary admission and its errors.
 
 
-def reuse_pack_projection(projection: Callable[[], Any]) -> Any:
-    """Reuse a projection of default pack discovery inside the current scope.
+def reuse_pack_projection(projection: Callable[..., Any], *args: Any, inputs: Any = ()) -> Any:
+    """Reuse a pure projection of inputs that the caller has already admitted.
 
-    The projection must depend only on the default discovery roots. Explicit
-    discovery objects and projections with other inputs must not use this seam.
-    Managed custody is verified on every lookup, just as for pack metadata.
+    ``inputs`` describes all data read by the projection. Admission and live
+    filesystem checks belong before this call, even on a cache hit.
     """
     cache = _active_discovery_cache()
     if cache is None:
-        return projection()
-    from astrid.core.pack.source_setup import active_source_inventory
-
-    def fingerprint():
-        return _discovery_fingerprint(REPO_ROOT, (), active_source_inventory(), discover_packs)
-
-    before = fingerprint()
-    key = (projection, before)
-    if before is not None:
-        cached = cache.read(key)
-        if cached is not _CACHE_MISS:
-            return cached
-    result = projection()
-    if before is not None and before == fingerprint():
-        cache.publish(key, result)
+        return projection(*args)
+    key = (projection, inputs)
+    cached = cache.read(key)
+    if cached is not _CACHE_MISS:
+        return cached
+    result = projection(*args)
+    cache.publish(key, result)
     return result
 
 
@@ -400,6 +362,50 @@ def discover_canonical_packs_ordered(**kwargs: Any) -> tuple[CanonicalPackEntry,
     return tuple(item.entry for item in discover_canonical_pack_metadata(**kwargs))
 
 
+def _load_hivemind_pack(root: Path) -> PackDefinition | None:
+    manifest = root / "pack.yaml"
+    return loader.load_pack_manifest(manifest, expected_pack_id="hivemind") if manifest.is_file() else None
+
+
+def _compatible_pack_roots(
+    packs: list[PackDefinition], records: dict[str, Any], personal_packs_root: Path | None,
+    cache: _DiscoveryCache | None,
+) -> set[Path]:
+    inputs = None
+    if cache is not None:
+        # External compatibility depends on the live Python environment and
+        # import policy. Reuse only the bundled v3 case, where compatibility
+        # reduces to checking the already admitted identities.
+        try:
+            bundled = loader.packs_root().resolve()
+            hivemind = (Path(loader.__file__).resolve().parents[1] / "hivemind").resolve()
+            roots = tuple(pack.root.resolve() for pack in packs)
+            if (all(pack.schema_version == "3" for pack in packs)
+                    and all(root == hivemind or root.is_relative_to(bundled) for root in roots)):
+                from astrid.core.pack.source_setup import SOURCE_DECLARATIONS_ENV
+
+                declarations = os.environ.get(SOURCE_DECLARATIONS_ENV, "").strip()
+                declaration_paths = (Path(declarations),) if declarations else ()
+                policy = _discovery_fingerprint(cache, *declaration_paths)
+                if policy is not None:
+                    inputs = (tuple(pack.id for pack in packs), roots, bundled, personal_packs_root,
+                              declarations, policy)
+        except (OSError, RuntimeError, ValueError):
+            pass  # Ordinary compatibility retains the authority to report failures.
+        if inputs is not None:
+            key = ("bundled compatibility", loader._isolate_incompatible_packs, inputs)
+            cached = cache.read(key)
+            if cached is not _CACHE_MISS:
+                return cached
+
+    admitted, _ = loader._isolate_incompatible_packs(
+        packs, source_records=records, personal_packs_root=personal_packs_root)
+    admitted_roots = {pack.root.resolve() for pack in admitted}
+    if inputs is not None:
+        cache.publish(key, admitted_roots)
+    return admitted_roots
+
+
 @stage("pack discovery")
 def discover_pack_metadata(
     *,
@@ -540,19 +546,8 @@ def discover_pack_metadata(
     except ImportError:
         managed_inventory = None
 
-    cache = _active_discovery_cache()
-    fingerprint = None
-    if cache is not None and managed_inventory is not None:
-        # active_source_inventory verifies revision, cleanliness, manifest and
-        # tree digests even when an admitted inventory can be reused below.
-        fingerprint = _discovery_fingerprint(
-            project_root, extra_pack_roots, managed_inventory, scan,
-            include_hidden=include_hidden, personal_packs_root=selected_personal_root,
-        )
-        if fingerprint is not None:
-            cached = cache.read(fingerprint)
-            if cached is not _CACHE_MISS:
-                return cached
+    cache = (_active_discovery_cache() if managed_inventory is not None and not managed_inventory.sources
+             else None)
 
     managed_by_root = {
         source.pack_root.resolve(): source
@@ -730,20 +725,57 @@ def discover_pack_metadata(
 
     # Collect every layer before compatibility checks, so dependencies may
     # resolve across roots. Preserve the injectable scanner seam for callers.
-    source_packs = (loader.scan_packs(loader.packs_root(), strict=False, include_hidden=include_hidden,
-                                      _validate=False, personal_packs_root=selected_personal_root).packs
-                    if scan is _default_discover_packs else scan())
     # Hivemind is a runtime-owned core pack rather than an authorable pack
     # under ``astrid/packs``. Admit it through the same strict manifest loader
     # as source packs, and place it first so user/managed copies cannot shadow
     # the bundled implementation in registries that honor discovery order.
     core_hivemind_root = PACKAGE_ROOT / "core" / "hivemind"
-    core_hivemind_manifest = core_hivemind_root / "pack.yaml"
-    if core_hivemind_manifest.is_file():
-        core_hivemind = loader.load_pack_manifest(
-            core_hivemind_manifest,
-            expected_pack_id="hivemind",
-        )
+    source_root = loader.packs_root() if scan is _default_discover_packs else None
+    bundled_roots = (source_root, core_hivemind_root, canonical_pack._SCHEMA_ROOT) if source_root is not None else ()
+
+    def bundled_fingerprint():
+        return _discovery_fingerprint(cache, *bundled_roots, scan=scan)
+
+    before = bundled_fingerprint() if cache is not None else None
+    cache_key = ("bundled packs", scan, source_root, core_hivemind_root, include_hidden, selected_personal_root)
+    cached = _CACHE_MISS
+    scanned = None
+    if before is not None and (*cache_key, before) in cache:
+        if source_root is None:
+            cached = cache.read((*cache_key, before))
+        else:
+            from astrid.core.pack.transaction import group_read_lock
+
+            # Custody can recover an exchange. Recheck the snapshot under the
+            # original source guard and rescan there if the root changed.
+            with group_read_lock(source_root):
+                current = bundled_fingerprint()
+                if current == before:
+                    cached = cache.read((*cache_key, before))
+                if cached is _CACHE_MISS:
+                    before = current
+                    scanned = loader._scan_packs_locked(
+                        Path(source_root), strict=False, include_hidden=include_hidden,
+                        required_pack_ids=loader.REQUIRED_PACK_IDS, _validate=False,
+                        personal_packs_root=selected_personal_root,
+                    )
+
+    def scan_bundled_sources():
+        nonlocal scanned
+        if scanned is None:
+            scanned = loader.scan_packs(source_root, strict=False, include_hidden=include_hidden,
+                                        _validate=False, personal_packs_root=selected_personal_root)
+        return scanned.packs
+
+    if cached is _CACHE_MISS:
+        source_packs = (scan_bundled_sources() if source_root is not None else scan())
+        core_hivemind = _load_hivemind_pack(core_hivemind_root)
+        if (before is not None and (scanned is None or not scanned.quarantined)
+                and bundled_fingerprint() == before):
+            cache.publish((*cache_key, before), (source_packs, core_hivemind))
+    else:
+        source_packs, core_hivemind = cached
+    if core_hivemind is not None:
         _add(core_hivemind, "source")
     for pack in source_packs:
         if pack.id in {LOCAL_PACK_ID, "hivemind"}:
@@ -796,23 +828,14 @@ def discover_pack_metadata(
     if scan is _default_discover_packs:
         records = {item.pack.id: managed_by_root[item.pack.root.resolve()]
                    for item in discovered if item.pack.root.resolve() in managed_by_root}
-        admitted, _ = loader._isolate_incompatible_packs(
-            [item.pack for item in discovered], source_records=records,
-            personal_packs_root=selected_personal_root)
-        admitted_roots = {pack.root.resolve() for pack in admitted}
+        admitted_roots = _compatible_pack_roots(
+            [item.pack for item in discovered], records, selected_personal_root, cache)
         unique_roots: set[Path] = set()
         discovered = [item for item in discovered
                       if item.pack.root.resolve() in admitted_roots
                       and not (item.pack.root.resolve() in unique_roots
                                or unique_roots.add(item.pack.root.resolve()))]
-    result = tuple(discovered)
-    if cache is not None and fingerprint is not None and fingerprint == _discovery_fingerprint(
-        project_root, extra_pack_roots, managed_inventory, scan,
-        include_hidden=include_hidden, personal_packs_root=selected_personal_root,
-    ):
-        # Do not publish a snapshot if its inputs changed during admission.
-        cache.publish(fingerprint, result)
-    return result
+    return tuple(discovered)
 
 
 def discover_packs_ordered(
