@@ -1,0 +1,156 @@
+{
+  "actual_installed_dependencies": {
+    "lifecycle": {
+      "repo": "https://github.com/banodoco/runpod-lifecycle.git",
+      "sha": "9f88ef7640bc664f697112d966ecefa123d44340",
+      "version": "0.3.1.dev0"
+    },
+    "runtime": {
+      "repo": "/workspace/scratch/687e2e07963c/agent.env/runtime",
+      "schema_digest": "sha256:2c6a76e17b4441398ab91e3e9d6283a719fd5b08807447db9dbf2ecc5e1339a2",
+      "sha": "686ca695469bda48cd40a70824c4ccef2a137284"
+    },
+    "vibecomfy": {
+      "repo": "/workspace/scratch/687e2e07963c/agent.env/vibecomfy",
+      "sha": "55c3948212d23cf037fae8a4c6faad77d33e7279"
+    }
+  },
+  "actual_installed_python": "3.11.13 (main, Oct  7 2025, 15:34:32) [Clang 20.1.4 ]",
+  "all_four_source_inventory_receipts": [
+    {
+      "agent": {
+        "repo": "/tmp/r16-pack-delivery-proof",
+        "sha": "a82d483def612fb7aeb193aa9afa147976a64d64"
+      },
+      "agent_tree": "88035891b099eece84737d026c855c170cdbdd43",
+      "matches": 1038,
+      "path": "/workspace/library-files/r16-pack-delivery-687e2e07963c/accepted-pair-native/native-source-inventory.json",
+      "prefix": "/workspace/library-files/r16-pack-delivery-687e2e07963c/accepted-pair-native/program/versions/090bc6ca346e/py",
+      "sha256": "60b160f54f3f7e3ff75b71e0e3543e39987b832118d4c31dbc869f4f4988fe8a",
+      "venue": "public"
+    },
+    {
+      "agent": {
+        "repo": "/tmp/r16-pack-delivery-proof",
+        "sha": "a82d483def612fb7aeb193aa9afa147976a64d64"
+      },
+      "agent_tree": "88035891b099eece84737d026c855c170cdbdd43",
+      "matches": 1038,
+      "path": "/workspace/library-files/r16-pack-delivery-687e2e07963c/accepted-pair-native/candidate-source-inventory.json",
+      "prefix": "/workspace/library-files/r16-pack-delivery-687e2e07963c/accepted-pair-native/program/versions/b8167037f0ab/py",
+      "sha256": "e649f367b45a9aa3f3037734aac1e3c49070c9cdf06c7d82300f449d0074c961",
+      "venue": "candidate"
+    },
+    {
+      "agent": {
+        "repo": "/tmp/r16-pack-delivery-proof",
+        "sha": "a82d483def612fb7aeb193aa9afa147976a64d64"
+      },
+      "agent_tree": "88035891b099eece84737d026c855c170cdbdd43",
+      "matches": 1038,
+      "path": "/workspace/library-files/r16-pack-delivery-687e2e07963c/accepted-pair-stage/native-source-inventory.json",
+      "prefix": "/workspace/library-files/r16-pack-delivery-687e2e07963c/accepted-pair-stage/program/versions/e51fd817037d/py",
+      "sha256": "28b0bc8b302f6d8984e708b8fb9a03de17affa03871aa0737ede2da93d281e70",
+      "venue": "original-ten"
+    },
+    {
+      "agent": {
+        "repo": "/tmp/r16-pack-delivery-proof",
+        "sha": "baf6b73f297865f681bfe07ca2035a53168e79d5"
+      },
+      "agent_tree": "f2749ccd7dcfcd8526e4d6bacfdc53d54b114999",
+      "matches": 1038,
+      "path": "/workspace/scratch/687e2e07963c/accepted-pair-evidence/legacy-current-inventory.json",
+      "prefix": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/2be5c5132c6c/py",
+      "sha256": "efb82882c5cd6c072998b0a87ee21d48a8e051d60e73e4b8e86b7c0f5d2b31ed",
+      "venue": "actual-legacy"
+    }
+  ],
+  "base": "44d59774abb638c61ed0aae2b32653e62a5bcf66",
+  "changes_vs_old_pair": [
+    "astrid/resources/astrid_motion_release_source.json",
+    "evidence/r16-pack-delivery/README.md",
+    "evidence/r16-pack-delivery/hold-fix/README.md",
+    "evidence/r16-pack-delivery/hold-fix/originals-and-dependencies.json",
+    "evidence/r16-pack-delivery/hold-fix/proof-summary.json",
+    "evidence/r16-pack-delivery/hold-fix/source-regressions.json"
+  ],
+  "dependencies": {
+    "lifecycle": {
+      "head": "9f88ef7640bc664f697112d966ecefa123d44340",
+      "path": "/tmp/r16-pack-delivery-proof.env/lifecycle",
+      "tracked_changes": ""
+    },
+    "runtime": {
+      "head": "686ca695469bda48cd40a70824c4ccef2a137284",
+      "path": "/tmp/r16-pack-delivery-proof.env/runtime",
+      "tracked_changes": ""
+    },
+    "vibecomfy": {
+      "head": "55c3948212d23cf037fae8a4c6faad77d33e7279",
+      "path": "/tmp/r16-pack-delivery-proof.env/vibecomfy",
+      "tracked_changes": ""
+    }
+  },
+  "full_entry_audit": {
+    "bytes": 287562,
+    "path": "/workspace/scratch/687e2e07963c/accepted-pair-evidence/source-identity-preservation.json",
+    "sha256": "d3141babe21cc849c50a16683ab5538250025e8cda2035e4ef8899014067c95d"
+  },
+  "head": "a82d483def612fb7aeb193aa9afa147976a64d64",
+  "independent_review_program_unchanged": {
+    "bytes": 5935,
+    "path": "/workspace/scratch/687e2e07963c/accepted-pair-evidence/independent-review-archive-audit.json",
+    "sha256": "d0ecf5b2dd3360b660e1cb9d7ef5e4e5bb6cbd7ffbeffb43c51b1a8edf3e425b"
+  },
+  "initial_audit_attempt": "A blanket base-test equality check failed on the three accepted PACK-B-owned test files. The corrected audit preserves all DELIVERY-owned originals and separately binds all nine PACK-B files exactly to accepted B; no source, test, assertion or dependency was changed to satisfy this audit.",
+  "non_evidence_changes_vs_old_pair": [
+    "astrid/resources/astrid_motion_release_source.json"
+  ],
+  "noneditable_distribution_inventory_in_raw": true,
+  "obsolete_code_cleanup_every_home_data_entry_preserved": {
+    "bytes": 1810,
+    "path": "/workspace/scratch/687e2e07963c/accepted-pair-evidence/obsolete-code-cleanup.json",
+    "sha256": "b1cf61048f7071094dd3cb16252f3e9ca0e70e430ea807bed94ab59f10cbb574"
+  },
+  "old_failed_attempts_retained_archive_sha256": "f88755f8c1375fbabad19af56e029af59990a0e88f88e0e62e996dd7bcd9c179",
+  "original_base_test_helper_entries": 2532,
+  "original_base_test_helper_entries_unchanged_outside_pack_b": 2529,
+  "original_configs": {
+    "astrid/packs/runpod/pins.json": "100644 blob ca2733bca0460403903def3d0756bfb5fc0d1594",
+    "pyproject.toml": "100644 blob e2f86e5e47b6ce08a53b0c01f2a0d8ba43cf4aef",
+    "remotion/package-lock.json": "100644 blob 3d2c07bf447994de3b2b6021feb54e507b4b6dad",
+    "requirements/runtime.lock": "100644 blob 2d4c52fa65fb485f2fad90f8ba159a2d8d9f010f",
+    "runtime.lock.json": "100644 blob 0e2077c4f2365e793a808f8a52af88a03bfd4811",
+    "tests/conftest.py": "100644 blob 90dceb03604273cd81347326f6f8333bd4292411",
+    "tests/lanes.py": "100644 blob 652be8a03de8f239d91f2442b16510184e8b0492"
+  },
+  "pack_b": "0a3d4019db73f1dc55881af4b4637d9795e21d4c",
+  "pack_b_exact_paths": [
+    "astrid/core/pack/motion_source.py",
+    "astrid/packs/rendering/rendering/renderers/remotion/pack_revisions.py",
+    "astrid/packs/rendering/shared/element_contracts.ts",
+    "astrid/resources/astrid_motion_release_source.json",
+    "scripts/project_astrid_motion.py",
+    "scripts/project_astrid_motion_catalog.py",
+    "tests/packs/rendering/test_motion_projection_provenance.py",
+    "tests/scripts/test_motion_projection.py",
+    "tests/scripts/test_motion_projection_catalog.py"
+  ],
+  "pack_b_owned_original_test_paths": [
+    "tests/packs/rendering/test_motion_projection_provenance.py",
+    "tests/scripts/test_motion_projection.py",
+    "tests/scripts/test_motion_projection_catalog.py"
+  ],
+  "parents": [
+    "6ab3bd0741f48bba3c638ff269b9606e9d12129e",
+    "0a3d4019db73f1dc55881af4b4637d9795e21d4c"
+  ],
+  "reviewed_delivery_test_helper_entries_unchanged_outside_pack_b": 2533,
+  "source_pack_inventory": {
+    "bytes": 18157,
+    "path": "/workspace/library-files/r16-pack-delivery-687e2e07963c/accepted-pair-native/pack-source-inventory.json",
+    "sha256": "5e6f60da11d9c3a521c2132137b63c099d3a5d767df55fb0fd1e8e50acfb871a"
+  },
+  "tree": "88035891b099eece84737d026c855c170cdbdd43"
+}

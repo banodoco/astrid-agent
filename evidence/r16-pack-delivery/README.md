@@ -1,20 +1,30 @@
 # R16 installed default delivery evidence
 
-## Independent HOLD and current correction evidence
+## Current accepted-pair evidence
+
+The accepted K8/B0a3 refresh and fresh installed/source results are recorded in
+[the accepted-pair report](accepted-pair/README.md). It executes actual Agent
+`a82d483def612fb7aeb193aa9afa147976a64d64`, preserves the independently closed
+P1 correction, and records 35/35 producer, 83/83 PACK-B, 50 installed case
+records, plus all retained original-suite failures. Joined-plan and final
+release qualification remain separately scoped there.
+
+## Historical independent HOLD and correction evidence
 
 The earlier READY at PR701 head `78480533d25dd8731a7b1f04c737719dea2fc880`
 was withdrawn after independent review reproduced two P1 defects. The corrected
-product, exact current source identities, complete new proof, retained failures,
-and HOLD disposition are recorded in [the correction report](hold-fix/README.md).
-The original records below are historical candidate evidence, not the corrected
-current proof. PR701 remains draft under the explicit manager landing/READY HOLD.
+product, then-current source identities, complete proof, retained failures,
+and historical HOLD disposition are recorded in [the correction report](hold-fix/README.md).
+Both P1s were independently closed in Dev2032/7229296423. The accepted K8/B0a3
+refresh supersedes its old producer blocker; its installed Kf40 proof is not
+relabelled. The original records below remain historical candidate evidence.
 
 This directory records actual candidate evidence, not a Release 16 source freeze,
 served installer manifest, native R0/platform acceptance, or browser acceptance.
 The owning change is `p93/PACK-DELIVERY`, Agent PR 701. PACK-B separately owns the
 facade, independent release-source witness, readers, and generators in PR 700.
 
-## Completed current implementation proof
+## Historical original implementation proof
 
 The retrievable integration commit
 `baf6b73f297865f681bfe07ca2035a53168e79d5` (tree

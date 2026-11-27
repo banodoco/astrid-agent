@@ -1,0 +1,442 @@
+{
+  "actual_tested_agent": "a82d483def612fb7aeb193aa9afa147976a64d64",
+  "base_tests_rerun_this_refresh": false,
+  "collection_audit": {
+    "bytes": 251633,
+    "path": "/workspace/scratch/687e2e07963c/accepted-pair-evidence/final-collection-audit.json",
+    "sha256": "66ec851ae537d0fb09bf31005bde316d24c52bef4b113cc89fd8395afae776de"
+  },
+  "failure_audit": {
+    "bytes": 278989,
+    "path": "/workspace/scratch/687e2e07963c/accepted-pair-evidence/failure-and-producer-audit.json",
+    "sha256": "d82d5aa5742d946c5e57750dec3c59a567ba8e557bd9d2702c5c0804fac91aa5"
+  },
+  "original_lane_deselections": [
+    "tests/test_installer_lifecycle.py::test_real_backend_upgrade_binding_survives_fresh_controller_recovery"
+  ],
+  "pack_b": "0a3d4019db73f1dc55881af4b4637d9795e21d4c",
+  "producer": {
+    "command": {
+      "bytes": 3260,
+      "path": "/workspace/scratch/687e2e07963c/accepted-pair-evidence/final-producer-command.json",
+      "sha256": "ced6c768692fcf0f9f7c711ff6c8356381475ee108fb1382a4c4d7235b20bddc"
+    },
+    "commit": "8f392101717c18b2e84de425828de3985913a6f9",
+    "compiler_outputs": [
+      {
+        "bytes": 7957,
+        "effect": "am-burst",
+        "sha256": "82a1ff7fc5f39e907e73639ed697a3d83058d7f4e86b2239fa50fcb368bf42ae"
+      },
+      {
+        "bytes": 5210,
+        "effect": "am-callout",
+        "sha256": "6c7d05b0b59b461f87668b24761a01ba60b97bea88a4e93a8dab384a514d87a9"
+      },
+      {
+        "bytes": 30303,
+        "effect": "am-churn",
+        "sha256": "57087a91d82aa4cdb7bea14573bc2c90c6db68d48f7f2f442d23290fd9c6a96f"
+      },
+      {
+        "bytes": 40232,
+        "effect": "am-discord",
+        "sha256": "ef3067f02d5b787d057061707a428a684469f41d3f10603b3bc1f7542cc2d943"
+      },
+      {
+        "bytes": 4889,
+        "effect": "am-droste",
+        "sha256": "4071b7c0bf843412535a6c2c998cfa4e4bd0cc779b1c3eaab888c20b27a6e7ee"
+      },
+      {
+        "bytes": 7741,
+        "effect": "am-flap",
+        "sha256": "e7839ad1d4d5cc9ad6f63dc9cfb44f33d623ec1a4cda8eba68d24746da7c28cf"
+      },
+      {
+        "bytes": 16258,
+        "effect": "am-footage",
+        "sha256": "eb1132f265252479d1228ad062c1d218e616d9a8e2091a8a94dc7ff5f4eb69c7"
+      },
+      {
+        "bytes": 4566,
+        "effect": "am-orbit",
+        "sha256": "403f18a7aef060d78db731a21a2eeb2935d5f7b8b9a6ea6890414541bc5d29dd"
+      },
+      {
+        "bytes": 7203,
+        "effect": "am-orgchart",
+        "sha256": "5ad248904371790fa3960c5a5fb06cb0863642232c1f1a448ec6e9267a6a761e"
+      },
+      {
+        "bytes": 6002,
+        "effect": "am-pixel-shape",
+        "sha256": "3aa75d14bd31ee971f47a4177f139795d11cec912433049d4a602a62a799fb21"
+      },
+      {
+        "bytes": 3358,
+        "effect": "am-pixel-wipe",
+        "sha256": "52ef30749e6426f6f31c222579b3230eb4bf04b4e86487a28d28525b97f4012c"
+      },
+      {
+        "bytes": 17232,
+        "effect": "am-presenter",
+        "sha256": "f17eaa62aa574bdd12cb09790e0070c340325b6f603fabcb8ba9f25a4578a2bf"
+      },
+      {
+        "bytes": 6405,
+        "effect": "am-quote",
+        "sha256": "e0e6880049beb0cababd392756aa4aa2810303e334026dd380b9f9dbee361d36"
+      },
+      {
+        "bytes": 9099,
+        "effect": "am-seasons",
+        "sha256": "e4e32464355272129647afe28c231963c00676ddfad87e3d447eee685ac9406c"
+      },
+      {
+        "bytes": 15062,
+        "effect": "am-snap-plate",
+        "sha256": "8932b3ae7b45fcae5deaa64b747989131713630dbf73ef312f6dae0ad9ce39a6"
+      },
+      {
+        "bytes": 9869,
+        "effect": "am-sprite",
+        "sha256": "617894937b1e7d6eb02619ed4692a6d11867dd0e307518821a9027c042888caf"
+      },
+      {
+        "bytes": 8983,
+        "effect": "am-terminal",
+        "sha256": "07873372297d83b081b1348117978c2c7d0b163f61dd8579a16d17f62218774a"
+      },
+      {
+        "bytes": 6960,
+        "effect": "am-tweet",
+        "sha256": "c8c1d0ee0b89b2f5c25e64b09598be6ee3b142727020449d00deea44d305af90"
+      },
+      {
+        "bytes": 7411,
+        "effect": "am-type",
+        "sha256": "f7dff1b68e9b649b784b408c3d36e862ef177e564280879bfea242e8c6272372"
+      },
+      {
+        "bytes": 25427,
+        "effect": "am-ui-sketch",
+        "sha256": "9af25ffd3552fb68da4dc66c9e6385d15a7e23d1f69b0dd6b6a566c3f1ca835d"
+      }
+    ],
+    "exact_selected_executed_multiset": true,
+    "executed": 35,
+    "failed": 0,
+    "junit": {
+      "bytes": 5873,
+      "path": "/workspace/scratch/687e2e07963c/accepted-pair-evidence/final-producer.xml",
+      "sha256": "bc96ae0a23c45b9ccdd42945e0595611dfca6182ef3d91a001d528083008aac9"
+    },
+    "later_canonical_assertions": "Executed and passed at accepted K8; old Kf40 failure remains historical.",
+    "log": {
+      "bytes": 10334,
+      "path": "/workspace/scratch/687e2e07963c/accepted-pair-evidence/final-producer.log",
+      "sha256": "f5f247d8d2abeec999c2b4f46f91f96633ef647fbecab2943de97da40c688da1"
+    },
+    "passed": 35,
+    "skipped": 0
+  },
+  "retained_failure_comparison": [
+    {
+      "comparison": "Exact same failure message.",
+      "exact_message": true,
+      "node": "tests.packs.test_pack_quarantine::test_doctor_section_lists_quarantine_with_error_and_fix",
+      "same_observed_cause": true
+    },
+    {
+      "comparison": "Exact same failure message.",
+      "exact_message": true,
+      "node": "tests.packs.test_pack_quarantine::test_invalid_keyword_quarantines_only_that_pack",
+      "same_observed_cause": true
+    },
+    {
+      "comparison": "Exact same failure message.",
+      "exact_message": true,
+      "node": "tests.packs.test_pack_quarantine::test_invoking_a_quarantined_capability_is_typed_unavailable",
+      "same_observed_cause": true
+    },
+    {
+      "comparison": "Legacy schema fixture quarantines goodpack; diagnostic path/truncation differs.",
+      "exact_message": false,
+      "node": "tests.packs.test_pack_quarantine::test_quarantine_owner_matches_declared_bare_labels",
+      "same_observed_cause": true
+    },
+    {
+      "comparison": "Both capabilities absent from the legacy fixture; unordered set display may differ.",
+      "exact_message": false,
+      "node": "tests.packs.test_pack_quarantine::test_unapproved_capability_is_unavailable_without_stopping_host",
+      "same_observed_cause": true
+    },
+    {
+      "comparison": "Original expected refusal wording differs from actual retained copy-only handoff wording; temporary log path differs.",
+      "exact_message": false,
+      "node": "tests.test_boundary_handoff::test_cli_handled_handoff_refuses_policy_change_and_reports_saved_policy",
+      "same_observed_cause": true
+    },
+    {
+      "comparison": "Exact same failure message.",
+      "exact_message": true,
+      "node": "tests.test_installer_app_update::test_local_verification_rejects_mismatched_managed_version_identity[managed_by-discovery]",
+      "same_observed_cause": true
+    },
+    {
+      "comparison": "Exact same failure message.",
+      "exact_message": true,
+      "node": "tests.test_installer_app_update::test_local_verification_rejects_mismatched_managed_version_identity[managed_by-health]",
+      "same_observed_cause": true
+    },
+    {
+      "comparison": "Exact same failure message.",
+      "exact_message": true,
+      "node": "tests.test_installer_app_update::test_local_verification_rejects_mismatched_managed_version_identity[release-discovery]",
+      "same_observed_cause": true
+    },
+    {
+      "comparison": "Exact same failure message.",
+      "exact_message": true,
+      "node": "tests.test_installer_app_update::test_local_verification_rejects_mismatched_managed_version_identity[release-health]",
+      "same_observed_cause": true
+    },
+    {
+      "comparison": "Exact same failure message.",
+      "exact_message": true,
+      "node": "tests.test_installer_app_update::test_local_verification_rejects_mismatched_transaction_binding",
+      "same_observed_cause": true
+    },
+    {
+      "comparison": "Exact same failure message.",
+      "exact_message": true,
+      "node": "tests.test_installer_app_update::test_local_verification_rejects_missing_raw_managed_identity[None]",
+      "same_observed_cause": true
+    },
+    {
+      "comparison": "Exact same failure message.",
+      "exact_message": true,
+      "node": "tests.test_installer_app_update::test_local_verification_rejects_missing_raw_managed_identity[owner_health1]",
+      "same_observed_cause": true
+    },
+    {
+      "comparison": "Exact same failure message.",
+      "exact_message": true,
+      "node": "tests.test_installer_app_update::test_local_verification_rejects_missing_raw_managed_identity[owner_health2]",
+      "same_observed_cause": true
+    },
+    {
+      "comparison": "Exact same failure message.",
+      "exact_message": true,
+      "node": "tests.test_installer_lifecycle::test_real_c1_post_stop_failure_retries_fence_before_old_activation",
+      "same_observed_cause": true
+    },
+    {
+      "comparison": "Exact same failure message.",
+      "exact_message": true,
+      "node": "tests.test_installer_lifecycle::test_repair_skips_down_for_proven_dead_runtime_and_keeps_discovery",
+      "same_observed_cause": true
+    }
+  ],
+  "retained_untouched_base": "44d59774abb638c61ed0aae2b32653e62a5bcf66",
+  "suites": {
+    "final-focused": {
+      "collected_selected": 63,
+      "command": {
+        "bytes": 1645,
+        "path": "/workspace/scratch/687e2e07963c/accepted-pair-evidence/final-focused-command.json",
+        "sha256": "fdd1b05621dc0834885167ae6cc0189e5ccb619ac7ab412163f78a6d7a4a0652"
+      },
+      "exact_node_multiset": true,
+      "executed": 63,
+      "failures": [],
+      "junit": {
+        "bytes": 10376,
+        "path": "/workspace/scratch/687e2e07963c/accepted-pair-evidence/final-focused.xml",
+        "sha256": "ee9d5b1d3e1b92c37787b1b5519028f8780912413d72b0092bc5adbeadef41af"
+      },
+      "log": {
+        "bytes": 18369,
+        "path": "/workspace/scratch/687e2e07963c/accepted-pair-evidence/final-focused.log",
+        "sha256": "864fe27e0ada5c476126e1832d1462b247671ca686967bfbef90ea3dba43741e"
+      },
+      "passed": 63,
+      "skipped": []
+    },
+    "final-original-installer": {
+      "collected_selected": 452,
+      "command": {
+        "bytes": 1554,
+        "path": "/workspace/scratch/687e2e07963c/accepted-pair-evidence/final-original-installer-command.json",
+        "sha256": "6ffa3e9f24e92681fcdc2715333ee1908014b060b879c62fb8d62ee238ac5521"
+      },
+      "exact_node_multiset": true,
+      "executed": 452,
+      "failures": [
+        {
+          "kind": "failure",
+          "message": "astrid.installer.r0_stop.R0StopError: R0 requires the copy-only upgrade boundary. Run the install line again.",
+          "node": "tests/test_installer_lifecycle.py::test_real_c1_post_stop_failure_retries_fence_before_old_activation"
+        },
+        {
+          "kind": "failure",
+          "message": "astrid.installer.r0_stop.R0StopError: R0 requires the copy-only upgrade boundary. Run the install line again.",
+          "node": "tests/test_installer_lifecycle.py::test_repair_skips_down_for_proven_dead_runtime_and_keeps_discovery"
+        },
+        {
+          "kind": "failure",
+          "message": "AssertionError: Regex pattern did not match.\n  Expected regex: 'different Runtime, release|identity'\n  Actual message: \"Astrid's browser door did not become ready before the verification deadline; expected endpoint: <door disabled>; observed endpoint: <unavailable endpoint>; discovery runtime_instance_id: <unavailable>; pre-update runtime_instance_id: <unavailable>; last Runtime status/startup error: <none observed>.\"",
+          "node": "tests/test_installer_app_update.py::test_local_verification_rejects_mismatched_managed_version_identity[release-health]"
+        },
+        {
+          "kind": "failure",
+          "message": "AssertionError: Regex pattern did not match.\n  Expected regex: 'different Runtime, release|identity'\n  Actual message: \"Astrid's browser door did not become ready before the verification deadline; expected endpoint: <door disabled>; observed endpoint: <unavailable endpoint>; discovery runtime_instance_id: <unavailable>; pre-update runtime_instance_id: <unavailable>; last Runtime status/startup error: <none observed>.\"",
+          "node": "tests/test_installer_app_update.py::test_local_verification_rejects_mismatched_managed_version_identity[release-discovery]"
+        },
+        {
+          "kind": "failure",
+          "message": "AssertionError: Regex pattern did not match.\n  Expected regex: 'different Runtime, release|identity'\n  Actual message: \"Astrid's browser door did not become ready before the verification deadline; expected endpoint: <door disabled>; observed endpoint: <unavailable endpoint>; discovery runtime_instance_id: <unavailable>; pre-update runtime_instance_id: <unavailable>; last Runtime status/startup error: <none observed>.\"",
+          "node": "tests/test_installer_app_update.py::test_local_verification_rejects_mismatched_managed_version_identity[managed_by-health]"
+        },
+        {
+          "kind": "failure",
+          "message": "AssertionError: Regex pattern did not match.\n  Expected regex: 'different Runtime, release|identity'\n  Actual message: \"Astrid's browser door did not become ready before the verification deadline; expected endpoint: <door disabled>; observed endpoint: <unavailable endpoint>; discovery runtime_instance_id: <unavailable>; pre-update runtime_instance_id: <unavailable>; last Runtime status/startup error: <none observed>.\"",
+          "node": "tests/test_installer_app_update.py::test_local_verification_rejects_mismatched_managed_version_identity[managed_by-discovery]"
+        },
+        {
+          "kind": "failure",
+          "message": "AssertionError: Regex pattern did not match.\n  Expected regex: 'different Runtime|identity|owner health'\n  Actual message: \"Astrid's browser door did not become ready before the verification deadline; expected endpoint: <door disabled>; observed endpoint: <unavailable endpoint>; discovery runtime_instance_id: <unavailable>; pre-update runtime_instance_id: <unavailable>; last Runtime status/startup error: <none observed>.\"",
+          "node": "tests/test_installer_app_update.py::test_local_verification_rejects_missing_raw_managed_identity[None]"
+        },
+        {
+          "kind": "failure",
+          "message": "AssertionError: Regex pattern did not match.\n  Expected regex: 'different Runtime|identity|owner health'\n  Actual message: \"Astrid's browser door did not become ready before the verification deadline; expected endpoint: <door disabled>; observed endpoint: <unavailable endpoint>; discovery runtime_instance_id: <unavailable>; pre-update runtime_instance_id: <unavailable>; last Runtime status/startup error: <none observed>.\"",
+          "node": "tests/test_installer_app_update.py::test_local_verification_rejects_missing_raw_managed_identity[owner_health1]"
+        },
+        {
+          "kind": "failure",
+          "message": "AssertionError: Regex pattern did not match.\n  Expected regex: 'different Runtime|identity|owner health'\n  Actual message: \"Astrid's browser door did not become ready before the verification deadline; expected endpoint: <door disabled>; observed endpoint: <unavailable endpoint>; discovery runtime_instance_id: <unavailable>; pre-update runtime_instance_id: <unavailable>; last Runtime status/startup error: <none observed>.\"",
+          "node": "tests/test_installer_app_update.py::test_local_verification_rejects_missing_raw_managed_identity[owner_health2]"
+        },
+        {
+          "kind": "failure",
+          "message": "AssertionError: Regex pattern did not match.\n  Expected regex: 'different Runtime|identity'\n  Actual message: \"Astrid's browser door did not become ready before the verification deadline; expected endpoint: <door disabled>; observed endpoint: <unavailable endpoint>; discovery runtime_instance_id: <unavailable>; pre-update runtime_instance_id: <unavailable>; last Runtime status/startup error: <none observed>.\"",
+          "node": "tests/test_installer_app_update.py::test_local_verification_rejects_mismatched_transaction_binding"
+        },
+        {
+          "kind": "failure",
+          "message": "assert 'Astrid did NOT update: the installer refused to continue' in \"Astrid couldn't finish. Your work is kept.\\nThe R0 to R1 handoff is copy-only and cannot apply setup choice changes (...f.env/basetemp/1795822353231112634/test_cli_handled_handoff_refus0/home/.local/state/astrid-runtime/logs/install.log\\n\"",
+          "node": "tests/test_boundary_handoff.py::test_cli_handled_handoff_refuses_policy_change_and_reports_saved_policy"
+        }
+      ],
+      "junit": {
+        "bytes": 189657,
+        "path": "/workspace/scratch/687e2e07963c/accepted-pair-evidence/final-original-installer.xml",
+        "sha256": "6c668b0cae05278da99ee32a757d1faecaef62591e5039830a152154c7cfcea7"
+      },
+      "log": {
+        "bytes": 313291,
+        "path": "/workspace/scratch/687e2e07963c/accepted-pair-evidence/final-original-installer.log",
+        "sha256": "d80bc0e0fe8ad4514becf6c3ebb0846185c35563d98c952f7faae4da6501905c"
+      },
+      "passed": 441,
+      "skipped": []
+    },
+    "final-original-loader": {
+      "collected_selected": 36,
+      "command": {
+        "bytes": 1485,
+        "path": "/workspace/scratch/687e2e07963c/accepted-pair-evidence/final-original-loader-command.json",
+        "sha256": "c005e9985286ec2a38592df9979f132d900abf7238042bc5ba2891f8c9db10c1"
+      },
+      "exact_node_multiset": true,
+      "executed": 36,
+      "failures": [
+        {
+          "kind": "failure",
+          "message": "AssertionError: assert [] == ['goodpack']\n  \n  Right contains one more item: 'goodpack'\n  Use -v to get more diff",
+          "node": "tests/packs/test_pack_quarantine.py::test_invalid_keyword_quarantines_only_that_pack"
+        },
+        {
+          "kind": "failure",
+          "message": "AssertionError: assert 'keywords.1' in 'Pack manifest needs an explicit schema upgrade. Migrate to v3 and add it again.'",
+          "node": "tests/packs/test_pack_quarantine.py::test_invoking_a_quarantined_capability_is_typed_unavailable"
+        },
+        {
+          "kind": "failure",
+          "message": "AssertionError: assert QuarantinedPack(pack_id='goodpack', pack_dir=PosixPath('/tmp/r16-pack-delivery-proof.env/basetemp/1795822495816624538/..._0/packs/goodpack/pack.yaml'), error='Pack manifest needs an explicit schema upgrade. Migrate to v3 and add it again.') is None\n +  where QuarantinedPack(pack_id='goodpack', pack_dir=PosixPath('/tmp/r16-pack-delivery-proof.env/basetemp/1795822495816624538/..._0/packs/goodpack/pack.yaml'), error='Pack manifest needs an explicit schema upgrade. Migrate to v3 and add it again.') = quarantined_pack_for_capability('goodpack.echo', roots=(PosixPath('/tmp/r16-pack-delivery-proof.env/basetemp/1795822495816624538/test_quarantine_owner_matches_0/packs'),))",
+          "node": "tests/packs/test_pack_quarantine.py::test_quarantine_owner_matches_declared_bare_labels"
+        },
+        {
+          "kind": "failure",
+          "message": "AssertionError: assert 'keywords.1' in 'Pack manifest needs an explicit schema upgrade. Migrate to v3 and add it again.'",
+          "node": "tests/packs/test_pack_quarantine.py::test_doctor_section_lists_quarantine_with_error_and_fix"
+        },
+        {
+          "kind": "failure",
+          "message": "AssertionError: assert set() == {'goodpack.ec...odpack.extra'}\n  \n  Extra items in the right set:\n  'goodpack.extra'\n  'goodpack.echo'\n  Use -v to get more diff",
+          "node": "tests/packs/test_pack_quarantine.py::test_unapproved_capability_is_unavailable_without_stopping_host"
+        }
+      ],
+      "junit": {
+        "bytes": 11686,
+        "path": "/workspace/scratch/687e2e07963c/accepted-pair-evidence/final-original-loader.xml",
+        "sha256": "a0ad26456a9ff3b53275d11f3a30722fca0b0570313177b26901c6003298f9c1"
+      },
+      "log": {
+        "bytes": 36022,
+        "path": "/workspace/scratch/687e2e07963c/accepted-pair-evidence/final-original-loader.log",
+        "sha256": "2c75a90e88228ab90bb02f85a5d687b79df65491fad63d7536eb40f82801c154"
+      },
+      "passed": 31,
+      "skipped": []
+    },
+    "final-original-transactions": {
+      "collected_selected": 311,
+      "command": {
+        "bytes": 3078,
+        "path": "/workspace/scratch/687e2e07963c/accepted-pair-evidence/final-original-transactions-command.json",
+        "sha256": "18937612616f92c0f57f7f2753c9b9f563a55fdea0e72658d4f75928bc3bfe7d"
+      },
+      "exact_node_multiset": true,
+      "executed": 311,
+      "failures": [],
+      "junit": {
+        "bytes": 47797,
+        "path": "/workspace/scratch/687e2e07963c/accepted-pair-evidence/final-original-transactions.xml",
+        "sha256": "229545cc49c2228585f19a88b5fccf839844beede7e5a9b87516f7ce4c769bd8"
+      },
+      "log": {
+        "bytes": 95199,
+        "path": "/workspace/scratch/687e2e07963c/accepted-pair-evidence/final-original-transactions.log",
+        "sha256": "09e6c0221fc677da04afb564cc5991e95738dea4eea2ea1bb403040c6aafb3d5"
+      },
+      "passed": 311,
+      "skipped": []
+    },
+    "final-packb": {
+      "collected_selected": 83,
+      "command": {
+        "bytes": 1503,
+        "path": "/workspace/scratch/687e2e07963c/accepted-pair-evidence/final-packb-command.json",
+        "sha256": "6c317d5aead0ce1faf57b0bb000286b6a57bc6cc7e3bdb0ce4edf987c34a3be4"
+      },
+      "exact_node_multiset": true,
+      "executed": 83,
+      "failures": [],
+      "junit": {
+        "bytes": 14046,
+        "path": "/workspace/scratch/687e2e07963c/accepted-pair-evidence/final-packb.xml",
+        "sha256": "b75048a1e79e4a7271ac255563fbfd754b2dece037dc08d23027c7f28fffc46d"
+      },
+      "log": {
+        "bytes": 11399,
+        "path": "/workspace/scratch/687e2e07963c/accepted-pair-evidence/final-packb.log",
+        "sha256": "063f8b35e31fa23b3499e6a96bc736063e3d787880949ead29272fa629b3057b"
+      },
+      "passed": 83,
+      "skipped": []
+    }
+  }
+}
