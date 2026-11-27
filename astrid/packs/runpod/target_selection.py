@@ -274,7 +274,9 @@ class RunPodPreferences:
 def read_runpod_preferences(*, path: Path | None = None, client: Any = None) -> RunPodPreferences:
     """RunPod placement policy: ``machines.runpod`` in the user's generation settings document.
 
-    ``path`` names an old VibeComfy TOML whose ``[runpod]`` is imported into the document once.
+    ``path`` names an old VibeComfy TOML whose ``[runpod]`` is projected when
+    the Runtime document is absent. Reading preferences does not import them;
+    explicit settings migration and writers retain that responsibility.
     """
     from astrid.core.generation import settings
 

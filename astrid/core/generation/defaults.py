@@ -231,7 +231,7 @@ def listing(client: Any = None, registry: Any = None) -> dict[str, Any]:
     """Every slot with its resolved entry, where it came from, the others, its readiness, and how to edit it."""
     from astrid.core.generation import listing as generation_listing
 
-    snapshot = settings.read(client)
+    snapshot = settings.read_snapshot(client)
     candidates = pack_candidates(registry)
     entries = known_entries(registry)
     pins = snapshot.content.get("defaults", {})
