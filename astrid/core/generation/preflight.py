@@ -810,6 +810,51 @@ def install_offer_action(action, *, declined_endpoint=None, install_root=None):
     return result
 
 
+def _compute_binding(plan, observer, device):
+    """Reuse the existing read-only listener owner; never launch or adopt it."""
+    import os
+    import time
+    from pathlib import Path
+    from .target_launch import LaunchVerificationError, _match_process
+
+    deadline = time.monotonic() + 5.0
+    listeners = observer.listeners(plan.endpoint, deadline=deadline)
+    if len(listeners) != 1:
+        raise LaunchVerificationError("the selected port has no unique native listener")
+    process = _match_process(plan, listeners[0])
+    if plan.previous_process and plan.previous_process != (process.pid, process.birth_id):
+        raise LaunchVerificationError("the selected process birth changed")
+    # The existing observer is Linux-only. Read the exact child's bounded
+    # exec environment, not Agent Python's CUDA visibility/library settings.
+    raw = observer._read(Path("/proc") / str(process.pid) / "environ", 1024 * 1024)
+    environment = {}
+    for item in raw.split(b"\\0"):
+        if not item:
+            continue
+        key, separator, value = item.partition(b"=")
+        key = os.fsdecode(key)
+        if not separator or not key or key in environment:
+            raise LaunchVerificationError("the selected process environment is ambiguous")
+        environment[key] = os.fsdecode(value)
+    # Some ComfyUI launcher flags remap devices inside the running process.
+    # An exec-time environment cannot establish that effective remapping.
+    if any(arg.split("=", 1)[0] in {"--cuda-device", "--default-device"}
+           for arg in plan.argv):
+        raise LaunchVerificationError("the selected process remaps its CUDA device")
+    stats = _comfy_get_json(plan.endpoint, "/system_stats")
+    devices = stats.get("devices") if isinstance(stats, dict) else None
+    if (not isinstance(devices, list) or len(devices) != 1
+            or not isinstance(devices[0], dict)
+            or devices[0].get("type") != "cuda"
+            or type(devices[0].get("index")) is not int
+            or device != f"cuda:{devices[0]['index']}"):
+        raise LaunchVerificationError("the responder has not established the selected CUDA device")
+    if (observer.process(process.pid, deadline=deadline) != process
+            or observer.listeners(plan.endpoint, deadline=deadline) != (process,)):
+        raise LaunchVerificationError("listener identity changed during compute selection")
+    return process, environment
+
+
 def observe_compute_rung(ladder, selection, *, device, backend, required_operations):
     """Extend the observed prefix only for the selected local environment.
 
@@ -843,12 +888,41 @@ def observe_compute_rung(ladder, selection, *, device, backend, required_operati
         return unknown("interpreter_required", "Access to the selected ComfyUI environment could not be verified.")
 
     from . import gpu_environment
+    from .target_launch import (LaunchVerificationError, ProcLaunchObserver,
+                                prepare_target_launch, _revalidate)
 
-    # E owns selection validation, numeric/device evidence and diagnostics.
-    evidence = gpu_environment.probe_compute(
-        record.python, device=device, backend=backend,
-        required_operations=required_operations,
+    # E validates the actual operator/dtype request before any process runs.
+    request, reason, message = gpu_environment._compute_request(
+        record.python, device, backend, required_operations,
     )
+    if request is None:
+        return unknown(reason, message)
+    if _platform() != "linux":
+        return unknown("interpreter_binding_unverified",
+                       "Native listener-to-interpreter evidence is unavailable on this platform; compute has not been checked.")
+    try:
+        plan = prepare_target_launch(selection)
+        observer = ProcLaunchObserver()
+        before = _compute_binding(plan, observer, device)
+        _revalidate(plan, record)
+    except (LaunchVerificationError, OSError, ValueError, RuntimeError, TimeoutError):
+        return unknown("interpreter_binding_unverified",
+                       "The responder's exact Python and CUDA device could not be verified. Keep the endpoint; check its selected environment.")
+    # E owns numeric/device evidence and diagnostics. Its process is scoped
+    # to the verified selected interpreter and native environment, never a
+    # fallback or the Agent's interpreter.
+    evidence = gpu_environment.probe_compute(
+        plan.python, device=device, backend=backend,
+        required_operations=required_operations, environ=before[1],
+    )
+    try:
+        _revalidate(plan, record)
+        after = _compute_binding(plan, observer, device)
+        if before != after:
+            raise LaunchVerificationError("the selected compute binding changed")
+    except (LaunchVerificationError, OSError, ValueError, RuntimeError, TimeoutError):
+        return unknown("compute_binding_changed",
+                       "The selected listener or environment changed during the compute check; recheck the same selection.")
     if evidence["ok"] is True:
         return with_rung(result, "computes", "observed", observation=evidence)
     reason = evidence["cause"] or "probe_failed"
@@ -869,7 +943,8 @@ def compute_next_action(ladder, *, prior_action, placement, device, backend, req
     if stop["reason"] == "backend_owned_elsewhere":
         return make_next_action("person", stop["message"])
     if stop["reason"] in {"interpreter_required", "device_required", "operations_required",
-                          "unsupported_backend", "selection_required"}:
+                          "unsupported_backend", "selection_required",
+                          "interpreter_binding_unverified"}:
         return make_next_action("person", stop["message"])
     argv = ["astrid", "generate", "targets", "--placement", placement,
             "--through", "computes", "--compute-backend", backend]
