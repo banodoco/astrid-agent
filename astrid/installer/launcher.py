@@ -168,6 +168,19 @@ _RUNNER = '''import json, os, re, sys
 from pathlib import Path
 
 root = Path(__file__).resolve().parent
+if sys.argv[1:2] == ["install"] and not any(arg in {"--help", "-h"} for arg in sys.argv[2:]):
+    pending = root / "update-transaction.json"
+    transaction = json.loads(pending.read_text(encoding="utf-8")) if pending.exists() else {}
+    if (transaction.get("step") not in {"complete", "rolled_back"}
+            and (transaction.get("step") == "deferred" or "deferred_update" in transaction)):
+        # R15's installer does not understand deferred intent and would enter
+        # its old rollback/stop path. Never import it for this request.
+        raise SystemExit("A prepared Astrid update is pending. After the old Runtime exits normally, "
+                         "start Astrid with the astrid command to continue it before installing or removing anything.")
+if (not any(arg in {"--help", "-h", "--version"} for arg in sys.argv[1:])
+        and sys.argv[1:2] not in (["credential"], ["install"], ["doctor"], ["help"],
+                                 ["auth"], ["login"], ["setup"], ["status"], ["logout"], ["revoke"])):
+    launch_continuation(root)
 name = (root / "current").read_text(encoding="utf-8").strip()
 if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", name):
     raise SystemExit("Astrid's current version pointer is invalid.")
@@ -189,6 +202,30 @@ if sys.argv[1:2] == ["credential"]:
     raise SystemExit(main(sys.argv[2:]))
 replace_process([python, "-X", "utf8", "-I", "-m", "astrid.omp_agent", *sys.argv[1:]], env)
 '''
+
+
+def publish_continuation(root: Path) -> Path:
+    """Publish the ordinary terminal entry before accepting deferred intent."""
+    import inspect
+    from runtime_protocol import platform
+    from .core import absolute
+    from .deferred import launch_continuation
+
+    root = absolute(root)
+    runner = absolute(root / "run_astrid.py")
+    source = (Path(_process.__file__).read_text(encoding="utf-8") + "\n"
+              + inspect.getsource(launch_continuation) + "\n" + _RUNNER)
+    fd, pending = platform.private_temporary(root, ".run_astrid.py.")
+    temporary = Path(pending)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+            stream.write(source)
+            stream.flush()
+            os.fsync(stream.fileno())
+        platform.durable_replace(temporary, runner)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return runner
 
 
 def publish_runtime_runner(root: Path) -> Path:
@@ -338,8 +375,7 @@ def install(root: Path) -> tuple[Path, ...]:
     runner = root / "run_astrid.py"
     # The selected package may predate the process helper. Embed it so the
     # runner also works after a failed update or rollback.
-    process_source = Path(_process.__file__).read_text(encoding="utf-8")
-    runner.write_text(process_source + "\n" + _RUNNER, encoding="utf-8", newline="\n")
+    publish_continuation(root)
     if os.name == "nt":
         launcher = root / "run-astrid.cmd"
         launcher.write_text(

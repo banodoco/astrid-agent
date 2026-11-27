@@ -457,6 +457,9 @@ def run_update(root: Path, backend: Backend, manifest: dict, app: dict,
     manifest = _at_step("validate-manifest", validate_manifest, manifest)
     repair = not _at_step("select-operation", update_required,
                           "install", manifest, old, managed_by=backend.managed_by)
+    legacy = getattr(backend, "_legacy_linux_update", None)
+    if not repair and callable(legacy) and legacy(old):
+        _at_step("preflight-update", backend.preflight_update, old, data)
     realm = _at_step("validate-selection", backend.workspace, old, data)
     context = {"owner": "local-update", "app": app}
     installer = Installer(root, data, backend, say=say, managed_by=backend.managed_by)
@@ -620,6 +623,15 @@ def _execute_locked(action: dict, root: Path, backend: Backend, *,
         raise LocalUpdateStepError("validate-manifest", "The target install manifest is invalid.")
     if app.get("manifest") != manifest:
         raise LocalUpdateStepError("validate-manifest", "The App and Runtime update manifests do not match.")
+    pending = pending_transaction(root)
+    if pending and pending.get("deferred_update"):
+        raise LocalUpdateStepError("recover-journal", "Start Astrid through its normal launcher to continue the deferred update.")
+    old = current(root)
+    legacy = getattr(backend, "_legacy_linux_update", None)
+    if callable(legacy) and legacy(old):
+        old, data, _identity = _at_step("validate-selection", _selection, root, backend)
+        if update_required("install", manifest, old, managed_by=backend.managed_by):
+            _at_step("preflight-update", backend.preflight_update, old, data)
     backend = _finish_storage_move(root, backend)
     hooks = HookClient(app, stdin, stdout)
     if pending_transaction(root):

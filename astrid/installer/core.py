@@ -293,13 +293,23 @@ def switch(root: Path, version: Version) -> None:
 
 @contextmanager
 def update_context(backend, transaction: dict, *, recovering: bool = False):
-    """Expose the existing transaction solely for restore selection validation."""
+    """Keep transaction context and any admitted manager alive through C2."""
     previous = getattr(backend, "_update_transaction", None)
+    retained = getattr(backend, "_update_authority", None)
     backend._update_transaction = (transaction, recovering)
-    try:
-        yield
-    finally:
-        backend._update_transaction = previous
+    with ExitStack() as lifetime:
+        backend._update_authority = retained if retained is not None else lifetime
+        try:
+            yield
+        finally:
+            backend._update_transaction = previous
+            backend._update_authority = retained
+
+
+def _check_update_manager(backend):
+    check = getattr(backend, "check_update_manager", None)
+    if callable(check):
+        check()
 
 
 def rollback_transaction(root: Path, data: Path, backend, transaction: dict, *,
@@ -321,8 +331,10 @@ def rollback_transaction(root: Path, data: Path, backend, transaction: dict, *,
         else:
             stop_version = candidate or old
         stop(stop_version, data)
+        _check_update_manager(backend)
         save("recovering")
         if backup is not None and restore_workspace and kind == "migration":
+            _check_update_manager(backend)
             backend.restore(old, data, realm, backup)
         # A same-schema candidate can have installed the history guard layer
         # even when no workspace backup was taken. Replay after restore as well:
@@ -352,10 +364,13 @@ def rollback_transaction(root: Path, data: Path, backend, transaction: dict, *,
             restore_pre_restamp_boot_manifest(
                 Path(data) / "runtime", remove_if_missing=not (backup is not None and restore_workspace and kind == "migration"),
             )
+        _check_update_manager(backend)
         switch_old(old, candidate)
         save("rollback_selected")
         try:
+            _check_update_manager(backend)
             activate_old(old, data, realm)
+            _check_update_manager(backend)
         except Exception as exc:   # noqa: BLE001 - add the recovery remedy without losing the cause
             if warning is None or is_lifecycle_refusal(exc):
                 raise
@@ -381,6 +396,8 @@ def recover_transaction(root: Path, data: Path, backend, *, stop, switch_old,
             or not re.fullmatch(r"[0-9a-f]{32}", transaction.get("operation_id", ""))
             or absolute(transaction["data_root"]) != absolute(data)):
         raise ValueError("The interrupted update identity does not match this installation.")
+    if transaction.get("step") == "deferred":
+        raise ValueError("The deferred update must continue through its normal launch entry, not rollback.")
     if transaction.get("transaction_kind") not in {None, "migration", "app"}:
         raise ValueError("The interrupted update transaction kind is invalid.")
     persist_callback = save
@@ -388,12 +405,19 @@ def recover_transaction(root: Path, data: Path, backend, *, stop, switch_old,
         installer = Installer(root, data, backend)
 
         def persist_default(step, **details):
-            installer._save_update(transaction, step, **details)
+            return installer._save_update(transaction, step, **details)
         persist_callback = persist_default
 
     def write_step(step, **details):
+        if type(transaction.get("legacy_systemd_enabled")) is bool:
+            details.setdefault("legacy_systemd_enabled", transaction["legacy_systemd_enabled"])
         transaction.update(step=step, **details)
-        persist_callback(step, **details)
+        persisted = persist_callback(step, **details)
+        if isinstance(persisted, dict):
+            # The existing writer adds its activation-lock binding. Carry its
+            # actual output into the retained C2 context, not a fresh disk read
+            # that could silently adopt a concurrently changed journal.
+            transaction.update(persisted)
 
     # New journals publish staged before any stop or workspace backup. The old
     # v1 migration writer published staged only after stop and backup, so it
@@ -401,6 +425,11 @@ def recover_transaction(root: Path, data: Path, backend, *, stop, switch_old,
     if (transaction.get("step") == "staged"
             and transaction.get("transaction_kind") in {"migration", "app"}
             and transaction.get("backup") is None):
+        if transaction.get("deferred_update"):
+            from .deferred import close_staged
+
+            close_staged(backend, transaction, lambda: write_step("complete", outcome="recovered_before_stop"))
+            return
         write_step("complete", outcome="recovered_before_stop")
         return
     realm = transaction["realm"]
@@ -410,13 +439,31 @@ def recover_transaction(root: Path, data: Path, backend, *, stop, switch_old,
         retained = absolute(backup["root"])
         if retained.parent != absolute(root / "backups"):
             raise ValueError("The interrupted update backup is outside this installation.")
-    install_runtime(root)
     publish = getattr(backend, "publish_launch_admission", None)
-    if publish is not None:
-        publish(current(root) or Version.load(transaction["old"]), data)
+    selected = current(root) or Version.load(transaction["old"])
+    legacy_check = getattr(backend, "_legacy_linux_update", None)
+    defer_publication = bool(transaction.get("deferred_update")) or callable(legacy_check) and (
+        legacy_check(selected) or legacy_check(Version.load(transaction["old"]))
+        and transaction.get("transaction_kind") in {None, "migration"})
+
+    def publish_recovery_launcher():
+        install_runtime(root)
+        if publish is not None:
+            publish(selected, data)
+
+    recovery_stop = stop
+    if defer_publication:
+        # An uncertain R15 stop is re-admitted from live supervisor/quiescence
+        # before changing launchers, the loaded action or the recovery journal.
+        # No old CLI and no second label-based systemd stop are involved.
+        def recovery_stop(version, workspace):
+            stop(version, workspace)
+            publish_recovery_launcher()
+    else:
+        publish_recovery_launcher()
     say("Recovering the interrupted Astrid update.")
     rollback_transaction(
-        root, data, backend, transaction, stop=stop, switch_old=switch_old,
+        root, data, backend, transaction, stop=recovery_stop, switch_old=switch_old,
         activate_old=activate_old, restore_workspace=restore_workspace,
         save=write_step, say=say,
     )
@@ -490,7 +537,7 @@ class Installer:
         except Exception:  # noqa: BLE001 - skill setup remains best effort
             self.say("Couldn't add Astrid's skill to your agents; see the log.")
 
-    def _save_update(self, transaction: dict, step: str, **details) -> None:
+    def _save_update(self, transaction: dict, step: str, **details) -> dict:
         if step in {"switched", "rollback_selected"}:
             import sys
 
@@ -526,6 +573,7 @@ class Installer:
             job["transaction_id"] = transaction["operation_id"]
             marker["update_job"] = job
             write_json(marker_path, marker)
+        return transaction
 
     def _recover_update(self) -> None:
         """Replay rollback before inspecting mutable support or choosing an operation."""
@@ -563,7 +611,7 @@ class Installer:
                                  switch_candidate, switch_old, activate, activate_old,
                                  backup=None, migrate=None, restore_workspace: bool = True,
                                  kind: str = "migration",
-                                 transaction_context: dict | None = None) -> Version:
+                                 transaction_context: dict | None = None, resume=None) -> Version:
         """Run the one durable stop/switch/ready/rollback policy for updates.
 
         ``prepare`` stages and validates while the old owner is still running.
@@ -575,6 +623,9 @@ class Installer:
 
             raise R0StopError("R0 cannot enter the legacy in-place update transaction; use the copy-only upgrade boundary.")
         with ExitStack() as authority:
+            legacy_context = getattr(self.backend, "legacy_update_stop", None)
+            legacy_stop = (authority.enter_context(legacy_context(old, self.data, realm=realm))
+                           if callable(legacy_context) else None)
             candidate = prepare()
             transaction = {
                 "format": "astrid-install-update/v1", "operation_id": uuid.uuid4().hex,
@@ -582,6 +633,18 @@ class Installer:
                 "old": old.document(), "realm": realm, "backup": None,
                 "candidate": candidate.document(),
             }
+            if resume is not None:
+                import copy
+
+                if (legacy_stop is None or legacy_stop.owner is not None or candidate != resume.candidate
+                        or old != resume.old or realm != resume.transaction["realm"]):
+                    raise ValueError("The deferred continuation no longer matches its quiescent transaction.")
+                resume.validate(legacy_stop.inspection)
+                legacy_stop.on_validate = resume.validate
+                transaction = copy.deepcopy(resume.transaction)
+            if legacy_stop is not None and legacy_stop.systemd_enabled is not None:
+                # Configuration preference only; never serialized stop authority.
+                transaction["legacy_systemd_enabled"] = legacy_stop.systemd_enabled
             log = getattr(self.backend, "log", None)
             if isinstance(log, (str, Path)):
                 transaction["log_path"] = str(absolute(Path(log)))
@@ -592,15 +655,26 @@ class Installer:
                 # Adapter-owned recovery context lives in the shared journal,
                 # and is durable before any owner stop or checkout movement.
                 transaction["transaction_context"] = transaction_context
-            self._save_update(transaction, "staged")
             authority.enter_context(update_context(self.backend, transaction))
-            install_runtime(self.root)
             publish = getattr(self.backend, "publish_launch_admission", None)
-            if publish is not None:
-                publish(old, self.data)
-            # Record intent before the fenced stop: recovery can distinguish a
-            # pure staged image from a stop that may have completed on crash.
-            self._save_update(transaction, "stopping")
+            journal_started = False
+
+            def publish_stop_intent():
+                nonlocal journal_started
+                self._save_update(transaction, "staged")
+                journal_started = True
+                if legacy_stop is None:
+                    install_runtime(self.root)
+                    if publish is not None:
+                        publish(old, self.data)
+                # R15 supervisor admission invokes this only inside Runtime's
+                # final fence, before its stopping marker/first manager action.
+                self._save_update(transaction, "stopping")
+
+            if legacy_stop is None:
+                publish_stop_intent()
+            else:
+                legacy_stop.on_admitted = publish_stop_intent
 
             def rollback_after(failure):
                 try:
@@ -622,29 +696,49 @@ class Installer:
             try:
                 stop(old, self.data)
             except (Exception, KeyboardInterrupt) as failure:
+                if legacy_stop is not None and not journal_started:
+                    # No admission means no transaction/launcher/selection
+                    # writes and no rollback action against the live owner.
+                    raise
                 if is_lifecycle_refusal(failure):
                     try:
                         self._save_update(transaction, "complete", outcome="stop_refused")
                     except (Exception, KeyboardInterrupt) as journal_failure:
                         failure.add_note(
                             f"Could not durably cancel the staged update after the stop refusal: {journal_failure!r}")
-                else:
+                elif legacy_stop is None or legacy_stop.consumed:
                     rollback_after(failure)
+                # A supervisor request may have acted before a timeout. Keep
+                # the existing stopping journal for re-admission on retry;
+                # do not issue a second stop or activate over uncertain exit.
                 raise
+            finally:
+                if legacy_stop is not None:
+                    legacy_stop.on_admitted = None
 
             backup_image = None
             try:
+                _check_update_manager(self.backend)
+                if legacy_stop is not None:
+                    install_runtime(self.root)
+                    if publish is not None:
+                        publish(old, self.data)
                 self._save_update(transaction, "stopped")
                 if backup is not None:
+                    _check_update_manager(self.backend)
                     backup_image = backup(old, self.data, realm)
                     transaction["backup"] = backup_image
                     self._save_update(transaction, "backed_up", backup=backup_image)
                 if migrate is not None:
+                    _check_update_manager(self.backend)
                     migrate(candidate, self.data, realm)
                     self._save_update(transaction, "migrated")
+                _check_update_manager(self.backend)
                 switch_candidate(candidate)
                 self._save_update(transaction, "switched")
+                _check_update_manager(self.backend)
                 activate(candidate, self.data, realm)
+                _check_update_manager(self.backend)
                 install_launcher(self.root)
                 self._save_update(transaction, "verified")
                 self._last_update_backup = backup_image
@@ -689,8 +783,13 @@ class Installer:
             return self._run_locked(mode, manifest, delete_data=delete_data, bundle=bundle)
 
     def _run_locked(self, mode: str, manifest: dict, *, delete_data: bool = False,
-                    bundle: Path | None = None) -> None:
-        if mode not in {"doctor", "uninstall"}:
+                    bundle: Path | None = None, resume=None) -> None:
+        pending = pending_transaction(self.root)
+        if resume is None and mode in {"install", "update"} and pending and pending.get("step") == "deferred":
+            from .deferred import resume_locked
+
+            return resume_locked(self.backend, pending)
+        if resume is None and mode not in {"doctor", "uninstall"}:
             self._recover_update()
         old = current(self.root)
         if old is not None and not old.python.is_file():
@@ -799,6 +898,13 @@ class Installer:
         if not old and has_workspace and not reinstall:
             raise ValueError("An existing workspace has no usable source profile; repair its profile before installing.")
         if old:
+            if resume is None:
+                legacy_check = getattr(self.backend, "_legacy_linux_update", None)
+                if callable(legacy_check) and legacy_check(old):
+                    from .deferred import prepare as defer_update
+
+                    if defer_update(self, old, manifest):
+                        return
             new = release_name(install_release(manifest))
             same_schema = False
             prepared_candidate: Version | None = None
@@ -808,7 +914,7 @@ class Installer:
                 if prepared_candidate is not None:
                     return prepared_candidate
                 with self._phase(f"Downloading {new}"):
-                    candidate = self.backend.stage(manifest, self.root, self.data)
+                    candidate = resume.candidate if resume is not None else self.backend.stage(manifest, self.root, self.data)
                 with self._phase("Checking it"):
                     self.backend.validate_candidate(candidate, self.data, realm)
                     same_schema = schema_unchanged(self.backend, old, candidate, realm)
@@ -862,6 +968,10 @@ class Installer:
                 raise ValueError("The selected workspace identity is unavailable.")
             # Choose the workspace policy before constructing the transaction;
             # the shared runner receives its callbacks as concrete values.
+            legacy_context = getattr(self.backend, "legacy_update_stop", None)
+            if callable(legacy_context):
+                with legacy_context(old, self.data, realm=realm):
+                    pass  # Read-only refusal before even isolated staging.
             prepare()
             self._run_update_transaction(
                 old, realm, prepare=prepare, stop=self._stop,
@@ -871,11 +981,13 @@ class Installer:
                     previous, selected_realm["realm_id"]),
                 backup=None if same_schema else back_up,
                 migrate=None if same_schema else migrate, kind="migration",
+                resume=resume,
             )
             backup_image = getattr(self, "_last_update_backup", None)
             if backup_image:
                 self.say(f"A backup of your workspace is kept at {backup_image['root']}.")
-            self._ready()
+            if resume is None:
+                self._ready()
             return
 
         candidate_version: Version | None = None
