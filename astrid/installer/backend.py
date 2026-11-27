@@ -1700,8 +1700,12 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         # never a switch that disables delivery or its selected authority.
         code = ("import importlib.util,json; "
                 "print(json.dumps(importlib.util.find_spec('astrid.installer.default_packs') is not None))")
-        return json.loads(self.run([version.python, "-I", "-c", code],
-                                   extra_env=version.env, separate_stderr=True))
+        supported = json.loads(self.run([version.python, "-I", "-c", code],
+                                        extra_env=version.env, separate_stderr=True))
+        if not supported and ((version.root / "default-packs-prepared.json").exists()
+                              or (version.root / "a/astrid/installer/default_packs.py").exists()):
+            raise ValueError("The staged default-delivery adapter is missing from the installed version.")
+        return supported
 
     def default_packs_need_repair(self, version: Version) -> bool:
         if not self._has_default_delivery(version):

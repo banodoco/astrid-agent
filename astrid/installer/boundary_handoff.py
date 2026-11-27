@@ -211,6 +211,16 @@ class BoundaryHandoff:
             return value
         value["phase"] = "rolling_back"
         self._save(value)  # Covers interruptions in rollback itself.
+
+        def restore_selection():
+            # Registration recovery invokes this only after its existing R1
+            # stop/owner-lock fence. Restore the canonical defaults before the
+            # retained R0 pointer is selected and its existing owner restarts.
+            rollback_defaults = getattr(self.backend, "rollback_default_packs", None)
+            if rollback_defaults is not None and value.get("candidate"):
+                rollback_defaults(Version.load(value["old_version"]), Version.load(value["candidate"]))
+            self._restore_selection(value)
+
         if os.path.lexists(self.registration.journal):
             bound = read_json(absolute(self.registration.journal))
             for key in ("program_root", "r1_data_root", "realm_id", "candidate", "old_pointer"):
@@ -218,7 +228,7 @@ class BoundaryHandoff:
                     raise ValueError("R1 registration differs from its handoff; recovery intent retained.")
             if bound.get("r0_data_root") != value["r0_data_root"] or bound.get("r0_realm") != value["r0_realm"]:
                 raise ValueError("R1 registration differs from its retained roots.")
-            self.registration.recover(restore_selection=lambda: self._restore_selection(value))
+            self.registration.recover(restore_selection=restore_selection)
         else:
             # No registration was published, or B already finished switch-back.
             # Do not infer this from a receipt, pointer, or process discovery.
@@ -228,7 +238,7 @@ class BoundaryHandoff:
             lock = (r0_stop.owner_lock(Path(value["r1_data_root"]) / "runtime/realms" / value["realm_id"])
                     if os.path.lexists(value["r1_data_root"]) else nullcontext())
             with lock:
-                self._restore_selection(value)
+                restore_selection()
                 if os.path.lexists(r0_stop._marker_path(self.service)):
                     r0_stop.recover_r0(self.service)
                 else:
@@ -367,6 +377,9 @@ class BoundaryHandoff:
                 value["phase"] = "switching"
                 self._save(value)
                 self._restore_selection(value)  # Validate the unchanged old snapshots.
+                apply_defaults = getattr(self.backend, "apply_default_packs", None)
+                if apply_defaults is not None:
+                    apply_defaults(candidate, old)
                 for path, content in zip((self.root / "install.json", self.service.selection, self.root / "current"),
                                          self._records(value)):
                     registration._publish(path, content, exclusive=False)

@@ -1,0 +1,22 @@
+{
+  "agent_candidate": "40c84fc7eccfb7f8c4c927a3899d0da3368961bb",
+  "delivery_parent": "175dcfa84b02fed9621849dd69d6932f8859ba47",
+  "esbuild_api_sha256": "bce772de103e1cbb118f1b7313916caa81f0e85461b3b6e3531607e7ed75ec85",
+  "esbuild_native_sha256": "c638273fcf95573ca74af586677800b4dd874c55f8f945adb54316d6902ba14b",
+  "node": {
+    "sha256": "43d6cf63f2a460b463eba6b19df5e9a259771c56f11b5130e04178a15bb99490",
+    "version": "v20.19.4"
+  },
+  "pack_b_parent": "4210932093c8c34838dbe3c7e11a14a3536c2411",
+  "source_files": {
+    "astrid/core/pack/loader.py": "57a330278ed1e253874e555515317aa54e0892ec602f7a1a4f2f72da4e003166",
+    "astrid/core/pack/release_manifest.py": "9a98a9e7b3d54b1474f6f80fe7478af08b661cdb5c083e7eb7b5f6d71e9323de",
+    "astrid/core/pack/transaction.py": "704058d8e319b1acb0cce98f9468921972202d2ee27a5bcba2084652cf99872c",
+    "astrid/installer/default_packs.py": "2e23bdd3dd39e1a24e2e9f4a62e3e0c3e8515101570c20de4a2bb8e16f73f999",
+    "astrid/packs/rendering/shared/element_contracts.ts": "020cd57e1e3c81717eb0715c0710724522f82f95e6ec609dc86466f7ac6dc341",
+    "astrid/resources/astrid_motion_release_source.json": "a14a6152dbb14e4c73f5ca539fc1eb2219f7c8335be0085ddc6db34fdb3b6f9b",
+    "remotion/package-lock.json": "5d8ccd9d1cd6024edd57657bfd9caac672b50c4c05f8bc58ac8552c092ca0e98",
+    "requirements/runtime.lock": "9469f51df94631ea83a0380e362bc92918efcdcf59c2e263b7e8dece0ec40066",
+    "tests/conftest.py": "8b79adcc7b692a232721ea2c4fc1065ec39945c00c935557cdb0b7f153d76c4c"
+  }
+}

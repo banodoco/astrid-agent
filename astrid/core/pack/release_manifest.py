@@ -118,12 +118,15 @@ def verify_release_default(path: Path, expected: Mapping[str, str]) -> dict[str,
                 or type(admission.get("committedRevision")) is not int
                 or not 1 <= admission["committedRevision"] <= snapshot.revision
                 or not isinstance(admission.get("transactionId"), str)
-                or not re.fullmatch(r"[0-9a-f]{32}", admission["transactionId"])):
+                or not re.fullmatch(r"[0-9a-f]{32}", admission["transactionId"])
+                or (admission["committedRevision"] == snapshot.revision
+                    and admission["transactionId"] != snapshot.transaction_id)):
             raise PackInstallError("pin_mismatch", "Default source or canonical admission differs from the selected release.")
         _retained_build_records(path.parent, {path.name: admission}, snapshot.revision)
         raw = (path / ".build/definitions.json").read_bytes()
         record = json.loads(raw)
-        if (hashlib.sha256(raw).hexdigest() != admission.get("definitionsDigest")
+        if (not isinstance(record, dict)
+                or hashlib.sha256(raw).hexdigest() != admission.get("definitionsDigest")
                 or record.get("version") != 1 or record.get("repository") != source
                 or record.get("revision") != expected["commit"] or record.get("subpath") != path.name
                 or not isinstance(record.get("tree"), str) or not _SHA.fullmatch(record["tree"])
