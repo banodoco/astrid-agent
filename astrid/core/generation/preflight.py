@@ -475,6 +475,157 @@ def observe_target_rungs(record, *, get_json=None, installation=None):
     return _compatible_rung(ladder, url, probe, stats["system"].get("comfyui_version"))
 
 
+def _discovery_failure(url, reason):
+    ladder = new_ladder("compatible")
+    if reason in ("no_install_found", "discovery_incomplete"):
+        return _stop_existing(ladder, "installed", reason, url,
+                              state="failed" if reason == "no_install_found" else "unchecked")
+    ladder = with_rung(ladder, "installed", "observed", observation={"identity": "endpoint_only"})
+    if reason == "not_comfyui":
+        ladder = with_rung(ladder, "reachable", "observed", observation={"endpoint": url})
+    return _stop_existing(ladder, LADDER_REASONS[reason], reason, url)
+
+
+def _empty_discovery(scan):
+    """Require positive refusal observations before claiming complete absence.
+
+    The existing scan intentionally treats both refusal and timeout as a miss.
+    Its optional Pinokio phase can also run out of budget. Recheck those
+    boundaries without changing its public servers/errors/Pinokio semantics.
+    """
+    from .desktop_install import DESKTOP_CANDIDATE_PORTS
+    from astrid.packs.vibecomfy import local
+
+    default = "http://127.0.0.1:8188"
+    for port in DESKTOP_CANDIDATE_PORTS:
+        url = f"http://127.0.0.1:{port}"
+        try:
+            stats = _comfy_get_json(url, "/system_stats")
+        except Exception as exc:
+            if _connection_refused(exc):
+                continue
+            reason = _failure_kind(exc)
+            if reason == "answered_not_comfyui":
+                reason = "not_comfyui"
+            elif reason == "not_answering":
+                reason = "discovery_incomplete"
+            return url, reason
+        # A responder appeared since scan; do not bind a different answer
+        # from this partial second observation.
+        if not isinstance(stats, dict) or not isinstance(stats.get("system"), dict):
+            return url, "not_comfyui"
+        return url, "discovery_incomplete"
+    if (scan.get("errors") != [] or not isinstance(scan.get("pinokio"), dict)
+            or scan["pinokio"].get("available") is not False):
+        return default, "discovery_incomplete"
+    # Pinokio being unavailable is not itself evidence of a refused connection.
+    try:
+        local._get_json(local._PINOKIO_INFO_URL, timeout=local._PINOKIO_REQUEST_TIMEOUT_SECONDS)
+    except Exception as exc:
+        if _connection_refused(exc):
+            # On Windows an absent APPDATA prevents a complete config read.
+            import os
+            if _platform() == "win32" and not os.environ.get("APPDATA"):
+                return default, "discovery_incomplete"
+            return default, "no_install_found"
+        if _failure_kind(exc) == "access_denied":
+            return default, "access_denied"
+        if _failure_kind(exc) == "timeout":
+            return default, "timeout"
+    return default, "discovery_incomplete"
+
+
+def inspect_existing_selection(selection):
+    """Observe the resolved human endpoint or propose a discovery candidate.
+
+    A discovered record is still unbound; only an explicit later placement
+    command can change the user's selected job identity. No writer is called.
+    """
+    from . import desktop_install
+    from .targets import TargetRecord, TargetSelection
+    from astrid.packs.vibecomfy import local
+
+    record = selection.record
+    url = record.endpoint
+
+    def incomplete(reason="discovery_incomplete"):
+        return selection, _discovery_failure(url, reason), None, None
+
+    def matched(installations, endpoint):
+        return [item for item in installations if item["endpoint"] == endpoint]
+
+    def inspect(selected, matches):
+        if len(matches) > 1:
+            # Two registered identities at one endpoint are not one known install.
+            ladder = new_ladder("compatible")
+            ladder = with_rung(ladder, "installed", "observed", observation={"registrations": len(matches)})
+            if any(item["responder"]["kind"] in ("comfyui", "other") for item in matches):
+                ladder = with_rung(ladder, "reachable", "observed", observation={"endpoint": selected.record.endpoint})
+                ladder = _stop_existing(ladder, "identified", "cannot_tell_which_install", selected.record.endpoint)
+            else:
+                ladder = _stop_existing(new_ladder("compatible"), "installed", "discovery_incomplete",
+                                        selected.record.endpoint, state="unchecked")
+            return selected, ladder, None, None
+        installation = matches[0] if matches else None
+        ladder = observe_target_rungs(selected.record, installation=installation)
+        return selected, ladder, installation, None
+
+    if selection.bound:
+        if record.layout == "desktop" and _platform() != "win32":
+            return inspect(selection, [])
+        # On unsupported Desktop hosts an explicit generic URL remains a URL.
+        # Do not require Desktop discovery for unrelated explicit endpoints.
+        installations = []
+        if _platform() == "win32":
+            from urllib.parse import urlsplit
+            try:
+                installations = desktop_install.observe_installations(ports=[urlsplit(url).port])
+            except (OSError, ValueError):
+                if record.layout == "desktop":
+                    return incomplete()
+        return inspect(selection, matched(installations, url))
+
+    try:
+        scan = local.scan([8188, 8000])
+        installations = scan["installations"]
+        servers = scan["servers"]
+        if not isinstance(installations, list) or not isinstance(servers, list):
+            return incomplete()
+        candidates = desktop_install.select_candidate(installations, servers)
+    except (OSError, ValueError, KeyError, TypeError):
+        return incomplete()
+
+    if candidates["outcome"] == "several":
+        choices = [{"label": f"{item['label']} ({item['endpoint']})"
+                    if item["layout"] == "desktop" else item["label"],
+                    "endpoint": item["endpoint"]} for item in candidates["choices"]]
+        ladder = new_ladder("compatible")
+        ladder = with_rung(ladder, "installed", "observed", observation={"candidate_count": len(choices)})
+        ladder = with_rung(ladder, "reachable", "observed", observation={"candidates": choices})
+        ladder = _stop_existing(ladder, "identified", "several_installs", url)
+        return selection, ladder, None, choices
+
+    if candidates["outcome"] == "one":
+        endpoint = candidates["choices"][0]["endpoint"]
+        # Normalization verifies loopback; it cannot import guessed filesystem facts.
+        from .targets import normalize_target
+        selected = TargetSelection(normalize_target({"endpoint": endpoint}), "discovery", False)
+        return inspect(selected, matched(installations, endpoint))
+
+    if len(installations) == 1:
+        item = installations[0]
+        selected = TargetSelection(TargetRecord(endpoint=item["endpoint"]), "discovery", False)
+        return inspect(selected, [item])
+    if installations:
+        # No answering candidates, several registrations: no absence inference
+        # and no arbitrary choice of a stale/closed/inaccessible registration.
+        return incomplete()
+
+    endpoint, reason = _empty_discovery(scan)
+    selected = TargetSelection(TargetRecord(endpoint=endpoint), "discovery", False)
+    return selected, _discovery_failure(endpoint, reason), None, None
+
+
 def ladder_summary(ladder, *, url=None, installation=None):
     stop = ladder_stop(ladder)
     if stop is not None:
