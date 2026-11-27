@@ -828,7 +828,7 @@ def _compute_binding(plan, observer, device):
     # exec environment, not Agent Python's CUDA visibility/library settings.
     raw = observer._read(Path("/proc") / str(process.pid) / "environ", 1024 * 1024)
     environment = {}
-    for item in raw.split(b"\\0"):
+    for item in raw.split(bytes((0,))):
         if not item:
             continue
         key, separator, value = item.partition(b"=")
