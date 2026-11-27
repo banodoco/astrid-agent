@@ -193,13 +193,15 @@ class LoopbackPod:
             'request = json.loads(base64.b64decode(sys.argv[1]))\n'
             'with pathlib.Path(os.environ["POD_JOBS_SETUP_LOG"]).open("a") as log: log.write("runtime-ready\\n")\n'
             + f'print(json.dumps({{**request, "ready": {not runtime_fail!r}, "stopped": True}}))\n')
-        (scripts / "gpu_sanity.py").write_text(
+        sanity = self.agent_root / "astrid" / "packs" / "runpod" / "gpu_sanity.py"
+        sanity.parent.mkdir(parents=True)
+        sanity.write_text(
             'import argparse,os,pathlib,sys\n'
             'parser = argparse.ArgumentParser()\nparser.add_argument("--venv", required=True)\n'
             'venv = pathlib.Path(parser.parse_args().venv)\nassert venv.is_dir() and venv.parts[-2:] == ("runtime", "venv")\n'
             'with pathlib.Path(os.environ["POD_JOBS_SETUP_LOG"]).open("a") as log: log.write("sanity\\n")\n'
             + f'sys.exit({2 if sanity_fail else 0})\n')
-        monkeypatch.setattr(module, "SANITY_CMD", f"{shlex.quote(sys.executable)} {shlex.quote(str(Path(module.SRC_DIR) / 'astrid-agent/scripts/gpu_sanity.py'))}")
+        monkeypatch.setattr(module, "SANITY_CMD", f"{shlex.quote(sys.executable)} {shlex.quote(str(Path(module.SRC_DIR) / 'astrid-agent/astrid/packs/runpod/gpu_sanity.py'))}")
         self.sources = self.root / "sources"
         for name in module.BUNDLE_TREES[1:]:
             source = self.sources / name
