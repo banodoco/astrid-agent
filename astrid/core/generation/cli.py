@@ -351,6 +351,13 @@ def _parser(contextual: dict[str, Any] | None = None) -> _GenerationParser:
     command.add_argument('--engine', action=_Once, default='comfyui')
     command.add_argument('--save', action='store_true')
     command.add_argument('--input', action='append', default=[])
+    command.add_argument('--through', action=_Once, choices=('compatible', 'computes'), default='compatible')
+    command.add_argument('--decline-attach', action=_Once, metavar='ENDPOINT',
+                         help='Request a separate preview after declining the current attach proposal; no install consent.')
+    command.add_argument('--compute-device', action=_Once, metavar='DEVICE')
+    command.add_argument('--compute-backend', action=_Once, choices=('cuda', 'mps'), default='cuda')
+    command.add_argument('--required-operation', action='append', default=None,
+                         help='Exact required operator/dtype pair for the selected environment.')
     command.add_argument('--json', action='store_true')
     command = sub.add_parser('launch', help='Launch or re-probe only the selected human ComfyUI.')
     command.add_argument('--placement', action=_Once, default='auto')
@@ -431,8 +438,15 @@ def _controls(parsed):
 
 def _targets_command(parsed):
     from astrid.core.generation.entries import merge_input_values
+    inspection = {}
+    if (parsed.through != 'compatible' or parsed.decline_attach is not None
+            or parsed.compute_device is not None or parsed.compute_backend != 'cuda'
+            or parsed.required_operation is not None):
+        inspection.update(through=parsed.through, decline_attach=parsed.decline_attach,
+                          compute_device=parsed.compute_device, compute_backend=parsed.compute_backend,
+                          required_operations=parsed.required_operation)
     payload = _generate_facade().targets(placement=parsed.placement, engine=parsed.engine,
-        save=parsed.save, inputs=merge_input_values(assignments=parsed.input))
+        save=parsed.save, inputs=merge_input_values(assignments=parsed.input), **inspection)
     print(json.dumps(payload, indent=2, sort_keys=True))
     return 0
 

@@ -1350,19 +1350,33 @@ class GenerationFacade:
 
     @_generation_boundary
     def targets(self, *, placement='auto', engine='comfyui', save=False, inputs=None,
-                project_root=None, client=None):
-        """Probe a selected attached endpoint with read-only GETs (/system_stats
-        and /object_info); write only on an explicit save.
+                project_root=None, client=None, through='compatible', decline_attach=None,
+                compute_device=None, compute_backend='cuda', required_operations=None):
+        """Inspect endpoint readiness by default; explicitly opt into selected compute.
+
+        A current attach decline is an inert request for a separate preview.
+        Neither the preview nor the compute check grants install consent.
         """
         from astrid.core.generation import targets
         from astrid.core.generation.entries import merge_input_values
         from astrid.core.generation.preflight import readiness_envelope
         try:
+            if through not in {'compatible', 'computes'}:
+                raise ValueError('targets supports through=compatible or computes')
+            if (through == 'compatible' and (compute_device is not None or required_operations is not None
+                                             or compute_backend != 'cuda')):
+                raise ValueError('compute parameters require through=computes')
+            if save and (through == 'computes' or decline_attach is not None):
+                raise ValueError('compute and decline inspection cannot save a target')
+            if decline_attach is not None and through != 'compatible':
+                raise ValueError('decline and compute are independent requests')
             if targets.canonical_engine(engine) != 'comfyui':
                 raise ValueError('Phase 1 targets support only comfyui')
             updates = merge_input_values(inputs if inputs is not None else {})
             from astrid.core.generation.placement import is_runpod_placement
             if is_runpod_placement(placement):
+                if through != 'compatible' or decline_attach is not None:
+                    raise ValueError('local target inspection cannot probe or decline a RunPod target')
                 if save:
                     allowed = {'gpu_types', 'datacenter_id', 'volume', 'image', 'idle_timeout_seconds',
                                'provider_account_ref', 'credential_ref'}
@@ -1413,11 +1427,23 @@ class GenerationFacade:
                     ladder, url=record.endpoint if record else None,
                     installation=installation, choices=choices, bound=selection.bound,
                 )
+                action = preflight.install_offer_action(action, declined_endpoint=decline_attach)
+                if through == 'computes':
+                    ladder = preflight.observe_compute_rung(
+                        ladder, selection, device=compute_device, backend=compute_backend,
+                        required_operations=required_operations,
+                    )
+                    action = preflight.compute_next_action(
+                        ladder, prior_action=action, placement=placement, device=compute_device,
+                        backend=compute_backend, required_operations=required_operations,
+                    )
                 payload = readiness_envelope(target=record, ladder=ladder, next_action=action)
                 payload["summary"] = preflight.ladder_summary(
                     ladder, url=record.endpoint if record else None, installation=installation,
                 )
             else:
+                if through != 'compatible' or decline_attach is not None:
+                    raise ValueError('compute or decline inspection requires a selected attached endpoint')
                 payload = readiness_envelope(target=record)
             # Legacy explicit --save retains its TOML writer, but only after
             # the identity guard. The new attach action uses Runtime placement.

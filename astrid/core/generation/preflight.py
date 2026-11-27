@@ -649,6 +649,9 @@ def ladder_summary(ladder, *, url=None, installation=None):
     stop = ladder_stop(ladder)
     if stop is not None:
         return stop["message"] or f"{stop['rung']} was not observed."
+    if ladder["through"] == "computes":
+        return ("The selected local interpreter passed the requested compute operations. "
+                "Workflow readiness and delivery have not been checked.")
     if installation is not None and installation["state"] == "running":
         return LADDER_TEXT["running_desktop"]["message"]
     return (f"The ComfyUI endpoint at {url} is API-compatible. "
@@ -688,6 +691,196 @@ def ladder_next_action(ladder, *, url=None, installation=None, choices=None, bou
     if wording["who"] == "agent":
         return make_next_action("agent", step, argv=command)
     return make_next_action("person", step, then_argv=command, alternative=alternative)
+
+
+def _portable_preview_argv():
+    import os
+    from . import comfy_portable
+
+    destination = comfy_portable.default_destination(os.environ, _platform())
+    return ["astrid", "generate", "install-comfyui", "--destination",
+            str(destination), "--json"]
+
+
+def _linux_preview_argv():
+    from pathlib import Path
+    from .engine_local_endpoint import default_engine_root, recorded_engine_root
+
+    root = Path(default_engine_root("comfyui"))
+    # The default may be the current working installation. A separate copy
+    # must not request that root for replacement. The engine owner validates
+    # the proposed sibling and refuses foreign or unqualified state.
+    if recorded_engine_root("comfyui") == str(root):
+        root = root.with_name(root.name + "-separate")
+    return ["astrid", "engines", "install", "comfyui", "--platform",
+            "linux-x86_64-cu130", "--placement", "local", "--root",
+            str(root), "--dry-run"]
+
+
+def separate_copy_preview():
+    """Return only a genuinely offered, read-only producer preview command.
+
+    No installer, attachment, placement write, or synthetic release/measurement
+    is invoked. The command rechecks live conditions; its later apply digest
+    is independent of consent to attach an existing endpoint.
+    """
+    import platform
+    import re
+
+    from .engine_contracts import EngineError
+
+    try:
+        if _platform() == "win32":
+            from . import comfy_portable
+
+            pin = comfy_portable.load_pin()
+            if pin["release"] is None:
+                return None
+            argv = _portable_preview_argv()
+            offer = comfy_portable.build_offer(argv[4], pin=pin, platform=_platform(),
+                                               disk_usage=shutil.disk_usage)
+            available = offer.get("status") == "offered"
+            digest = offer.get("offer_sha256")
+        elif _platform() == "linux" and platform.machine().lower() in {"x86_64", "amd64"}:
+            from astrid.core import engine_cli
+
+            # 94-D owns this producer. On a pre-D integration base the legacy
+            # dry run supplies only a policy floor, not a bounded consent offer.
+            preview = getattr(engine_cli, "_managed_preview", None)
+            if preview is None:
+                return None
+            argv = _linux_preview_argv()
+            args = engine_cli._parser().parse_args(argv[2:])
+            recipe = engine_cli.load_recipe(args.engine, args.platform)
+            plan = engine_cli.plan_install(recipe, root=engine_cli._root(args),
+                                           placement=args.placement,
+                                           models_root=args.models_root)
+            offer = preview(plan, recipe, args.deadline)
+            available = offer.get("available") is True
+            digest = offer.get("offer_sha256")
+        else:
+            # Existing Apple Silicon and other attached endpoints remain with
+            # their backend owner; do not offer Windows/Linux installation.
+            return None
+        if available and isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest):
+            return argv
+    except (EngineError, OSError, ValueError, RuntimeError):
+        # Unreadable capacity, release, or install metadata is not an offer.
+        return None
+    return None
+
+
+def install_offer_action(action, *, declined_endpoint=None):
+    """Enrich only P93's eligible action, or an explicit current attach decline.
+
+    The decline names the exact currently proposed endpoint. It is not saved
+    and cannot authorize installation. Repeating ordinary inspection has
+    exactly the same result as before the decline.
+    """
+    from copy import deepcopy
+    from .targets import normalize_target
+
+    if declined_endpoint is not None:
+        endpoint = normalize_target({"endpoint": declined_endpoint}).endpoint
+        if (action is None or action.get("requires_consent") != "attach_existing"
+                or action["argv"][-1] != endpoint):
+            raise ValueError("decline must name the currently proposed attach endpoint")
+        alternative = _separate_copy()
+        argv = separate_copy_preview()
+        if argv is None:
+            return make_next_action(
+                "person", "Keep your current choice; a separate install offer is not available here.",
+                alternative=alternative,
+            )
+        return make_next_action(
+            "agent", "Preview a separate ComfyUI installation; ask for fresh consent to its exact offer before applying.",
+            argv=argv,
+        )
+
+    if action is None or not action.get("alternative"):
+        return action
+    alternative = action["alternative"]
+    if (alternative.get("kind") != "separate_copy"
+            or alternative.get("owner") != "plan-94"):
+        return action
+    argv = separate_copy_preview()
+    if argv is None:
+        return action
+    result = deepcopy(action)
+    result["alternative"].update(available=True, argv=argv)
+    return result
+
+
+def observe_compute_rung(ladder, selection, *, device, backend, required_operations):
+    """Extend the observed prefix only for the selected local environment.
+
+    A configured interpreter is not inferred from an answering URL or from
+    the Agent's Python. This opt-in probe is distinct from endpoint readiness;
+    workflow and editor delivery remain the owners of their later rungs.
+    """
+    from copy import deepcopy
+    from pathlib import Path
+
+    result = deepcopy(ladder)
+    result["through"] = "computes"
+    if ladder_stop(ladder) is not None:
+        return result
+
+    def unknown(reason, message):
+        return with_rung(result, "computes", "unchecked", reason=reason, message=message)
+
+    if not selection.bound:
+        return unknown("selection_required", "Choose and consent to the existing endpoint before checking its environment.")
+    if backend == "mps" or _platform() == "darwin":
+        return unknown("backend_owned_elsewhere", "Use the existing Apple Silicon MPS readiness path; CUDA has not been checked.")
+    record = selection.record
+    if (record is None or record.location != "local" or record.layout == "unknown"
+            or not record.root or not record.python):
+        return unknown("interpreter_required", "The selected ComfyUI interpreter is not known; do not probe the Agent Python or guess from its endpoint.")
+    try:
+        if not Path(record.root).is_dir() or not Path(record.python).is_file():
+            return unknown("interpreter_required", "The selected ComfyUI interpreter or root could not be verified.")
+    except OSError:
+        return unknown("interpreter_required", "Access to the selected ComfyUI environment could not be verified.")
+
+    from . import gpu_environment
+
+    # E owns selection validation, numeric/device evidence and diagnostics.
+    evidence = gpu_environment.probe_compute(
+        record.python, device=device, backend=backend,
+        required_operations=required_operations,
+    )
+    if evidence["ok"] is True:
+        return with_rung(result, "computes", "observed", observation=evidence)
+    reason = evidence["cause"] or "probe_failed"
+    state = ("unchecked" if reason in {"interpreter_required", "device_required",
+                                     "operations_required", "unsupported_backend"}
+             else "failed")
+    return with_rung(result, "computes", state, reason=reason,
+                     observation=evidence, message=evidence["message"])
+
+
+def compute_next_action(ladder, *, prior_action, placement, device, backend, required_operations):
+    """Retain the first existing-install stop/attach action; never install on compute failure."""
+    stop = ladder_stop(ladder)
+    if stop is None:
+        return None
+    if stop["rung"] != "computes" or prior_action is not None:
+        return prior_action
+    if stop["reason"] == "backend_owned_elsewhere":
+        return make_next_action("person", stop["message"])
+    if stop["reason"] in {"interpreter_required", "device_required", "operations_required",
+                          "unsupported_backend", "selection_required"}:
+        return make_next_action("person", stop["message"])
+    argv = ["astrid", "generate", "targets", "--placement", placement,
+            "--through", "computes", "--compute-backend", backend]
+    if device is not None:
+        argv += ["--compute-device", device]
+    for operation in required_operations or ():
+        argv += ["--required-operation", operation]
+    argv += ["--json"]
+    evidence = stop["observation"] or {}
+    return make_next_action("person", evidence.get("works") or stop["message"], then_argv=argv)
 
 
 def _mirror_next_action(action):
