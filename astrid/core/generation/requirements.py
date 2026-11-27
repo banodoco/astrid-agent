@@ -172,12 +172,19 @@ def _placement(selector):
 
     with settings.using(ReadOnlySettings()):
         selected = placement.resolve_placement(placement.request_from_selector(selector))
-    return placement.validate_placement(selected, machine_kinds=("runpod",), live_leases=lambda _: ())
+    if selected.kind == "runpod":
+        # Validate the shape, not whether a paid lease is live. The plan
+        # records any requested machine but cannot attest its remote paths.
+        from dataclasses import replace
+        placement.validate_placement(replace(selected, machine=None), machine_kinds=("runpod",))
+        return selected
+    return placement.validate_placement(selected, machine_kinds=("runpod",))
 
 
 def _attached_target(endpoint):
     """Read live paths, with native process evidence for root/Python; no launch."""
     from .backends.comfy_target import ComfyTarget, ComfyTargetClient, validate_attached_url
+    from .engine_contracts import TransportError
     from astrid.packs.vibecomfy.local import _observed_launch_facts
 
     endpoint = validate_attached_url(endpoint)
@@ -190,9 +197,18 @@ def _attached_target(endpoint):
         if not isinstance(stats, dict) or not isinstance(stats.get("system"), dict):
             raise ValueError("invalid target facts")
         folders = client.request_json("/internal/folder_paths", timeout=5.0)
-    except (OSError, ValueError, TimeoutError) as exc:
-        cause = exc.__cause__
-        result["selection_state"] = "timeout" if isinstance(exc, TimeoutError) or isinstance(cause, TimeoutError) else "unknown"
+    except (OSError, ValueError, TimeoutError, TransportError) as exc:
+        # urllib may wrap a timeout inside URLError.reason, then ValueError.
+        current = exc
+        seen = set()
+        timed_out = False
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            if isinstance(current, TimeoutError):
+                timed_out = True
+                break
+            current = getattr(current, "reason", None) or getattr(current, "__cause__", None)
+        result["selection_state"] = "timeout" if timed_out else "unknown"
         return result
     if not isinstance(folders, dict):
         return result
@@ -221,10 +237,12 @@ def _attached_target(endpoint):
     checkpoints = single(folders.get("checkpoints"))
     if checkpoints is not None and checkpoints.name == "checkpoints":
         candidate = checkpoints.parent
-        # Bind every reported model folder, excluding non-model Comfy folders.
-        from .backends.comfy_target import _COMFY_MODEL_FOLDERS
-        keys = set(_COMFY_MODEL_FOLDERS.values())
-        if all(single(folders.get(key)) == candidate / key for key in keys):
+        # Bind every reported folder other than known non-model roots. An
+        # alias or extra root is not a one-root model placement.
+        keys = set(folders) - {"custom_nodes", "input", "output", "temp", "user"}
+        if keys and all(isinstance(key, str) and key and "/" not in key and "\\" not in key
+                        and key not in (".", "..")
+                        and single(folders[key]) == candidate / key for key in keys):
             result["models_root"] = str(candidate)
     # Human environment capacity is not a substitute for the transfer owner's
     # scoped disk budget. Leave it unknown when folders are not fully bound.
@@ -241,7 +259,7 @@ def selected_target(selector):
     if selected.kind == "runpod":
         # No machine claim or inference of a future paid target's identity.
         return {"placement_class": "runpod", "location": "remote", "owner": None,
-                "root": None, "python": None, "comfyui_root": None,
+                "machine": selected.machine, "root": None, "python": None, "comfyui_root": None,
                 "models_root": None, "custom_nodes_root": None, "capacity_bytes": None}
     if selected.kind == "attached":
         return _attached_target(selected.endpoint)
@@ -305,13 +323,26 @@ def _consent_records(value, supplied, saved):
     return list(records.values()), True
 
 
-def _retry_argv(args):
+def _retry_argv(args, value, *, consent_valid):
     # A requirements invocation is always a preview; this is a functional
     # recheck command, not an apply promise. Strict P56 fixes omit --dry-run.
-    return ["astrid", "generate", "requirements", args.source,
-            "--placement", args.placement,
-            *[part for value in args.add for part in ("--add", value)],
-            *[part for value in args.add_model for part in ("--add-model", value)], "--json"]
+    pins = {row["node"]["repo"].rstrip("/").removesuffix(".git"): row["node"]
+            for row in value["requirements"] if row["kind"] == "node"
+            and row["approval"]["record"] is not None}
+    additions = []
+    for raw in args.add:
+        repo = raw.rsplit("@", 1)[0] if "@" in raw else raw
+        node = pins.get(repo.rstrip("/").removesuffix(".git"))
+        additions.append(node["repo"] + "@" + node["commit"] if node else raw)
+    retry = ["astrid", "generate", "requirements", args.source,
+             "--placement", args.placement,
+             *[part for raw in additions for part in ("--add", raw)],
+             *[part for raw in args.add_model for part in ("--add-model", raw)], "--json"]
+    if consent_valid:
+        for choice in args.consent:
+            if choice != "user_env":
+                retry.extend(["--consent", choice])
+    return retry
 
 
 def _readiness(value, args, *, consent_valid=True):
@@ -330,7 +361,7 @@ def _readiness(value, args, *, consent_valid=True):
         if state not in ("blocked", "unknown", "timeout", "unapproved") or who not in ("agent", "human"):
             raise ValueError("requirements producer returned an invalid gap")
         fix_id = f"requirements-{index + 1}"
-        retry = _retry_argv(args)
+        retry = _retry_argv(args, value, consent_valid=consent_valid)
         item = rows.get(gap["requirement"])
         if code == "node_code_unapproved":
             if not item or not item["approval"]["consent_code"]:
@@ -343,14 +374,6 @@ def _readiness(value, args, *, consent_valid=True):
                     "install.py is never run by the controlled installer. Preview runs no code. "
                     f"Only after informed approval, recheck with code={consent_code}; "
                     "this is not a saved approval or Runtime grant.")
-            # Freeze any matching explicit branch/tag in the recheck, using the
-            # exact producer source. Other unresolved additions remain unresolved.
-            for n, arg in enumerate(retry[:-1]):
-                if arg == "--add":
-                    raw = retry[n + 1]
-                    repo = raw.rsplit("@", 1)[0] if "@" in raw else raw
-                    if repo.rstrip("/").removesuffix(".git") == node["repo"].rstrip("/").removesuffix(".git"):
-                        retry[n + 1] = node["repo"] + "@" + node["commit"]
             retry.extend(["--consent", "code=" + consent_code])
             issue_code = "needs_consent"
         elif code == "stale_code_consent":
@@ -414,5 +437,8 @@ def main(args, *, output=None) -> int:
     issues, fixes = _readiness(value, args, consent_valid=valid)
     entry = {"id": source.entry["id"]} if source.entry is not None else None
     envelope = preview_envelope(value, entry=entry, target=value["target"], issues=issues, fixes=fixes)
-    print(json.dumps(envelope, indent=2, sort_keys=True), file=output)
+    public = redact_credential_data(envelope)
+    if public["plan"] != value:
+        raise ValueError("requirements producer returned non-public plan data")
+    print(json.dumps(public, indent=2, sort_keys=True), file=output)
     return 0
