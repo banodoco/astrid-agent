@@ -1,5 +1,14 @@
 # R16 installed default delivery evidence
 
+## Independent HOLD and current correction evidence
+
+The earlier READY at PR701 head `78480533d25dd8731a7b1f04c737719dea2fc880`
+was withdrawn after independent review reproduced two P1 defects. The corrected
+product, exact current source identities, complete new proof, retained failures,
+and HOLD disposition are recorded in [the correction report](hold-fix/README.md).
+The original records below are historical candidate evidence, not the corrected
+current proof. PR701 remains draft under the explicit manager landing/READY HOLD.
+
 This directory records actual candidate evidence, not a Release 16 source freeze,
 served installer manifest, native R0/platform acceptance, or browser acceptance.
 The owning change is `p93/PACK-DELIVERY`, Agent PR 701. PACK-B separately owns the

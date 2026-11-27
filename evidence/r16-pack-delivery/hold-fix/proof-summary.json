@@ -1,0 +1,311 @@
+{
+  "all_proof_runtime_stopped": true,
+  "delivery": "31fe4ea07dd44bb97c708a2f4f2d1a54a4362ecc",
+  "delivery_tree": "2d99e2cfb324b888c8cf04007ae42ed3fdb02f34",
+  "disposition": "Corrections reproved; explicit manager landing/READY HOLD retained; PR701 draft/unmerged; producer remains failed.",
+  "installed_cases_passed": 48,
+  "installed_groups": {
+    "candidate-negative-inputs": {
+      "cases": [
+        {
+          "name": "undeclared-resource",
+          "status": "PASS"
+        },
+        {
+          "name": "compiler-syntax",
+          "status": "PASS"
+        }
+      ],
+      "count": 2,
+      "raw": {
+        "bytes": 7728,
+        "path": "/workspace/library-files/r16-pack-delivery-687e2e07963c/hold-fix-final-native/candidate-refusals.json",
+        "sha256": "64a056a65ef53b7fa555312553a81b7283e11b04016fa8cadc3e4e735b060612"
+      },
+      "result": "PASS"
+    },
+    "genuine-older-reader-rollback": {
+      "count": 1,
+      "old_agent": {
+        "repo": "/tmp/r16-pack-delivery-proof",
+        "sha": "baf6b73f297865f681bfe07ca2035a53168e79d5"
+      },
+      "raw": {
+        "bytes": 9117,
+        "path": "/workspace/scratch/687e2e07963c/hold-fix-evidence/final-legacy-rollback.json",
+        "sha256": "9a6dfe4d73a58f34b829e2a491357da70d412d49c75a0bc774de62a88b7396a5"
+      },
+      "result": "PASS",
+      "source_files_restored": 66,
+      "user_bytes_preserved": true
+    },
+    "installed-negatives": {
+      "cases": [
+        {
+          "name": "wrong-commit-refuses-without-mutation",
+          "status": "PASS"
+        },
+        {
+          "name": "wrong-digest-refuses-without-mutation",
+          "status": "PASS"
+        },
+        {
+          "name": "duplicate-json-key-refuses-without-mutation",
+          "status": "PASS"
+        },
+        {
+          "name": "aliased-selected-manifest-refuses",
+          "status": "PASS"
+        },
+        {
+          "name": "missing-preparation-receipt-refuses",
+          "status": "PASS"
+        },
+        {
+          "name": "missing-canonical-admission-quarantines",
+          "status": "PASS"
+        },
+        {
+          "name": "user-origin-conflict-refuses-without-takeover",
+          "status": "PASS"
+        }
+      ],
+      "count": 7,
+      "raw": {
+        "bytes": 1172,
+        "path": "/workspace/library-files/r16-pack-delivery-687e2e07963c/hold-fix-final-native/installed-negatives.json",
+        "sha256": "5150c029b4c15fd8337e20e5f1e7d2616e112f281cc042f59a6669eea1406b62"
+      },
+      "result": "PASS"
+    },
+    "new-authority-absence": {
+      "cases": [
+        {
+          "name": "canonical-clean-loader-and-current-witness",
+          "status": "PASS"
+        },
+        {
+          "name": "loader-missing-matching-source",
+          "status": "PASS"
+        },
+        {
+          "name": "loader-user-matching-source",
+          "status": "PASS"
+        },
+        {
+          "name": "loader-folder-matching-source",
+          "status": "PASS"
+        },
+        {
+          "name": "loader-missing-changed-source",
+          "status": "PASS"
+        },
+        {
+          "name": "loader-user-changed-source",
+          "status": "PASS"
+        },
+        {
+          "name": "loader-folder-changed-source",
+          "status": "PASS"
+        },
+        {
+          "name": "bound-user-matching-source",
+          "status": "PASS"
+        },
+        {
+          "name": "bound-user-edited-source",
+          "status": "PASS"
+        },
+        {
+          "name": "bound-folder-matching-source",
+          "status": "PASS"
+        },
+        {
+          "name": "bound-folder-edited-source",
+          "status": "PASS"
+        },
+        {
+          "name": "legacy-user-matching-source",
+          "status": "PASS"
+        },
+        {
+          "name": "legacy-user-edited-source",
+          "status": "PASS"
+        },
+        {
+          "name": "legacy-folder-matching-source",
+          "status": "PASS"
+        },
+        {
+          "name": "legacy-folder-edited-source",
+          "status": "PASS"
+        },
+        {
+          "name": "rollback-preserves-public-new",
+          "status": "PASS"
+        },
+        {
+          "name": "rollback-preserves-unpinned-directory",
+          "status": "PASS"
+        },
+        {
+          "name": "rollback-preserves-file",
+          "status": "PASS"
+        },
+        {
+          "name": "rollback-preserves-empty-directory",
+          "status": "PASS"
+        },
+        {
+          "name": "rollback-preserves-dangling-link",
+          "status": "PASS"
+        },
+        {
+          "name": "interrupted-rollback-retry-preserves-public-user-pack",
+          "status": "PASS"
+        },
+        {
+          "name": "rollback-prepared-callback-rechecks-absence",
+          "status": "PASS"
+        },
+        {
+          "name": "rollback-restores-genuinely-absent-default",
+          "status": "PASS"
+        },
+        {
+          "name": "rollback-preserves-tombstone",
+          "status": "PASS"
+        }
+      ],
+      "count": 24,
+      "raw": {
+        "bytes": 27908,
+        "path": "/workspace/scratch/687e2e07963c/hold-fix-evidence/final-installed-authority.json",
+        "sha256": "485af39e588f1606c9696630d7a739fa334f7fa6e4540c7a627f1acc5283c63e"
+      },
+      "result": "PASS"
+    },
+    "original-installed": {
+      "cases": [
+        {
+          "name": "interruption-before-publication",
+          "status": "PASS"
+        },
+        {
+          "name": "interruption-after-publication",
+          "status": "PASS"
+        },
+        {
+          "name": "clean-installed-default-loader-and-source-identity",
+          "status": "PASS"
+        },
+        {
+          "name": "environment-cannot-replace-selected-authority",
+          "status": "PASS"
+        },
+        {
+          "name": "interrupted-rollback-and-retry",
+          "status": "PASS"
+        },
+        {
+          "name": "quarantine-and-repair-definitions",
+          "status": "PASS"
+        },
+        {
+          "name": "quarantine-and-repair-source",
+          "status": "PASS"
+        },
+        {
+          "name": "quarantine-and-repair-pin",
+          "status": "PASS"
+        },
+        {
+          "name": "missing-default-repair-preserves-user-state",
+          "status": "PASS"
+        },
+        {
+          "name": "explicit-removal-survives-repair",
+          "status": "PASS"
+        }
+      ],
+      "count": 10,
+      "raw": {
+        "bytes": 9970,
+        "path": "/workspace/scratch/687e2e07963c/hold-fix-evidence/final-original-installed.json",
+        "sha256": "495ce7bf72e7cec38af3bee2afd738503d8e583f79f4fdf5113c11eba95c4cd3"
+      },
+      "result": "PASS"
+    },
+    "public-install-repair": {
+      "cases": [
+        {
+          "name": "public-clean-install-runtime-ready-and-selected-default",
+          "status": "PASS"
+        },
+        {
+          "name": "public-repair-after-quarantine-preserves-selection-and-user-state",
+          "status": "PASS"
+        }
+      ],
+      "count": 2,
+      "raw": {
+        "bytes": 2664,
+        "path": "/workspace/library-files/r16-pack-delivery-687e2e07963c/hold-fix-final-native/public-installer-proof.json",
+        "sha256": "0229f1cb8e8372f29fc11d2c1593a215353d37c7807e55b9daa8d83e02adf825"
+      },
+      "result": "PASS"
+    },
+    "public-interruption-recovery": {
+      "cases": [
+        {
+          "name": "public-update-killed-after-canonical-removal-and-selection",
+          "status": "PASS"
+        },
+        {
+          "name": "public-journal-rollback-restores-prior-selection-source-and-protected-state",
+          "status": "PASS"
+        }
+      ],
+      "count": 2,
+      "raw": {
+        "bytes": 19917,
+        "path": "/workspace/library-files/r16-pack-delivery-687e2e07963c/hold-fix-final-native/public-update-recovery.json",
+        "sha256": "236ebca5cafea403efe2f9d055f5f84b70d54c468deed5de921216b1c3d3a7b6"
+      },
+      "result": "PASS"
+    }
+  },
+  "integration": "b1a3a6a9e64917c2847ff91c293ff210c8aa10ad",
+  "integration_tree": "2143d91da0cf80cdc9ff70d33e804c9908e972ea",
+  "original_proof_program_hashes": {
+    "prove_installed_candidate_refusals.py": {
+      "bytes": 5813,
+      "path": "/workspace/scratch/687e2e07963c/agent/scripts/prove_installed_candidate_refusals.py",
+      "sha256": "999e02243b20547c3f2599d2a5ec38fc0d4c4a818a1440c2eee1e96e533b5fce"
+    },
+    "prove_installed_default_delivery.py": {
+      "bytes": 12036,
+      "path": "/workspace/scratch/687e2e07963c/agent/scripts/prove_installed_default_delivery.py",
+      "sha256": "d0a967dfd1f0b5f08595458db9c3a18e6ecae95eee3ae4202617f420307d982e"
+    },
+    "prove_installed_default_negatives.py": {
+      "bytes": 6103,
+      "path": "/workspace/scratch/687e2e07963c/agent/scripts/prove_installed_default_negatives.py",
+      "sha256": "58a92b9a379e5283320e1b4d0c981c568deaaacc9debde8b860f47a732862c4c"
+    }
+  },
+  "pack_b": "f02ceffa39d221756999cebd1a38b97f5d42519b",
+  "producer": {
+    "actual_source_transport": "file:///tmp/r16-pack-delivery-poms",
+    "agent": {
+      "repo": "/tmp/r16-pack-delivery-proof",
+      "sha": "b1a3a6a9e64917c2847ff91c293ff210c8aa10ad"
+    },
+    "commit": "f40b1f44bbe513cb871387a07e14332ffbed8a53",
+    "digest": "be6abd1feb9759eca56364c6a2ccded470977aaf965a8e208cdd4f1bedcf77cf",
+    "digest_rule": "pack-tree-v1",
+    "non_shallow_source": true,
+    "source_file_count": 64,
+    "tree": "9668568025190d0a8b5742cda0aec32ffaf9d5d0"
+  }
+}
