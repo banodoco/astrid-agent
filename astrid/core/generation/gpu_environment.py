@@ -269,7 +269,9 @@ result = {
     "interpreter": sys.executable, "backend": request["backend"],
     "device": request["device"], "required_operations": request["required_operations"],
     "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
+    "cuda_device_order": os.environ.get("CUDA_DEVICE_ORDER"),
     "torch": None, "cuda": None, "hip": None, "devices": [], "arch_list": [],
+    "device_inventory_errors": [],
     "driver_version": None, "driver_error": None, "wheel_versions": {},
     "operations": {}, "numeric_outputs": {}, "error": None,
 }
@@ -308,19 +310,27 @@ try:
             result["driver_error"] = "NVIDIA driver version could not be read."
 
         if result["cuda"] is not None and result["hip"] is None and torch.cuda.is_available():
+            selected_index = int(request["device"].split(":")[1])
             for index in range(torch.cuda.device_count()):
-                result["devices"].append({
-                    "index": index,
-                    "name": torch.cuda.get_device_name(index),
-                    "capability": list(torch.cuda.get_device_capability(index)),
-                })
+                try:
+                    result["devices"].append({
+                        "index": index,
+                        "name": torch.cuda.get_device_name(index),
+                        "capability": list(torch.cuda.get_device_capability(index)),
+                    })
+                except Exception as exc:
+                    if index == selected_index:
+                        stage = "device"
+                        raise
+                    result["device_inventory_errors"].append({
+                        "index": index, "message": str(exc)[:300],
+                    })
             result["arch_list"] = torch.cuda.get_arch_list()
-            index = int(request["device"].split(":")[1])
-            if index < len(result["devices"]):
+            if any(item["index"] == selected_index for item in result["devices"]):
                 stage = "device"
                 device = request["device"]
                 # The isolated child has no authority to choose a different GPU.
-                torch.cuda.set_device(index)
+                torch.cuda.set_device(selected_index)
                 for stage in request["required_operations"]:
                     result["operations"][stage] = False
                     operator, dtype_key = stage.rsplit("_", 1)
@@ -336,6 +346,8 @@ try:
                         actual = torch.nn.functional.conv2d(*inputs)
                     else:
                         actual = torch.softmax(*inputs, dim=-1)
+                    if str(actual.device) != device or actual.dtype != dtype:
+                        raise RuntimeError("The operation returned output on a different device or dtype.")
                     torch.cuda.synchronize(device)
                     observed = actual.cpu().float()
                     result["numeric_outputs"][stage] = observed.tolist()
@@ -393,12 +405,13 @@ def _numeric_matches(actual, expected, tolerance):
 
 def classify_compute(
     raw, *, python=None, device=None, backend="cuda", required_operations=None,
-    returncode=0, stderr="", timed_out=False,
+    returncode=0, stderr="", timed_out=False, environ: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Classify evidence against the exact request, never against another GPU."""
     request, selection_cause, selection_message = _compute_request(
         python, device, backend, required_operations,
     )
+    environment = os.environ if environ is None else environ
     valid = isinstance(raw, dict) and raw.get("schema") == COMPUTE_SCHEMA
     report = raw if valid else {}
     expected = request["required_operations"] if request else []
@@ -446,8 +459,20 @@ def classify_compute(
     detail = error.get("message")
     detail = detail if isinstance(detail, str) else ""
     error_type = error.get("type")
-    diagnostic = " ".join((detail, error_type if isinstance(error_type, str) else "",
-                           stderr if isinstance(stderr, str) else "")).lower()
+    def diagnostic_cause(value):
+        value = value.lower()
+        if "out of memory" in value or "outofmemoryerror" in value:
+            return "out_of_memory"
+        if "driver" in value and ("too old" in value or "insufficient" in value):
+            return "driver_too_old"
+        if "no kernel image" in value or "invalid device function" in value:
+            return "wheel_arch_mismatch"
+        return None
+
+    # Prefer the actual selected operation's exception over ambient warnings.
+    diagnostic = diagnostic_cause(" ".join((detail, error_type if isinstance(error_type, str) else "")))
+    if diagnostic is None and isinstance(stderr, str):
+        diagnostic = diagnostic_cause(stderr)
     capability = selected.get("capability") if selected else None
     architecture = ""
     if (isinstance(capability, (tuple, list)) and len(capability) == 2
@@ -460,6 +485,8 @@ def classify_compute(
         and report.get("device") == request["device"]
         and report.get("backend") == request["backend"]
         and report.get("required_operations") == expected
+        and report.get("cuda_visible_devices") == environment.get("CUDA_VISIBLE_DEVICES")
+        and report.get("cuda_device_order") == environment.get("CUDA_DEVICE_ORDER")
     )
     version = torch_version or "unknown"
     gpu_name = selected["name"] if selected else (request["device"] if request else "selected GPU")
@@ -500,11 +527,11 @@ def classify_compute(
         cause = None
         message = f"PyTorch ({version}, CUDA {cuda}) passed the {len(expected)} required compute checks on {gpu_name} ({device})."
         works = ""
-    elif "driver" in diagnostic and ("too old" in diagnostic or "insufficient" in diagnostic):
+    elif diagnostic == "driver_too_old":
         cause = "driver_too_old"
         message = f"The NVIDIA driver is too old for PyTorch ({version}, CUDA {cuda or 'unknown'})."
         works = "Update the NVIDIA driver to one that supports this CUDA build."
-    elif "out of memory" in diagnostic or "outofmemoryerror" in diagnostic:
+    elif diagnostic == "out_of_memory":
         cause = "out_of_memory"
         message = f"PyTorch ({version}) ran out of GPU memory during {stage or 'the compute probe'} on {gpu_name}."
         works = "Free GPU memory or use a GPU with more available memory."
@@ -516,7 +543,7 @@ def classify_compute(
         cause = "device_unavailable"
         message = f"The selected CUDA device ({device}) is not available to PyTorch ({version})."
         works = "Select a visible CUDA device in the same interpreter environment."
-    elif "no kernel image" in diagnostic or "invalid device function" in diagnostic:
+    elif diagnostic == "wheel_arch_mismatch":
         # Architecture lists are advisory: compatible cubins or PTX can
         # compute without an exact SM entry. A real kernel error is decisive.
         cause = "wheel_arch_mismatch"
@@ -539,6 +566,8 @@ def classify_compute(
         "arch_list": arches, "wheel_versions": wheels, "driver_version": driver,
         "driver_error": driver_error,
         "cuda_visible_devices": report.get("cuda_visible_devices"),
+        "cuda_device_order": report.get("cuda_device_order"),
+        "device_inventory_errors": report.get("device_inventory_errors", []),
     }
 
 
@@ -560,11 +589,12 @@ def probe_compute(
         key: value for key, value in (os.environ if environ is None else environ).items()
         if key.upper() not in {"PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV"}
     }
+    context["environ"] = environment
     try:
         result = run(
             [request["interpreter"], "-I", "-c", COMPUTE_PROBE_SOURCE, json.dumps(request)],
             stdin=subprocess.DEVNULL, capture_output=True, text=True,
-            check=False, timeout=timeout, env=environment,
+            check=False, timeout=timeout, env=environment, encoding="utf-8", errors="replace",
         )
     except subprocess.TimeoutExpired:
         return classify_compute(None, timed_out=True, **context)
