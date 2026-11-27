@@ -7,6 +7,7 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -370,6 +371,18 @@ def _source_url(model) -> tuple[str | None, str]:
     return url, ''
 
 
+def download_peak_bytes(files, partial_bytes=None) -> int:
+    """Additional space for completed files and the simultaneous part and staging copy."""
+    partial_bytes = partial_bytes or {}
+    completed = peak = 0
+    for f in files:
+        size = f['bytes']
+        partial = min(size, max(0, partial_bytes.get((f['folder'], f['file']), 0)))
+        peak = max(peak, completed + 2 * size - partial)
+        completed += size
+    return peak
+
+
 def plan_attached_model_download(client, entry_id: str, mode: str, *, sources=None) -> dict[str, Any]:
     """Read-only: what would be downloaded where. Writes nothing and asks the server only for reads.
 
@@ -418,26 +431,32 @@ def plan_attached_model_download(client, entry_id: str, mode: str, *, sources=No
     if problems:
         raise AttachedDownloadRefused('folder_not_writable', 'The folder ' + problems[0]
             + ' reported by your ComfyUI does not exist on this computer or is not writable; nothing was downloaded.')
-    links = {}
-    for f in files:
-        if f['folder'] not in links:
-            links[f['folder']] = _hard_links_supported(Path(f['folder']))
-        f['hard_links'] = links[f['folder']]
     total = sum(f['bytes'] for f in files)
-    devices = {}
+    devices, partials = {}, {}
     for f in files:
         devices.setdefault(os.stat(f['folder']).st_dev, []).append(f)
-    free, enough = None, True
+        part = Path(f['folder']) / f".{f['file']}.astrid-resume"
+        try:
+            metadata = part.stat(follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        if stat.S_ISREG(metadata.st_mode) and metadata.st_nlink == 1:
+            partials[(f['folder'], f['file'])] = min(metadata.st_size, f['bytes'])
+    free, enough, peak = None, True, 0
     for group in devices.values():
         space = shutil.disk_usage(group[0]['folder']).free
         free = space if free is None else min(free, space)
-        enough = enough and space >= sum(f['bytes'] for f in group) + DOWNLOAD_MARGIN_BYTES
+        group_peak = download_peak_bytes(group, partials)
+        peak += group_peak
+        enough = enough and space >= group_peak + DOWNLOAD_MARGIN_BYTES
     wanted = sorted(({key: f[key] for key in ('file', 'folder', 'url', 'bytes', 'sha256')}
                      for f in [*files, *present_files]), key=lambda f: (f['folder'], f['file']))
     body = {'entry': entry_id, 'mode': mode, 'target': client.target.url, 'wanted': wanted, 'manual': manual}
     digest = hashlib.sha256(json.dumps(body, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
     return {'entry': entry_id, 'mode': mode, 'target': client.target.url, 'files': files, 'present': present_files,
             'manual': manual, 'total_bytes': total, 'margin_bytes': DOWNLOAD_MARGIN_BYTES, 'free_bytes': free,
+            'peak_bytes': peak, 'partial_bytes': [{'file': f['file'], 'bytes': partials[(f['folder'], f['file'])]}
+                for f in files if partials.get((f['folder'], f['file']), 0)],
             'space_ok': enough, 'plan_sha256': digest}
 
 
@@ -456,6 +475,8 @@ def render_attached_download_plan(plan: dict[str, Any]) -> str:
         return '\n'.join(lines + ['Nothing can be downloaded.'])
     lines.append(f"Total: {_size(plan['total_bytes'])}; free space: {_size(plan['free_bytes'])}, "
                  f"and {_size(plan['margin_bytes'])} more is kept free as a margin.")
+    lines.append(f"At its peak the download needs {_size(plan['peak_bytes'])} because a file being rebuilt "
+                 "sits beside its partial copy.")
     if not plan['space_ok']:
         lines.append('Not enough free space for this download; free some space first.')
     lines.append('Nothing has been written. ComfyUI is not restarted and nothing else on it is changed.')
@@ -640,12 +661,17 @@ def apply_attached_model_download(client, entry_id: str, mode: str, *, plan_sha2
         raise AttachedDownloadRefused('nothing_to_download', 'Nothing in the plan can be downloaded.')
     if not plan['space_ok']:
         raise AttachedDownloadRefused('insufficient_space',
-            f"Not enough free space: {_size(plan['free_bytes'])} free, need {_size(plan['total_bytes'])} plus a "
+            f"Not enough free space: {_size(plan['free_bytes'])} free, need {_size(plan['peak_bytes'])} at its peak plus a "
             f"margin of {_size(plan['margin_bytes'])}. Nothing was written.")
     for f in plan['files']:
         if os.path.lexists(os.path.join(f['folder'], f['file'])):
             raise AttachedDownloadRefused('file_exists', f"{f['file']} already exists in {f['folder']}; it is never "
                                           'overwritten. Nothing was written.')
+    links = {}
+    for f in plan['files']:
+        if f['folder'] not in links:
+            links[f['folder']] = _hard_links_supported(Path(f['folder']))
+        f['hard_links'] = links[f['folder']]
     done = []
     for f in plan['files']:
         _say(f"Downloading {f['file']} ({_size(f['bytes'])}) -> {f['folder']}")
