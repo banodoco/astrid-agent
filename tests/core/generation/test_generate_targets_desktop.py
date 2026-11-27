@@ -8,7 +8,9 @@ import pytest
 from astrid.core.generation import cli, desktop_install, placement, preflight, settings, targets
 from astrid.packs.vibecomfy import local
 from astrid.sdk.generation import GenerationFacade, GenerationInputError
-from tests.core.generation.test_desktop_rungs import installation_for
+from tests.core.generation.test_desktop_rungs import (
+    INSTALLATION_DENIAL_CASES, denied_installation_for, installation_for,
+)
 
 
 URL = "http://127.0.0.1:8000"
@@ -80,6 +82,45 @@ def test_bound_sdk_and_cli_payload(case, reason, scenario, tmp_path, generation_
         assert (payload["next_action"]["alternative"] is not None) == (case == "stale")
         assert calls == []
     assert_no_writes(generation_settings_store, tmp_path)
+
+
+@pytest.mark.parametrize("case", INSTALLATION_DENIAL_CASES)
+@pytest.mark.parametrize("selector", [URL, "auto"])
+def test_installation_denial_public_payload_and_no_writes(
+    case, selector, scenario, tmp_path, generation_settings_store, monkeypatch, capsys,
+):
+    state, calls = scenario
+    state["installations"] = [denied_installation_for(case, tmp_path, monkeypatch)]
+    before = copy.deepcopy((generation_settings_store.documents, generation_settings_store.receipts))
+    facade = GenerationFacade()
+    payload = facade.targets(placement=selector)
+    assert payload == facade.targets(placement=selector)
+    assert cli.main(["targets", "--placement", selector, "--json"]) == 0
+    assert json.loads(capsys.readouterr().out) == payload
+    assert payload["target"]["endpoint"] == URL
+    assert payload["placement"]["source"] == ("discovery" if selector == "auto" else "request")
+    assert payload["status"] == "blocked"
+    assert payload["ladder"]["stopped_at"] == "installed"
+    rungs = payload["ladder"]["rungs"]
+    assert rungs[0]["state"] == "unchecked" and rungs[0]["observation"] is None
+    assert rungs[0]["reason"] == "installation_access_denied"
+    assert all(rung["state"] == "unchecked" and rung["reason"] == "not_reached"
+               for rung in rungs[1:])
+    assert len(payload["issues"]) == len(payload["fixes"]) == 1
+    assert payload["issues"][0]["details"]["reason"] == "installation_access_denied"
+    action = payload["next_action"]
+    assert action["who"] == "agent"
+    assert action["argv"] == ["astrid", "generate", "targets", "--placement", selector]
+    assert action["alternative"] is None and "requires_consent" not in action
+    assert payload["fixes"][0]["scope"] == "read_only"
+
+    # No bound or discovered path can save an unverified denied installation.
+    message = "explicit target" if selector == "auto" else "installation_access_denied"
+    with pytest.raises(GenerationInputError, match=message):
+        facade.targets(placement=selector, save=True)
+    assert calls == []
+    assert (generation_settings_store.documents, generation_settings_store.receipts) == before
+    assert_no_writes(generation_settings_store, tmp_path, before[0])
 
 
 def test_unbound_attach_proposal_repeated_decline_and_explicit_yes(
