@@ -270,9 +270,22 @@ def destination_state(destination):
     return "foreign"
 
 
+def _digest(identity):
+    return hashlib.sha256(
+        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
 def build_offer(destination, *, pin=None, platform=None, gpu=None,
                 disk_usage=shutil.disk_usage, environ=None):
     """Construct a consent offer or the first applicable refusal. Never write."""
+    offer, _ = _build_offer(destination, pin=pin, platform=platform, gpu=gpu,
+                            disk_usage=disk_usage, environ=environ)
+    return offer
+
+
+def _build_offer(destination, *, pin, platform, gpu, disk_usage, environ, consent=None):
+    """Return the current offer and the historical journal identity, never consent."""
     pin = load_pin() if pin is None else _validate_pin(pin)
     platform = sys.platform if platform is None else platform
     environ = os.environ if environ is None else environ
@@ -299,22 +312,39 @@ def build_offer(destination, *, pin=None, platform=None, gpu=None,
 
         gpu = gpu_environment.detect_nvidia()
     devices = list(gpu.get("devices", [])) if gpu is not None else []
-    identity = {
+    # The v1 digest is useful solely to recognize a historical journal whose
+    # separately recorded full release still matches. It cannot authorize apply.
+    legacy_digest = _digest({
         "destination": str(destination),
         "release": offer["release"],
         "archive_sha256": release["archive_sha256"] if release is not None else None,
         "platform": platform,
         "peak_bytes": peak,
         "gpu_devices": devices,
-    }
-    offer["offer_sha256"] = hashlib.sha256(
-        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
+    })
+    offer["offer_sha256"] = _digest({
+        "schema": "astrid.comfy-install-consent.v2",
+        "destination": str(destination),
+        "release": release,
+        "platform": platform,
+        "gpu_devices": devices,
+        "download_bytes": offer["download_bytes"],
+        "installed_bytes": offer["installed_bytes"],
+        "peak_bytes": peak,
+        "margin_bytes": MARGIN_BYTES,
+        "minutes": offer["minutes"],
+        "cost_usd": offer["cost_usd"],
+    })
+    # Compare the stable scope before consulting destination state, measuring
+    # free space, verifying a completed tree or invoking any install step.
+    # The selected GPU observation above is required to compute that scope.
+    if consent is not None and consent != offer["offer_sha256"]:
+        raise PortableError("consent_mismatch")
 
     def refuse(code, message, works):
         offer["status"] = "refused"
         offer["refusal"] = {"code": code, "message": message, "works": works}
-        return offer
+        return offer, legacy_digest
 
     if platform != "win32":
         works = (
@@ -340,7 +370,7 @@ def build_offer(destination, *, pin=None, platform=None, gpu=None,
             "No verified official ComfyUI Portable release is pinned.",
             "Use your own running ComfyUI, or wait for a verified official Portable release.",
         )
-    if not destination.is_absolute() or destination.is_file():
+    if not destination.is_absolute() or ".." in destination.parts or destination.is_file():
         return refuse(
             "destination_invalid",
             f"The destination must be an absolute folder path, not a file: {destination}",
@@ -361,15 +391,17 @@ def build_offer(destination, *, pin=None, platform=None, gpu=None,
             return refuse(exc.code, str(exc), "Keep the existing folder and choose another destination.")
         if journal is None:
             return refuse("destination_changed", "The install journal disappeared.", "Retry the offer.")
+        try:
+            _validate_journal(journal, offer, release, legacy_digest)
+        except PortableError as exc:
+            return refuse(exc.code, str(exc), "Keep the existing folder and choose another destination.")
         done = _work_bytes(destination)
         offer["resume"] = {"phase": journal.get("phase"), "done_bytes": done}
-        # Space already occupied by this attempt is not required a second time.
-        # The consent identity above continues to use the original full peak.
+        # Only matching, journal-owned work may reduce remaining free space.
+        # Neither remaining space nor progress changes the original consent.
         offer["peak_bytes"] = max(0, peak - done)
         if (
             journal.get("phase") == "complete"
-            and journal.get("offer_sha256") == offer["offer_sha256"]
-            and journal.get("release") == release
             and not _required_missing(destination / release["inner_directory"], pin)
         ):
             offer["state"] = "complete"
@@ -386,24 +418,30 @@ def build_offer(destination, *, pin=None, platform=None, gpu=None,
             f"Only {offer['free_bytes']} bytes are free; {offer['peak_bytes']} bytes are needed at the peak.",
             "Free enough disk space or choose a folder on a drive with enough space.",
         )
-    return offer
+    return offer, legacy_digest
 
 
-def _validate_journal(journal, offer, release):
+def _validate_journal(journal, offer, release, legacy_digest):
+    """Validate custody; return whether a recognized v1 journal needs renewal."""
     if journal is None:
-        return
-    if journal.get("offer_sha256") != offer["offer_sha256"]:
-        raise PortableError("consent_mismatch")
+        return False
+    # A different descriptor cannot redirect repair/cleanup, even when the
+    # person freshly confirms that new offer. Preserve the old installation.
     if (
-        # The offer identity predates this installer and does not include these
-        # layout details. The journal's release descriptor binds custody so a
-        # changed pin cannot redirect repair or cleanup onto someone else's data.
         journal.get("release") != release
         or journal.get("phase") not in ("started", "downloaded", "extracted", "complete")
         or type(journal.get("renaming")) is not bool
         or (journal["renaming"] and journal["phase"] != "downloaded")
     ):
         raise PortableError("destination_changed", "The install journal has changed.")
+    digest = journal.get("offer_sha256")
+    if digest == offer["offer_sha256"]:
+        return False
+    if digest == legacy_digest:
+        # This is historical custody only, not approval: install_portable has
+        # already required the current full-scope digest before reaching here.
+        return True
+    raise PortableError("consent_mismatch", "The install journal belongs to a different offer.")
 
 
 def _check_final_root(journal, root, staged_root, pin, steps):
@@ -443,11 +481,13 @@ def install_portable(destination, consent, *, pin=None, steps, platform=None, gp
     """Apply one exact offer, resuming only work owned by its destination journal."""
     if consent is None:
         raise PortableError("consent_required")
-    pin = load_pin() if pin is None else _validate_pin(pin)
-    offer = build_offer(destination, pin=pin, platform=platform, gpu=gpu,
-                        disk_usage=disk_usage, environ=environ)
-    if not isinstance(consent, str) or consent != offer["offer_sha256"]:
+    if not isinstance(consent, str):
         raise PortableError("consent_mismatch")
+    pin = load_pin() if pin is None else _validate_pin(pin)
+    offer, legacy_digest = _build_offer(
+        destination, pin=pin, platform=platform, gpu=gpu,
+        disk_usage=disk_usage, environ=environ, consent=consent,
+    )
     if offer["status"] == "refused":
         raise PortableError(offer["refusal"]["code"], offer["refusal"]["message"])
 
@@ -462,7 +502,7 @@ def install_portable(destination, consent, *, pin=None, steps, platform=None, gp
     staged_root = staging / release["inner_directory"]
     _check_layout(destination, release)
     journal = _read_journal(destination)
-    _validate_journal(journal, offer, release)
+    _validate_journal(journal, offer, release, legacy_digest)
     _check_final_root(journal, root, staged_root, pin, steps)
     resumed_from = journal["phase"] if journal is not None else None
     kept_previous = None
@@ -492,7 +532,7 @@ def install_portable(destination, consent, *, pin=None, steps, platform=None, gp
     try:
         _check_layout(destination, release)
         locked_journal = _read_journal(destination)
-        _validate_journal(locked_journal, offer, release)
+        renew_journal = _validate_journal(locked_journal, offer, release, legacy_digest)
         _check_final_root(locked_journal, root, staged_root, pin, steps)
         if journal is not None and locked_journal is None:
             raise PortableError("destination_changed", "The install journal disappeared.")
@@ -513,6 +553,15 @@ def install_portable(destination, consent, *, pin=None, steps, platform=None, gp
         if journal["phase"] == "complete":
             if not _required_missing(root, pin) and not steps.missing(root, pin):
                 return result("already_installed")
+
+        if renew_journal:
+            # Fresh v2 consent and matching historical custody were checked
+            # before the lock and again under it. Keep all journal fields and
+            # verified progress, changing only the authorization identity.
+            journal = {**journal, "offer_sha256": consent}
+            _write_journal(journal_path, journal)
+
+        if journal["phase"] == "complete":
             kept_previous = _preserve_broken(root)
             advance("started")
 
