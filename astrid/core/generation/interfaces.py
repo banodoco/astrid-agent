@@ -71,6 +71,7 @@ class ReadinessNextAction(TypedDict):
     then_argv: list[str] | None
     alternative: dict[str, Any] | None
     choices: list[dict[str, Any]] | None
+    requires_consent: NotRequired[Literal["attach_existing"]]
 
 
 class ReadinessEnvelope(TypedDict):
@@ -82,6 +83,7 @@ class ReadinessEnvelope(TypedDict):
     attempt_count: NotRequired[int]
     ladder: NotRequired[ReadinessLadder]
     next_action: NotRequired[ReadinessNextAction | None]
+    summary: NotRequired[str]
 
 
 class GenerationErrorEnvelope(ReadinessEnvelope):

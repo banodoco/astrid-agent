@@ -184,7 +184,8 @@ def ladder_stop(ladder):
                  if item["state"] != "observed"), None)
 
 
-def make_next_action(who, step, *, argv=None, then_argv=None, alternative=None, choices=None):
+def make_next_action(who, step, *, argv=None, then_argv=None, alternative=None, choices=None,
+                     requires_consent=None):
     """Describe exactly one action, not an implicit sequence of repairs."""
     from copy import deepcopy
 
@@ -202,8 +203,16 @@ def make_next_action(who, step, *, argv=None, then_argv=None, alternative=None, 
         argv = command(argv)
     else:
         raise ValueError("readiness action must be one person step or agent command")
-    return {"who": who, "step": step, "argv": argv, "then_argv": then_argv,
-            "alternative": deepcopy(alternative), "choices": deepcopy(choices)}
+    action = {"who": who, "step": step, "argv": argv, "then_argv": then_argv,
+              "alternative": deepcopy(alternative), "choices": deepcopy(choices)}
+    if requires_consent is not None:
+        if (requires_consent != "attach_existing" or who != "agent"
+                or len(argv) != 6 or argv[:5] != ["astrid", "generate", "settings", "set", "placement"]):
+            raise ValueError("attach consent belongs only to the explicit placement command")
+        from .targets import normalize_target
+        normalize_target({"endpoint": argv[-1]})
+        action["requires_consent"] = requires_consent
+    return action
 
 
 # Observations of the human-owned existing-install prefix.
@@ -212,8 +221,18 @@ LADDER_REASONS = {
     "files_missing": "installed",
     "not_answering": "reachable",
     "access_denied": "reachable",
+    "installation_access_denied": "installed",
     "not_comfyui": "identified",
     "api_unsupported": "compatible",
+    "stale_registration": "installed",
+    "closed": "reachable",
+    "not_this_install": "identified",
+    "cannot_tell_which_install": "identified",
+    "several_installs": "identified",
+    "not_supported_here": "installed",
+    "no_install_found": "installed",
+    "discovery_incomplete": "installed",
+    "timeout": "reachable",
 }
 
 LADDER_TEXT = {
@@ -232,6 +251,11 @@ LADDER_TEXT = {
         "step": "Retry the same check through the normal permission request.",
         "who": "agent",
     },
+    "installation_access_denied": {
+        "message": "Access to ComfyUI Desktop registration or files was denied; its installation could not be verified.",
+        "step": "Retry the installation check through the normal permission request.",
+        "who": "agent",
+    },
     "not_comfyui": {
         "message": "Something that is not ComfyUI answers at {url}.",
         "step": "Close it, or tell me the address of your ComfyUI.",
@@ -241,6 +265,54 @@ LADDER_TEXT = {
         "message": "The ComfyUI at {url} does not offer the API Astrid needs.",
         "step": "Update that ComfyUI, then ask me to check again.",
         "who": "person",
+    },
+    "stale_registration": {
+        "message": "Your ComfyUI Desktop registration points at files that no longer exist.",
+        "step": "Reinstall ComfyUI Desktop without deleting your existing files, then ask me to check again.",
+        "who": "person",
+    },
+    "closed": {
+        "message": "Found your registered ComfyUI Desktop, but it is not answering at {url}.",
+        "step": "Open ComfyUI Desktop yourself, then I will recheck its endpoint.",
+        "who": "person",
+    },
+    "not_this_install": {
+        "message": "The responder at {url} does not match the registered ComfyUI Desktop.",
+        "step": "Tell me the address of the ComfyUI you want to use.",
+        "who": "person",
+    },
+    "cannot_tell_which_install": {
+        "message": "I cannot establish which ComfyUI installation answers at {url}.",
+        "step": "Tell me which ComfyUI to use, or check its installation details.",
+        "who": "person",
+    },
+    "several_installs": {
+        "message": "More than one ComfyUI candidate was found.",
+        "step": "Choose the ComfyUI you want to use.",
+        "who": "person",
+    },
+    "not_supported_here": {
+        "message": "ComfyUI Desktop discovery is only supported on Windows here.",
+        "step": "Choose a running ComfyUI Portable, Git or Pinokio endpoint.",
+        "who": "person",
+    },
+    "no_install_found": {
+        "message": "Completed local discovery found no registered Desktop or answering ComfyUI candidate.",
+        "step": "Tell me an existing ComfyUI address if you have one.",
+        "who": "person",
+    },
+    "discovery_incomplete": {
+        "message": "Local discovery is incomplete; I cannot establish whether an installation exists.",
+        "step": "Retry discovery or tell me the exact ComfyUI address.",
+        "who": "person",
+    },
+    "timeout": {
+        "message": "The observation at {url} timed out; this does not establish absence.",
+        "step": "Check that the endpoint is responding, then ask me to retry.",
+        "who": "person",
+    },
+    "running_desktop": {
+        "message": "Your ComfyUI Desktop endpoint is identified and API-compatible. Compute, workflow and delivery have not been checked.",
     },
 }
 
@@ -266,6 +338,7 @@ def _failure_kind(exc):
     pending = [(exc, 0)]
     seen = set()
     denied = False
+    timed_out = False
     while pending:
         item, depth = pending.pop(0)
         if item is None or id(item) in seen:
@@ -275,12 +348,104 @@ def _failure_kind(exc):
             return "answered_not_comfyui"
         if isinstance(item, PermissionError):
             denied = True
+        if isinstance(item, TimeoutError):
+            timed_out = True
         if depth < 6:
             pending.extend((attr(item, name), depth + 1) for name in ("__cause__", "reason"))
-    return "access_denied" if denied else "not_answering"
+    return "access_denied" if denied else "timeout" if timed_out else "not_answering"
 
 
-def observe_target_rungs(record, *, get_json=None):
+def _connection_refused(exc):
+    """A positively observed refused connection, not a timeout or unknown error."""
+    pending = [exc]
+    seen = set()
+    refused = False
+    while pending and len(seen) < 16:
+        item = pending.pop()
+        if not isinstance(item, BaseException) or id(item) in seen:
+            continue
+        seen.add(id(item))
+        if isinstance(item, (TimeoutError, PermissionError)) or isinstance(getattr(item, "code", None), int):
+            return False
+        if isinstance(item, ConnectionRefusedError):
+            refused = True
+        pending.extend((getattr(item, "reason", None), item.__cause__))
+    return refused
+
+
+def _platform():
+    import sys
+    return sys.platform
+
+
+def _stop_existing(ladder, rung, reason, url, *, state="failed"):
+    result = with_rung(ladder, rung, state, reason=reason,
+                       message=LADDER_TEXT[reason]["message"].format(url=url))
+    for later in LADDER_RUNGS[LADDER_RUNGS.index(rung) + 1:]:
+        result = with_rung(result, later, "unchecked", reason="not_reached")
+    return result
+
+
+def _compatible_rung(ladder, url, probe, version):
+    try:
+        schema = probe(url, "/object_info")
+    except Exception:  # noqa: BLE001 - unverified API is not compatible
+        return _stop_existing(ladder, "compatible", "api_unsupported", url)
+    if not isinstance(schema, dict) or not schema:
+        return _stop_existing(ladder, "compatible", "api_unsupported", url)
+    return with_rung(ladder, "compatible", "observed", observation={
+        "comfyui_version": version if isinstance(version, str) else None,
+    })
+
+
+def _observe_desktop_rungs(installation, url, probe):
+    ladder = new_ladder("compatible")
+    state = installation["state"]
+    files = installation["files"]
+    responder = installation["responder"]
+    if state == "stale":
+        return _stop_existing(ladder, "installed", "stale_registration", url)
+    # B distinguishes registration/config/stat denial (no responder
+    # observation) from denied responder access after both files were found.
+    # A false file flag on a denied observation is not proof of absence.
+    if state == "denied":
+        recorded = installation["recorded"]
+        files_verified = all(
+            files.get(field) is True
+            and isinstance(recorded.get(field), str) and recorded[field].strip()
+            for field in ("executable", "data_dir")
+        )
+        if not files_verified or responder.get("kind") != "denied":
+            return _stop_existing(ladder, "installed", "installation_access_denied",
+                                  url, state="unchecked")
+    # Only responder denial with positively observed files can advance past
+    # installed. Preserve the supplied evidence; never guess paths.
+    ladder = with_rung(ladder, "installed", "observed", observation={
+        "layout": "desktop", "files": files,
+    })
+    if state == "closed":
+        return _stop_existing(ladder, "reachable", "closed", url)
+    if state == "denied":
+        return _stop_existing(ladder, "reachable", "access_denied", url)
+    if state == "ambiguous" and responder["kind"] not in ("comfyui", "other"):
+        # Incomplete registry/config with no responder is not reachable.
+        return _stop_existing(new_ladder("compatible"), "installed",
+                              "discovery_incomplete", url, state="unchecked")
+    ladder = with_rung(ladder, "reachable", "observed", observation={"endpoint": url})
+    if state == "wrong_responder":
+        reason = "not_comfyui" if responder["kind"] == "other" else "not_this_install"
+        return _stop_existing(ladder, "identified", reason, url)
+    if state != "running" or responder.get("matches_install") is not True or not all(files.values()):
+        return _stop_existing(ladder, "identified", "cannot_tell_which_install", url)
+    ladder = with_rung(ladder, "identified", "observed", observation={
+        "tied_to_install": True, "by": "data_dir",
+    })
+    # B exposes the Desktop application/registration version, not the
+    # ComfyUI responder version. Do not equate those separate identities.
+    return _compatible_rung(ladder, url, probe, None)
+
+
+def observe_target_rungs(record, *, get_json=None, installation=None):
     """Observe the four existing-install rungs without adopting or starting it."""
     from pathlib import Path
 
@@ -291,13 +456,17 @@ def observe_target_rungs(record, *, get_json=None):
     url = record.endpoint
     probe = _comfy_get_json if get_json is None else get_json
     ladder = new_ladder("compatible")
+    if record.layout == "desktop" and _platform() != "win32":
+        return _stop_existing(ladder, "installed", "not_supported_here", url)
+    if installation is not None:
+        if installation["endpoint"] != url:
+            raise ValueError("Desktop observation does not match the selected endpoint")
+        return _observe_desktop_rungs(installation, url, probe)
+    if record.layout == "desktop":
+        return _stop_existing(ladder, "installed", "discovery_incomplete", url, state="unchecked")
 
     def failed(rung, reason):
-        result = with_rung(ladder, rung, "failed", reason=reason,
-                           message=LADDER_TEXT[reason]["message"].format(url=url))
-        for later in LADDER_RUNGS[LADDER_RUNGS.index(rung) + 1:]:
-            result = with_rung(result, later, "unchecked", reason="not_reached")
-        return result
+        return _stop_existing(ladder, rung, reason, url)
 
     if record.root is None:
         installed = {"identity": "endpoint_only"}
@@ -324,24 +493,193 @@ def observe_target_rungs(record, *, get_json=None):
         return failed("identified", "not_comfyui")
     ladder = with_rung(ladder, "identified", "observed", observation={"tied_to_install": False})
 
+    return _compatible_rung(ladder, url, probe, stats["system"].get("comfyui_version"))
+
+
+def _discovery_failure(url, reason):
+    ladder = new_ladder("compatible")
+    if reason in ("no_install_found", "discovery_incomplete"):
+        return _stop_existing(ladder, "installed", reason, url,
+                              state="failed" if reason == "no_install_found" else "unchecked")
+    ladder = with_rung(ladder, "installed", "observed", observation={"identity": "endpoint_only"})
+    if reason == "not_comfyui":
+        ladder = with_rung(ladder, "reachable", "observed", observation={"endpoint": url})
+    return _stop_existing(ladder, LADDER_REASONS[reason], reason, url)
+
+
+def _empty_discovery(scan):
+    """Require positive refusal observations before claiming complete absence.
+
+    The existing scan intentionally treats both refusal and timeout as a miss.
+    Its optional Pinokio phase can also run out of budget. Recheck those
+    boundaries without changing its public servers/errors/Pinokio semantics.
+    """
+    from .desktop_install import DESKTOP_CANDIDATE_PORTS
+    from astrid.packs.vibecomfy import local
+
+    default = "http://127.0.0.1:8188"
+    for port in DESKTOP_CANDIDATE_PORTS:
+        url = f"http://127.0.0.1:{port}"
+        try:
+            stats = _comfy_get_json(url, "/system_stats")
+        except Exception as exc:
+            if _connection_refused(exc):
+                continue
+            reason = _failure_kind(exc)
+            if reason == "answered_not_comfyui":
+                reason = "not_comfyui"
+            elif reason == "not_answering":
+                reason = "discovery_incomplete"
+            return url, reason
+        # A responder appeared since scan; do not bind a different answer
+        # from this partial second observation.
+        if not isinstance(stats, dict) or not isinstance(stats.get("system"), dict):
+            return url, "not_comfyui"
+        return url, "discovery_incomplete"
+    if (scan.get("errors") != [] or not isinstance(scan.get("pinokio"), dict)
+            or scan["pinokio"].get("available") is not False):
+        return default, "discovery_incomplete"
+    # Pinokio being unavailable is not itself evidence of a refused connection.
     try:
-        schema = probe(url, "/object_info")
-    except Exception:  # noqa: BLE001 - an unavailable API is a stable compatibility failure
-        return failed("compatible", "api_unsupported")
-    if not isinstance(schema, dict) or not schema:
-        return failed("compatible", "api_unsupported")
-    version = stats["system"].get("comfyui_version")
-    return with_rung(ladder, "compatible", "observed", observation={
-        "comfyui_version": version if isinstance(version, str) else None,
-    })
+        local._get_json(local._PINOKIO_INFO_URL, timeout=local._PINOKIO_REQUEST_TIMEOUT_SECONDS)
+    except Exception as exc:
+        if _connection_refused(exc):
+            # On Windows an absent APPDATA prevents a complete config read.
+            import os
+            if _platform() == "win32" and not os.environ.get("APPDATA"):
+                return default, "discovery_incomplete"
+            return default, "no_install_found"
+        # This was the optional Pinokio API, not the selected Comfy endpoint.
+        # Do not attribute its timeout or denial to the default Comfy address.
+    return default, "discovery_incomplete"
 
 
-def ladder_next_action(ladder, *, url=None, installation=None):
+def inspect_existing_selection(selection):
+    """Observe the resolved human endpoint or propose a discovery candidate.
+
+    A discovered record is still unbound; only an explicit later placement
+    command can change the user's selected job identity. No writer is called.
+    """
+    from . import desktop_install
+    from .targets import TargetRecord, TargetSelection
+    from astrid.packs.vibecomfy import local
+
+    record = selection.record
+    url = record.endpoint
+
+    def incomplete(reason="discovery_incomplete"):
+        return selection, _discovery_failure(url, reason), None, None
+
+    def matched(installations, endpoint):
+        return [item for item in installations if item["endpoint"] == endpoint]
+
+    def inspect(selected, matches):
+        if len(matches) > 1:
+            # Two registered identities at one endpoint are not one known install.
+            ladder = new_ladder("compatible")
+            ladder = with_rung(ladder, "installed", "observed", observation={"registrations": len(matches)})
+            if any(item["responder"]["kind"] in ("comfyui", "other") for item in matches):
+                ladder = with_rung(ladder, "reachable", "observed", observation={"endpoint": selected.record.endpoint})
+                ladder = _stop_existing(ladder, "identified", "cannot_tell_which_install", selected.record.endpoint)
+            else:
+                ladder = _stop_existing(new_ladder("compatible"), "installed", "discovery_incomplete",
+                                        selected.record.endpoint, state="unchecked")
+            return selected, ladder, None, None
+        installation = matches[0] if matches else None
+        ladder = observe_target_rungs(selected.record, installation=installation)
+        return selected, ladder, installation, None
+
+    if selection.bound:
+        if record.layout == "desktop" and _platform() != "win32":
+            return inspect(selection, [])
+        # On unsupported Desktop hosts an explicit generic URL remains a URL.
+        # Do not require Desktop discovery for unrelated explicit endpoints.
+        installations = []
+        if _platform() == "win32":
+            from urllib.parse import urlsplit
+            try:
+                installations = desktop_install.observe_installations(ports=[urlsplit(url).port])
+            except (OSError, ValueError):
+                if record.layout == "desktop":
+                    return incomplete()
+        return inspect(selection, matched(installations, url))
+
+    try:
+        scan = local.scan([8188, 8000])
+        installations = scan["installations"]
+        servers = scan["servers"]
+        if not isinstance(installations, list) or not isinstance(servers, list):
+            return incomplete()
+        candidates = desktop_install.select_candidate(installations, servers)
+    except (OSError, ValueError, KeyError, TypeError):
+        return incomplete()
+
+    if candidates["outcome"] == "several":
+        choices = [{"label": f"{item['label']} ({item['endpoint']})"
+                    if item["layout"] == "desktop" else item["label"],
+                    "endpoint": item["endpoint"]} for item in candidates["choices"]]
+        ladder = new_ladder("compatible")
+        ladder = with_rung(ladder, "installed", "observed", observation={"candidate_count": len(choices)})
+        ladder = with_rung(ladder, "reachable", "observed", observation={"candidates": choices})
+        ladder = _stop_existing(ladder, "identified", "several_installs", url)
+        return selection, ladder, None, choices
+
+    if candidates["outcome"] == "one":
+        endpoint = candidates["choices"][0]["endpoint"]
+        # Normalization verifies loopback; it cannot import guessed filesystem facts.
+        from .targets import normalize_target
+        selected = TargetSelection(normalize_target({"endpoint": endpoint}), "discovery", False)
+        return inspect(selected, matched(installations, endpoint))
+
+    if len(installations) == 1:
+        item = installations[0]
+        selected = TargetSelection(TargetRecord(endpoint=item["endpoint"]), "discovery", False)
+        return inspect(selected, [item])
+    if installations:
+        # No answering candidates, several registrations: no absence inference
+        # and no arbitrary choice of a stale/closed/inaccessible registration.
+        return incomplete()
+
+    endpoint, reason = _empty_discovery(scan)
+    selected = TargetSelection(TargetRecord(endpoint=endpoint), "discovery", False)
+    return selected, _discovery_failure(endpoint, reason), None, None
+
+
+def ladder_summary(ladder, *, url=None, installation=None):
+    stop = ladder_stop(ladder)
+    if stop is not None:
+        return stop["message"] or f"{stop['rung']} was not observed."
+    if installation is not None and installation["state"] == "running":
+        return LADDER_TEXT["running_desktop"]["message"]
+    return (f"The ComfyUI endpoint at {url} is API-compatible. "
+            "Its installation identity may be unknown; compute, workflow and delivery have not been checked.")
+
+
+def _separate_copy():
+    return {"kind": "separate_copy", "owner": "plan-94", "available": False,
+            "step": "Set up a separate copy of ComfyUI, with your consent."}
+
+
+def ladder_next_action(ladder, *, url=None, installation=None, choices=None, bound=True):
     """Project the first missing observation into one person or agent action."""
     stop = ladder_stop(ladder)
     if stop is None:
-        return None
+        if bound:
+            return None
+        return make_next_action(
+            "agent", f"Use the ComfyUI at {url} for generation only after the person says yes.",
+            argv=["astrid", "generate", "settings", "set", "placement", url],
+            requires_consent="attach_existing",
+        )
     command = ["astrid", "generate", "targets", "--placement", url or "auto"]
+    if stop["reason"] == "closed" and installation is not None:
+        command[-1] = installation["endpoint"]
+    if stop["reason"] in ("stale_registration", "no_install_found", "discovery_incomplete",
+                          "installation_access_denied"):
+        command[-1] = "auto" if not bound or stop["reason"] == "stale_registration" else url or "auto"
+    alternative = _separate_copy() if stop["reason"] in ("stale_registration", "no_install_found") else None
+    if stop["reason"] == "several_installs":
+        return make_next_action("person", LADDER_TEXT["several_installs"]["step"], choices=choices)
     wording = LADDER_TEXT.get(stop["reason"])
     if wording is None:
         step = f"Check the {stop['rung']} step ({stop['reason'] or 'not checked'}), then ask me to check again."
@@ -349,7 +687,7 @@ def ladder_next_action(ladder, *, url=None, installation=None):
     step = wording["step"].format(url=url or "auto")
     if wording["who"] == "agent":
         return make_next_action("agent", step, argv=command)
-    return make_next_action("person", step, then_argv=command)
+    return make_next_action("person", step, then_argv=command, alternative=alternative)
 
 
 def _mirror_next_action(action):
@@ -360,8 +698,12 @@ def _mirror_next_action(action):
             "guidance": action["step"], "who": "person",
             "then_argv": deepcopy(action["then_argv"]),
         }}
-    return {"argv": deepcopy(action["argv"]), "scope": "read_only",
-            "details": {"guidance": action["step"], "who": "agent"}}
+    details = {"guidance": action["step"], "who": "agent"}
+    scope = "read_only"
+    if action.get("requires_consent") == "attach_existing":
+        scope = "attached_target"
+        details["requires_consent"] = "attach_existing"
+    return {"argv": deepcopy(action["argv"]), "scope": scope, "details": details}
 
 
 def readiness_envelope(*, entry=None, target=None, issues=(), fixes=(), attempt_count=None,

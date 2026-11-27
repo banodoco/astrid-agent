@@ -140,6 +140,14 @@ def resolve_placement(request: Mapping[str, Any] | Placement | None = None, *,
     if not isinstance(default, Mapping):
         raise _refuse("the [placement] default must be a table", field_name="placement")
     over = request.as_mapping() if isinstance(request, Placement) else dict(request or {})
+    # The local ComfyUI environment override is a transient explicit address,
+    # above a saved Runtime placement, but below a request for a place.
+    if not over:
+        import os
+        from .targets import normalize_target
+        override = os.environ.get("VIBECOMFY_COMFYUI_URL")
+        if override is not None:
+            over = {"kind": "attached", "endpoint": normalize_target({"endpoint": override}).endpoint}
     merged = _merge((builtin or Placement()).as_mapping(), _merge(default, over))
     if not over and "kind" not in default and merged.get("kind") == "local":
         attached = _discovered_attachment(repo)

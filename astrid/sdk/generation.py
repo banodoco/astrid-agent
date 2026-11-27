@@ -1389,25 +1389,40 @@ class GenerationFacade:
             if updates:
                 raise ValueError('local target input updates are not supported; select an explicit URL')
             from astrid.core.generation import listing as generation_listing
-            # --save writes only what resolve_target selects, never the Runtime placement default.
-            selection = (targets.resolve_target(placement, repo=project_root) if save
-                         else generation_listing.target_selection(client, placement, repo=project_root))
+            # Inspect and save the same selection. Discovery is never a binding.
+            selection = generation_listing.target_selection(client, placement, repo=project_root)
+            if save and not selection.bound:
+                raise ValueError('select an explicit target before saving discovered defaults')
             record = selection.record
             if record is None and placement == 'managed':
                 record = targets.TargetRecord(owner='astrid')
-            if save:
-                if not selection.bound:
-                    raise ValueError('select an explicit target before saving discovered defaults')
-                if record is None:
-                    raise ValueError('select an explicit target before saving')
-                targets.save_target(record)
+            if save and record is None:
+                raise ValueError('select an explicit target before saving')
             if record is not None and record.owner == 'human' and record.endpoint:
                 from astrid.core.generation import preflight
-                ladder = preflight.observe_target_rungs(record)
-                action = preflight.ladder_next_action(ladder, url=record.endpoint)
+                selection, ladder, installation, choices = preflight.inspect_existing_selection(selection)
+                record = selection.record
+                stop = preflight.ladder_stop(ladder)
+                if save and stop is not None and stop["reason"] in {
+                    "not_this_install", "cannot_tell_which_install", "not_comfyui",
+                    "several_installs", "discovery_incomplete", "not_supported_here",
+                    "installation_access_denied",
+                }:
+                    raise ValueError("refusing to save an unidentified ComfyUI target: " + stop["reason"])
+                action = preflight.ladder_next_action(
+                    ladder, url=record.endpoint if record else None,
+                    installation=installation, choices=choices, bound=selection.bound,
+                )
                 payload = readiness_envelope(target=record, ladder=ladder, next_action=action)
+                payload["summary"] = preflight.ladder_summary(
+                    ladder, url=record.endpoint if record else None, installation=installation,
+                )
             else:
                 payload = readiness_envelope(target=record)
+            # Legacy explicit --save retains its TOML writer, but only after
+            # the identity guard. The new attach action uses Runtime placement.
+            if save:
+                targets.save_target(record)
             payload['placement'] = generation_listing.placement_block(selection)
             return payload
         except (ValueError, OSError) as exc:
