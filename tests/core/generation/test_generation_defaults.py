@@ -248,3 +248,91 @@ def test_model_verification_counter_defaults_to_trusting_unchanged_files():
     assert ModelVerification().report() == {'trust_unchanged': True, 'hashed': 0, 'skipped': 0}
     for enabled in (True, False):
         assert ModelVerification(enabled).report() == {'trust_unchanged': enabled, 'hashed': 0, 'skipped': 0}
+
+
+def test_snapshot_projects_legacy_until_explicit_import(tmp_path, generation_settings_store):
+    legacy = tmp_path / "config.toml"
+    data = (b'[placement]\nkind = "attached"\nendpoint = "http://127.0.0.1:8199"\n'
+            b'[runpod]\nprovider_account_ref = "acct"\ngpu_types = ["A40"]\n')
+    legacy.write_bytes(data)
+    projected = settings.read_snapshot(legacy_path=legacy)
+    assert projected.source == "runtime" and projected.version == 0 and not projected.imported
+    assert projected.content["placement"] == {"kind": "attached", "endpoint": "http://127.0.0.1:8199"}
+    assert projected.content["machines"] == {"runpod": {"provider_account_ref": "acct", "gpu_types": ["A40"]}}
+    assert settings.placement_default(legacy_path=legacy) == projected.content["placement"]
+    assert settings.machine_policy("runpod", legacy_path=legacy) == projected.content["machines"]["runpod"]
+    assert settings.read_snapshot(legacy_path=legacy) == projected
+    assert generation_settings_store.documents == generation_settings_store.receipts == {}
+    assert legacy.read_bytes() == data
+
+    imported = settings.read(legacy_path=legacy)
+    assert imported.imported and imported.version == 1 and imported.content == projected.content
+    assert len(generation_settings_store.receipts) == 1
+    assert legacy.read_bytes() == data
+    legacy.write_bytes(b'[placement]\nkind = "local"\n')
+    before = generation_settings_store.get_user_app_state("generation")
+    existing = settings.read_snapshot(legacy_path=legacy)
+    assert existing.content == imported.content and existing.version == 1 and not existing.imported
+    assert not settings.read(legacy_path=legacy).imported
+    assert generation_settings_store.get_user_app_state("generation") == before
+    assert len(generation_settings_store.receipts) == 1
+
+
+def test_explicit_writer_imports_once_then_keeps_versioned_update(tmp_path, generation_settings_store):
+    legacy = tmp_path / "config.toml"
+    data = b'[placement]\nkind = "local"\n[runpod]\ngpu_types = ["A40"]\n'
+    legacy.write_bytes(data)
+    assert settings.read_snapshot(legacy_path=legacy).version == 0
+    assert generation_settings_store.documents == {}
+    changed = settings.update(lambda d: d["placement"].update(device=1), legacy_path=legacy)
+    assert changed.version == 2
+    assert changed.content["placement"] == {"kind": "local", "device": 1}
+    assert changed.content["machines"] == {"runpod": {"gpu_types": ["A40"]}}
+    assert settings.update(lambda d: None, legacy_path=legacy).version == 2
+    assert len(generation_settings_store.receipts) == 2
+    assert legacy.read_bytes() == data
+
+
+@pytest.mark.parametrize("failure", ["no-store", "open-error", "read-error"])
+def test_snapshot_preserves_runtime_unavailability_and_read_errors(
+        tmp_path, monkeypatch, generation_settings_store, failure):
+    legacy = tmp_path / "config.toml"
+    data = b'[placement]\nkind = "attached"\nendpoint = "http://127.0.0.1:8199"\n'
+    legacy.write_bytes(data)
+
+    def unavailable(*args):
+        raise OSError("fixture unavailable")
+
+    if failure == "no-store":
+        monkeypatch.setattr(settings, "_store_factory", lambda: None)
+    elif failure == "open-error":
+        monkeypatch.setattr(settings, "_store_factory", unavailable)
+    else:
+        monkeypatch.setattr(generation_settings_store, "get_user_app_state", unavailable)
+    if failure == "read-error":
+        with pytest.raises(OSError, match="fixture unavailable"):
+            settings.read_snapshot(legacy_path=legacy)
+    else:
+        snapshot = settings.read_snapshot(legacy_path=legacy)
+        assert snapshot.source == "unavailable" and snapshot.version == 0
+        assert snapshot.content == settings.empty_document()
+        with pytest.raises(AstridError) as caught:
+            settings.update(lambda d: None, legacy_path=legacy)
+        assert caught.value.code == "generation_settings_unavailable"
+    assert generation_settings_store.documents == generation_settings_store.receipts == {}
+    assert legacy.read_bytes() == data
+
+
+def test_snapshot_validates_legacy_and_existing_document(tmp_path, generation_settings_store):
+    legacy = tmp_path / "config.toml"
+    legacy.write_text('[runpod]\napi_token = "synthetic"\n')
+    with pytest.raises(AstridError) as caught:
+        settings.read_snapshot(legacy_path=legacy)
+    assert caught.value.field == "machines.runpod.api_token"
+    assert generation_settings_store.documents == generation_settings_store.receipts == {}
+    generation_settings_store.documents["generation"] = ({"unknown": True}, 7)
+    with pytest.raises(AstridError) as caught:
+        settings.read_snapshot(legacy_path=legacy)
+    assert caught.value.field == "unknown"
+    assert generation_settings_store.documents["generation"] == ({"unknown": True}, 7)
+    assert generation_settings_store.receipts == {}

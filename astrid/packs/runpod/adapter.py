@@ -718,7 +718,7 @@ class TargetProviderBindings:
                 if self.provider is not None:
                     policy = {**policy, "preferences": json.loads(self.signature)[2]}
                 else:
-                    policy = {**policy, "preferences": current_policy().as_mapping()}
+                    policy = {**policy, "preferences": current_policy(migrate_legacy=False).as_mapping()}
         if checked and policy["kind"] == "runpod":
             from astrid.packs.runpod.target_selection import RunPodPreferences
             # The setup owner signs the representation it persists. Callers

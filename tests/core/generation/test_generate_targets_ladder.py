@@ -86,6 +86,24 @@ def test_managed_keeps_unprobed_shape(probe, tmp_path):
     assert not (tmp_path / ".vibecomfy").exists()
 
 
+@pytest.mark.parametrize("placement", ["auto", "runpod"])
+def test_targets_without_save_do_not_import_legacy_settings(probe, generation_settings_store, placement):
+    config = targets.config_path()
+    config.parent.mkdir(parents=True)
+    legacy = (
+        '[placement]\nkind = "attached"\nendpoint = "' + URL + '"\n'
+        '[runpod]\ngpu_types = ["A40"]\n'
+    ).encode()
+    config.write_bytes(legacy)
+    assert generation_settings_store.documents == {}
+
+    GenerationFacade().targets(placement=placement, save=False)
+
+    assert config.read_bytes() == legacy
+    assert generation_settings_store.documents == {}
+    assert generation_settings_store.receipts == {}
+
+
 @pytest.mark.parametrize("refused", [False, True])
 def test_stable_cli_facade_payload(probe, monkeypatch, capsys, refused):
     calls, responses = probe
@@ -101,3 +119,51 @@ def test_stable_cli_facade_payload(probe, monkeypatch, capsys, refused):
     if not refused:
         expected.append((URL, "/object_info"))
     assert calls == expected * 3
+
+
+@pytest.mark.parametrize("selector,env,runtime,repo,global_,source,endpoint", [
+    ("http://127.0.0.1:18100", "http://127.0.0.1:18101", True, True, True, "request", 18100),
+    ("auto", "http://127.0.0.1:18101", True, True, True, "env", 18101),
+    ("auto", None, True, True, True, "settings", 18102),
+    ("auto", None, False, True, True, "repo", 18103),
+    ("auto", None, False, False, True, "global", 18104),
+    ("auto", None, False, False, False, "discovery", 8188),
+])
+def test_snapshot_selection_precedence(probe, tmp_path, monkeypatch, generation_settings_store,
+                                       selector, env, runtime, repo, global_, source, endpoint):
+    import copy
+    from astrid.core.generation import listing, settings
+
+    config = targets.config_path()
+    project = tmp_path / "project"
+    project.mkdir()
+    repo_config = project / "vibecomfy.toml"
+    if repo:
+        repo_config.write_text('[comfyui]\nurl = "http://127.0.0.1:18103"\n')
+    if global_:
+        config.parent.mkdir()
+        config.write_text('[comfyui]\nurl = "http://127.0.0.1:18104"\n')
+    if runtime:
+        settings.set_placement("http://127.0.0.1:18102")
+    if env is not None:
+        monkeypatch.setenv("VIBECOMFY_COMFYUI_URL", env)
+    before = copy.deepcopy((generation_settings_store.documents, generation_settings_store.receipts))
+    bytes_before = {p: p.read_bytes() for p in (config, repo_config) if p.exists()}
+    selection = listing.target_selection(request=selector, repo=project)
+    assert selection.source == source
+    assert selection.record.endpoint == f"http://127.0.0.1:{endpoint}"
+    assert (generation_settings_store.documents, generation_settings_store.receipts) == before
+    assert {p: p.read_bytes() for p in (config, repo_config) if p.exists()} == bytes_before
+
+
+def test_runtime_endpoint_wins_over_invalid_lower_priority_target(probe, tmp_path):
+    from astrid.core.generation import listing, settings
+
+    settings.set_placement(URL)
+    project = tmp_path / "project"
+    project.mkdir()
+    config = project / "vibecomfy.toml"
+    config.write_text("not valid TOML!")
+    chosen = listing.target_selection(repo=project)
+    assert chosen.source == "settings" and chosen.record.endpoint == URL
+    assert config.read_text() == "not valid TOML!"

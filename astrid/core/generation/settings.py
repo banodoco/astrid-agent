@@ -12,7 +12,9 @@ engine-neutral::
 ``machines.<id>`` is placement policy for one machine contribution; no secret is ever stored in it,
 only a credential *reference* by name. An old ``[placement]`` / ``[runpod]`` table in VibeComfy's
 ``~/.vibecomfy/config.toml`` is imported into the document once, when the document does not exist
-yet, and is never read for Astrid again.
+yet, and is never read for Astrid again. Read-only inspection uses a snapshot of
+the same legacy values without importing them; explicit migration and writers
+still use the versioned, one-time import.
 This one-time migration is deleted after 2027-05-26 along with ``_legacy``, the ``legacy_path`` arguments and the use of ``targets.read_config`` here, leaving standalone VibeComfy's ``[library]`` table and ComfyUI address in its TOML.
 
 This module owns the document and its refusal site (:func:`refuse`); resolution of defaults lives
@@ -55,7 +57,12 @@ def refuse(message: str, *, key: str, code: str = "generation_settings_invalid",
 
 @dataclass(frozen=True)
 class Snapshot:
-    """The document as the Runtime holds it: content, version and where it came from."""
+    """Settings content, store availability and Runtime version.
+
+    A read-only legacy projection has version 0 (the document is absent) and
+    imported=False. A reachable store is still source="runtime"; the projected
+    content is not a persisted document.
+    """
 
     content: dict[str, Any]
     version: int
@@ -228,7 +235,16 @@ def _write(store: Any, content: Mapping[str, Any], expected: int, key: str) -> S
 
 
 def read(client: Any = None, *, legacy_path: str | Path | None = None) -> Snapshot:
-    """Read the document; a missing one is created once from any old TOML Astrid default."""
+    """Explicit migration read: import old TOML once if the Runtime document is absent."""
+    return _read(client, legacy_path=legacy_path, migrate_legacy=True)
+
+
+def read_snapshot(client: Any = None, *, legacy_path: str | Path | None = None) -> Snapshot:
+    """Read the same effective settings without creating or updating any document."""
+    return _read(client, legacy_path=legacy_path, migrate_legacy=False)
+
+
+def _read(client: Any, *, legacy_path: str | Path | None, migrate_legacy: bool) -> Snapshot:
     try:
         store = current_store(client)
     except Exception as exc:  # noqa: BLE001 - best-effort fallback; log only the type, never transport data or a traceback.
@@ -241,6 +257,8 @@ def read(client: Any = None, *, legacy_path: str | Path | None = None) -> Snapsh
         found = _legacy(legacy_path)
         if found:
             document = validate_document({**empty_document(), **found})
+            if not migrate_legacy:
+                return Snapshot(document, 0, "runtime")
             digest = hashlib.sha256(json.dumps(document, sort_keys=True).encode()).hexdigest()[:24]
             snapshot = _write(store, document, 0, f"generation-legacy-import-{digest}")
             warning_token = object()
@@ -356,11 +374,11 @@ def checkin(file: str | Path, client: Any = None) -> dict[str, Any]:
 # -- the placement default ------------------------------------------------------------------------
 
 def placement_default(client: Any = None, *, legacy_path: str | Path | None = None) -> dict[str, Any]:
-    return copy.deepcopy(read(client, legacy_path=legacy_path).content.get("placement") or {})
+    return copy.deepcopy(read_snapshot(client, legacy_path=legacy_path).content.get("placement") or {})
 
 
 def machine_policy(machine: str, client: Any = None, *, legacy_path: str | Path | None = None) -> dict[str, Any] | None:
-    value = read(client, legacy_path=legacy_path).content.get("machines", {}).get(machine)
+    value = read_snapshot(client, legacy_path=legacy_path).content.get("machines", {}).get(machine)
     return copy.deepcopy(value) if value is not None else None
 
 
