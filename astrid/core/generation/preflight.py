@@ -365,7 +365,7 @@ def _mirror_next_action(action):
 
 
 def readiness_envelope(*, entry=None, target=None, issues=(), fixes=(), attempt_count=None,
-                       ladder=None, next_action=None) -> ReadinessEnvelope:
+                       ladder=None, next_action=None, plan=None) -> ReadinessEnvelope:
     """Project observations once; unknown version facts do not become issues."""
     from copy import deepcopy
 
@@ -417,6 +417,10 @@ def readiness_envelope(*, entry=None, target=None, issues=(), fixes=(), attempt_
     envelope = {'entry': deepcopy(entry),
             'target': target_payload,
             'status': status, 'issues': issues, 'fixes': fixes}
+    # The canonical producer owns the plan and digest; preserve it without
+    # re-projecting its requirements, gaps, approval evidence or destinations.
+    if plan is not None:
+        envelope['plan'] = deepcopy(plan)
     if ladder is not None:
         envelope["ladder"] = ladder
         envelope["next_action"] = next_action
@@ -435,7 +439,7 @@ class GenerationReadinessError(AstridError, ValueError):
     def __init__(self, envelope: ReadinessEnvelope, *, task_id: str | None = None):
         from astrid.core.contracts.errors import _redact_credential_data
         self.readiness = readiness_envelope(**{key: envelope[key] for key in
-            ('entry', 'target', 'issues', 'fixes', 'attempt_count', 'ladder', 'next_action') if key in envelope})
+            ('entry', 'target', 'issues', 'fixes', 'attempt_count', 'ladder', 'next_action', 'plan') if key in envelope})
         self.readiness = _redact_credential_data(self.readiness)
         self.task_id = task_id
         if 'attempt_count' in self.readiness and self.readiness['status'] != 'blocked':
