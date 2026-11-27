@@ -11,20 +11,23 @@ description: >
 
 ## Generate discovery
 
-Use the shared Generate commands to list and inspect registered VibeComfy
-catalog, workflow, and action entries. Authoring operations (`import`, `inspect`,
+Use the shared Generate commands to list and inspect registered catalog,
+workflow, and declared action entries. Authoring operations (`import`, `inspect`,
 `edit`, and `validate`) support workflow preparation but are not Generate entries
-by themselves. `run` executes a selected workflow; it does not make every pack
-action or workflow an entry automatically.
+by themselves. Choose a listed entry and its modality (`image`, `video`, or
+`audio`), then inspect its declared mode and inputs. For example, `ltx-2.3` has a
+local VibeComfy text-to-video catalog route; this is not a claim of target readiness.
 
 ```sh
-astrid generate list --json
-astrid generate describe --entry vibecomfy.video_enhance --json
-astrid generate run --entry vibecomfy.video_enhance --inputs-json FILE
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate list --json
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate describe --entry ltx-2.3 --mode t2v --json
+"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate video --entry ltx-2.3 --mode t2v --inputs-json FILE
 ```
 
-Use the selected entry's `describe` output to prepare `FILE`. The SDK invocation
-routes documented below remain available as compatibility conveniences.
+Use the selected entry's `describe` output to prepare `FILE`. A pack action such
+as `vibecomfy.video_enhance` is not automatically a Generate entry; use its
+published capability contract through the SDK unless it has a declared entry.
+The SDK invocation routes documented below remain available.
 
 ## Run on your own ComfyUI
 
