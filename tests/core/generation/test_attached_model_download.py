@@ -405,12 +405,43 @@ def test_a_failed_publish_without_hard_links_leaves_no_placeholder(comfy, models
     assert not [n for n in _files(root) if n.startswith("vae/")]
 
 
-def test_the_plan_records_whether_each_folder_takes_hard_links(comfy, models, file_server, monkeypatch):
+@pytest.mark.parametrize("supports_links", [True, False])
+def test_the_plan_records_whether_each_folder_takes_hard_links(
+        comfy, models, file_server, monkeypatch, supports_links):
+    from tests.core.generation.environment_states import snapshot
+
     root, _ = models
-    assert all(f["hard_links"] is True for f in _plan(comfy, file_server)["files"])
-    _no_hard_links(monkeypatch)
-    assert all(f["hard_links"] is False for f in _plan(comfy, file_server)["files"])
-    assert _files(root) == []  # the probe file is removed again
+    targets = {root / key / name for key, (name, _) in WANTED.items()}
+    link_calls, replace_calls = [], []
+    real_link, real_replace = os.link, os.replace
+
+    def link(src, dst, *args, **kwargs):
+        link_calls.append(Path(dst))
+        if not supports_links:
+            raise OSError(errno.EPERM, "hard links are not supported", os.fspath(dst))
+        return real_link(src, dst, *args, **kwargs)
+
+    def replace(src, dst, *args, **kwargs):
+        replace_calls.append(Path(dst))
+        return real_replace(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(os, "link", link)
+    monkeypatch.setattr(os, "replace", replace)
+    before = snapshot(root)
+    plan = _plan(comfy, file_server)
+    assert all("hard_links" not in f for f in plan["files"])
+    assert link_calls == replace_calls == file_server.requested == []
+    assert snapshot(root) == before
+
+    result = _apply(comfy, file_server, plan["plan_sha256"])
+    probes = [p for p in link_calls if p.name.startswith(".astrid-link-probe-")]
+    assert sorted(p.parent for p in probes) == sorted(root / key for key in WANTED)
+    assert set(link_calls) & targets == (targets if supports_links else set())
+    assert set(replace_calls) & targets == (set() if supports_links else targets)
+    assert len(result["downloaded"]) == len(targets)
+    for key, (name, source) in WANTED.items():
+        assert (root / key / name).read_bytes() == BLOBS[source]
+    assert set(root / f for f in _files(root)) == targets
 
 
 def test_a_server_file_the_local_folder_lacks_refuses_that_folder(comfy, models, file_server):
@@ -453,9 +484,15 @@ def test_empty_listings_and_a_stray_non_model_file_plan_normally(comfy, models, 
 
 
 def test_a_file_that_appears_before_the_hard_link_is_never_overwritten(comfy, models, file_server):
+    from astrid.core.generation.asset_gaps import _hard_links_supported
+
     root, _ = models
-    plan = _plan(comfy, file_server)  # hard links work here: publish takes the os.link path
+    plan = _plan(comfy, file_server)
     item = next(f for f in plan["files"] if f["file"] == "ae.safetensors")
+    assert "hard_links" not in item
+    # This low-level publish test starts after apply's read-only checks and capability probe.
+    # Probe the real filesystem now, not during preview, and exercise the same publish branch.
+    item["hard_links"] = _hard_links_supported(Path(item["folder"]))
     assert item["hard_links"] is True
     existing = root / "vae" / "ae.safetensors"
     existing.write_bytes(b"appeared while downloading")
