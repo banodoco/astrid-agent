@@ -1,0 +1,127 @@
+{
+  "actual_distribution_inventory_in_raw": true,
+  "original_preservation": {
+    "all_existing_delivery_assertions_preserved": true,
+    "all_integrated_pack_b_files_exact": [
+      "astrid/core/pack/motion_source.py",
+      "astrid/packs/rendering/rendering/renderers/remotion/pack_revisions.py",
+      "astrid/packs/rendering/shared/element_contracts.ts",
+      "astrid/resources/astrid_motion_release_source.json",
+      "scripts/project_astrid_motion.py",
+      "scripts/project_astrid_motion_catalog.py",
+      "tests/packs/rendering/test_motion_projection_provenance.py",
+      "tests/scripts/test_motion_projection.py",
+      "tests/scripts/test_motion_projection_catalog.py"
+    ],
+    "append_only": [
+      {
+        "original_prefix_preserved": true,
+        "original_sha256": "b926b3f64c9479f22cef4b965d82be634b16355cfc96bd73de071f45d420531a",
+        "path": "tests/core/pack/test_release_delivery_transactions.py"
+      }
+    ],
+    "base": "78480533d25dd8731a7b1f04c737719dea2fc880",
+    "delivery_head": "31fe4ea07dd44bb97c708a2f4f2d1a54a4362ecc",
+    "initial_audit_scope_correction": "First comparison incorrectly required PACK-B-owned tests in the integrated tree to equal the DELIVERY-only held branch. This audit checks DELIVERY preservation separately and binds the nine PACK-B files to actual f02.",
+    "integration": "b1a3a6a9e64917c2847ff91c293ff210c8aa10ad",
+    "original_delivery_test_and_helper_files_byte_identical": 2534,
+    "pack_b": "f02ceffa39d221756999cebd1a38b97f5d42519b"
+  },
+  "original_ten_case_matches": 1038,
+  "original_ten_case_prefix": "/workspace/library-files/r16-pack-delivery-687e2e07963c/hold-fix-final-stage/program/versions/2e012063d18a/py",
+  "original_ten_inventory": {
+    "bytes": 230412,
+    "path": "/workspace/library-files/r16-pack-delivery-687e2e07963c/hold-fix-final-stage/native-source-inventory.json",
+    "sha256": "1dff5e9fcd15406cf5f5bdb14c567e3b9d97e5ac9245f8bbd93288182c5bc0fe"
+  },
+  "producer_64_file_inventory": {
+    "bytes": 18157,
+    "path": "/workspace/library-files/r16-pack-delivery-687e2e07963c/hold-fix-final-native/pack-source-inventory.json",
+    "sha256": "2060d13e218d8c9971ad6a4781ed77685a0f4a18f30f5edb43979181ed121325"
+  },
+  "public_actual_interpreter": "/workspace/library-files/r16-pack-delivery-687e2e07963c/hold-fix-final-native/program/versions/0a53c15e3bac/py",
+  "public_installed": {
+    "agent": {
+      "repo": "/tmp/r16-pack-delivery-proof",
+      "sha": "b1a3a6a9e64917c2847ff91c293ff210c8aa10ad"
+    },
+    "agent_tree": "2143d91da0cf80cdc9ff70d33e804c9908e972ea",
+    "lifecycle": {
+      "repo": "https://github.com/banodoco/runpod-lifecycle.git",
+      "sha": "9f88ef7640bc664f697112d966ecefa123d44340",
+      "version": "0.3.1.dev0"
+    },
+    "original_unchanged_blobs": {
+      "astrid/packs/runpod/pins.json": "ca2733bca0460403903def3d0756bfb5fc0d1594",
+      "pyproject.toml": "e2f86e5e47b6ce08a53b0c01f2a0d8ba43cf4aef",
+      "remotion/package-lock.json": "3d2c07bf447994de3b2b6021feb54e507b4b6dad",
+      "requirements/runtime.lock": "2d4c52fa65fb485f2fad90f8ba159a2d8d9f010f",
+      "runtime.lock.json": "0e2077c4f2365e793a808f8a52af88a03bfd4811",
+      "tests/conftest.py": "90dceb03604273cd81347326f6f8333bd4292411",
+      "tests/core/pack/test_transaction.py": "3870c078a95d3b255bfb2781e60fb7d0b6986412",
+      "tests/core/pack/test_transaction_integrity.py": "d474add245928c33fb8ae3322a530cf99a8a4fbf",
+      "tests/core/pack/test_transaction_source_contracts.py": "a69e357fc940be16bafb44c99b160a78b831ddbf",
+      "tests/lanes.py": "652be8a03de8f239d91f2442b16510184e8b0492",
+      "tests/test_boundary_handoff.py": "b09554f3b8d52aaa938c2357b0372a5c522fd50f"
+    },
+    "runtime": {
+      "repo": "/workspace/scratch/687e2e07963c/agent.env/runtime",
+      "schema_digest": "sha256:2c6a76e17b4441398ab91e3e9d6283a719fd5b08807447db9dbf2ecc5e1339a2",
+      "sha": "686ca695469bda48cd40a70824c4ccef2a137284"
+    },
+    "source": {
+      "astrid_motion": {
+        "commit": "f40b1f44bbe513cb871387a07e14332ffbed8a53",
+        "digest": "be6abd1feb9759eca56364c6a2ccded470977aaf965a8e208cdd4f1bedcf77cf",
+        "digest_rule": "pack-tree-v1",
+        "repo": "file:///tmp/r16-pack-delivery-poms"
+      }
+    },
+    "source_verification": "Independent Git-object equality of actual staged and installed bytes",
+    "staged_git_metadata_present": false,
+    "tools": {
+      "bun": {
+        "path": "/workspace/library-files/r16-pack-delivery-687e2e07963c/hold-fix-final-native/program/versions/0a53c15e3bac/tools/bun/bun-linux-x64/bun",
+        "sha256": "9fd36f87e4b90b07632b987a2e4ec81ca15a62c81bf983190cea6d715be2ad74",
+        "version": "1.3.14"
+      },
+      "esbuild": {
+        "path": "/workspace/library-files/r16-pack-delivery-687e2e07963c/hold-fix-final-native/program/versions/0a53c15e3bac/a/remotion/node_modules/esbuild/bin/esbuild",
+        "sha256": "c638273fcf95573ca74af586677800b4dd874c55f8f945adb54316d6902ba14b",
+        "version": "0.27.7"
+      },
+      "esbuild_api": {
+        "path": "/workspace/library-files/r16-pack-delivery-687e2e07963c/hold-fix-final-native/program/versions/0a53c15e3bac/a/remotion/node_modules/esbuild/lib/main.js",
+        "sha256": "bce772de103e1cbb118f1b7313916caa81f0e85461b3b6e3531607e7ed75ec85"
+      },
+      "ffmpeg": {
+        "manifest_version": "7.0.2",
+        "observed_version": "7.1.5-0+deb13u1",
+        "path": "/usr/bin/ffmpeg",
+        "sha256": "e8a8d46f5225f3062cec7c07fb145d58ae73c603cb740dcd5bad34bfb54e455a",
+        "source": "path"
+      },
+      "ffprobe": {
+        "observed_version": "7.1.5-0+deb13u1",
+        "path": "/usr/bin/ffprobe",
+        "sha256": "cefc5f81c0b18429cdbf8fa5a89e1e9c759235e10f93f9b329ff1b2fdff26f46",
+        "source": "path"
+      },
+      "node": {
+        "path": "/workspace/library-files/r16-pack-delivery-687e2e07963c/hold-fix-final-native/program/versions/0a53c15e3bac/tools/node/node-v20.19.4-linux-x64/bin/node",
+        "sha256": "43d6cf63f2a460b463eba6b19df5e9a259771c56f11b5130e04178a15bb99490",
+        "version": "v20.19.4"
+      }
+    },
+    "vibecomfy": {
+      "repo": "/workspace/scratch/687e2e07963c/agent.env/vibecomfy",
+      "sha": "55c3948212d23cf037fae8a4c6faad77d33e7279"
+    }
+  },
+  "public_inventory": {
+    "bytes": 230427,
+    "path": "/workspace/library-files/r16-pack-delivery-687e2e07963c/hold-fix-final-native/native-source-inventory.json",
+    "sha256": "58153b2a452694805de86149bbd2573ab25e14613cad66f0902ec1084efd34dc"
+  },
+  "public_matches": 1038
+}

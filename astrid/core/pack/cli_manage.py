@@ -477,6 +477,12 @@ def _validation_snapshot() -> tuple[Mapping[str, str], Mapping[str, Mapping[str,
         dist.metadata.get("Name", "").lower().replace("_", "-").replace(".", "-"): dist.version
         for dist in importlib.metadata.distributions() if dist.metadata.get("Name")
     }
+    # The installed version owns its release policy. Explicit source-checkout
+    # policy remains available, but cannot override a selected managed release.
+    from .release_manifest import installed_release_pins
+    installed_pins = installed_release_pins()
+    if installed_pins is not None:
+        return MappingProxyType(packages), _freeze(installed_pins)
     # Release policy is an independently supplied, verified snapshot. Source
     # declarations describe acquisition and may intentionally be unpinned.
     pins: dict[str, Mapping[str, str]] = {}

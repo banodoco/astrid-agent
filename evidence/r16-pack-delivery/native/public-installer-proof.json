@@ -1,0 +1,72 @@
+{
+  "argv": [
+    "--root",
+    "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program",
+    "--data-root",
+    "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/data",
+    "--manifest",
+    "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/proof-manifest.json",
+    "--uv",
+    "/tmp/r16-pack-delivery-tooling/bin/uv",
+    "--no-browser",
+    "--autostart",
+    "off",
+    "--command",
+    "off",
+    "--skills",
+    "off",
+    "--skill-copies",
+    "off",
+    "--sandbox"
+  ],
+  "cases": [
+    {
+      "exit": 0,
+      "identity": {
+        "agent": {
+          "repo": "/tmp/r16-pack-delivery-proof",
+          "sha": "baf6b73f297865f681bfe07ca2035a53168e79d5"
+        },
+        "comparison": {
+          "comparison": "match",
+          "derived_from": null,
+          "digest_rule": "pack-tree-v1",
+          "editor_revision": "be6abd1feb9759eca56364c6a2ccded470977aaf965a8e208cdd4f1bedcf77cf",
+          "editor_upstream_revision": "23f78bfc7e3cb26e320e8d3c6bd30a8b94cd92e1",
+          "identity_verification": "agent direct-source witness and source digest verified",
+          "pack_id": "astrid_motion",
+          "resolved_revision": "be6abd1feb9759eca56364c6a2ccded470977aaf965a8e208cdd4f1bedcf77cf",
+          "upstream_revision": "23f78bfc7e3cb26e320e8d3c6bd30a8b94cd92e1"
+        },
+        "prefix": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/2be5c5132c6c/py",
+        "source": {
+          "commit": "23f78bfc7e3cb26e320e8d3c6bd30a8b94cd92e1",
+          "digest": "be6abd1feb9759eca56364c6a2ccded470977aaf965a8e208cdd4f1bedcf77cf",
+          "digest_rule": "pack-tree-v1",
+          "repo": "file:///tmp/r16-pack-delivery-poms"
+        }
+      },
+      "name": "public-clean-install-runtime-ready-and-selected-default",
+      "status": "PASS",
+      "version": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/2be5c5132c6c"
+    },
+    {
+      "exit": 0,
+      "name": "public-repair-after-quarantine-preserves-selection-and-user-state",
+      "status": "PASS"
+    }
+  ],
+  "clean_exit": 0,
+  "result": "PASS",
+  "selected_source": {
+    "commit": "23f78bfc7e3cb26e320e8d3c6bd30a8b94cd92e1",
+    "digest": "be6abd1feb9759eca56364c6a2ccded470977aaf965a8e208cdd4f1bedcf77cf",
+    "digest_rule": "pack-tree-v1",
+    "repo": "file:///tmp/r16-pack-delivery-poms"
+  },
+  "source": {
+    "repo": "/tmp/r16-pack-delivery-proof",
+    "sha": "baf6b73f297865f681bfe07ca2035a53168e79d5"
+  },
+  "venue": "Linux seccomp; existing public --sandbox process-control mode"
+}

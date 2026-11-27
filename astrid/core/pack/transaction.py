@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import stat
 import sys
@@ -27,7 +28,7 @@ from astrid import pack_api, sdk
 from astrid.core.pack import _filelock
 from astrid.installer._pack_cleanup import remove_pack_tree
 from astrid.core.pack.canonical import validate_canonical_pack
-from astrid.core.pack.identity import pack_digest, read_pin
+from astrid.core.pack.identity import _validate_pin, pack_digest, read_pin
 from astrid.core.pack.definitions import definitions_record, pack_definitions
 from astrid.core.pack.install import (
     _ID,
@@ -62,6 +63,7 @@ class GroupSnapshot:
     removals: tuple[str, ...]
     admissions: Mapping[str, Any]
     refresh_pending: bool
+    pins: Mapping[str, Mapping[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -447,7 +449,8 @@ def _state(root: Path) -> dict[str, Any]:
     except (OSError, ValueError) as exc:
         raise PackInstallError("invalid_state", "Group state cannot be read; restore a complete committed collection.") from exc
     fields = {"version", "revision", "transaction_id", "removals", "admissions", "refresh"}
-    if (not isinstance(value, dict) or set(value) != fields or type(value["version"]) is not int or value["version"] != 1
+    if (not isinstance(value, dict) or not fields <= set(value) or set(value) - fields - {"pins"}
+            or type(value["version"]) is not int or value["version"] != 1
             or type(value["revision"]) is not int or value["revision"] < 1
             or not isinstance(value["transaction_id"], str)
             or not isinstance(value["removals"], list)
@@ -465,6 +468,16 @@ def _state(root: Path) -> dict[str, Any]:
         raise PackInstallError("invalid_state", "Pending refresh does not identify the committed group.")
     if len(value["transaction_id"]) != 32 or any(c not in "0123456789abcdef" for c in value["transaction_id"]):
         raise PackInstallError("invalid_state", "Group transaction id must identify a private retained generation.")
+    bindings = value.get("pins", {})
+    try:
+        if not isinstance(bindings, dict):
+            raise ValueError("PIN bindings must be an object")
+        for pack_id, pin in bindings.items():
+            if not _ID.fullmatch(pack_id):
+                raise ValueError("Invalid admitted PIN id")
+            _validate_pin(pin)
+    except (ValueError, TypeError) as exc:
+        raise PackInstallError("invalid_state", "Canonical admitted PIN bindings are malformed.") from exc
     return value
 
 
@@ -495,7 +508,7 @@ def read_group(packs_root: str | Path) -> GroupSnapshot:
     with group_read_lock(root):
         state = _state(root)
         return GroupSnapshot(state["transaction_id"], state["revision"], _paths(root),
-                             tuple(state["removals"]), state["admissions"], state["refresh"] is not None)
+                             tuple(state["removals"]), state["admissions"], state["refresh"] is not None, state.get("pins", {}))
 
 
 def read_retired_group(*, packs_root: str | Path, transaction_id: str) -> GroupSnapshot:
@@ -515,7 +528,7 @@ def read_retired_group(*, packs_root: str | Path, transaction_id: str) -> GroupS
         if state["revision"] == 0 or state["transaction_id"] == transaction_id or not (root / _STATE).exists():
             raise PackInstallError("uncommitted_generation", "This attempt has no retired committed generation.")
         return GroupSnapshot(state["transaction_id"], state["revision"], _paths(retained),
-                             tuple(state["removals"]), state["admissions"], state["refresh"] is not None)
+                             tuple(state["removals"]), state["admissions"], state["refresh"] is not None, state.get("pins", {}))
 
 
 def _facts(path: Path, *, destination: Path | None = None) -> tuple[dict[str, Any], PackFacts]:
@@ -758,12 +771,25 @@ def _verify_retained_collection(live: Path, changed: frozenset[str],
             + ("" if len(changed_paths) <= 5 else ", ...") + "); nothing was committed. Retry.")
 
 
+def _verify_absent_paths(root: Path, pack_ids: frozenset[str]) -> None:
+    """An absence receipt binds the named entry, not the presence of its PIN."""
+    for pack_id in sorted(pack_ids):
+        try:
+            (root / pack_id).lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise PackInstallError("rollback_conflict", f"Cannot prove that removed pack {pack_id} is still absent.") from exc
+        raise PackInstallError("rollback_conflict", f"Removed pack {pack_id} has a newly present path; its user bytes were preserved.")
+
+
 def _publish_and_verify_external_roots(candidate: Path, root: Path, facts: Mapping[str, Mapping[str, Any]],
                                        paths: Mapping[str, Path], retired: Path, transaction_id: str,
                                        revision: int,
                                        carried_ids: frozenset[str] | None = None,
                                        carried: Mapping[str, tuple[str, str]] | None = None,
-                                       preserve: list[Path] | None = None) -> None:
+                                       preserve: list[Path] | None = None,
+                                       expected_absent: frozenset[str] = frozenset()) -> None:
     """Publish, then restore the prior generation if an external root raced the exchange.
 
     With ``carried`` (the retained bytes the candidate copied), the generation
@@ -777,8 +803,16 @@ def _publish_and_verify_external_roots(candidate: Path, root: Path, facts: Mappi
     If it cannot be moved it stays at ``candidate`` and is appended to
     ``preserve`` so the caller's cleanup leaves it in place.
     """
+    # Recovery of a removed default may only replace an absent named path.
+    # Capture all published bytes too: if swap-back is needed, a late user
+    # write to a restored target must survive in the discarded generation.
+    published_bytes = _retained_collection_bytes(candidate, frozenset()) if expected_absent else None
+    _verify_absent_paths(root, expected_absent)
     _publish_collection(candidate, root)
     try:
+        # The exchanged directory is the exact generation that was live until
+        # publication. This closes a write racing the last pre-exchange check.
+        _verify_absent_paths(candidate, expected_absent)
         _verify_external_root_digests(facts, paths)
         if carried is not None:
             _verify_retained_collection(candidate, carried_ids or frozenset(), carried)
@@ -791,7 +825,10 @@ def _publish_and_verify_external_roots(candidate: Path, root: Path, facts: Mappi
             # The new generation stays live; the prior one (holding any write
             # that triggered this swap-back) is still at candidate.
             raise GroupCommitError(transaction_id, revision, late_write_root=candidate) from exc
-        kept = _keep_discarded_generation_if_written(candidate, retired, transaction_id, carried_ids, carried)
+        kept = _keep_discarded_generation_if_written(
+            candidate, retired, transaction_id,
+            frozenset() if published_bytes is not None else carried_ids,
+            published_bytes if published_bytes is not None else carried)
         if kept == candidate and preserve is not None:
             preserve.append(candidate)
         try:
@@ -1014,6 +1051,19 @@ def _retained_build_records(root: Path, admissions: Mapping[str, Any], group_rev
     return records
 
 
+def _verify_admitted_pins(root: Path, bindings: Mapping[str, Mapping[str, Any]],
+                          admissions: Mapping[str, Any]) -> None:
+    """Verify per-pack PINs against the independently committed collection."""
+    for pack_id, expected in bindings.items():
+        try:
+            if pack_id not in admissions:
+                raise ValueError("PIN binding has no canonical admission")
+            if read_pin(root / pack_id / "PIN") != expected:
+                raise ValueError("PIN differs from its admission")
+        except (OSError, ValueError) as exc:
+            raise PackInstallError("pin_mismatch", f"Pack {pack_id} PIN differs from its canonical admission.") from exc
+
+
 def _refresh(root: Path, pending: Mapping[str, Any] | None, refresh: Refresh | None) -> bool:
     """Notify the host about one committed outbox entry; never under custody.
 
@@ -1161,6 +1211,7 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
                   reconcile_defaults: bool = False,
                   refresh: Refresh | None = None,
                   consent: Callable[[Mapping[str, Any]], bool] | None = None,
+                  on_prepared: Callable[[Mapping[str, Any]], None] | None = None,
                   boundary: Callable[[str], None] | None = None) -> GroupResult:
     """Validate -> build -> publish a same-source, same-commit dependency group.
 
@@ -1249,6 +1300,8 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
             carried_ids = frozenset(packs) | frozenset(remove)
             carried = _retained_collection_bytes(candidate, carried_ids)
             admissions = {i: a for i, a in old["admissions"].items() if i not in remove and i not in packs}
+            pin_bindings = {i: p for i, p in old.get("pins", {}).items() if i not in remove and i not in packs}
+            _verify_admitted_pins(candidate, pin_bindings, admissions)
             build_records = _retained_build_records(candidate, admissions, old["revision"])
             facts: dict[str, dict[str, Any]] = dict(host_selected)
             for pack_id, path in _paths(candidate).items():
@@ -1411,6 +1464,10 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
                     **(admissions.get(pack_id) or {"packId": pack_id, "sourceDigest": identities[pack_id][0],
                                                    "committedRevision": committed_revision, "transactionId": tx}),
                     "definitionsDigest": hashlib.sha256(definitions_bytes).hexdigest()}
+                # Preserve the frozen definitions/browser records. This
+                # additive collection binding records the complete admitted
+                # PIN independently of its mutable per-pack file.
+                pin_bindings[pack_id] = dict(identities[pack_id][1])
                 mark("built:" + pack_id)
             mark("built")
             _tree(candidate)
@@ -1434,12 +1491,22 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
             pending_ids = old["refresh"]["changed_ids"] if old["refresh"] else ()
             changed_ids = tuple(sorted(set(packs) | set(remove) | set(pending_ids)))
             state = {"version": 1, "revision": committed_revision, "transaction_id": tx,
-                     "removals": sorted(tombstones), "admissions": admissions,
+                     "removals": sorted(tombstones), "admissions": admissions, "pins": pin_bindings,
                      "refresh": {"transaction_id": tx, "revision": committed_revision,
                                  "changed_ids": list(changed_ids)}}
             _write_state(candidate, state)
             _sync_tree(candidate)
             _sync_directory(retired)
+            if on_prepared is not None:
+                # Trusted installer write-ahead receipt, before the exchange.
+                # The callback cannot select an epoch or bypass the source,
+                # retained-state and artifact rechecks that follow it.
+                on_prepared({"transaction_id": tx, "revision": committed_revision,
+                             "previous_transaction_id": old["transaction_id"],
+                             "previous_revision": old["revision"],
+                             "pack_ids": sorted(set(packs) | set(remove)),
+                             "pins": {i: read_pin(candidate / i / "PIN") if i in packs else None
+                                      for i in sorted(set(packs) | set(remove))}})
             mark("prepared")
             mark("before_swap")
             # Host quiescence/observability hooks cannot invalidate the sealed
@@ -1454,6 +1521,7 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
                         raise PackInstallError("pin_mismatch", "Local source changed after consent; retry the group transaction.")
             for request, result, admitted_revision in build_records:
                 _verify_artifacts(request, result, committed_revision=admitted_revision)
+            _verify_admitted_pins(candidate, pin_bindings, admissions)
             if _state(candidate) != state:
                 raise PackInstallError("invalid_state", "Prepared group record changed before publication; retry the transaction.")
             verified_facts, verified_apis = _compose_resulting_facts(
@@ -1503,7 +1571,7 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
 
 def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[str] | None = None,
                    transaction_id: str | None = None,
-                   expected_pins: Mapping[str, Mapping[str, Any]] | None = None,
+                   expected_pins: Mapping[str, Mapping[str, Any] | None] | None = None,
                    selected: Mapping[str, PackFacts] | None = None,
                    selected_roots: tuple[str | Path, ...] = (),
                    core_root: str | Path | None = None,
@@ -1511,6 +1579,8 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
                    python_packages: Mapping[str, str] | None = None,
                    refresh: Refresh | None = None,
                    consent: Callable[[Mapping[str, Any]], bool] | None = None,
+                   on_prepared: Callable[[Mapping[str, Any]], None] | None = None,
+                   expected_previous: tuple[str | None, int] | None = None,
                    boundary: Callable[[str], None] | None = None) -> GroupResult:
     """Restore selected packs from the generation retired by the active commit.
 
@@ -1519,9 +1589,21 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
     are copied from the live collection unchanged. Restored pack directories
     are copied as complete installed state, including build-hook admission and
     artifact-manifest files under ``.build``.
+
+    ``expected_previous`` binds installer recovery to its write-ahead receipt.
+    Returning to an initial (revision-zero) collection additionally requires
+    the exact active transaction, explicit ids and all expected current PINs.
+    Ordinary rollback still refuses an uncommitted previous generation.
     """
     root = _root(packs_root)
-    expected_pins = {key: dict(value) for key, value in (expected_pins or {}).items()}
+    if expected_previous is not None and (
+            not isinstance(expected_previous, tuple) or len(expected_previous) != 2
+            or type(expected_previous[1]) is not int or expected_previous[1] < 0
+            or (expected_previous[0] is None) != (expected_previous[1] == 0)
+            or (expected_previous[0] is not None and
+                (not isinstance(expected_previous[0], str) or not re.fullmatch(r"[0-9a-f]{32}", expected_previous[0])))):
+        raise PackInstallError("invalid_request", "Expected previous generation must name a complete recorded identity.")
+    expected_pins = {key: dict(value) if value is not None else None for key, value in (expected_pins or {}).items()}
     host_selected = {key: dict(value) for key, value in (selected or {}).items()}
     pins = {key: dict(value) for key, value in (release_pins or {}).items()}
     packages = dict(python_packages or {})
@@ -1533,7 +1615,12 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
             raise PackInstallError("rollback_conflict", "Rollback must name the currently active committed generation.")
         prior = _directory(root.parent / ".astrid-retired" / active_tx)
         prior_state = _state(prior)
-        if prior_state["revision"] < 1 or prior_state["transaction_id"] == active_tx:
+        previous = (prior_state["transaction_id"], prior_state["revision"])
+        if expected_previous is not None and previous != expected_previous:
+            raise PackInstallError("rollback_conflict", "The retained generation differs from the installer's prepared receipt.")
+        initial = (expected_previous == (None, 0) and transaction_id == active_tx
+                   and pack_ids is not None and set(expected_pins) == set(pack_ids))
+        if (prior_state["revision"] < 1 and not initial) or prior_state["transaction_id"] == active_tx:
             raise PackInstallError("uncommitted_generation", "The active generation has no prior committed generation to restore.")
         current_paths = _paths(root)
         prior_paths = _paths(prior)
@@ -1550,11 +1637,14 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
             ids = tuple(sorted(set(pack_ids)))
         if not ids or any(not isinstance(i, str) or not _ID.fullmatch(i) or i == "personal" for i in ids):
             raise PackInstallError("invalid_request", "Select one or more valid pack IDs to roll back.")
+        expected_absent = frozenset(i for i in ids if i in expected_pins and expected_pins[i] is None)
+        _verify_absent_paths(root, expected_absent)
         # Verify the retired generation's held admission files and every
         # artifact byte before copying any restored pack or constructing a
         # new admission epoch. Historical source pins are preserved, subject
         # to any currently applicable authoritative release pin below.
         prior_build_records = _retained_build_records(prior, prior_state["admissions"], prior_state["revision"])
+        _verify_admitted_pins(prior, prior_state.get("pins", {}), prior_state["admissions"])
         prior_facts = {}
         for pack_id, path in prior_paths.items():
             if pack_id == "personal":
@@ -1603,11 +1693,13 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
             carried_ids = frozenset(ids)
             carried = _retained_collection_bytes(candidate, carried_ids)
             admissions = dict(state["admissions"])
+            pin_bindings = dict(state.get("pins", {}))
             for pack_id in ids:
                 target = candidate / pack_id
                 if target.exists():
                     remove_pack_tree(target)
                 admissions.pop(pack_id, None)
+                pin_bindings.pop(pack_id, None)
                 if pack_id not in tombstones and pack_id in prior_paths:
                     # Preserve the complete installed tree. In particular,
                     # M1-16 build-hook admission/artifact records belong to the
@@ -1643,6 +1735,8 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
                                    if "definitionsDigest" in prior_admission else {})}
                         else:
                             admissions[pack_id] = prior_admission
+                    if pack_id in prior_state.get("pins", {}):
+                        pin_bindings[pack_id] = dict(prior_state["pins"][pack_id])
             facts = dict(host_selected)
             for pack_id, path in _paths(candidate).items():
                 if pack_id == "personal":
@@ -1676,15 +1770,28 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
                     continue
                 candidate_facts[pack_id] = (pack_digest(path), read_pin(path / "PIN") if (path / "PIN").is_file() else {})
             _retained_build_records(candidate, admissions, state["revision"] + 1)
+            _verify_admitted_pins(candidate, pin_bindings, admissions)
             mark("prepared")
             changed_ids = tuple(sorted(set(ids) | (set(state["refresh"]["changed_ids"]) if state["refresh"] else set())))
             new_state = {"version": 1, "revision": state["revision"] + 1, "transaction_id": tx,
                          "removals": sorted(tombstones), "admissions": admissions,
                          "refresh": {"transaction_id": tx, "revision": state["revision"] + 1,
                                      "changed_ids": list(changed_ids)}}
+            # An installer may restore the previous executable as well as its
+            # collection. Preserve that generation's pre-binding wire format
+            # when no bindings remain; its reader rejects additive fields.
+            # A partial rollback must never drop bindings of untouched packs.
+            if pin_bindings or "pins" in prior_state:
+                new_state["pins"] = pin_bindings
             _write_state(candidate, new_state)
             _sync_tree(candidate)
             _sync_directory(retired)
+            if on_prepared is not None:
+                on_prepared({"transaction_id": tx, "revision": new_state["revision"],
+                             "previous_transaction_id": active_tx,
+                             "previous_revision": state["revision"], "pack_ids": list(ids),
+                             "pins": {i: read_pin(candidate / i / "PIN")
+                                      if (candidate / i / "PIN").is_file() else None for i in ids}})
             mark("before_swap")
             for pack_id, (digest, pin) in candidate_facts.items():
                 path = candidate / pack_id
@@ -1697,6 +1804,7 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
                     if pack_digest(path) != item["observed_digest"] or (read_pin(path / "PIN") if (path / "PIN").is_file() else {}) != pin:
                         raise PackInstallError("pin_mismatch", f"Historical source/PIN facts for {pack_id} changed before rollback publication.")
             _retained_build_records(candidate, admissions, new_state["revision"])
+            _verify_admitted_pins(candidate, pin_bindings, admissions)
             if _state(candidate) != new_state:
                 raise PackInstallError("invalid_state", "Prepared rollback record changed before publication; retry the transaction.")
             verified_facts, verified_apis = _compose_resulting_facts(
@@ -1707,7 +1815,8 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
             _verify_retained_collection(root, carried_ids, carried)
             _publish_and_verify_external_roots(
                 candidate, root, facts, _paths(candidate), retired, tx, new_state["revision"],
-                carried_ids=carried_ids, carried=carried, preserve=preserve)
+                carried_ids=carried_ids, carried=carried, preserve=preserve,
+                expected_absent=expected_absent)
             published = True
             _sync_directory(retired)
             _sync_directory(root.parent)

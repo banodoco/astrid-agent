@@ -1,0 +1,328 @@
+{
+  "candidate_manifest_difference": {
+    "packs": {}
+  },
+  "cases": [
+    {
+      "candidate": {
+        "env": {
+          "ASTRID_BUN_EXECUTABLE": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/483bc7ce49cc/tools/bun/bun-linux-x64/bun",
+          "ASTRID_CAPABILITY_MATRIX_PATH": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/483bc7ce49cc/a/config/astrid-beta-capabilities.json",
+          "ASTRID_FFMPEG_EXECUTABLE": "/usr/bin/ffmpeg",
+          "ASTRID_FFPROBE_EXECUTABLE": "/usr/bin/ffprobe",
+          "ASTRID_GIT_EXECUTABLE": "/usr/local/bin/git",
+          "ASTRID_HOST_EXECUTION_PROFILE": "installed",
+          "ASTRID_INSTALL_FFMPEG_SOURCE": "path",
+          "ASTRID_INSTALL_FFMPEG_VERSION": "7.1.5-0+deb13u1",
+          "ASTRID_INSTALL_FFPROBE_VERSION": "7.1.5-0+deb13u1",
+          "ASTRID_INSTALL_MANAGED_BY": "",
+          "ASTRID_INSTALL_OMP_COMMIT": "78f0e0960f471c2c62b943272a48c33366f239fe",
+          "ASTRID_INSTALL_OMP_SOURCE": "fork",
+          "ASTRID_INSTALL_OMP_VERSION": "18.12.6",
+          "ASTRID_INSTALL_RELEASE": "16",
+          "ASTRID_INSTALL_UV": "/tmp/r16-pack-delivery-tooling/bin/uv",
+          "ASTRID_NODE_EXECUTABLE": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/483bc7ce49cc/tools/node/node-v20.19.4-linux-x64/bin/node",
+          "ASTRID_REMOTION_PROJECT_DIR": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/483bc7ce49cc/a/remotion",
+          "ASTRID_RUNTIME_DATA_ROOT": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/data",
+          "ASTRID_RUNTIME_DOOR_PORT": "60871",
+          "ASTRID_SOURCE_PROVENANCE_ROOT": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/483bc7ce49cc/a",
+          "ASTRID_TIMELINE_SCHEMA_PYTHONPATH": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/483bc7ce49cc/py/lib/python3.11/site-packages/astrid/core/timeline/schema/timeline-config.schema.json",
+          "BUN_INSTALL": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/483bc7ce49cc/tools/omp",
+          "BUN_INSTALL_BIN": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/483bc7ce49cc/tools/omp/bin",
+          "PATH": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/483bc7ce49cc/py/bin:/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/483bc7ce49cc/tools/omp/bin:/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/483bc7ce49cc/tools/bun/bun-linux-x64:/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/483bc7ce49cc/tools/node/node-v20.19.4-linux-x64/bin:/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+          "PYTHONIOENCODING": "utf-8"
+        },
+        "identity": {
+          "managed_by": null,
+          "release": 16
+        },
+        "profile": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/483bc7ce49cc/profile.json",
+        "python": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/483bc7ce49cc/py/bin/python",
+        "root": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/483bc7ce49cc"
+      },
+      "exit": -9,
+      "journal": {
+        "backup": null,
+        "candidate": {
+          "env": {
+            "ASTRID_BUN_EXECUTABLE": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/483bc7ce49cc/tools/bun/bun-linux-x64/bun",
+            "ASTRID_CAPABILITY_MATRIX_PATH": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/483bc7ce49cc/a/config/astrid-beta-capabilities.json",
+            "ASTRID_FFMPEG_EXECUTABLE": "/usr/bin/ffmpeg",
+            "ASTRID_FFPROBE_EXECUTABLE": "/usr/bin/ffprobe",
+            "ASTRID_GIT_EXECUTABLE": "/usr/local/bin/git",
+            "ASTRID_HOST_EXECUTION_PROFILE": "installed",
+            "ASTRID_INSTALL_FFMPEG_SOURCE": "path",
+            "ASTRID_INSTALL_FFMPEG_VERSION": "7.1.5-0+deb13u1",
+            "ASTRID_INSTALL_FFPROBE_VERSION": "7.1.5-0+deb13u1",
+            "ASTRID_INSTALL_MANAGED_BY": "",
+            "ASTRID_INSTALL_OMP_COMMIT": "78f0e0960f471c2c62b943272a48c33366f239fe",
+            "ASTRID_INSTALL_OMP_SOURCE": "fork",
+            "ASTRID_INSTALL_OMP_VERSION": "18.12.6",
+            "ASTRID_INSTALL_RELEASE": "16",
+            "ASTRID_INSTALL_UV": "/tmp/r16-pack-delivery-tooling/bin/uv",
+            "ASTRID_NODE_EXECUTABLE": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/483bc7ce49cc/tools/node/node-v20.19.4-linux-x64/bin/node",
+            "ASTRID_REMOTION_PROJECT_DIR": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/483bc7ce49cc/a/remotion",
+            "ASTRID_RUNTIME_DATA_ROOT": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/data",
+            "ASTRID_RUNTIME_DOOR_PORT": "60871",
+            "ASTRID_SOURCE_PROVENANCE_ROOT": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/483bc7ce49cc/a",
+            "ASTRID_TIMELINE_SCHEMA_PYTHONPATH": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/483bc7ce49cc/py/lib/python3.11/site-packages/astrid/core/timeline/schema/timeline-config.schema.json",
+            "BUN_INSTALL": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/483bc7ce49cc/tools/omp",
+            "BUN_INSTALL_BIN": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/483bc7ce49cc/tools/omp/bin",
+            "PATH": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/483bc7ce49cc/py/bin:/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/483bc7ce49cc/tools/omp/bin:/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/483bc7ce49cc/tools/bun/bun-linux-x64:/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/483bc7ce49cc/tools/node/node-v20.19.4-linux-x64/bin:/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+            "PYTHONIOENCODING": "utf-8"
+          },
+          "identity": {
+            "managed_by": null,
+            "release": 16
+          },
+          "profile": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/483bc7ce49cc/profile.json",
+          "python": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/483bc7ce49cc/py/bin/python",
+          "root": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/483bc7ce49cc"
+        },
+        "data_root": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/data",
+        "format": "astrid-install-update/v1",
+        "log_path": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/home/.local/state/astrid-runtime/logs/install.log",
+        "old": {
+          "env": {
+            "ASTRID_BUN_EXECUTABLE": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/2be5c5132c6c/tools/bun/bun-linux-x64/bun",
+            "ASTRID_CAPABILITY_MATRIX_PATH": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/2be5c5132c6c/a/config/astrid-beta-capabilities.json",
+            "ASTRID_FFMPEG_EXECUTABLE": "/usr/bin/ffmpeg",
+            "ASTRID_FFPROBE_EXECUTABLE": "/usr/bin/ffprobe",
+            "ASTRID_GIT_EXECUTABLE": "/usr/local/bin/git",
+            "ASTRID_HOST_EXECUTION_PROFILE": "installed",
+            "ASTRID_INSTALL_FFMPEG_SOURCE": "path",
+            "ASTRID_INSTALL_FFMPEG_VERSION": "7.1.5-0+deb13u1",
+            "ASTRID_INSTALL_FFPROBE_VERSION": "7.1.5-0+deb13u1",
+            "ASTRID_INSTALL_MANAGED_BY": "",
+            "ASTRID_INSTALL_OMP_COMMIT": "78f0e0960f471c2c62b943272a48c33366f239fe",
+            "ASTRID_INSTALL_OMP_SOURCE": "fork",
+            "ASTRID_INSTALL_OMP_VERSION": "18.12.6",
+            "ASTRID_INSTALL_RELEASE": "16",
+            "ASTRID_INSTALL_UV": "/tmp/r16-pack-delivery-tooling/bin/uv",
+            "ASTRID_NODE_EXECUTABLE": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/2be5c5132c6c/tools/node/node-v20.19.4-linux-x64/bin/node",
+            "ASTRID_REMOTION_PROJECT_DIR": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/2be5c5132c6c/a/remotion",
+            "ASTRID_RUNTIME_DATA_ROOT": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/data",
+            "ASTRID_RUNTIME_DOOR_PORT": "60871",
+            "ASTRID_SOURCE_PROVENANCE_ROOT": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/2be5c5132c6c/a",
+            "ASTRID_TIMELINE_SCHEMA_PYTHONPATH": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/2be5c5132c6c/py/lib/python3.11/site-packages/astrid/core/timeline/schema/timeline-config.schema.json",
+            "BUN_INSTALL": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/2be5c5132c6c/tools/omp",
+            "BUN_INSTALL_BIN": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/2be5c5132c6c/tools/omp/bin",
+            "PATH": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/2be5c5132c6c/py/bin:/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/2be5c5132c6c/tools/omp/bin:/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/2be5c5132c6c/tools/bun/bun-linux-x64:/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/2be5c5132c6c/tools/node/node-v20.19.4-linux-x64/bin:/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+            "PYTHONIOENCODING": "utf-8"
+          },
+          "identity": {
+            "managed_by": null,
+            "release": 16
+          },
+          "profile": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/2be5c5132c6c/profile.json",
+          "python": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/2be5c5132c6c/py/bin/python",
+          "root": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/2be5c5132c6c"
+        },
+        "operation_id": "a5f2e8b89e494762b0c2217c731b4b78",
+        "realm": {
+          "effects": [
+            "observe"
+          ],
+          "inspection": {
+            "checks": {
+              "realm_identity": {
+                "ok": true,
+                "realm_id": "52ac24b3-931e-4f85-8263-caf3971a727d"
+              }
+            },
+            "ok": true,
+            "runtime_instance_id": "893bd47c36694d80877a33b0e48c343e",
+            "source": "live_owner",
+            "state": "live"
+          },
+          "ok": true,
+          "realm_id": "52ac24b3-931e-4f85-8263-caf3971a727d",
+          "realm_root": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/data/runtime/realms/52ac24b3-931e-4f85-8263-caf3971a727d",
+          "state": "configured"
+        },
+        "step": "switched",
+        "transaction_context": {
+          "activation_lock_path": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/home/.local/share/astrid-install.lock"
+        },
+        "transaction_kind": "migration"
+      },
+      "name": "public-update-killed-after-canonical-removal-and-selection",
+      "publication": {
+        "pack_ids": [
+          "astrid_motion"
+        ],
+        "pins": {
+          "astrid_motion": null
+        },
+        "previous_revision": 4,
+        "previous_transaction_id": "e76b701878a14fd59448d7c261ced2b7",
+        "revision": 5,
+        "transaction_id": "48f1d34207fe45968da7dff1a2a454da"
+      },
+      "status": "PASS"
+    },
+    {
+      "motion_source_files": 64,
+      "name": "public-journal-rollback-restores-prior-selection-source-and-protected-state",
+      "rollback": {
+        "pack_ids": [
+          "astrid_motion"
+        ],
+        "pins": {
+          "astrid_motion": {
+            "commit": "23f78bfc7e3cb26e320e8d3c6bd30a8b94cd92e1",
+            "digest": "be6abd1feb9759eca56364c6a2ccded470977aaf965a8e208cdd4f1bedcf77cf",
+            "digest_rule": "pack-tree-v1",
+            "origin": "default",
+            "source": "file:///tmp/r16-pack-delivery-poms#astrid_motion",
+            "version": 1
+          }
+        },
+        "previous_revision": 5,
+        "previous_transaction_id": "48f1d34207fe45968da7dff1a2a454da",
+        "revision": 6,
+        "transaction_id": "8298d172ac224445b5f7ba8c0c3c0391"
+      },
+      "runtime": "running and ready",
+      "status": "PASS",
+      "tombstones": [
+        "user_removed"
+      ],
+      "user_file_count": 4
+    }
+  ],
+  "interrupted-update": {
+    "argv": [
+      "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/2be5c5132c6c/py/bin/python",
+      "-I",
+      "-m",
+      "astrid",
+      "install",
+      "--root",
+      "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program",
+      "--data-root",
+      "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/data",
+      "--manifest",
+      "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/explicit-empty-defaults.json",
+      "--uv",
+      "/tmp/r16-pack-delivery-tooling/bin/uv",
+      "--no-browser",
+      "--autostart",
+      "off",
+      "--command",
+      "off",
+      "--skills",
+      "off",
+      "--skill-copies",
+      "off",
+      "--sandbox",
+      "--update"
+    ],
+    "exit": -9
+  },
+  "journal-recovery": {
+    "argv": [
+      "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/483bc7ce49cc/py/bin/python",
+      "-I",
+      "-m",
+      "astrid",
+      "install",
+      "--root",
+      "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program",
+      "--data-root",
+      "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/data",
+      "--manifest",
+      "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/proof-manifest.json",
+      "--uv",
+      "/tmp/r16-pack-delivery-tooling/bin/uv",
+      "--no-browser",
+      "--autostart",
+      "off",
+      "--command",
+      "off",
+      "--skills",
+      "off",
+      "--skill-copies",
+      "off",
+      "--sandbox"
+    ],
+    "exit": 0
+  },
+  "old": {
+    "env": {
+      "ASTRID_BUN_EXECUTABLE": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/2be5c5132c6c/tools/bun/bun-linux-x64/bun",
+      "ASTRID_CAPABILITY_MATRIX_PATH": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/2be5c5132c6c/a/config/astrid-beta-capabilities.json",
+      "ASTRID_FFMPEG_EXECUTABLE": "/usr/bin/ffmpeg",
+      "ASTRID_FFPROBE_EXECUTABLE": "/usr/bin/ffprobe",
+      "ASTRID_GIT_EXECUTABLE": "/usr/local/bin/git",
+      "ASTRID_HOST_EXECUTION_PROFILE": "installed",
+      "ASTRID_INSTALL_FFMPEG_SOURCE": "path",
+      "ASTRID_INSTALL_FFMPEG_VERSION": "7.1.5-0+deb13u1",
+      "ASTRID_INSTALL_FFPROBE_VERSION": "7.1.5-0+deb13u1",
+      "ASTRID_INSTALL_MANAGED_BY": "",
+      "ASTRID_INSTALL_OMP_COMMIT": "78f0e0960f471c2c62b943272a48c33366f239fe",
+      "ASTRID_INSTALL_OMP_SOURCE": "fork",
+      "ASTRID_INSTALL_OMP_VERSION": "18.12.6",
+      "ASTRID_INSTALL_RELEASE": "16",
+      "ASTRID_INSTALL_UV": "/tmp/r16-pack-delivery-tooling/bin/uv",
+      "ASTRID_NODE_EXECUTABLE": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/2be5c5132c6c/tools/node/node-v20.19.4-linux-x64/bin/node",
+      "ASTRID_REMOTION_PROJECT_DIR": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/2be5c5132c6c/a/remotion",
+      "ASTRID_RUNTIME_DATA_ROOT": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/data",
+      "ASTRID_RUNTIME_DOOR_PORT": "60871",
+      "ASTRID_SOURCE_PROVENANCE_ROOT": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/2be5c5132c6c/a",
+      "ASTRID_TIMELINE_SCHEMA_PYTHONPATH": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/2be5c5132c6c/py/lib/python3.11/site-packages/astrid/core/timeline/schema/timeline-config.schema.json",
+      "BUN_INSTALL": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/2be5c5132c6c/tools/omp",
+      "BUN_INSTALL_BIN": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/2be5c5132c6c/tools/omp/bin",
+      "PATH": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/2be5c5132c6c/py/bin:/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/2be5c5132c6c/tools/omp/bin:/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/2be5c5132c6c/tools/bun/bun-linux-x64:/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/2be5c5132c6c/tools/node/node-v20.19.4-linux-x64/bin:/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+      "PYTHONIOENCODING": "utf-8"
+    },
+    "identity": {
+      "managed_by": null,
+      "release": 16
+    },
+    "profile": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/2be5c5132c6c/profile.json",
+    "python": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/2be5c5132c6c/py/bin/python",
+    "root": "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/2be5c5132c6c"
+  },
+  "result": "PASS",
+  "retained-start": {
+    "argv": [
+      "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program/versions/2be5c5132c6c/py/bin/python",
+      "-I",
+      "-m",
+      "astrid",
+      "install",
+      "--root",
+      "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/program",
+      "--data-root",
+      "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/data",
+      "--manifest",
+      "/workspace/library-files/r16-pack-delivery-687e2e07963c/native/proof-manifest.json",
+      "--uv",
+      "/tmp/r16-pack-delivery-tooling/bin/uv",
+      "--no-browser",
+      "--autostart",
+      "off",
+      "--command",
+      "off",
+      "--skills",
+      "off",
+      "--skill-copies",
+      "off",
+      "--sandbox"
+    ],
+    "exit": 0
+  },
+  "selected_source": {
+    "astrid_motion": {
+      "commit": "23f78bfc7e3cb26e320e8d3c6bd30a8b94cd92e1",
+      "digest": "be6abd1feb9759eca56364c6a2ccded470977aaf965a8e208cdd4f1bedcf77cf",
+      "digest_rule": "pack-tree-v1",
+      "repo": "file:///tmp/r16-pack-delivery-poms"
+    }
+  },
+  "source": {
+    "repo": "/tmp/r16-pack-delivery-proof",
+    "sha": "baf6b73f297865f681bfe07ca2035a53168e79d5"
+  }
+}

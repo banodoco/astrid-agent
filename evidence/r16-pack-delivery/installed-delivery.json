@@ -1,0 +1,258 @@
+{
+  "agent": {
+    "repo": "/tmp/r16-pack-delivery-proof",
+    "sha": "40c84fc7eccfb7f8c4c927a3899d0da3368961bb"
+  },
+  "cases": [
+    {
+      "exit": 73,
+      "name": "interruption-before-publication",
+      "status": "PASS"
+    },
+    {
+      "exit": 73,
+      "name": "interruption-after-publication",
+      "status": "PASS",
+      "transaction": "3ba674e01e6c41c6853d7bdefa4097e4"
+    },
+    {
+      "admission": {
+        "committedRevision": 1,
+        "definitionsDigest": "4e2e7ee6cadd25f2be986af7e22a5abf26acc31a4fb2438f22d272794b6b1ed8",
+        "packId": "astrid_motion",
+        "sourceDigest": "be6abd1feb9759eca56364c6a2ccded470977aaf965a8e208cdd4f1bedcf77cf",
+        "transactionId": "3ba674e01e6c41c6853d7bdefa4097e4"
+      },
+      "comparison": {
+        "comparison": "match",
+        "derived_from": null,
+        "digest_rule": "pack-tree-v1",
+        "editor_revision": "be6abd1feb9759eca56364c6a2ccded470977aaf965a8e208cdd4f1bedcf77cf",
+        "editor_upstream_revision": "23f78bfc7e3cb26e320e8d3c6bd30a8b94cd92e1",
+        "identity_verification": "agent direct-source witness and source digest verified",
+        "pack_id": "astrid_motion",
+        "resolved_revision": "be6abd1feb9759eca56364c6a2ccded470977aaf965a8e208cdd4f1bedcf77cf",
+        "upstream_revision": "23f78bfc7e3cb26e320e8d3c6bd30a8b94cd92e1"
+      },
+      "files": 64,
+      "name": "clean-installed-default-loader-and-source-identity",
+      "status": "PASS"
+    },
+    {
+      "name": "environment-cannot-replace-selected-authority",
+      "status": "PASS"
+    },
+    {
+      "after_exit": 73,
+      "before_exit": 73,
+      "name": "interrupted-rollback-and-retry",
+      "status": "PASS"
+    },
+    {
+      "name": "quarantine-and-repair-definitions",
+      "status": "PASS"
+    },
+    {
+      "name": "quarantine-and-repair-source",
+      "status": "PASS"
+    },
+    {
+      "name": "quarantine-and-repair-pin",
+      "status": "PASS"
+    },
+    {
+      "name": "missing-default-repair-preserves-user-state",
+      "status": "PASS"
+    },
+    {
+      "name": "explicit-removal-survives-repair",
+      "status": "PASS"
+    }
+  ],
+  "compiler": [
+    {
+      "bytes": 7884,
+      "component": "rendering/elements/effects/am-burst/component.tsx",
+      "contract_sha256": "020cd57e1e3c81717eb0715c0710724522f82f95e6ec609dc86466f7ac6dc341",
+      "id": "am-burst",
+      "sha256": "25376cc29a50abcba8e9cd9d677ceb3de4774d42b08234004166e2a723a27734",
+      "syntax_exit": 0
+    },
+    {
+      "bytes": 5137,
+      "component": "rendering/elements/effects/am-callout/component.tsx",
+      "contract_sha256": "020cd57e1e3c81717eb0715c0710724522f82f95e6ec609dc86466f7ac6dc341",
+      "id": "am-callout",
+      "sha256": "b985213d9fe1f585d597b58cc5667e8a35422a0af9e4bebcd33f6a56bf0019c6",
+      "syntax_exit": 0
+    },
+    {
+      "bytes": 30230,
+      "component": "rendering/elements/effects/am-churn/component.tsx",
+      "contract_sha256": "020cd57e1e3c81717eb0715c0710724522f82f95e6ec609dc86466f7ac6dc341",
+      "id": "am-churn",
+      "sha256": "ee344e4e66a01883b5d1c2153068de8c3bcd9c148f4e54f7453596d10ff77c2a",
+      "syntax_exit": 0
+    },
+    {
+      "bytes": 40159,
+      "component": "rendering/elements/effects/am-discord/component.tsx",
+      "contract_sha256": "020cd57e1e3c81717eb0715c0710724522f82f95e6ec609dc86466f7ac6dc341",
+      "id": "am-discord",
+      "sha256": "89f83c220b669f81057fe1d0dd6fa6d177aef408df4e47574a8deb2676418408",
+      "syntax_exit": 0
+    },
+    {
+      "bytes": 4816,
+      "component": "rendering/elements/effects/am-droste/component.tsx",
+      "contract_sha256": "020cd57e1e3c81717eb0715c0710724522f82f95e6ec609dc86466f7ac6dc341",
+      "id": "am-droste",
+      "sha256": "36545c3313bbb225d82fb2376fea23f34e7f86335b8e0b00fd9e472cdc1ca14a",
+      "syntax_exit": 0
+    },
+    {
+      "bytes": 7668,
+      "component": "rendering/elements/effects/am-flap/component.tsx",
+      "contract_sha256": "020cd57e1e3c81717eb0715c0710724522f82f95e6ec609dc86466f7ac6dc341",
+      "id": "am-flap",
+      "sha256": "ab10ab631463e39e8a7e5964a62b7e53628790e930eede236446953a4025d6f2",
+      "syntax_exit": 0
+    },
+    {
+      "bytes": 16185,
+      "component": "rendering/elements/effects/am-footage/component.tsx",
+      "contract_sha256": "020cd57e1e3c81717eb0715c0710724522f82f95e6ec609dc86466f7ac6dc341",
+      "id": "am-footage",
+      "sha256": "4290556fd4542d75a279c42c41c9d3a23187b8582ee02c08e2c51ae82ac21933",
+      "syntax_exit": 0
+    },
+    {
+      "bytes": 4493,
+      "component": "rendering/elements/effects/am-orbit/component.tsx",
+      "contract_sha256": "020cd57e1e3c81717eb0715c0710724522f82f95e6ec609dc86466f7ac6dc341",
+      "id": "am-orbit",
+      "sha256": "beef26d9edd99f73f94bd9b2217cc350224a47c1dfdc615ce2d1a27844db8cb5",
+      "syntax_exit": 0
+    },
+    {
+      "bytes": 7130,
+      "component": "rendering/elements/effects/am-orgchart/component.tsx",
+      "contract_sha256": "020cd57e1e3c81717eb0715c0710724522f82f95e6ec609dc86466f7ac6dc341",
+      "id": "am-orgchart",
+      "sha256": "a7918ebca2ddc292d2f7cadc3d29912e30e1112d442e1241d7cfbc227093186d",
+      "syntax_exit": 0
+    },
+    {
+      "bytes": 5929,
+      "component": "rendering/elements/effects/am-pixel-shape/component.tsx",
+      "contract_sha256": "020cd57e1e3c81717eb0715c0710724522f82f95e6ec609dc86466f7ac6dc341",
+      "id": "am-pixel-shape",
+      "sha256": "208ac6260e5f9e91fb278c125a5d26d1e73dbc8aa96ccac5f0c2d135f1dc61dc",
+      "syntax_exit": 0
+    },
+    {
+      "bytes": 3285,
+      "component": "rendering/elements/effects/am-pixel-wipe/component.tsx",
+      "contract_sha256": "020cd57e1e3c81717eb0715c0710724522f82f95e6ec609dc86466f7ac6dc341",
+      "id": "am-pixel-wipe",
+      "sha256": "2a3baa0cc3ea101db0524339b119b6993b685b1c026b89a95c6fa8bc542961b5",
+      "syntax_exit": 0
+    },
+    {
+      "bytes": 17159,
+      "component": "rendering/elements/effects/am-presenter/component.tsx",
+      "contract_sha256": "020cd57e1e3c81717eb0715c0710724522f82f95e6ec609dc86466f7ac6dc341",
+      "id": "am-presenter",
+      "sha256": "765c277f1dfdb1431b496a318e793f992e731574118475f9b01106e8655319ee",
+      "syntax_exit": 0
+    },
+    {
+      "bytes": 6332,
+      "component": "rendering/elements/effects/am-quote/component.tsx",
+      "contract_sha256": "020cd57e1e3c81717eb0715c0710724522f82f95e6ec609dc86466f7ac6dc341",
+      "id": "am-quote",
+      "sha256": "815396cb6f6534036ed0961dbd9c2f808d1a3ba8f0323d913a3681330efa99e0",
+      "syntax_exit": 0
+    },
+    {
+      "bytes": 9026,
+      "component": "rendering/elements/effects/am-seasons/component.tsx",
+      "contract_sha256": "020cd57e1e3c81717eb0715c0710724522f82f95e6ec609dc86466f7ac6dc341",
+      "id": "am-seasons",
+      "sha256": "34d976bcf9a888271657e83fcc5dcfe66e1a133015679ea8d419d68c4b141bde",
+      "syntax_exit": 0
+    },
+    {
+      "bytes": 14989,
+      "component": "rendering/elements/effects/am-snap-plate/component.tsx",
+      "contract_sha256": "020cd57e1e3c81717eb0715c0710724522f82f95e6ec609dc86466f7ac6dc341",
+      "id": "am-snap-plate",
+      "sha256": "14088b8ad6f01cbc281774c59c55deee387ff08a01cbf690d8782fed721b0afa",
+      "syntax_exit": 0
+    },
+    {
+      "bytes": 9796,
+      "component": "rendering/elements/effects/am-sprite/component.tsx",
+      "contract_sha256": "020cd57e1e3c81717eb0715c0710724522f82f95e6ec609dc86466f7ac6dc341",
+      "id": "am-sprite",
+      "sha256": "2ddf1763b280d543501538c30cd39c1f9d6f9e36cf495d512db968051c194b01",
+      "syntax_exit": 0
+    },
+    {
+      "bytes": 8910,
+      "component": "rendering/elements/effects/am-terminal/component.tsx",
+      "contract_sha256": "020cd57e1e3c81717eb0715c0710724522f82f95e6ec609dc86466f7ac6dc341",
+      "id": "am-terminal",
+      "sha256": "99e69bde5a0c43efae637a3556f18a4aeedea992e33f42c0f2a11d556e90a40a",
+      "syntax_exit": 0
+    },
+    {
+      "bytes": 6887,
+      "component": "rendering/elements/effects/am-tweet/component.tsx",
+      "contract_sha256": "020cd57e1e3c81717eb0715c0710724522f82f95e6ec609dc86466f7ac6dc341",
+      "id": "am-tweet",
+      "sha256": "e53d45032d1d93c5020c9c68e688637fab51e42fd0e5c1e0f145d726b2262b43",
+      "syntax_exit": 0
+    },
+    {
+      "bytes": 7338,
+      "component": "rendering/elements/effects/am-type/component.tsx",
+      "contract_sha256": "020cd57e1e3c81717eb0715c0710724522f82f95e6ec609dc86466f7ac6dc341",
+      "id": "am-type",
+      "sha256": "73d9ba5460c83295ebe622991a6ea539f5a75efe7871c0bfa948f2742b2b6648",
+      "syntax_exit": 0
+    },
+    {
+      "bytes": 25354,
+      "component": "rendering/elements/effects/am-ui-sketch/component.tsx",
+      "contract_sha256": "020cd57e1e3c81717eb0715c0710724522f82f95e6ec609dc86466f7ac6dc341",
+      "id": "am-ui-sketch",
+      "sha256": "46c60341f39b92903c0c5f8aaff05a2f3e165843d768a534f075d043ce8b0ea1",
+      "syntax_exit": 0
+    }
+  ],
+  "lifecycle": {
+    "repo": "https://github.com/banodoco/runpod-lifecycle.git",
+    "sha": "9f88ef7640bc664f697112d966ecefa123d44340",
+    "version": "0.3.1.dev0"
+  },
+  "prefix": "/tmp/r16-pack-delivery-installed/program/versions/838d57d6db8d/py",
+  "python": "3.11.13 (main, Oct  7 2025, 15:34:32) [Clang 20.1.4 ]",
+  "result": "PASS",
+  "runtime": {
+    "repo": "/workspace/scratch/687e2e07963c/agent.env/runtime",
+    "schema_digest": "sha256:2c6a76e17b4441398ab91e3e9d6283a719fd5b08807447db9dbf2ecc5e1339a2",
+    "sha": "686ca695469bda48cd40a70824c4ccef2a137284"
+  },
+  "selected_source": {
+    "commit": "23f78bfc7e3cb26e320e8d3c6bd30a8b94cd92e1",
+    "digest": "be6abd1feb9759eca56364c6a2ccded470977aaf965a8e208cdd4f1bedcf77cf",
+    "digest_rule": "pack-tree-v1",
+    "repo": "file:///tmp/r16-pack-delivery-poms"
+  },
+  "version": "/tmp/r16-pack-delivery-installed/program/versions/838d57d6db8d",
+  "vibecomfy": {
+    "repo": "/workspace/scratch/687e2e07963c/agent.env/vibecomfy",
+    "sha": "55c3948212d23cf037fae8a4c6faad77d33e7279"
+  }
+}

@@ -1,0 +1,362 @@
+{
+  "base44-failures": {
+    "failures": [
+      {
+        "kind": "failure",
+        "message": "astrid.installer.r0_stop.R0StopError: R0 requires the copy-only upgrade boundary. Run the install line again.",
+        "node": "tests.test_installer_lifecycle::test_real_c1_post_stop_failure_retries_fence_before_old_activation"
+      },
+      {
+        "kind": "failure",
+        "message": "astrid.installer.r0_stop.R0StopError: R0 requires the copy-only upgrade boundary. Run the install line again.",
+        "node": "tests.test_installer_lifecycle::test_repair_skips_down_for_proven_dead_runtime_and_keeps_discovery"
+      },
+      {
+        "kind": "failure",
+        "message": "AssertionError: Regex pattern did not match.\n  Expected regex: 'different Runtime, release|identity'\n  Actual message: \"Astrid's browser door did not become ready before the verification deadline; expected endpoint: <door disabled>; observed endpoint: <unavailable endpoint>; discovery runtime_instance_id: <unavailable>; pre-update runtime_instance_id: <unavailable>; last Runtime status/startup error: <none observed>.\"",
+        "node": "tests.test_installer_app_update::test_local_verification_rejects_mismatched_managed_version_identity[release-health]"
+      },
+      {
+        "kind": "failure",
+        "message": "AssertionError: Regex pattern did not match.\n  Expected regex: 'different Runtime, release|identity'\n  Actual message: \"Astrid's browser door did not become ready before the verification deadline; expected endpoint: <door disabled>; observed endpoint: <unavailable endpoint>; discovery runtime_instance_id: <unavailable>; pre-update runtime_instance_id: <unavailable>; last Runtime status/startup error: <none observed>.\"",
+        "node": "tests.test_installer_app_update::test_local_verification_rejects_mismatched_managed_version_identity[release-discovery]"
+      },
+      {
+        "kind": "failure",
+        "message": "AssertionError: Regex pattern did not match.\n  Expected regex: 'different Runtime, release|identity'\n  Actual message: \"Astrid's browser door did not become ready before the verification deadline; expected endpoint: <door disabled>; observed endpoint: <unavailable endpoint>; discovery runtime_instance_id: <unavailable>; pre-update runtime_instance_id: <unavailable>; last Runtime status/startup error: <none observed>.\"",
+        "node": "tests.test_installer_app_update::test_local_verification_rejects_mismatched_managed_version_identity[managed_by-health]"
+      },
+      {
+        "kind": "failure",
+        "message": "AssertionError: Regex pattern did not match.\n  Expected regex: 'different Runtime, release|identity'\n  Actual message: \"Astrid's browser door did not become ready before the verification deadline; expected endpoint: <door disabled>; observed endpoint: <unavailable endpoint>; discovery runtime_instance_id: <unavailable>; pre-update runtime_instance_id: <unavailable>; last Runtime status/startup error: <none observed>.\"",
+        "node": "tests.test_installer_app_update::test_local_verification_rejects_mismatched_managed_version_identity[managed_by-discovery]"
+      },
+      {
+        "kind": "failure",
+        "message": "AssertionError: Regex pattern did not match.\n  Expected regex: 'different Runtime|identity|owner health'\n  Actual message: \"Astrid's browser door did not become ready before the verification deadline; expected endpoint: <door disabled>; observed endpoint: <unavailable endpoint>; discovery runtime_instance_id: <unavailable>; pre-update runtime_instance_id: <unavailable>; last Runtime status/startup error: <none observed>.\"",
+        "node": "tests.test_installer_app_update::test_local_verification_rejects_missing_raw_managed_identity[None]"
+      },
+      {
+        "kind": "failure",
+        "message": "AssertionError: Regex pattern did not match.\n  Expected regex: 'different Runtime|identity|owner health'\n  Actual message: \"Astrid's browser door did not become ready before the verification deadline; expected endpoint: <door disabled>; observed endpoint: <unavailable endpoint>; discovery runtime_instance_id: <unavailable>; pre-update runtime_instance_id: <unavailable>; last Runtime status/startup error: <none observed>.\"",
+        "node": "tests.test_installer_app_update::test_local_verification_rejects_missing_raw_managed_identity[owner_health1]"
+      },
+      {
+        "kind": "failure",
+        "message": "AssertionError: Regex pattern did not match.\n  Expected regex: 'different Runtime|identity|owner health'\n  Actual message: \"Astrid's browser door did not become ready before the verification deadline; expected endpoint: <door disabled>; observed endpoint: <unavailable endpoint>; discovery runtime_instance_id: <unavailable>; pre-update runtime_instance_id: <unavailable>; last Runtime status/startup error: <none observed>.\"",
+        "node": "tests.test_installer_app_update::test_local_verification_rejects_missing_raw_managed_identity[owner_health2]"
+      },
+      {
+        "kind": "failure",
+        "message": "AssertionError: Regex pattern did not match.\n  Expected regex: 'different Runtime|identity'\n  Actual message: \"Astrid's browser door did not become ready before the verification deadline; expected endpoint: <door disabled>; observed endpoint: <unavailable endpoint>; discovery runtime_instance_id: <unavailable>; pre-update runtime_instance_id: <unavailable>; last Runtime status/startup error: <none observed>.\"",
+        "node": "tests.test_installer_app_update::test_local_verification_rejects_mismatched_transaction_binding"
+      }
+    ],
+    "sha256": "99bc52a00fe0827ee7ea4cf13a405ed15356726e0a41bc5b431645332d9293dc",
+    "suites": [
+      {
+        "errors": "0",
+        "failures": "10",
+        "hostname": "b4f1ff20ec69",
+        "name": "pytest",
+        "skipped": "0",
+        "tests": "10",
+        "time": "4.138",
+        "timestamp": "2026-11-27T18:49:24.268015+00:00"
+      }
+    ]
+  },
+  "base44-handoff-wording": {
+    "failures": [
+      {
+        "kind": "failure",
+        "message": "assert 'Astrid did NOT update: the installer refused to continue' in \"Astrid couldn't finish. Your work is kept.\\nThe R0 to R1 handoff is copy-only and cannot apply setup choice changes (...4.env/basetemp/1795807180991394531/test_cli_handled_handoff_refus0/home/.local/state/astrid-runtime/logs/install.log\\n\"",
+        "node": "tests.test_boundary_handoff::test_cli_handled_handoff_refuses_policy_change_and_reports_saved_policy"
+      }
+    ],
+    "sha256": "7c7ff5cac26b4833175564d38d2679f477f328871bbf864fcc1d6478fb8b72c4",
+    "suites": [
+      {
+        "errors": "0",
+        "failures": "1",
+        "hostname": "b4f1ff20ec69",
+        "name": "pytest",
+        "skipped": "0",
+        "tests": "1",
+        "time": "1.198",
+        "timestamp": "2026-11-27T19:19:44.034790+00:00"
+      }
+    ]
+  },
+  "base44-loader": {
+    "failures": [
+      {
+        "kind": "failure",
+        "message": "AssertionError: assert [] == ['goodpack']\n  \n  Right contains one more item: 'goodpack'\n  Use -v to get more diff",
+        "node": "tests.packs.test_pack_quarantine::test_invalid_keyword_quarantines_only_that_pack"
+      },
+      {
+        "kind": "failure",
+        "message": "AssertionError: assert 'keywords.1' in 'Pack manifest needs an explicit schema upgrade. Migrate to v3 and add it again.'",
+        "node": "tests.packs.test_pack_quarantine::test_invoking_a_quarantined_capability_is_typed_unavailable"
+      },
+      {
+        "kind": "failure",
+        "message": "AssertionError: assert QuarantinedPack(pack_id='goodpack', pack_dir=PosixPath('/tmp/r16-pack-delivery-base44.env/basetemp/1795805986279938162..._0/packs/goodpack/pack.yaml'), error='Pack manifest needs an explicit schema upgrade. Migrate to v3 and add it again.') is None\n +  where QuarantinedPack(pack_id='goodpack', pack_dir=PosixPath('/tmp/r16-pack-delivery-base44.env/basetemp/1795805986279938162..._0/packs/goodpack/pack.yaml'), error='Pack manifest needs an explicit schema upgrade. Migrate to v3 and add it again.') = quarantined_pack_for_capability('goodpack.echo', roots=(PosixPath('/tmp/r16-pack-delivery-base44.env/basetemp/1795805986279938162/test_quarantine_owner_matches_0/packs'),))",
+        "node": "tests.packs.test_pack_quarantine::test_quarantine_owner_matches_declared_bare_labels"
+      },
+      {
+        "kind": "failure",
+        "message": "AssertionError: assert 'keywords.1' in 'Pack manifest needs an explicit schema upgrade. Migrate to v3 and add it again.'",
+        "node": "tests.packs.test_pack_quarantine::test_doctor_section_lists_quarantine_with_error_and_fix"
+      },
+      {
+        "kind": "failure",
+        "message": "AssertionError: assert set() == {'goodpack.ec...odpack.extra'}\n  \n  Extra items in the right set:\n  'goodpack.echo'\n  'goodpack.extra'\n  Use -v to get more diff",
+        "node": "tests.packs.test_pack_quarantine::test_unapproved_capability_is_unavailable_without_stopping_host"
+      }
+    ],
+    "sha256": "c17928c8b963f4ee3d0372c9507b263cf2820f8621af6139e5395d92ec09d080",
+    "suites": [
+      {
+        "errors": "0",
+        "failures": "5",
+        "hostname": "b4f1ff20ec69",
+        "name": "pytest",
+        "skipped": "0",
+        "tests": "13",
+        "time": "6.009",
+        "timestamp": "2026-11-27T18:59:49.381944+00:00"
+      }
+    ]
+  },
+  "baseline": {
+    "failures": [],
+    "sha256": "3f2ed7b3a2abfd5b376ae09ac6b2c64a96a598fd96df762b499549df4b64a329",
+    "suites": [
+      {
+        "errors": "0",
+        "failures": "0",
+        "hostname": "b4f1ff20ec69",
+        "name": "pytest",
+        "skipped": "0",
+        "tests": "123",
+        "time": "28.947",
+        "timestamp": "2026-11-27T18:32:35.393456+00:00"
+      }
+    ]
+  },
+  "delivery-handoff-physical": {
+    "failures": [
+      {
+        "kind": "failure",
+        "message": "assert 'Astrid did NOT update: the installer refused to continue' in \"Astrid couldn't finish. Your work is kept.\\nThe R0 to R1 handoff is copy-only and cannot apply setup choice changes (...f.env/basetemp/1795807053150611011/test_cli_handled_handoff_refus0/home/.local/state/astrid-runtime/logs/install.log\\n\"",
+        "node": "tests.test_boundary_handoff::test_cli_handled_handoff_refuses_policy_change_and_reports_saved_policy"
+      }
+    ],
+    "sha256": "aa795ca798f193342d571212f70260bcee9ef25294517d093b33264e464ae1d6",
+    "suites": [
+      {
+        "errors": "0",
+        "failures": "1",
+        "hostname": "b4f1ff20ec69",
+        "name": "pytest",
+        "skipped": "0",
+        "tests": "80",
+        "time": "71.077",
+        "timestamp": "2026-11-27T19:17:36.392375+00:00"
+      }
+    ]
+  },
+  "delivery-loader-original": {
+    "failures": [
+      {
+        "kind": "failure",
+        "message": "AssertionError: assert [] == ['goodpack']\n  \n  Right contains one more item: 'goodpack'\n  Use -v to get more diff",
+        "node": "tests.packs.test_pack_quarantine::test_invalid_keyword_quarantines_only_that_pack"
+      },
+      {
+        "kind": "failure",
+        "message": "AssertionError: assert 'keywords.1' in 'Pack manifest needs an explicit schema upgrade. Migrate to v3 and add it again.'",
+        "node": "tests.packs.test_pack_quarantine::test_invoking_a_quarantined_capability_is_typed_unavailable"
+      },
+      {
+        "kind": "failure",
+        "message": "AssertionError: assert QuarantinedPack(pack_id='goodpack', pack_dir=PosixPath('/workspace/scratch/687e2e07963c/agent.env/basetemp/17958058610..._0/packs/goodpack/pack.yaml'), error='Pack manifest needs an explicit schema upgrade. Migrate to v3 and add it again.') is None\n +  where QuarantinedPack(pack_id='goodpack', pack_dir=PosixPath('/workspace/scratch/687e2e07963c/agent.env/basetemp/17958058610..._0/packs/goodpack/pack.yaml'), error='Pack manifest needs an explicit schema upgrade. Migrate to v3 and add it again.') = quarantined_pack_for_capability('goodpack.echo', roots=(PosixPath('/workspace/scratch/687e2e07963c/agent.env/basetemp/1795805861025073027/test_quarantine_owner_matches_0/packs'),))",
+        "node": "tests.packs.test_pack_quarantine::test_quarantine_owner_matches_declared_bare_labels"
+      },
+      {
+        "kind": "failure",
+        "message": "AssertionError: assert 'keywords.1' in 'Pack manifest needs an explicit schema upgrade. Migrate to v3 and add it again.'",
+        "node": "tests.packs.test_pack_quarantine::test_doctor_section_lists_quarantine_with_error_and_fix"
+      },
+      {
+        "kind": "failure",
+        "message": "AssertionError: assert set() == {'goodpack.ec...odpack.extra'}\n  \n  Extra items in the right set:\n  'goodpack.echo'\n  'goodpack.extra'\n  Use -v to get more diff",
+        "node": "tests.packs.test_pack_quarantine::test_unapproved_capability_is_unavailable_without_stopping_host"
+      }
+    ],
+    "sha256": "b7468ee28cf95d608faf52fafc030ce137c032e66216790b7bc59385d02513b0",
+    "suites": [
+      {
+        "errors": "0",
+        "failures": "5",
+        "hostname": "b4f1ff20ec69",
+        "name": "pytest",
+        "skipped": "0",
+        "tests": "36",
+        "time": "38.347",
+        "timestamp": "2026-11-27T18:57:44.419307+00:00"
+      }
+    ]
+  },
+  "delivery-order-physical": {
+    "failures": [],
+    "sha256": "a597cdb96d8c3784dd4cbb121c1ed7f8820471da71e056368f9d9d34b919bfb0",
+    "suites": [
+      {
+        "errors": "0",
+        "failures": "0",
+        "hostname": "b4f1ff20ec69",
+        "name": "pytest",
+        "skipped": "0",
+        "tests": "5",
+        "time": "3.636",
+        "timestamp": "2026-11-27T19:17:11.322858+00:00"
+      }
+    ]
+  },
+  "delivery-original-reader-retry": {
+    "failures": [],
+    "sha256": "ee0c6df813f320cea7aa6818dfcd02ddf9f09c74e004a9444314ab956fbeed85",
+    "suites": [
+      {
+        "errors": "0",
+        "failures": "0",
+        "hostname": "b4f1ff20ec69",
+        "name": "pytest",
+        "skipped": "0",
+        "tests": "1",
+        "time": "9.027",
+        "timestamp": "2026-11-27T19:33:51.598029+00:00"
+      }
+    ]
+  },
+  "delivery-original-transactions-equipped": {
+    "failures": [
+      {
+        "kind": "failure",
+        "message": "KeyError: 'ASTRID_RUNTIME_ADMISSION_CHECKOUT'",
+        "node": "tests.core.pack.test_transaction::test_rollback_restores_build_hook_metadata_with_the_pack_generation"
+      }
+    ],
+    "sha256": "75a9e746250d0bebfa40cc4d2f4bb7c65776ad191ad88cc61b4603a49055c782",
+    "suites": [
+      {
+        "errors": "0",
+        "failures": "1",
+        "hostname": "b4f1ff20ec69",
+        "name": "pytest",
+        "skipped": "0",
+        "tests": "203",
+        "time": "541.015",
+        "timestamp": "2026-11-27T19:26:44.966629+00:00"
+      }
+    ]
+  },
+  "delivery-owned-final": {
+    "failures": [],
+    "sha256": "3af6604aed138506ee609fd3add9e985fd4cae92226dc9d43a394799bb15d6c4",
+    "suites": [
+      {
+        "errors": "0",
+        "failures": "0",
+        "hostname": "b4f1ff20ec69",
+        "name": "pytest",
+        "skipped": "0",
+        "tests": "24",
+        "time": "54.934",
+        "timestamp": "2026-11-27T19:08:09.049293+00:00"
+      }
+    ]
+  },
+  "draft-original": {
+    "failures": [
+      {
+        "kind": "failure",
+        "message": "astrid.installer.r0_stop.R0StopError: R0 requires the copy-only upgrade boundary. Run the install line again.",
+        "node": "tests.test_installer_lifecycle::test_real_c1_post_stop_failure_retries_fence_before_old_activation"
+      },
+      {
+        "kind": "failure",
+        "message": "astrid.installer.r0_stop.R0StopError: R0 requires the copy-only upgrade boundary. Run the install line again.",
+        "node": "tests.test_installer_lifecycle::test_repair_skips_down_for_proven_dead_runtime_and_keeps_discovery"
+      },
+      {
+        "kind": "failure",
+        "message": "AssertionError: Regex pattern did not match.\n  Expected regex: 'different Runtime, release|identity'\n  Actual message: \"Astrid's browser door did not become ready before the verification deadline; expected endpoint: <door disabled>; observed endpoint: <unavailable endpoint>; discovery runtime_instance_id: <unavailable>; pre-update runtime_instance_id: <unavailable>; last Runtime status/startup error: <none observed>.\"",
+        "node": "tests.test_installer_app_update::test_local_verification_rejects_mismatched_managed_version_identity[release-health]"
+      },
+      {
+        "kind": "failure",
+        "message": "AssertionError: Regex pattern did not match.\n  Expected regex: 'different Runtime, release|identity'\n  Actual message: \"Astrid's browser door did not become ready before the verification deadline; expected endpoint: <door disabled>; observed endpoint: <unavailable endpoint>; discovery runtime_instance_id: <unavailable>; pre-update runtime_instance_id: <unavailable>; last Runtime status/startup error: <none observed>.\"",
+        "node": "tests.test_installer_app_update::test_local_verification_rejects_mismatched_managed_version_identity[release-discovery]"
+      },
+      {
+        "kind": "failure",
+        "message": "AssertionError: Regex pattern did not match.\n  Expected regex: 'different Runtime, release|identity'\n  Actual message: \"Astrid's browser door did not become ready before the verification deadline; expected endpoint: <door disabled>; observed endpoint: <unavailable endpoint>; discovery runtime_instance_id: <unavailable>; pre-update runtime_instance_id: <unavailable>; last Runtime status/startup error: <none observed>.\"",
+        "node": "tests.test_installer_app_update::test_local_verification_rejects_mismatched_managed_version_identity[managed_by-health]"
+      },
+      {
+        "kind": "failure",
+        "message": "AssertionError: Regex pattern did not match.\n  Expected regex: 'different Runtime, release|identity'\n  Actual message: \"Astrid's browser door did not become ready before the verification deadline; expected endpoint: <door disabled>; observed endpoint: <unavailable endpoint>; discovery runtime_instance_id: <unavailable>; pre-update runtime_instance_id: <unavailable>; last Runtime status/startup error: <none observed>.\"",
+        "node": "tests.test_installer_app_update::test_local_verification_rejects_mismatched_managed_version_identity[managed_by-discovery]"
+      },
+      {
+        "kind": "failure",
+        "message": "AssertionError: Regex pattern did not match.\n  Expected regex: 'different Runtime|identity|owner health'\n  Actual message: \"Astrid's browser door did not become ready before the verification deadline; expected endpoint: <door disabled>; observed endpoint: <unavailable endpoint>; discovery runtime_instance_id: <unavailable>; pre-update runtime_instance_id: <unavailable>; last Runtime status/startup error: <none observed>.\"",
+        "node": "tests.test_installer_app_update::test_local_verification_rejects_missing_raw_managed_identity[None]"
+      },
+      {
+        "kind": "failure",
+        "message": "AssertionError: Regex pattern did not match.\n  Expected regex: 'different Runtime|identity|owner health'\n  Actual message: \"Astrid's browser door did not become ready before the verification deadline; expected endpoint: <door disabled>; observed endpoint: <unavailable endpoint>; discovery runtime_instance_id: <unavailable>; pre-update runtime_instance_id: <unavailable>; last Runtime status/startup error: <none observed>.\"",
+        "node": "tests.test_installer_app_update::test_local_verification_rejects_missing_raw_managed_identity[owner_health1]"
+      },
+      {
+        "kind": "failure",
+        "message": "AssertionError: Regex pattern did not match.\n  Expected regex: 'different Runtime|identity|owner health'\n  Actual message: \"Astrid's browser door did not become ready before the verification deadline; expected endpoint: <door disabled>; observed endpoint: <unavailable endpoint>; discovery runtime_instance_id: <unavailable>; pre-update runtime_instance_id: <unavailable>; last Runtime status/startup error: <none observed>.\"",
+        "node": "tests.test_installer_app_update::test_local_verification_rejects_missing_raw_managed_identity[owner_health2]"
+      },
+      {
+        "kind": "failure",
+        "message": "AssertionError: Regex pattern did not match.\n  Expected regex: 'different Runtime|identity'\n  Actual message: \"Astrid's browser door did not become ready before the verification deadline; expected endpoint: <door disabled>; observed endpoint: <unavailable endpoint>; discovery runtime_instance_id: <unavailable>; pre-update runtime_instance_id: <unavailable>; last Runtime status/startup error: <none observed>.\"",
+        "node": "tests.test_installer_app_update::test_local_verification_rejects_mismatched_transaction_binding"
+      }
+    ],
+    "sha256": "8e7004c04d24459c8c7c73c5ed5af163cc459229da2e30eb3372c2f565ab179d",
+    "suites": [
+      {
+        "errors": "0",
+        "failures": "10",
+        "hostname": "b4f1ff20ec69",
+        "name": "pytest",
+        "skipped": "0",
+        "tests": "391",
+        "time": "436.996",
+        "timestamp": "2026-11-27T18:40:44.843163+00:00"
+      }
+    ]
+  },
+  "transaction_inventory": {
+    "collected": 203,
+    "exact_node_identity_match": true,
+    "executed": 203,
+    "failure": "Missing required environment key ASTRID_RUNTIME_ADMISSION_CHECKOUT",
+    "full_run_failed": 1,
+    "full_run_passed": 202,
+    "retry_actual_runtime": "686ca695469bda48cd40a70824c4ccef2a137284",
+    "skipped": 0,
+    "targeted_retry_passed": 1,
+    "unique": true
+  }
+}

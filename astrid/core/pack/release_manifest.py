@@ -1,7 +1,12 @@
 """Apply the frozen C6 release pack pins through the group transaction."""
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 import re
+import stat
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal
@@ -14,6 +19,159 @@ _SHA = re.compile(r"[0-9a-f]{40}\Z")
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 _ID = re.compile(r"[a-z][a-z0-9_]*\Z")
 _PIN_FIELDS = {"repo", "commit", "digest_rule", "digest"}
+
+
+def release_pins(manifest: Mapping[str, Any]) -> dict[str, dict[str, str]]:
+    """The compatibility snapshot of the manifest's validated default list."""
+    _source, revision, packs, digests = _default_pins(manifest)
+    return {pack_id: {"commit": revision, "digest": digests[pack_id]} for pack_id in packs}
+
+
+def installed_release_manifest(*, selected: bool = True) -> tuple[Path, dict[str, Any]] | None:
+    """Read the executing noneditable install's version-owned selection.
+
+    Source checkouts keep their existing explicit policy. Neither an environment
+    variable nor a pack PIN can select a managed release. The installer uses
+    ``selected=False`` only inside the genuine candidate interpreter, before
+    its already-validated version is selected by the shared update transaction.
+    """
+    prefix = Path(sys.prefix)
+    module = Path(__file__)
+    if (not prefix.is_absolute() or prefix.name != "py"
+            or prefix.parent.parent.name != "versions"
+            or not module.is_absolute() or not module.is_relative_to(prefix)):
+        return None
+    from astrid.installer.core import Version, current, read_json
+    from astrid.installer.tools import validate_manifest
+    from runtime_protocol import platform
+
+    folder = prefix.parent
+    root = folder.parent.parent
+    manifest_path = folder / "manifest.json"
+    record_path = folder / "version.json"
+    paths = [root, folder.parent, folder, prefix, manifest_path, record_path]
+    if selected:
+        paths.append(root / "current")
+    try:
+        for path in paths:
+            info = path.lstat()
+            if (stat.S_ISLNK(info.st_mode)
+                    or getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+                    or (hasattr(os, "getuid") and info.st_uid != os.getuid())
+                    or (os.name != "nt" and info.st_mode & 0o022)
+                    or (os.name == "nt" and not platform.is_owner_only(path))):
+                raise ValueError("Untrusted installed release path.")
+        if (prefix.resolve() != prefix or module.resolve() != module
+                or not manifest_path.is_file() or manifest_path.stat().st_nlink != 1
+                or not record_path.is_file() or record_path.stat().st_nlink != 1):
+            raise ValueError("Aliased installed release input.")
+        version = Version.load(read_json(record_path))
+        if (version.root != folder or version.python != Path(sys.executable)
+                or not version.profile.is_relative_to(folder)):
+            raise ValueError("Installed version and interpreter disagree.")
+        if selected and current(root) != version:
+            raise ValueError("The executing install is not selected.")
+        manifest = validate_manifest(load_release_manifest(manifest_path))
+        if manifest.get("release", 0) != version.release:
+            raise ValueError("Installed version and release manifest disagree.")
+        # This also checks the canonical same-source/same-commit group shape.
+        _default_pins(manifest)
+        if selected and current(root) != version:
+            raise ValueError("The selected install changed while reading its manifest.")
+        return folder, manifest
+    except (OSError, ValueError, TypeError, KeyError, RuntimeError) as exc:
+        raise PackInstallError("invalid_release_manifest", "The installed release manifest is unavailable or disagrees with the selected version.") from exc
+
+
+def installed_release_pins() -> dict[str, dict[str, str]] | None:
+    """Return managed authority, or None for a source/legacy explicit policy."""
+    installed = installed_release_manifest()
+    if installed is None or "packs" not in installed[1]:
+        return None
+    return release_pins(installed[1])
+
+
+def admitted_pack_pin(path: Path) -> dict[str, Any] | None:
+    """Read origin/PIN authority bound by the canonical collection admission.
+
+    Freely authored folders and legacy unbound user admissions keep ordinary
+    inventory semantics. Every release-default publication writes its binding
+    before selection; its missing/altered PIN cannot opt out. A claimed managed
+    default without this binding is refused by verify_release_default. Never
+    manufacture origin authority from an ID shared with the selected release.
+    """
+    from astrid.core.pack.identity import _validate_pin
+    from astrid.core.pack.transaction import (
+        group_read_lock, read_group, _retained_build_records, _verify_admitted_pins,
+    )
+
+    path = Path(path)
+    with group_read_lock(path.parent):
+        snapshot = read_group(path.parent)
+        if path.name not in snapshot.pins:
+            return None
+        admission = snapshot.admissions.get(path.name)
+        if (snapshot.paths.get(path.name) != path or path.name in snapshot.removals
+                or not isinstance(admission, dict) or admission.get("packId") != path.name
+                or type(admission.get("committedRevision")) is not int
+                or not 1 <= admission["committedRevision"] <= snapshot.revision
+                or not isinstance(admission.get("transactionId"), str)
+                or not re.fullmatch(r"[0-9a-f]{32}", admission["transactionId"])
+                or (admission["committedRevision"] == snapshot.revision
+                    and admission["transactionId"] != snapshot.transaction_id)):
+            raise PackInstallError("pin_mismatch", "Canonical pack admission has an invalid identity.")
+        _retained_build_records(path.parent, {path.name: admission}, snapshot.revision)
+        pin = _validate_pin(snapshot.pins[path.name])
+        if pin["origin"] in {"default", "user"} and pin["digest"] != admission.get("sourceDigest"):
+            raise PackInstallError("pin_mismatch", "Canonical admitted PIN disagrees with its source digest.")
+        _verify_admitted_pins(path.parent, {path.name: pin}, {path.name: admission})
+        return pin
+
+
+def verify_release_default(path: Path, expected: Mapping[str, str]) -> dict[str, Any]:
+    """Verify canonical admission and actual bytes, not just a requested PIN.
+
+    This is a read-only projection of the existing group record. The caller
+    selects the collection; the loader restricts it to the canonical home
+    collection. Builders and the group transaction remain the only producers.
+    """
+    from astrid.core.pack.identity import pack_digest, read_pin
+    from astrid.core.pack.install import _git_source
+    from astrid.core.pack.transaction import group_read_lock, read_group, _retained_build_records
+
+    path = Path(path)
+    with group_read_lock(path.parent):
+        snapshot = read_group(path.parent)
+        pin = read_pin(path / "PIN")
+        source = _git_source(expected["repo"])
+        admission = snapshot.admissions.get(path.name)
+        if (snapshot.paths.get(path.name) != path or path.name in snapshot.removals
+                or admitted_pack_pin(path) != pin
+                or pin["origin"] != "default" or pin["source"] != source + "#" + path.name
+                or pin["commit"] != expected["commit"] or pin["digest"] != expected["digest"]
+                or pack_digest(path) != expected["digest"]
+                or not isinstance(admission, dict)
+                or admission.get("packId") != path.name
+                or admission.get("sourceDigest") != expected["digest"]
+                or type(admission.get("committedRevision")) is not int
+                or not 1 <= admission["committedRevision"] <= snapshot.revision
+                or not isinstance(admission.get("transactionId"), str)
+                or not re.fullmatch(r"[0-9a-f]{32}", admission["transactionId"])
+                or (admission["committedRevision"] == snapshot.revision
+                    and admission["transactionId"] != snapshot.transaction_id)):
+            raise PackInstallError("pin_mismatch", "Default source or canonical admission differs from the selected release.")
+        _retained_build_records(path.parent, {path.name: admission}, snapshot.revision)
+        raw = (path / ".build/definitions.json").read_bytes()
+        record = json.loads(raw)
+        if (not isinstance(record, dict)
+                or hashlib.sha256(raw).hexdigest() != admission.get("definitionsDigest")
+                or record.get("version") != 1 or record.get("repository") != source
+                or record.get("revision") != expected["commit"] or record.get("subpath") != path.name
+                or not isinstance(record.get("tree"), str) or not _SHA.fullmatch(record["tree"])
+                or record.get("source") != {"kind": "git", "repository": source,
+                                             "revision": expected["commit"], "tree": record["tree"]}):
+            raise PackInstallError("pin_mismatch", "Default definitions provenance differs from its canonical source admission.")
+        return pin
 
 
 def load_release_manifest(value: str | Path | Mapping[str, Any]) -> dict[str, Any]:
@@ -70,7 +228,7 @@ def install_release_manifest(*, manifest: str | Path | Mapping[str, Any], packs_
     """
     if origin not in {"default", "user"}:
         raise PackInstallError("invalid_origin", "Release manifests support default or user provenance.")
-    if set(group_options) - {"selected", "import_contract", "builds", "toolchain", "consent", "boundary"}:
+    if set(group_options) - {"selected", "import_contract", "builds", "toolchain", "consent", "boundary", "on_prepared"}:
         raise PackInstallError("invalid_request", "Release manifests accept only frozen group validation/build options.")
     data = load_release_manifest(manifest)
     source, revision, packs, digests = _default_pins(data)
@@ -87,4 +245,5 @@ def install_release_manifest(*, manifest: str | Path | Mapping[str, Any], packs_
     )
 
 
-__all__ = ["load_release_manifest", "install_release_manifest"]
+__all__ = ["load_release_manifest", "install_release_manifest", "release_pins",
+           "installed_release_manifest", "installed_release_pins"]
