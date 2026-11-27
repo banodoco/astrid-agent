@@ -1,6 +1,7 @@
 """Shared read-only workflow asset diagnostics, before canonical approval."""
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -533,16 +534,40 @@ def _say(line: str) -> None:
     print(line, file=sys.stderr, flush=True)
 
 
-def _progress(name: str, total: int):
-    """A callback for fetch_verified: a line every 256 MiB, or every 15 seconds while bytes keep arriving."""
-    state = {'shown': 0, 'at': time.monotonic()}
+def resume_summary(plan: dict[str, Any]) -> str | None:
+    """Describe retained candidate bytes, not a completed checksum verification."""
+    retained = sum(row['bytes'] for row in plan.get('partial_bytes', []))
+    if retained:
+        return (f"Picking up where we left off: {_size(retained)} of {_size(plan['total_bytes'])} done "
+                "(retained partial bytes; verified before publication).")
+    return None
+
+
+def _progress(name: str, total: int, *, finished: int = 0, grand_total: int | None = None):
+    """Per-file detail and a single cumulative counter, including each completed file."""
+    state = {'shown': -1, 'at': time.monotonic()}
 
     def report(done: int) -> None:
         now = time.monotonic()
-        if done - state['shown'] >= _PROGRESS_STEP or (done > state['shown'] and now - state['at'] >= _PROGRESS_SECONDS):
+        if done > state['shown'] and (
+                done == total or done - max(0, state['shown']) >= _PROGRESS_STEP
+                or now - state['at'] >= _PROGRESS_SECONDS):
             state['shown'], state['at'] = done, now
             _say(f'  {name}: {_size(done)} of {_size(total)}')
+            if grand_total is not None:
+                _say(f'Downloading models: {_size(finished + done)} of {_size(grand_total)}')
     return report
+
+
+def _disk_full(exc: BaseException) -> bool:
+    """Retain ENOSPC even through the verified transfer's error wrapping."""
+    seen = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        if isinstance(exc, OSError) and exc.errno == errno.ENOSPC:
+            return True
+        exc = exc.__cause__ or exc.__context__
+    return False
 
 
 def _fetch_into_folder(item: dict[str, Any], http_client, *, progress=None) -> int:
@@ -593,6 +618,7 @@ def _fetch_into_folder(item: dict[str, Any], http_client, *, progress=None) -> i
 def _stopped(plan: dict[str, Any], done: list[dict[str, Any]], failed: dict[str, Any], exc: Exception) -> AttachedDownloadRefused:
     """Say truthfully what this run finished and what it did not, so the same digest can be confirmed again."""
     from astrid.core.contracts.errors import TLS_VERIFICATION_CODE, coerce_astrid_error
+    from .engine_contracts import IntegrityError
 
     code = exc.code if isinstance(exc, AttachedDownloadRefused) else 'download_failed'
     structured = coerce_astrid_error(exc)
@@ -602,9 +628,23 @@ def _stopped(plan: dict[str, Any], done: list[dict[str, Any]], failed: dict[str,
     finished = ', '.join(d['file'] for d in done) or 'none (no file was published)'
     rest = ', '.join(f['file'] for f in plan['files'][plan['files'].index(failed) + 1:]) or 'none'
     part = Path(failed['folder']) / f".{failed['file']}.astrid-resume"
-    kept = ' Its partial download is kept, so the next run resumes it.' if part.exists() else ''
-    return AttachedDownloadRefused(code, f"Stopped at {failed['file']}: {exc}.{kept} Finished in this run: {finished}. "
-        f"Not downloaded: {rest}. Run the same command again to fetch only what is missing.")
+    kept = (' Its partial download is kept; the next run resumes it if the server honors Range, '
+            'and checks the complete checksum.') if part.is_file() and not part.is_symlink() else ''
+    remedy = 'Run the same command again to fetch only what is missing.'
+    detail = str(exc)
+    if _disk_full(exc):
+        code = 'disk_full'
+        detail = f'Disk space ran out ({exc})'
+        remedy = 'Free disk space first. ' + remedy
+    elif isinstance(exc, IntegrityError):
+        code = 'checksum_mismatch'
+        detail = f"{failed['file']} did not match its locked size or checksum and was refused ({exc})"
+        if not part.exists():
+            detail += '; its partial copy was removed'
+    elif code == 'download_failed' and kept:
+        detail = f'Download interrupted ({exc})'
+    return AttachedDownloadRefused(code, f"Stopped at {failed['file']}: {detail}.{kept} Finished in this run: {finished}. "
+        f"Not downloaded: {rest}. {remedy}")
 
 
 def _verify_confirmed_present(item: dict[str, Any]) -> dict[str, Any]:
@@ -642,8 +682,86 @@ def _verify_confirmed_present(item: dict[str, Any]) -> dict[str, Any]:
     return {'file': item['file'], 'folder': item['folder'], 'bytes': size, 'sha256': actual_sha}
 
 
+def _compute_gate(client, plan, *, compute_request=None) -> None:
+    """Require a fresh selected compute witness for a managed setup route.
+
+    A legacy person-owned attachment is not a managed install. For a managed
+    route we never treat a saved executable, a responding URL, or a cached pass
+    as permission to start bulk transfer. The workflow owner must supply the
+    actual operator/dtype request; F owns native listener/engine binding and E
+    owns its numerical probe. Until those are available this gate is closed.
+    """
+    from . import gpu_environment, preflight, settings, targets
+
+    def stop(code, message):
+        raise AttachedDownloadRefused(code, message + ' Nothing was downloaded.')
+
+    def unknown(message):
+        stop('compute_unknown', message + ' Resolve the selected workflow CUDA device and required operations, '
+             'then recheck the same target with astrid generate targets --json.')
+
+    try:
+        record = targets.read_target()
+    except (OSError, ValueError, RuntimeError):
+        unknown('The saved target could not be verified; repair its selection first.')
+    matching = record is not None and record.endpoint == plan['target']
+    managed = (getattr(client.target, 'kind', None) == 'managed'
+               or (matching and (record.owner == 'astrid' or record.facts.get('installed_by') == 'astrid')))
+    if not managed and compute_request is None:
+        return
+    if not matching or not record.python or not record.root:
+        unknown('The selected target interpreter and root are not verified.')
+    if record.owner != 'human':
+        unknown('Native compute binding for this managed engine is not yet established.')
+    if not isinstance(compute_request, dict) or (compute_request.get('entry'), compute_request.get('mode')) != (
+            plan['entry'], plan['mode']):
+        unknown('No exact compute request is available for this selected workflow.')
+    device = compute_request.get('device')
+    backend = compute_request.get('backend')
+    operations = compute_request.get('required_operations')
+    request, reason, message = gpu_environment._compute_request(record.python, device, backend, operations)
+    if request is None:
+        unknown(message)
+    try:
+        placement = settings.placement_default()
+        if placement.get('kind') != 'attached' or placement.get('endpoint') != plan['target']:
+            unknown('The selected Runtime placement does not match the confirmed target.')
+        inspect = getattr(preflight, 'inspect_existing_selection', None)
+        observe = getattr(preflight, 'observe_compute_rung', None)
+        if not callable(inspect) or not callable(observe):
+            unknown('Selected compute observation is not available in this build.')
+        selection = targets.TargetSelection(record, 'global', True)
+        selection, ladder, _installation, _choices = inspect(selection)
+        if not selection.bound or selection.record != record:
+            unknown('The selected target changed during inspection.')
+        ladder = observe(ladder, selection, device=device, backend=backend,
+                         required_operations=operations)
+        first_stop = preflight.ladder_stop(ladder)
+        if targets.read_target() != record or settings.placement_default() != placement:
+            unknown('The selected target or placement changed during compute observation.')
+        rung = next(row for row in ladder['rungs'] if row['rung'] == 'computes')
+    except AttachedDownloadRefused:
+        raise
+    except (OSError, ValueError, RuntimeError, KeyError, TypeError, StopIteration):
+        unknown('The selected compute evidence could not be verified.')
+    evidence = rung.get('observation') or {}
+    if first_stop is not None:
+        if first_stop.get('rung') == 'computes' and rung.get('state') == 'failed':
+            stop('compute_failed', ' '.join(str(value) for value in (
+                rung.get('message') or evidence.get('message') or 'Required compute failed.',
+                evidence.get('works') or 'Repair the selected environment and recheck compute.') if value))
+        unknown(first_stop.get('message') or 'Required compute has not been established.')
+    if (ladder.get('through') != 'computes' or rung.get('state') != 'observed'
+            or evidence.get('schema') != gpu_environment.COMPUTE_SCHEMA or evidence.get('ok') is not True
+            or evidence.get('requested_interpreter') != request['interpreter']
+            or evidence.get('device') != device or evidence.get('backend') != backend
+            or evidence.get('required_operations') != request['required_operations']
+            or any(evidence.get('operations', {}).get(op) is not True for op in operations)):
+        unknown('No positive compute receipt matches the selected workflow and interpreter.')
+
+
 def apply_attached_model_download(client, entry_id: str, mode: str, *, plan_sha256, sources=None,
-                                  http_client=None) -> dict[str, Any]:
+                                  http_client=None, compute_request=None) -> dict[str, Any]:
     """Download exactly the plan whose digest was confirmed; re-checks everything before the first write."""
     if not isinstance(plan_sha256, str) or not re.fullmatch('[0-9a-f]{64}', plan_sha256):
         raise AttachedDownloadRefused('confirmation_required', 'Run without --apply to see the plan, then pass its '
@@ -667,18 +785,35 @@ def apply_attached_model_download(client, entry_id: str, mode: str, *, plan_sha2
         if os.path.lexists(os.path.join(f['folder'], f['file'])):
             raise AttachedDownloadRefused('file_exists', f"{f['file']} already exists in {f['folder']}; it is never "
                                           'overwritten. Nothing was written.')
+    _compute_gate(client, plan, compute_request=compute_request)
+    # Recheck after potentially slow compute and before any write-capable
+    # filesystem probe; digest and capacity are still the original authority.
+    checked = plan_attached_model_download(client, entry_id, mode, sources=sources)
+    if checked['plan_sha256'] != plan_sha256:
+        raise AttachedDownloadRefused('plan_changed', 'The plan changed during compute; review it again. Nothing was written.')
+    if not checked['space_ok']:
+        raise AttachedDownloadRefused('insufficient_space', 'Not enough free space after the compute check. Nothing was written.')
+    if checked['files'] != plan['files'] or checked['present'] != plan['present']:
+        raise AttachedDownloadRefused('plan_changed', 'The files changed during compute; review the plan again. Nothing was written.')
+    plan = checked
     links = {}
     for f in plan['files']:
         if f['folder'] not in links:
             links[f['folder']] = _hard_links_supported(Path(f['folder']))
         f['hard_links'] = links[f['folder']]
     done = []
+    finished = 0
+    if summary := resume_summary(plan):
+        _say(summary)
     for f in plan['files']:
         _say(f"Downloading {f['file']} ({_size(f['bytes'])}) -> {f['folder']}")
+        progress = _progress(f['file'], f['bytes'], finished=finished, grand_total=plan['total_bytes'])
         try:
-            resumed = _fetch_into_folder(f, http_client, progress=_progress(f['file'], f['bytes']))
+            resumed = _fetch_into_folder(f, http_client, progress=progress)
         except Exception as exc:  # noqa: BLE001 - every failure is reported with what finished before it
             raise _stopped(plan, done, f, exc) from exc
+        progress(f['bytes'])
+        finished += f['bytes']
         done.append({'file': f['file'], 'folder': f['folder'], 'bytes': f['bytes'], 'resumed_from_bytes': resumed})
         suffix = f', resumed from {_size(resumed)}' if resumed else ''
         _say(f"Downloaded {f['file']} ({_size(f['bytes'])}{suffix})")
