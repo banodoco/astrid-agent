@@ -13,7 +13,8 @@ from astrid.installer.backend import Backend
 from astrid.installer.core import Installer, RuntimeOperationError, Version, current, recover_transaction, switch, update_context, write_json
 from astrid.installer.service import LABEL, Service, command, render
 from astrid.installer.systemd_stop import (
-    MANAGER, SERVICE, UNIT, SystemdInvocationStop, SystemdStopError, _BusError,
+    MANAGER, MANAGER_INTERFACE, SERVICE, UNIT, SystemdInvocationStop, SystemdStopError, _BusError,
+    _ManagerBus,
     STOP_RELATIONSHIPS, STOP_ACTIONS, prepare_systemd_stop,
 )
 from tests.test_installer_busy_fence import Boundary, publish, realm_fixture, snapshot
@@ -23,45 +24,131 @@ class Bus:
     """Explicit service-manager protocol double, with no process authority."""
     def __init__(self, properties, identity):
         self.properties = properties
-        self.identity = identity
+        self.owner_identity = identity
+        self.identity = {"pid": 100, "uid": os.getuid(), "birth_id": "original-manager"}
         self.calls = []
         self.on_stop = None
-        self.job_present = False
+        self.on_reload = None
+        self.on_start = None
+        self.on_poll = None
+        self.deadline = None
+        self.events = []
+        self.closed = False
+        self.fault = None
+        self.extra_processes = {}
+        self.unloaded = False
+        self.sequence = 0
+
+    bounded = _ManagerBus.bounded
+    remaining = _ManagerBus.remaining
+
+    def _verify_peer(self):
+        self.remaining()
+        if self.closed or self.fault:
+            raise SystemdStopError(self.fault or "original manager disconnected")
+
+    def poll(self, *, wait=False):
+        self._verify_peer()
+        if self.on_poll is not None:
+            self.on_poll(wait)
+        self._verify_peer()
+
+    def mark(self):
+        self.poll()
+        return len(self.events)
+
+    def emit(self, member, *values):
+        self.events.append((member, MANAGER, MANAGER_INTERFACE, list(values)))
+
+    def settle(self, *, result="done"):
+        self.owner_identity.clear()
+        self.extra_processes.clear()
+        self.properties.update(MainPID=0, ControlPID=0, ActiveState="inactive", SubState="dead", Job=[0, "/"])
+        self.emit("JobRemoved", self.sequence, f"{MANAGER}/job/{self.sequence}", "astrid.service", result)
+
+    def process(self, pid, **_kwargs):
+        if self.owner_identity.get("pid") == pid:
+            return dict(self.owner_identity)
+        value = self.extra_processes.get(pid)
+        return dict(value) if value is not None else None
 
     def call(self, path, interface, method, *args, **_kwargs):
         self.calls.append((path, interface, method, args))
         if method == "GetUnit":
+            if self.unloaded:
+                raise _BusError("org.freedesktop.systemd1.NoSuchUnit", "unloaded")
+            return MANAGER + "/unit/astrid_2eservice"
+        if method == "LoadUnit":
+            assert args == ("astrid.service",)
+            self.unloaded = False
+            self.emit("UnitNew", "astrid.service", MANAGER + "/unit/astrid_2eservice")
             return MANAGER + "/unit/astrid_2eservice"
         if method == "GetUnitByInvocationID":
+            if self.unloaded:
+                raise _BusError("org.freedesktop.systemd1.NoUnitForInvocationID", "unloaded")
             label = args[0].hex()
             if label[0].isdigit():
                 label = f"_{ord(label[0]):02x}" + label[1:]
             return MANAGER + "/unit/" + label
+        if method == "GetProcesses":
+            assert interface == SERVICE
+            return [[self.properties["ControlGroup"], item["pid"], "fixture-process"]
+                    for item in [self.owner_identity, *self.extra_processes.values()] if item]
+        if method == "GetUnitFileState":
+            return self.properties["UnitFileState"]
+        if method in {"Stop", "StartUnit"}:
+            assert (interface, args) == ((UNIT, ("fail",)) if method == "Stop" else
+                                         (MANAGER_INTERFACE, ("astrid.service", "fail")))
+            self.sequence += 1
+            self.properties["Job"] = [self.sequence, f"{MANAGER}/job/{self.sequence}"]
+            self.emit("JobNew", self.sequence, f"{MANAGER}/job/{self.sequence}", "astrid.service")
+            action = self.on_stop if method == "Stop" else self.on_start
+            if action is not None:
+                action()
+            elif method == "Stop":
+                self.settle()
+            else:
+                raise AssertionError("No start fixture installed")
+            return f"{MANAGER}/job/{self.sequence}"
+        if method == "Reload":
+            self.emit("Reloading", True)
+            if self.on_reload is not None:
+                self.on_reload()
+            self.emit("Reloading", False)
+            return None
         raise AssertionError((path, interface, method, args))
 
     def close(self):
         self.closed = True
 
     def property(self, path, interface, name):
-        if "/job/" in path:
-            if self.job_present:
-                return "running"
-            raise _BusError("org.freedesktop.systemd1.NoSuchJob", "job settled")
+        self._verify_peer()
         return self.properties[name]
 
 
 def cold_bus(service, version, data):
     argv = command(version, data, windows=False, log=service.log)
-    return Bus({
+    bus = Bus({
         "Id": "astrid.service", "FragmentPath": str(service.path), "DropInPaths": [],
         "LoadState": "loaded", "InvocationID": [], "UnitFileState": "enabled",
         "MainPID": 0, "ExecStart": [[argv[0], argv, False]], "ExecStop": [], "ExecStopPost": [],
         "KillMode": "mixed", "KillSignal": 15, "FinalKillSignal": 9, "SendSIGKILL": True,
         "TimeoutStopFailureMode": "terminate", "TimeoutStopUSec": 90_000_000,
         "ActiveState": "inactive", "Job": [0, "/"], "Result": "success", "NeedDaemonReload": False,
+        "SubState": "dead", "ControlPID": 0, "Type": "simple", "PIDFile": "", "NotifyAccess": "none",
+        "ControlGroup": "", "Delegate": False, "Restart": "on-failure",
         "StopWhenUnneeded": False, "RefuseManualStop": False,
         **{key: [] for key in STOP_RELATIONSHIPS}, **{key: "none" for key in STOP_ACTIONS},
     }, {})
+    def reload_definition():
+        # Explicit loaded-policy double. The real registration emits this
+        # exact direct command; no systemctl transport is silently substituted.
+        selected = current(service.root)
+        action = command(selected, data, windows=False, log=service.log, env_file=service.env_file,
+                         expected_lock=service.activation_lock_path, home=service._launch_home())
+        bus.properties["ExecStart"] = [[action[0], action, False]]
+    bus.on_reload = reload_definition
+    return bus
 
 
 @pytest.fixture
@@ -89,31 +176,43 @@ def systemd(tmp_path, monkeypatch):
         "ExecStop": [], "ExecStopPost": [], "KillMode": "mixed", "KillSignal": 15,
         "FinalKillSignal": 9, "SendSIGKILL": True, "TimeoutStopFailureMode": "terminate",
         "TimeoutStopUSec": 90_000_000, "ActiveState": "active", "Job": [0, "/"], "Result": "success",
+        "SubState": "running", "ControlPID": 0, "Type": "simple", "PIDFile": "", "NotifyAccess": "none",
+        "ControlGroup": "/user.slice/user-1000.slice/user@1000.service/app.slice/astrid.service",
+        "Delegate": False, "Restart": "on-failure",
         "NeedDaemonReload": False, "StopWhenUnneeded": False, "RefuseManualStop": False,
         **{key: [] for key in STOP_RELATIONSHIPS}, **{key: "none" for key in STOP_ACTIONS},
     }
-    identity = {"pid": owner["pid"], "birth_id": owner["process_birth_id"], "uid": os.getuid()}
+    identity = {"pid": owner["pid"], "birth_id": owner["process_birth_id"], "uid": os.getuid(), "parent_pid": 100}
+    bus = Bus(properties, identity)
     monkeypatch.setattr("astrid.installer.systemd_stop.platform.process_identity",
-                        lambda _pid: dict(identity) if identity else None)
-    return service, version, data, owner, Bus(properties, identity)
+                        bus.process)
+    monkeypatch.setattr("astrid.installer.systemd_stop._present", bus.process)
+    domain = properties["ControlGroup"].rsplit("/app.slice/", 1)[0]
+    monkeypatch.setattr("astrid.installer.systemd_stop._process_cgroup", lambda pid:
+                        domain + "/init.scope" if pid == bus.identity["pid"] else
+                        domain + "/app.slice/astrid-update-fixture.service" if pid == os.getpid() else
+                        properties["ControlGroup"])
+    return service, version, data, owner, bus
 
 
 @pytest.mark.parametrize("first_byte", [0x11, 0xA1])
 @pytest.mark.parametrize("enabled", ["enabled", "disabled"])
-def test_exact_invocation_observation_is_not_atomic_stop_authority(systemd, first_byte, enabled, monkeypatch):
+def test_original_manager_stops_exact_invocation_and_observes_early_job_result(systemd, first_byte, enabled, monkeypatch):
     service, version, data, owner, bus = systemd
     bus.properties["InvocationID"][0] = first_byte
     bus.properties["UnitFileState"] = enabled
     before = service.path.read_bytes(), service.selection.read_bytes()
-    stop = SystemdInvocationStop(service, version, data, owner, bus)
-    with pytest.raises(SystemdStopError, match="cannot atomically fence"):
-        stop.stop(owner)
     monkeypatch.setattr("astrid.installer.systemd_stop._ManagerBus", lambda: bus)
-    with pytest.raises(SystemdStopError, match="cannot atomically fence"):
-        with prepare_systemd_stop(service, version, data, owner):
-            pytest.fail("live authority was yielded")
+    with prepare_systemd_stop(service, version, data, owner) as stop:
+        stop.stop(owner)
+        stop.assert_stopped()
+        assert not bus.closed and stop.completed
+        with pytest.raises(SystemdStopError, match="already spent"):
+            stop.stop(owner)
     assert bus.closed
-    assert not any(call[2] in {"Stop", "Kill", "StopUnit"} for call in bus.calls)
+    assert [(path, interface, args) for path, interface, method, args in bus.calls if method == "Stop"] == [
+        (stop.path, UNIT, ("fail",))]
+    assert not any(call[2] in {"Kill", "StopUnit"} for call in bus.calls)
     assert "unit/_31" in stop.path if first_byte == 0x11 else "unit/a1" in stop.path
     assert (service.path.read_bytes(), service.selection.read_bytes()) == before
     assert bus.properties["UnitFileState"] == enabled
@@ -151,7 +250,7 @@ def test_loaded_foreign_command_is_refused_even_with_matching_unit_filename(syst
 def test_changed_process_birth_has_no_action(systemd):
     service, version, data, owner, bus = systemd
     stop = SystemdInvocationStop(service, version, data, owner, bus)
-    bus.identity["birth_id"] = "reused"
+    bus.owner_identity["birth_id"] = "reused"
     with pytest.raises(SystemdStopError, match="incarnation"):
         stop.validate(owner)
     assert not any(call[2] == "Stop" for call in bus.calls)
@@ -169,14 +268,14 @@ def test_invocation_disappearing_during_observation_never_falls_back_to_label(sy
     with pytest.raises(_BusError, match="old invocation gone"):
         stop.validate(owner)
     assert not any(call[2] == "Stop" for call in bus.calls)
-    assert bus.identity["pid"] == owner["pid"]
+    assert bus.owner_identity["pid"] == owner["pid"]
 
 
 @pytest.mark.parametrize("state", ["inactive", "failed"])
 def test_cold_quiescent_failed_unit_is_consistent_at_admission_and_exit_check(systemd, state):
     service, version, data, owner, bus = systemd
-    bus.properties.update(MainPID=0, ActiveState=state, Result="timeout")
-    bus.identity.clear()
+    bus.properties.update(MainPID=0, ActiveState=state, SubState="dead" if state == "inactive" else "failed", Result="timeout")
+    bus.owner_identity.clear()
     stop = SystemdInvocationStop(service, version, data, None, bus)
     stop.validate(None)
     stop.assert_stopped()
@@ -185,8 +284,8 @@ def test_cold_quiescent_failed_unit_is_consistent_at_admission_and_exit_check(sy
 
 def test_null_invocation_is_only_accepted_for_verified_quiescence(systemd):
     service, version, data, owner, bus = systemd
-    bus.properties.update(InvocationID=[], MainPID=0, ActiveState="inactive")
-    bus.identity.clear()
+    bus.properties.update(InvocationID=[], MainPID=0, ActiveState="inactive", SubState="dead")
+    bus.owner_identity.clear()
     stop = SystemdInvocationStop(service, version, data, None, bus)
     stop.validate(None)
     stop.assert_stopped()
@@ -201,9 +300,9 @@ def test_candidate_loaded_without_recovery_context_is_refused(systemd):
                         python=service.root / "versions" / "candidate" / "python", release=16)
     write_json(candidate.root / "version.json", candidate.document())
     argv = command(candidate, data, windows=False, log=service.log)
-    bus.properties.update(MainPID=0, ActiveState="inactive", InvocationID=[],
+    bus.properties.update(MainPID=0, ActiveState="inactive", SubState="dead", InvocationID=[],
                           ExecStart=[[argv[0], argv, False]])
-    bus.identity.clear()
+    bus.owner_identity.clear()
     before = service.path.read_bytes(), service.selection.read_bytes()
     with pytest.raises(SystemdStopError, match="loaded systemd action"):
         SystemdInvocationStop(service, version, data, None, bus)
@@ -315,7 +414,8 @@ def test_cold_candidate_loaded_rollback_recovers_after_real_c1(cold_candidate, s
     backend, old, candidate, data, paths, realm, boundary, calls, bus, transaction = cold_candidate
     transaction.update(step=step, legacy_systemd_enabled=not enabled)
     write_json(backend.root / "update-transaction.json", transaction)
-    bus.properties.update(ActiveState=state, UnitFileState="enabled" if enabled else "disabled")
+    bus.properties.update(ActiveState=state, SubState="dead" if state == "inactive" else "failed",
+                          UnitFileState="enabled" if enabled else "disabled")
     unit_before = backend.service.path.read_bytes()
     def activate(version, _data, _realm):
         assert version == old and current(backend.root) == old
@@ -411,24 +511,23 @@ def test_cold_recovery_re_registers_old_with_actual_enablement(cold_candidate, m
     bus.properties["UnitFileState"] = "enabled" if enabled else "disabled"
     backend.service.choices = {"autostart": not enabled}
     backend.service.env_file = backend.root / "service-env.json"
-    commands = []
-    def manager(argv):
+    from astrid.installer.core import read_json
+    monkeypatch.setattr(backend.service, "run", lambda *_: pytest.fail("fresh systemctl connection"))
+    reload_definition = bus.on_reload
+    def reloaded():
         assert not paths.discovery_path.exists() and not paths.instance_lock_path.exists()
         assert read_json(backend.root / "update-transaction.json")["step"] == "rollback_selected"
-        commands.append(argv)
-        if argv[2] == "show":
-            return bus.properties["UnitFileState"] + "\n"
-        assert argv[2] == "daemon-reload"
-        return ""
-    from astrid.installer.core import read_json
-    monkeypatch.setattr(backend.service, "run", manager)
+        assert backend._systemd_update_session.bus is bus and not bus.closed
+        reload_definition()
+    bus.on_reload = reloaded
     monkeypatch.setattr(backend, "_prior_chat_settings", lambda *_: (None, {}))
     monkeypatch.setattr(backend, "persist_identity", lambda *_: None)
     installer = Installer(backend.root, data, backend, say=lambda *_: None)
     monkeypatch.setattr(installer, "_activate", lambda version, _realm: Backend.register(backend, version, data))
     installer._recover_update()
-    assert commands and any(argv[2] == "daemon-reload" for argv in commands)
-    assert not any(argv[2] in {"enable", "disable", "stop", "kill"} for argv in commands)
+    assert [call[2] for call in bus.calls].count("Reload") == 1
+    assert not any(call[2] in {"Stop", "StopUnit", "Kill", "EnableUnitFiles", "DisableUnitFiles"} for call in bus.calls)
+    assert bus.closed
     assert str(old.python) in backend.service.path.read_text()
     journal = read_json(backend.root / "update-transaction.json")
     assert journal["step"] == "rolled_back" and journal["legacy_systemd_enabled"] is enabled
@@ -646,6 +745,7 @@ def test_ordinary_lifecycle_stop_does_not_enter_upgrade_adapter(upgrade, monkeyp
 def test_only_already_retained_native_child_uses_existing_pr130_path(upgrade, valid):
     from types import SimpleNamespace
     backend, old, candidate, data, paths, realm, boundary, calls, supervisors, run = upgrade
+    backend.service.path.unlink()  # This existing PR130 path is genuinely detached.
     observed = []
     class NativeReference:
         def verify(self, expected):

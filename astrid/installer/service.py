@@ -896,7 +896,7 @@ class Service:
             raise ValueError("The scheduled task does not match the selected installation.")
         return None
 
-    def prepare_supervised_upgrade_stop(self, version: Version, data: Path, owner, *, recovery=None):
+    def prepare_supervised_upgrade_stop(self, version: Version, data: Path, owner, *, recovery=None, session=None):
         """Retain a real Linux manager and its exact loaded invocation.
 
         This is distinct from validate_stop_target's historical read-only
@@ -906,7 +906,7 @@ class Service:
             raise ValueError("The supervised legacy upgrade stop is Linux-only.")
         from .systemd_stop import prepare_systemd_stop
 
-        return prepare_systemd_stop(self, version, data, owner, recovery=recovery)
+        return prepare_systemd_stop(self, version, data, owner, recovery=recovery, session=session)
 
     def _known_launch_action(self, action, data: Path, *, windows: bool, script: str | None,
                              version: Version | None = None) -> bool:
@@ -1405,11 +1405,13 @@ class Service:
                 return Path(pinned)
         return self.home
 
-    def register(self, version: Version, data: Path, *, preserve_systemd_enablement: bool | None = None) -> None:
+    def register(self, version: Version, data: Path, *, preserve_systemd_enablement: bool | None = None,
+                 manager_session=None) -> None:
         def check_enablement():
             expected = "enabled" if preserve_systemd_enablement else "disabled"
-            observed = self.run(["systemctl", "--user", "show", "astrid.service",
-                                 "--property=UnitFileState", "--value"]).strip()
+            observed = (manager_session.enablement() if manager_session is not None else
+                        self.run(["systemctl", "--user", "show", "astrid.service",
+                                  "--property=UnitFileState", "--value"]).strip())
             if observed != expected:
                 raise ValueError("The admitted systemd enablement changed during update registration.")
 
@@ -1440,7 +1442,10 @@ class Service:
             if self.system == "darwin":
                 self.run(["launchctl", "bootstrap", f"gui/{platform.current_user()}", self.path])
             elif self.system == "linux":
-                self.run(["systemctl", "--user", "daemon-reload"])
+                if manager_session is not None:
+                    manager_session.reload_definition(version, data)
+                else:
+                    self.run(["systemctl", "--user", "daemon-reload"])
                 if preserve:
                     check_enablement()
                 else:
@@ -1474,7 +1479,9 @@ class Service:
                 or (self.system == "linux" and self.path.exists() and not self.systemd())
                 or record.get("service_settings", {}) != self.settings())
 
-    def start(self) -> bool:
+    def start(self, *, manager_session=None, version=None, data=None, transaction=None) -> bool:
+        if manager_session is not None:
+            return manager_session.start(version, data, transaction)
         if not self.autostart_enabled():
             return False
         if self.handed_off:

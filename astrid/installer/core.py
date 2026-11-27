@@ -293,13 +293,23 @@ def switch(root: Path, version: Version) -> None:
 
 @contextmanager
 def update_context(backend, transaction: dict, *, recovering: bool = False):
-    """Expose the existing transaction solely for restore selection validation."""
+    """Keep transaction context and any admitted manager alive through C2."""
     previous = getattr(backend, "_update_transaction", None)
+    retained = getattr(backend, "_update_authority", None)
     backend._update_transaction = (transaction, recovering)
-    try:
-        yield
-    finally:
-        backend._update_transaction = previous
+    with ExitStack() as lifetime:
+        backend._update_authority = retained if retained is not None else lifetime
+        try:
+            yield
+        finally:
+            backend._update_transaction = previous
+            backend._update_authority = retained
+
+
+def _check_update_manager(backend):
+    check = getattr(backend, "check_update_manager", None)
+    if callable(check):
+        check()
 
 
 def rollback_transaction(root: Path, data: Path, backend, transaction: dict, *,
@@ -321,8 +331,10 @@ def rollback_transaction(root: Path, data: Path, backend, transaction: dict, *,
         else:
             stop_version = candidate or old
         stop(stop_version, data)
+        _check_update_manager(backend)
         save("recovering")
         if backup is not None and restore_workspace and kind == "migration":
+            _check_update_manager(backend)
             backend.restore(old, data, realm, backup)
         # A same-schema candidate can have installed the history guard layer
         # even when no workspace backup was taken. Replay after restore as well:
@@ -352,10 +364,13 @@ def rollback_transaction(root: Path, data: Path, backend, transaction: dict, *,
             restore_pre_restamp_boot_manifest(
                 Path(data) / "runtime", remove_if_missing=not (backup is not None and restore_workspace and kind == "migration"),
             )
+        _check_update_manager(backend)
         switch_old(old, candidate)
         save("rollback_selected")
         try:
+            _check_update_manager(backend)
             activate_old(old, data, realm)
+            _check_update_manager(backend)
         except Exception as exc:   # noqa: BLE001 - add the recovery remedy without losing the cause
             if warning is None or is_lifecycle_refusal(exc):
                 raise
@@ -390,14 +405,19 @@ def recover_transaction(root: Path, data: Path, backend, *, stop, switch_old,
         installer = Installer(root, data, backend)
 
         def persist_default(step, **details):
-            installer._save_update(transaction, step, **details)
+            return installer._save_update(transaction, step, **details)
         persist_callback = persist_default
 
     def write_step(step, **details):
         if type(transaction.get("legacy_systemd_enabled")) is bool:
             details.setdefault("legacy_systemd_enabled", transaction["legacy_systemd_enabled"])
         transaction.update(step=step, **details)
-        persist_callback(step, **details)
+        persisted = persist_callback(step, **details)
+        if isinstance(persisted, dict):
+            # The existing writer adds its activation-lock binding. Carry its
+            # actual output into the retained C2 context, not a fresh disk read
+            # that could silently adopt a concurrently changed journal.
+            transaction.update(persisted)
 
     # New journals publish staged before any stop or workspace backup. The old
     # v1 migration writer published staged only after stop and backup, so it
@@ -422,7 +442,9 @@ def recover_transaction(root: Path, data: Path, backend, *, stop, switch_old,
     publish = getattr(backend, "publish_launch_admission", None)
     selected = current(root) or Version.load(transaction["old"])
     legacy_check = getattr(backend, "_legacy_linux_update", None)
-    defer_publication = bool(transaction.get("deferred_update")) or callable(legacy_check) and legacy_check(selected)
+    defer_publication = bool(transaction.get("deferred_update")) or callable(legacy_check) and (
+        legacy_check(selected) or legacy_check(Version.load(transaction["old"]))
+        and transaction.get("transaction_kind") in {None, "migration"})
 
     def publish_recovery_launcher():
         install_runtime(root)
@@ -515,7 +537,7 @@ class Installer:
         except Exception:  # noqa: BLE001 - skill setup remains best effort
             self.say("Couldn't add Astrid's skill to your agents; see the log.")
 
-    def _save_update(self, transaction: dict, step: str, **details) -> None:
+    def _save_update(self, transaction: dict, step: str, **details) -> dict:
         if step in {"switched", "rollback_selected"}:
             import sys
 
@@ -551,6 +573,7 @@ class Installer:
             job["transaction_id"] = transaction["operation_id"]
             marker["update_job"] = job
             write_json(marker_path, marker)
+        return transaction
 
     def _recover_update(self) -> None:
         """Replay rollback before inspecting mutable support or choosing an operation."""
@@ -695,21 +718,27 @@ class Installer:
 
             backup_image = None
             try:
+                _check_update_manager(self.backend)
                 if legacy_stop is not None:
                     install_runtime(self.root)
                     if publish is not None:
                         publish(old, self.data)
                 self._save_update(transaction, "stopped")
                 if backup is not None:
+                    _check_update_manager(self.backend)
                     backup_image = backup(old, self.data, realm)
                     transaction["backup"] = backup_image
                     self._save_update(transaction, "backed_up", backup=backup_image)
                 if migrate is not None:
+                    _check_update_manager(self.backend)
                     migrate(candidate, self.data, realm)
                     self._save_update(transaction, "migrated")
+                _check_update_manager(self.backend)
                 switch_candidate(candidate)
                 self._save_update(transaction, "switched")
+                _check_update_manager(self.backend)
                 activate(candidate, self.data, realm)
+                _check_update_manager(self.backend)
                 install_launcher(self.root)
                 self._save_update(transaction, "verified")
                 self._last_update_backup = backup_image
