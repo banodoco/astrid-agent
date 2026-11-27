@@ -218,6 +218,25 @@ there with its kind, modes and default slots; `astrid generate describe` then sh
 it. Keep one contribution minimal: one workflow file, one entry, and a dry run that
 passes.
 
+## Exact workflow requirements preview
+
+On a release containing the reviewed canonical requirements producer, use
+`astrid generate requirements FILE|ENTRY --placement PLACEMENT --dry-run --json`
+to inspect the workflow and the selected target, not to run or save the workflow.
+Pass repeated `--add URL[@REF]` and `--add-model DEST=URL#sha256` only to identify
+sources. Show the returned plan, digest, target, unknown size/capacity and the
+named actor for each next step; do not turn unknown into zero or assume code
+approval. Show any exact P56 warning to the person. Preview itself grants no
+authority and saves no approvals. Declining or stopping must leave the entry
+and target unchanged. Do not advertise an apply command before it exists and
+has passed the approved exact-plan contract. Never substitute align or
+fetch-models apply for this plan.
+
+The pre-WS2 pin does not provide this producer. If the command reports
+`missing_dependency` or `requirements_contract_pending`, report that it is
+blocked; do not manufacture a plan or instruct the user to install arbitrary
+code to satisfy it.
+
 ## Workflow setup: missing packs or models
 
 Read the readiness result before running a workflow. Keep its issues and target
