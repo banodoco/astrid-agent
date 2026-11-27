@@ -421,7 +421,9 @@ def _observe_desktop_rungs(installation, url, probe):
     ladder = with_rung(ladder, "identified", "observed", observation={
         "tied_to_install": True, "by": "data_dir",
     })
-    return _compatible_rung(ladder, url, probe, installation["version"])
+    # B exposes the Desktop application/registration version, not the
+    # ComfyUI responder version. Do not equate those separate identities.
+    return _compatible_rung(ladder, url, probe, None)
 
 
 def observe_target_rungs(record, *, get_json=None, installation=None):
@@ -528,10 +530,8 @@ def _empty_discovery(scan):
             if _platform() == "win32" and not os.environ.get("APPDATA"):
                 return default, "discovery_incomplete"
             return default, "no_install_found"
-        if _failure_kind(exc) == "access_denied":
-            return default, "access_denied"
-        if _failure_kind(exc) == "timeout":
-            return default, "timeout"
+        # This was the optional Pinokio API, not the selected Comfy endpoint.
+        # Do not attribute its timeout or denial to the default Comfy address.
     return default, "discovery_incomplete"
 
 
