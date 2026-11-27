@@ -62,9 +62,10 @@ def _permission_denied(exc):
     return False
 
 
-def _windows_registry():  # pragma: no cover - exercised on native Windows
+def _windows_registry():
+    """Enumerate HKCU uninstall entries using only the native read API."""
     if sys.platform != "win32":
-        return None
+        return []
     import winreg
 
     def value(key, name):
@@ -75,30 +76,43 @@ def _windows_registry():  # pragma: no cover - exercised on native Windows
 
     try:
         uninstall = winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Uninstall"
+            winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Uninstall",
+            0, winreg.KEY_READ,
         )
     except FileNotFoundError:
-        return None
+        return []
+    except PermissionError:
+        return [{"_denied": True}]
+
+    entries = []
     with uninstall:
         index = 0
         while True:
             try:
                 name = winreg.EnumKey(uninstall, index)
+            except PermissionError:
+                entries.append({"_denied": True})
+                break
             except OSError as exc:
                 if getattr(exc, "winerror", None) == 259:  # ERROR_NO_MORE_ITEMS
-                    return None
+                    break
                 raise
             index += 1
             try:
-                key = winreg.OpenKey(uninstall, name)
+                with winreg.OpenKey(uninstall, name, 0, winreg.KEY_READ) as key:
+                    if value(key, "DisplayName") == "ComfyUI":
+                        entries.append({
+                            field: value(key, field)
+                            for field in ("DisplayVersion", "InstallLocation", "DisplayIcon")
+                        })
             except FileNotFoundError:
+                # An uninstall entry may disappear during enumeration.
                 continue
-            with key:
-                if value(key, "DisplayName") == "ComfyUI":
-                    return {
-                        field: value(key, field)
-                        for field in ("DisplayVersion", "InstallLocation", "DisplayIcon")
-                    }
+            except PermissionError:
+                # Preserve the observed entries and report incomplete access,
+                # rather than turning a partial enumeration into absence.
+                entries.append({"_denied": True})
+    return entries
 
 
 def read_registrations(environ=None, *, registry=None, read_text=None):
@@ -107,56 +121,70 @@ def read_registrations(environ=None, *, registry=None, read_text=None):
     if read_text is None:
         read_text = lambda path: Path(path).read_text(encoding="utf-8")
 
-    denied = False
     try:
-        entry = registry()
+        entries = registry()
     except PermissionError:
-        entry = None
-        denied = True
-    has_registry = entry is not None
-    entry = entry or {}
+        entries = [{"_denied": True}]
+    # Retain the original single-entry injection seam alongside enumeration.
+    if isinstance(entries, dict):
+        entries = [entries]
+    entries = entries or []
 
     config = None
+    config_seen = False
+    config_denied = False
     appdata = _string(environ.get("APPDATA"))
     if appdata:
         try:
-            parsed = json.loads(read_text(_join(appdata, "ComfyUI", "config.json")))
+            raw = read_text(_join(appdata, "ComfyUI", "config.json"))
         except PermissionError:
-            denied = True
-        except (FileNotFoundError, NotADirectoryError, ValueError):
+            config_denied = True
+        except (FileNotFoundError, NotADirectoryError):
             pass
+        except ValueError:
+            # A present but undecodable config is not complete absence.
+            config_seen = True
         else:
-            if isinstance(parsed, dict):
-                config = parsed
+            config_seen = True
+            try:
+                parsed = json.loads(raw)
+            except ValueError:
+                pass
+            else:
+                if isinstance(parsed, dict):
+                    config = parsed
 
-    if not has_registry and config is None and not denied:
+    if not entries and not config_seen and not config_denied:
         return []
 
-    icon = _string(entry.get("DisplayIcon"))
-    executable = None
-    if icon:
-        executable = _string(re.sub(r",\s*0$", "", icon.strip()).strip().strip('"'))
-    install_location = _string(entry.get("InstallLocation"))
-    localappdata = _string(environ.get("LOCALAPPDATA"))
-    if executable is None:
-        if install_location:
-            executable = _join(install_location, "ComfyUI.exe")
-        elif localappdata:
-            executable = _join(localappdata, "Programs", "ComfyUI", "ComfyUI.exe")
+    registrations = []
+    for entry in entries or [{}]:
+        icon = _string(entry.get("DisplayIcon"))
+        executable = None
+        if icon:
+            executable = _string(re.sub(r",\s*0$", "", icon.strip()).strip().strip('"'))
+        install_location = _string(entry.get("InstallLocation"))
+        localappdata = _string(environ.get("LOCALAPPDATA"))
+        if executable is None:
+            if install_location:
+                executable = _join(install_location, "ComfyUI.exe")
+            elif localappdata:
+                executable = _join(localappdata, "Programs", "ComfyUI", "ComfyUI.exe")
 
-    registration = {
-        "source": "registry+config" if has_registry and config is not None else
-                  "registry" if has_registry else "config",
-        "version": _string(entry.get("DisplayVersion")),
-        "executable": executable,
-        "data_dir": _string((config or {}).get("basePath")),
-        "server_port": 8000,
-    }
-    # An inaccessible registration/config is not evidence of absent files.
-    # This internal flag is never part of the public installation schema.
-    if denied:
-        registration["_denied"] = True
-    return [registration]
+        registration = {
+            "source": "registry+config" if entries and config_seen else
+                      "registry" if entries else "config",
+            "version": _string(entry.get("DisplayVersion")),
+            "executable": executable,
+            "data_dir": _string((config or {}).get("basePath")),
+            "server_port": 8000,
+        }
+        # An inaccessible source is not evidence of absent files.
+        # This internal flag is never part of the public installation schema.
+        if entry.get("_denied") or config_denied:
+            registration["_denied"] = True
+        registrations.append(registration)
+    return registrations
 
 
 def _folder_base(folders):
@@ -232,6 +260,10 @@ def classify(registration, *, files, responders):
 
     if registration.get("_denied"):
         return observation("denied")
+    # The public files booleans mean positively observed presence. An unknown
+    # path is distinguished by recorded.<field> == None, not by stale.
+    if not _string(registration.get("executable")) or not _string(data_dir):
+        return observation("ambiguous")
     if not files["executable"] or not files["data_dir"]:
         return observation("stale")
 
@@ -291,9 +323,12 @@ def observe_installations(
             _path_key(registration.get("data_dir")),
             bool(registration.get("_denied")),
         )
-        if key in seen:
-            continue
-        seen.add(key)
+        # Deduplicate only when both paths identify the same registration.
+        # Two incomplete entries are not proven duplicates.
+        if key[0] is not None and key[1] is not None:
+            if key in seen:
+                continue
+            seen.add(key)
         files = {}
         for field in ("executable", "data_dir"):
             path = registration.get(field)
