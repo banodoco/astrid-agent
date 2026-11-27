@@ -75,6 +75,7 @@ class _LegacyStopAdmission:
         self.supervisor = supervisor
         self.record = backend.service.recorded()
         self.on_admitted = None
+        self.on_validate = None
         self.admitted = False
         self.consumed = False
 
@@ -86,6 +87,9 @@ class _LegacyStopAdmission:
                 or current(self.backend.root) != self.version):
             raise RuntimeOperationError("The selected installation changed before update stop.",
                                         details={"safe": False})
+        if self.on_validate is not None:
+            self.on_validate(inspection)
+        self.backend._validate_legacy_foreground(inspection)
         if self.supervisor is not None:
             self.supervisor.validate(inspection.owner)
         elif inspection.owner is not None:
@@ -1205,6 +1209,7 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         if boundary is None:
             boundary = self._stop_boundary = LocalRuntimeBoundary()
         inspection = inspect_upgrade_stop(RuntimePaths.current(data_root=data), boundary)
+        self._validate_legacy_foreground(inspection)
         if realm is not None and (inspection.realm_id != realm["realm_id"]
                                   or str(inspection.realm_root) != realm["realm_root"]):
             raise RuntimeOperationError("The update workspace changed before stop admission.",
@@ -1234,9 +1239,35 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             finally:
                 self._legacy_stop_admission = previous
 
+    def _validate_legacy_foreground(self, inspection):
+        """A saved foreground claim can veto, never authorize, an update."""
+        foreground = self.service.recorded().get("foreground")
+        if foreground is None:
+            return
+        if (not isinstance(foreground, dict) or type(foreground.get("pid")) is not int
+                or foreground["pid"] <= 0 or not isinstance(foreground.get("birth_id"), str)
+                or not foreground["birth_id"]):
+            raise RuntimeOperationError("The retained foreground identity is incomplete.", details={"safe": False})
+        owner = inspection.owner
+        if owner is not None:
+            if (foreground["pid"] != owner["pid"]
+                    or platform.process_birth_matches(foreground["birth_id"], owner["process_birth_id"]) is not True):
+                raise RuntimeOperationError("The foreground claim differs from the authenticated Runtime owner.",
+                                            details={"safe": False})
+        else:
+            boundary = self._stop_boundary
+            try:
+                if boundary.is_pid_alive(foreground["pid"]) or boundary.process_birth_identity(foreground["pid"]) is not None:
+                    raise ValueError("retained PID is present or reused")
+            except Exception as exc:
+                raise RuntimeOperationError("The retained foreground process is present, reused or unobservable; update refused.",
+                                            details={"safe": False}) from exc
+
     @contextmanager
     def _legacy_update_manager(self, version, data, owner):
         """Read-only manager admission, also used with existing RestoreSelection."""
+        from .choices import resolve_choices
+
         with ExitStack() as lifetime:
             record = self.service.recorded()
             supervisor = None
@@ -1249,9 +1280,16 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                 raise RuntimeOperationError("The legacy systemd registration changed or is ambiguous; update refused.",
                                             details={"safe": False})
             if registration:
+                update = getattr(self, "_update_transaction", None)
+                recovery = ({"recovery": update} if owner is None and update is not None
+                            and update[1] is True and update[0].get("step") in {"recovering", "rollback_selected"}
+                            and isinstance(update[0].get("candidate"), dict)
+                            and update[0].get("transaction_kind") in {None, "migration"}
+                            else {})
                 supervisor = lifetime.enter_context(
-                    self.service.prepare_supervised_upgrade_stop(version, data, owner))
-            elif not isinstance(record.get("foreground"), dict) and self.service.autostart_enabled():
+                    self.service.prepare_supervised_upgrade_stop(version, data, owner, **recovery))
+            elif not isinstance(record.get("foreground"), dict) and resolve_choices(
+                    saved=record.get("choices"), existing_install=True)["autostart"]:
                 raise RuntimeOperationError("The enabled legacy service has no verifiable registration; update refused.",
                                             details={"safe": False})
             elif owner is not None:
@@ -1422,6 +1460,10 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                           restore_selection=restore_selection, **extra)
             if admission is not None:
                 admission.consumed = True
+                if update is not None and admission.systemd_enabled is not None:
+                    # Refresh actual enablement only after fresh cold C1. A
+                    # stale saved choice/journal must not change the service.
+                    update[0]["legacy_systemd_enabled"] = admission.systemd_enabled
             if legacy_restore and restore_manager is not None and update is not None:
                 # The existing recovery writer persists this preference after
                 # its absence fence; it grants no stop authority.

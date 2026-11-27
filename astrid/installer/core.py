@@ -381,6 +381,8 @@ def recover_transaction(root: Path, data: Path, backend, *, stop, switch_old,
             or not re.fullmatch(r"[0-9a-f]{32}", transaction.get("operation_id", ""))
             or absolute(transaction["data_root"]) != absolute(data)):
         raise ValueError("The interrupted update identity does not match this installation.")
+    if transaction.get("step") == "deferred":
+        raise ValueError("The deferred update must continue through its normal launch entry, not rollback.")
     if transaction.get("transaction_kind") not in {None, "migration", "app"}:
         raise ValueError("The interrupted update transaction kind is invalid.")
     persist_callback = save
@@ -392,6 +394,8 @@ def recover_transaction(root: Path, data: Path, backend, *, stop, switch_old,
         persist_callback = persist_default
 
     def write_step(step, **details):
+        if type(transaction.get("legacy_systemd_enabled")) is bool:
+            details.setdefault("legacy_systemd_enabled", transaction["legacy_systemd_enabled"])
         transaction.update(step=step, **details)
         persist_callback(step, **details)
 
@@ -401,6 +405,11 @@ def recover_transaction(root: Path, data: Path, backend, *, stop, switch_old,
     if (transaction.get("step") == "staged"
             and transaction.get("transaction_kind") in {"migration", "app"}
             and transaction.get("backup") is None):
+        if transaction.get("deferred_update"):
+            from .deferred import close_staged
+
+            close_staged(backend, transaction, lambda: write_step("complete", outcome="recovered_before_stop"))
+            return
         write_step("complete", outcome="recovered_before_stop")
         return
     realm = transaction["realm"]
@@ -413,7 +422,7 @@ def recover_transaction(root: Path, data: Path, backend, *, stop, switch_old,
     publish = getattr(backend, "publish_launch_admission", None)
     selected = current(root) or Version.load(transaction["old"])
     legacy_check = getattr(backend, "_legacy_linux_update", None)
-    defer_publication = callable(legacy_check) and legacy_check(selected)
+    defer_publication = bool(transaction.get("deferred_update")) or callable(legacy_check) and legacy_check(selected)
 
     def publish_recovery_launcher():
         install_runtime(root)
@@ -579,7 +588,7 @@ class Installer:
                                  switch_candidate, switch_old, activate, activate_old,
                                  backup=None, migrate=None, restore_workspace: bool = True,
                                  kind: str = "migration",
-                                 transaction_context: dict | None = None) -> Version:
+                                 transaction_context: dict | None = None, resume=None) -> Version:
         """Run the one durable stop/switch/ready/rollback policy for updates.
 
         ``prepare`` stages and validates while the old owner is still running.
@@ -601,6 +610,15 @@ class Installer:
                 "old": old.document(), "realm": realm, "backup": None,
                 "candidate": candidate.document(),
             }
+            if resume is not None:
+                import copy
+
+                if (legacy_stop is None or legacy_stop.owner is not None or candidate != resume.candidate
+                        or old != resume.old or realm != resume.transaction["realm"]):
+                    raise ValueError("The deferred continuation no longer matches its quiescent transaction.")
+                resume.validate(legacy_stop.inspection)
+                legacy_stop.on_validate = resume.validate
+                transaction = copy.deepcopy(resume.transaction)
             if legacy_stop is not None and legacy_stop.systemd_enabled is not None:
                 # Configuration preference only; never serialized stop authority.
                 transaction["legacy_systemd_enabled"] = legacy_stop.systemd_enabled
@@ -736,8 +754,13 @@ class Installer:
             return self._run_locked(mode, manifest, delete_data=delete_data, bundle=bundle)
 
     def _run_locked(self, mode: str, manifest: dict, *, delete_data: bool = False,
-                    bundle: Path | None = None) -> None:
-        if mode not in {"doctor", "uninstall"}:
+                    bundle: Path | None = None, resume=None) -> None:
+        pending = pending_transaction(self.root)
+        if resume is None and mode in {"install", "update"} and pending and pending.get("step") == "deferred":
+            from .deferred import resume_locked
+
+            return resume_locked(self.backend, pending)
+        if resume is None and mode not in {"doctor", "uninstall"}:
             self._recover_update()
         old = current(self.root)
         if old is not None and not old.python.is_file():
@@ -846,6 +869,13 @@ class Installer:
         if not old and has_workspace and not reinstall:
             raise ValueError("An existing workspace has no usable source profile; repair its profile before installing.")
         if old:
+            if resume is None:
+                legacy_check = getattr(self.backend, "_legacy_linux_update", None)
+                if callable(legacy_check) and legacy_check(old):
+                    from .deferred import prepare as defer_update
+
+                    if defer_update(self, old, manifest):
+                        return
             new = release_name(install_release(manifest))
             same_schema = False
             prepared_candidate: Version | None = None
@@ -855,7 +885,7 @@ class Installer:
                 if prepared_candidate is not None:
                     return prepared_candidate
                 with self._phase(f"Downloading {new}"):
-                    candidate = self.backend.stage(manifest, self.root, self.data)
+                    candidate = resume.candidate if resume is not None else self.backend.stage(manifest, self.root, self.data)
                 with self._phase("Checking it"):
                     self.backend.validate_candidate(candidate, self.data, realm)
                     same_schema = schema_unchanged(self.backend, old, candidate, realm)
@@ -922,11 +952,13 @@ class Installer:
                     previous, selected_realm["realm_id"]),
                 backup=None if same_schema else back_up,
                 migrate=None if same_schema else migrate, kind="migration",
+                resume=resume,
             )
             backup_image = getattr(self, "_last_update_backup", None)
             if backup_image:
                 self.say(f"A backup of your workspace is kept at {backup_image['root']}.")
-            self._ready()
+            if resume is None:
+                self._ready()
             return
 
         candidate_version: Version | None = None

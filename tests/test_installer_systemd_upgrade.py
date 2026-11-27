@@ -50,6 +50,20 @@ class Bus:
         return self.properties[name]
 
 
+def cold_bus(service, version, data):
+    argv = command(version, data, windows=False, log=service.log)
+    return Bus({
+        "Id": "astrid.service", "FragmentPath": str(service.path), "DropInPaths": [],
+        "LoadState": "loaded", "InvocationID": [], "UnitFileState": "enabled",
+        "MainPID": 0, "ExecStart": [[argv[0], argv, False]], "ExecStop": [], "ExecStopPost": [],
+        "KillMode": "mixed", "KillSignal": 15, "FinalKillSignal": 9, "SendSIGKILL": True,
+        "TimeoutStopFailureMode": "terminate", "TimeoutStopUSec": 90_000_000,
+        "ActiveState": "inactive", "Job": [0, "/"], "Result": "success", "NeedDaemonReload": False,
+        "StopWhenUnneeded": False, "RefuseManualStop": False,
+        **{key: [] for key in STOP_RELATIONSHIPS}, **{key: "none" for key in STOP_ACTIONS},
+    }, {})
+
+
 @pytest.fixture
 def systemd(tmp_path, monkeypatch):
     root, data = tmp_path / "program", tmp_path / "data"
@@ -181,7 +195,7 @@ def test_null_invocation_is_only_accepted_for_verified_quiescence(systemd):
         SystemdInvocationStop(service, version, data, owner, bus)
 
 
-def test_rollback_selected_with_candidate_unit_remains_explicitly_unsupported(systemd):
+def test_candidate_loaded_without_recovery_context_is_refused(systemd):
     service, version, data, owner, bus = systemd
     candidate = replace(version, root=service.root / "versions" / "candidate",
                         python=service.root / "versions" / "candidate" / "python", release=16)
@@ -191,8 +205,6 @@ def test_rollback_selected_with_candidate_unit_remains_explicitly_unsupported(sy
                           ExecStart=[[argv[0], argv, False]])
     bus.identity.clear()
     before = service.path.read_bytes(), service.selection.read_bytes()
-    # The journal may select old before re-registering it. That transition is
-    # deliberately not broadened into an authority grant in this scoped patch.
     with pytest.raises(SystemdStopError, match="loaded systemd action"):
         SystemdInvocationStop(service, version, data, None, bus)
     assert not any(call[2] in {"Stop", "Kill", "StopUnit"} for call in bus.calls)
@@ -235,7 +247,7 @@ def upgrade(tmp_path, monkeypatch):
 
     supervisors = []
     @contextmanager
-    def prepare(_version, _data, owner):
+    def prepare(_version, _data, owner, **_kwargs):
         supervisor = Supervisor(owner)
         supervisors.append(supervisor)
         yield supervisor
@@ -269,6 +281,159 @@ def watched(backend, data):
     return snapshot([*data.rglob("*"), *backend.root.rglob("*"), backend.service.path, backend.service.selection])
 
 
+@pytest.fixture
+def cold_candidate(upgrade, monkeypatch):
+    backend, old, candidate, data, paths, realm, boundary, calls, _supervisors, _run = upgrade
+    old = replace(old, python=old.root / "py" / "bin" / "python")
+    candidate = replace(candidate, python=candidate.root / "py" / "bin" / "python",
+                        profile=candidate.root / "profile.json")
+    for version in (old, candidate):
+        version.python.parent.mkdir(parents=True)
+        version.python.symlink_to(sys.executable)
+        write_json(version.profile, {"profile": "astrid", "fixture": "portable C1"})
+        write_json(version.root / "version.json", version.document())
+    switch(backend.root, old)
+    boundary.live = False
+    service = backend.service
+    service.path.write_text(render("linux", candidate, data, service.log))
+    bus = cold_bus(service, candidate, data)
+    monkeypatch.setattr("astrid.installer.systemd_stop._ManagerBus", lambda: bus)
+    monkeypatch.setattr(service, "prepare_supervised_upgrade_stop", Service.prepare_supervised_upgrade_stop.__get__(service))
+    transaction = {"format": "astrid-install-update/v1", "operation_id": "b" * 32,
+                   "transaction_kind": "migration", "step": "rollback_selected", "data_root": str(data),
+                   "old": old.document(), "candidate": candidate.document(), "backup": None,
+                   "realm": {"realm_id": "selected", "realm_root": str(realm)},
+                   "legacy_systemd_enabled": False}
+    write_json(backend.root / "update-transaction.json", transaction)
+    return backend, old, candidate, data, paths, realm, boundary, calls, bus, transaction
+
+
+@pytest.mark.parametrize("step", ["recovering", "rollback_selected"])
+@pytest.mark.parametrize("state", ["inactive", "failed"])
+@pytest.mark.parametrize("enabled", [True, False])
+def test_cold_candidate_loaded_rollback_recovers_after_real_c1(cold_candidate, step, state, enabled):
+    backend, old, candidate, data, paths, realm, boundary, calls, bus, transaction = cold_candidate
+    transaction.update(step=step, legacy_systemd_enabled=not enabled)
+    write_json(backend.root / "update-transaction.json", transaction)
+    bus.properties.update(ActiveState=state, UnitFileState="enabled" if enabled else "disabled")
+    unit_before = backend.service.path.read_bytes()
+    def activate(version, _data, _realm):
+        assert version == old and current(backend.root) == old
+        assert not paths.discovery_path.exists() and not paths.instance_lock_path.exists()
+        journal = json.loads((backend.root / "update-transaction.json").read_text())
+        assert journal["step"] == "rollback_selected" and journal["legacy_systemd_enabled"] is enabled
+        assert backend.service.path.read_bytes() == unit_before
+        calls.append("cold-activate-old")
+    recover_transaction(backend.root, data, backend, stop=backend.stop,
+                        switch_old=lambda *_: None, activate_old=activate, say=lambda *_: None)
+    assert json.loads((backend.root / "update-transaction.json").read_text())["step"] == "rolled_back"
+    assert current(backend.root) == old and "cold-activate-old" in calls
+    assert not any(name in calls for name in ("runtime-stop", "stop", "disable", "stop_foreground"))
+    assert not any(call[2] in {"Stop", "Kill", "StopUnit"} for call in bus.calls)
+    assert (data / "workspace-sentinel").read_bytes() == b"user work"
+
+
+@pytest.mark.parametrize("change", ["busy", "live", "reused", "candidate", "profile", "other-version", "job", "unit"])
+def test_cold_candidate_loaded_refusal_has_no_recovery_writes(cold_candidate, change):
+    backend, old, candidate, data, paths, realm, boundary, calls, bus, transaction = cold_candidate
+    if change == "busy":
+        with sqlite3.connect(realm / "realm.sqlite3") as db:
+            db.execute("INSERT INTO tasks VALUES ('busy','render','running','now')")
+    elif change == "live":
+        boundary.live = True
+    elif change == "reused":
+        boundary.process_birth_identity = lambda _pid: "new-owner"
+    elif change == "candidate":
+        write_json(candidate.root / "version.json", {**candidate.document(), "release": 17})
+    elif change == "profile":
+        candidate.profile.unlink()
+        candidate.profile.symlink_to(old.profile)
+    elif change == "other-version":
+        other = replace(candidate, root=backend.root / "versions" / "other")
+        write_json(other.root / "version.json", other.document())
+        argv = command(other, data, log=backend.service.log)
+        bus.properties["ExecStart"] = [[argv[0], argv, False]]
+    elif change == "job":
+        bus.properties["Job"] = [1, MANAGER + "/job/1"]
+    else:
+        bus.properties["NeedDaemonReload"] = True
+    before = watched(backend, data)
+    with pytest.raises((RuntimeOperationError, ValueError)):
+        recover_transaction(backend.root, data, backend, stop=backend.stop,
+                            switch_old=lambda *_: pytest.fail("selection write"),
+                            activate_old=lambda *_: pytest.fail("activation"), say=lambda *_: None)
+    assert watched(backend, data) == before and calls == []
+    assert not any(call[2] in {"Stop", "Kill", "StopUnit"} for call in bus.calls)
+
+
+@pytest.mark.parametrize("change", ["journal", "candidate", "loaded"])
+def test_cold_candidate_binding_is_rechecked_at_final_fence(cold_candidate, monkeypatch, change):
+    from astrid.installer.backend import _LegacyStopAdmission
+    backend, old, candidate, data, _paths, _realm, _boundary, calls, bus, transaction = cold_candidate
+    original = _LegacyStopAdmission.validate
+    seen = 0
+    captured = None
+    def validate(self, inspection):
+        nonlocal seen, captured
+        seen += 1
+        if seen == 4:
+            with sqlite3.connect(_realm / "realm.sqlite3", timeout=0) as db:
+                with pytest.raises(sqlite3.OperationalError, match="locked"):
+                    db.execute("BEGIN IMMEDIATE")
+            if change == "journal":
+                write_json(backend.root / "update-transaction.json", {**transaction, "operation_id": "c" * 32})
+            elif change == "candidate":
+                candidate.profile.write_text('{"changed":true}')
+            else:
+                argv = command(old, data, log=backend.service.log)
+                bus.properties["ExecStart"] = [[argv[0], argv, False]]
+            captured = watched(backend, data)
+        original(self, inspection)
+    monkeypatch.setattr(_LegacyStopAdmission, "validate", validate)
+    with update_context(backend, transaction, recovering=True), pytest.raises(RuntimeOperationError):
+        backend.stop(old, data)
+    assert captured is not None and watched(backend, data) == captured and calls == []
+
+
+def test_real_installer_recovery_persists_fresh_enablement(cold_candidate, monkeypatch):
+    backend, old, _candidate, data, _paths, _realm, _boundary, _calls, bus, _transaction = cold_candidate
+    installer = Installer(backend.root, data, backend, say=lambda *_: None)
+    monkeypatch.setattr(installer, "_activate", lambda *_: None)
+    installer._recover_update()
+    journal = json.loads((backend.root / "update-transaction.json").read_text())
+    assert journal["step"] == "rolled_back" and journal["legacy_systemd_enabled"] is True
+    assert bus.properties["UnitFileState"] == "enabled" and current(backend.root) == old
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_cold_recovery_re_registers_old_with_actual_enablement(cold_candidate, monkeypatch, enabled):
+    backend, old, _candidate, data, paths, _realm, _boundary, _calls, bus, _transaction = cold_candidate
+    bus.properties["UnitFileState"] = "enabled" if enabled else "disabled"
+    backend.service.choices = {"autostart": not enabled}
+    backend.service.env_file = backend.root / "service-env.json"
+    commands = []
+    def manager(argv):
+        assert not paths.discovery_path.exists() and not paths.instance_lock_path.exists()
+        assert read_json(backend.root / "update-transaction.json")["step"] == "rollback_selected"
+        commands.append(argv)
+        if argv[2] == "show":
+            return bus.properties["UnitFileState"] + "\n"
+        assert argv[2] == "daemon-reload"
+        return ""
+    from astrid.installer.core import read_json
+    monkeypatch.setattr(backend.service, "run", manager)
+    monkeypatch.setattr(backend, "_prior_chat_settings", lambda *_: (None, {}))
+    monkeypatch.setattr(backend, "persist_identity", lambda *_: None)
+    installer = Installer(backend.root, data, backend, say=lambda *_: None)
+    monkeypatch.setattr(installer, "_activate", lambda version, _realm: Backend.register(backend, version, data))
+    installer._recover_update()
+    assert commands and any(argv[2] == "daemon-reload" for argv in commands)
+    assert not any(argv[2] in {"enable", "disable", "stop", "kill"} for argv in commands)
+    assert str(old.python) in backend.service.path.read_text()
+    journal = read_json(backend.root / "update-transaction.json")
+    assert journal["step"] == "rolled_back" and journal["legacy_systemd_enabled"] is enabled
+
+
 def test_shared_transaction_commits_only_after_supervised_exit(upgrade):
     backend, old, candidate, data, paths, realm, boundary, calls, supervisors, run = upgrade
     run()
@@ -300,13 +465,15 @@ def test_detached_live_defers_without_staging_or_new_journal_and_cold_retry_cont
 
 
 @pytest.mark.parametrize("entry", ["update", "install-local", "install-remote"])
-def test_public_update_refuses_before_pending_cleanup_or_install_claims(upgrade, monkeypatch, tmp_path, capsys, entry):
+def test_public_busy_update_refuses_before_pending_cleanup_or_install_claims(upgrade, monkeypatch, tmp_path, capsys, entry):
     from astrid.installer import cli
     from tests.test_installer_cli_recovery import _valid_cli_manifest
     backend, old, candidate, data, paths, realm, boundary, calls, supervisors, run = upgrade
     backend.service.path.unlink()
     write_json(backend.service.selection, {**backend.service.recorded(),
                "foreground": {"pid": 123, "birth_id": "birth"}})
+    with sqlite3.connect(realm / "realm.sqlite3") as db:
+        db.execute("INSERT INTO tasks VALUES ('busy','render','running','2000-01-01T00:00:00Z')")
     monkeypatch.setattr(cli, "Backend", lambda *_args, **_kwargs: backend)
     monkeypatch.setattr(cli, "installer_lock_path", lambda *_: tmp_path / "installer.lock")
     monkeypatch.setattr("runtime_protocol.platform.log_dir", lambda: tmp_path / "logs")
@@ -329,7 +496,7 @@ def test_public_update_refuses_before_pending_cleanup_or_install_claims(upgrade,
     # Explicit update's existing public outcome code is 3 when it keeps the
     # previous release; the install-line refusal uses the ordinary error code.
     assert cli.main(argv) == (3 if entry == "update" else 1)
-    assert "Update deferred" in capsys.readouterr().out
+    assert "Astrid is busy" in capsys.readouterr().out
     assert watched(backend, data) == before and calls == []
 
 
@@ -565,12 +732,16 @@ def test_activation_failure_rolls_back_without_resignalling_old_owner(upgrade):
 
 
 @pytest.mark.parametrize("gap", ["realm", "catalog", "intact"])
-def test_r15_interrupted_restore_keeps_existing_absence_fence(tmp_path, monkeypatch, gap):
+@pytest.mark.parametrize("loaded_candidate", [False, True])
+def test_r15_interrupted_restore_keeps_existing_absence_fence(tmp_path, monkeypatch, gap, loaded_candidate):
     from tests.test_installer_lifecycle import _installer_runtime
     backend, data, paths, realm, boundary, calls = _installer_runtime(tmp_path, monkeypatch)
     boundary.live = False
     oldroot = backend.root / "versions" / "old"
-    old = Version(oldroot, Path(sys.executable), oldroot / "profile.json", {}, release=15)
+    old = Version(oldroot, oldroot / "py" / "bin" / "python", oldroot / "profile.json", {}, release=15)
+    old.python.parent.mkdir(parents=True)
+    old.python.symlink_to(sys.executable)
+    write_json(old.profile, {"profile": "astrid", "fixture": "portable restore"})
     write_json(oldroot / "version.json", old.document())
     switch(backend.root, old)
     backup_root = backend.root / "backups" / "retained"
@@ -602,6 +773,21 @@ def test_r15_interrupted_restore_keeps_existing_absence_fence(tmp_path, monkeypa
                "transaction_kind": "migration", "step": "recovering", "data_root": str(data),
                "old": old.document(), "candidate": None, "backup": backup,
                "realm": {"realm_id": "realm-1", "realm_root": str(realm)}}
+    if loaded_candidate:
+        folder = backend.root / "versions" / "candidate"
+        candidate = replace(old, root=folder, python=folder / "py" / "bin" / "python",
+                            profile=folder / "profile.json", release=16)
+        candidate.python.parent.mkdir(parents=True)
+        candidate.python.symlink_to(sys.executable)
+        write_json(candidate.profile, {"profile": "astrid", "fixture": "portable restore candidate"})
+        write_json(folder / "version.json", candidate.document())
+        journal["candidate"] = candidate.document()
+        backend.service.path.write_text(render("linux", candidate, data, backend.service.log))
+        bus = cold_bus(backend.service, candidate, data)
+        bus.properties["UnitFileState"] = "disabled"
+        monkeypatch.setattr("astrid.installer.systemd_stop._ManagerBus", lambda: bus)
+        monkeypatch.setattr(backend.service, "prepare_supervised_upgrade_stop",
+                            Service.prepare_supervised_upgrade_stop.__get__(backend.service))
     write_json(backend.root / "update-transaction.json", journal)
     if gap == "realm":
         realm.rename(realm.with_name("parked-realm"))

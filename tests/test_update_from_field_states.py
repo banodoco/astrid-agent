@@ -628,6 +628,7 @@ EXPECTED_NEXT = {
                 "and accept the setup choices.",
     "recovered-previous-version": "Next: Run the same command again to finish updating.",
     "runtime-not-running": "Next: run the same command again so Astrid restarts on the new release.",
+    "update-deferred": "Next: after the old Runtime exits normally, start Astrid with the astrid command to continue the prepared update.",
     "refused": "Next: fix what the message above names, then run the same command again.",
     "error": SUPPORT,
     "installer-bug": SUPPORT,

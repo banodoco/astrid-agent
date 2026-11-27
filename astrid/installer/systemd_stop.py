@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import ctypes as C
 import ctypes.util
+import json
 import os
+import re
 import socket
 import stat
 from contextlib import contextmanager
@@ -244,11 +246,14 @@ def _file_snapshot(path):
 
 class SystemdInvocationStop:
     """Authenticated observation; live stop deliberately supplies no authority."""
-    def __init__(self, service, version, data, owner, bus):
+    def __init__(self, service, version, data, owner, bus, *, recovery=None):
         from .core import current
 
         self.service, self.version, self.data, self.bus = service, version, data, bus
         self.owner = dict(owner) if owner is not None else None
+        self.recovery = None
+        self.retained_files = {}
+        self.loaded_versions = (version,)
         self.selection = service.recorded()
         if service.handed_off:
             # The R1 indirection has a different loaded-action contract. Do not
@@ -276,9 +281,72 @@ class SystemdInvocationStop:
             if self.path != f"{MANAGER}/unit/{label}":
                 raise SystemdStopError("The manager did not return an invocation-specific unit path.")
         self.snapshot = self._snapshot()
+        # A stopped manager may still have the candidate definition loaded
+        # after C2 reselected old. Pin one exact retained command, not whichever
+        # version happens to match on a later read. This is recognition only.
+        executable, argv, _ignore = self.snapshot["ExecStart"]
+        script = argv[-1] if isinstance(argv, list) and len(argv) >= 6 and argv[1:5] == ["-X", "utf8", "-I", "-c"] else None
+        if (recovery is not None and (executable != str(version.python)
+                or not service._known_launch_action(argv, data, windows=False, script=script, version=version))):
+            self._bind_recovery(recovery)
+        matches = [item for item in self.loaded_versions
+                   if executable == str(item.python)
+                   and service._known_launch_action(argv, data, windows=False, script=script, version=item)]
+        if len(matches) != 1:
+            raise SystemdStopError("The loaded systemd action is not the exact selected recovery version.")
+        self.loaded_version = matches[0]
         self.enabled_state = self.snapshot["UnitFileState"] == "enabled"
         self.stopped = False
         self.validate(owner)
+
+    def _bind_recovery(self, recovery):
+        from .core import Version, absolute, current, version_id
+
+        transaction, recovering = recovery
+        path = self.service.root / "update-transaction.json"
+        snapshot = _file_snapshot(path)
+        if (recovering is not True or self.owner is not None
+                or json.loads(snapshot[1]) != transaction
+                or transaction.get("format") != "astrid-install-update/v1"
+                or not re.fullmatch(r"[0-9a-f]{32}", transaction.get("operation_id", ""))
+                or transaction.get("transaction_kind") not in {None, "migration"}
+                or transaction.get("step") not in {"recovering", "rollback_selected"}
+                or absolute(transaction["data_root"]) != self.data
+                or Version.load(transaction["old"]) != self.version
+                or current(self.service.root) != self.version
+                or self.version.release != 15):
+            raise SystemdStopError("The cold recovery context does not match the selected installation.")
+        realm = transaction["realm"]
+        if not isinstance(realm.get("realm_id"), str) or not realm["realm_id"]:
+            raise SystemdStopError("The cold recovery realm identity is invalid.")
+        absolute(realm["realm_root"])
+        candidate = Version.load(transaction["candidate"])
+        if self.version.managed_by is not None or candidate.managed_by is not None:
+            raise SystemdStopError("The cold recovery candidate belongs to another installation manager.")
+        for item in (self.version, candidate):
+            folder = self.service.root / "versions" / version_id(item.root.name)
+            if (item.root != absolute(folder) or folder.is_symlink()
+                    or not item.python.is_absolute() or not item.python.is_relative_to(folder)
+                    or not item.profile.is_absolute() or not item.profile.is_relative_to(folder)
+                    or not item.python.is_file() or item.profile.is_symlink() or not item.profile.is_file()):
+                raise SystemdStopError("The cold recovery version is not retained by this installation.")
+            retained = _file_snapshot(folder / "version.json")
+            document = json.loads(retained[1])
+            if (Version.load(document) != item
+                    or item != self.version and document != item.document()):
+                raise SystemdStopError("The cold recovery version metadata changed.")
+            self.retained_files[folder / "version.json"] = retained
+            self.retained_files[item.profile] = _file_snapshot(item.profile)
+        self.recovery = path, snapshot
+        self.loaded_versions = (self.version,) if candidate == self.version else (self.version, candidate)
+
+    def _validate_recovery(self):
+        if self.recovery is not None:
+            path, snapshot = self.recovery
+            if _file_snapshot(path) != snapshot:
+                raise SystemdStopError("The cold recovery journal changed before admission.")
+            if any(_file_snapshot(path) != value for path, value in self.retained_files.items()):
+                raise SystemdStopError("The retained cold recovery inputs changed before admission.")
 
     def _snapshot(self, path=None):
         properties = {
@@ -301,6 +369,7 @@ class SystemdInvocationStop:
         from .core import current
         from .service import LABEL
 
+        self._validate_recovery()
         if owner != self.owner or self.stopped:
             raise SystemdStopError("The selected Runtime owner changed before systemd stop.")
         if (self.service.recorded() != self.selection or self.selection.get("owner") != LABEL
@@ -324,8 +393,9 @@ class SystemdInvocationStop:
                 or value["Job"] != [0, "/"]
                 or value["UnitFileState"] not in {"enabled", "disabled"}
                 or not isinstance(argv, list) or not argv or executable != argv[0]
-                or executable != str(self.version.python) or ignore_failure
-                or not self.service._known_launch_action(argv, self.data, windows=False, script=script)
+                or executable != str(self.loaded_version.python) or ignore_failure
+                or not self.service._known_launch_action(argv, self.data, windows=False, script=script,
+                                                         version=self.loaded_version)
                 or value["ExecStop"] or value["ExecStopPost"]
                 or value["KillMode"] != "mixed" or value["KillSignal"] != 15
                 or value["FinalKillSignal"] != 9 or value["SendSIGKILL"] is not True
@@ -349,6 +419,7 @@ class SystemdInvocationStop:
         raise SystemdStopError(WARM_REFUSAL)
 
     def assert_stopped(self):
+        self._validate_recovery()
         # Label lookup here is a read-only replacement/enablement check. Never
         # send an action to this mutable path, even after the old owner exited.
         path = self.bus.call(MANAGER, "org.freedesktop.systemd1.Manager", "GetUnit", "astrid.service")
@@ -371,10 +442,10 @@ class SystemdInvocationStop:
 
 
 @contextmanager
-def prepare_systemd_stop(service, version, data, owner):
+def prepare_systemd_stop(service, version, data, owner, *, recovery=None):
     bus = _ManagerBus()
     try:
-        observed = SystemdInvocationStop(service, version, data, owner, bus)
+        observed = SystemdInvocationStop(service, version, data, owner, bus, recovery=recovery)
         if owner is not None:
             raise SystemdStopError(WARM_REFUSAL)
         yield observed
