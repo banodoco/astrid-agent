@@ -2,7 +2,7 @@
   "schema": "astrid-motion-release-source/v1",
   "pack_id": "astrid_motion",
   "repo": "https://github.com/banodoco/poms_packs",
-  "upstream_commit": "23f78bfc7e3cb26e320e8d3c6bd30a8b94cd92e1",
+  "upstream_commit": "f40b1f44bbe513cb871387a07e14332ffbed8a53",
   "upstream_subpath": "astrid_motion",
   "upstream_tree": "9668568025190d0a8b5742cda0aec32ffaf9d5d0",
   "digest_rule": "pack-tree-v1",
