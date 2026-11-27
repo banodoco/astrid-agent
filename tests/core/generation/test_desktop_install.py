@@ -1,6 +1,8 @@
 """Desktop discovery tests use redacted fixtures and explicit observation seams."""
 
 from copy import deepcopy
+import sys
+from types import SimpleNamespace
 from urllib.error import HTTPError, URLError
 
 import pytest
@@ -69,11 +71,210 @@ def test_registry_only_uses_install_location():
     }]
 
 
-@pytest.mark.parametrize("raw", ["invalid json", "[]", "null"])
-def test_invalid_config_without_registry(raw):
-    assert desktop.read_registrations(
-        {"APPDATA": "/redacted"}, registry=lambda: None, read_text=lambda path: raw
-    ) == []
+@pytest.mark.parametrize("raw", ["invalid json", "[]", "null", "{}", '{"basePath": null}',
+                                 '{"basePath": ""}', '{"basePath": 123}'])
+def test_invalid_config_without_registry_preserves_incomplete_observation(raw):
+    options = {"environ": {"APPDATA": "/redacted"}, "registry": lambda: None,
+               "read_text": lambda path: raw}
+    assert desktop.read_registrations(**options) == [{
+        "source": "config", "version": None, "executable": None,
+        "data_dir": None, "server_port": 8000,
+    }]
+    result = desktop.observe_installations(
+        **options, get_json=_unexpected_request, exists=_unexpected_request,
+    )
+    assert len(result) == 1
+    assert result[0]["state"] == "ambiguous"
+    assert result[0]["recorded"] == {"executable": None, "data_dir": None}
+    assert result[0]["files"] == {"executable": False, "data_dir": False}
+    assert result[0]["responder"]["matches_install"] is None
+    assert desktop.select_candidate(result, [])["not_running"] == result
+
+
+@pytest.mark.parametrize("config", [None, "{broken", "{}", '{"basePath": null}'])
+def test_registered_executable_with_unknown_data_path_is_not_stale(config, tmp_path):
+    executable = tmp_path / "ComfyUI.exe"
+    executable.touch()
+    seen = []
+
+    def read_text(path):
+        if config is None:
+            raise FileNotFoundError(path)
+        return config
+
+    def exists(path):
+        seen.append(path)
+        return desktop._exists(path)
+
+    result = desktop.observe_installations(
+        environ={"APPDATA": str(tmp_path)},
+        registry=lambda: {"DisplayIcon": str(executable)},
+        read_text=read_text, exists=exists, get_json=_unexpected_request,
+    )
+    assert seen == [str(executable)]
+    assert len(result) == 1
+    assert result[0]["state"] == "ambiguous"
+    assert result[0]["recorded"] == {"executable": str(executable), "data_dir": None}
+    assert result[0]["files"] == {"executable": True, "data_dir": False}
+    assert result[0]["responder"]["kind"] == "none"
+
+
+def test_undecodable_config_is_not_absence(tmp_path):
+    config = tmp_path / "ComfyUI" / "config.json"
+    config.parent.mkdir()
+    config.write_bytes(b"\xff")
+    before = config.read_bytes()
+    result = desktop.observe_installations(
+        environ={"APPDATA": str(tmp_path)}, registry=lambda: [],
+        get_json=_unexpected_request, exists=_unexpected_request,
+    )
+    assert [item["state"] for item in result] == ["ambiguous"]
+    assert config.read_bytes() == before
+
+
+def test_config_only_known_data_unknown_executable_is_ambiguous(tmp_path):
+    result = desktop.observe_installations(
+        environ={"APPDATA": str(tmp_path)}, registry=lambda: [],
+        read_text=lambda path: '{"basePath": "/data"}',
+        exists=lambda path: path == "/data", get_json=_unexpected_request,
+    )
+    assert len(result) == 1
+    assert result[0]["state"] == "ambiguous"
+    assert result[0]["recorded"] == {"executable": None, "data_dir": "/data"}
+    assert result[0]["files"] == {"executable": False, "data_dir": True}
+
+
+def test_known_recorded_file_absence_is_still_stale(tmp_path):
+    result = desktop.observe_installations(
+        environ={"APPDATA": str(tmp_path)},
+        registry=lambda: {"DisplayIcon": str(tmp_path / "missing.exe")},
+        read_text=lambda path: '{"basePath": "/data"}',
+        exists=lambda path: path == "/data", get_json=_unexpected_request,
+    )
+    assert len(result) == 1
+    assert result[0]["state"] == "stale"
+    assert result[0]["recorded"]["executable"] == str(tmp_path / "missing.exe")
+    assert result[0]["files"] == {"executable": False, "data_dir": True}
+
+
+def _install_native_registry_seam(monkeypatch, entries, *, deny_keys=(), vanished_keys=(),
+                                  deny_enumeration_at=None):
+    """Replace only the OS API; execute the actual default Windows reader."""
+    hkey = object()
+    uninstall_path = r"Software\Microsoft\Windows\CurrentVersion\Uninstall"
+    key_read = 0x20019
+    enumerated = []
+    closed = []
+
+    class Key:
+        def __init__(self, name):
+            self.name = name
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            closed.append(self.name)
+
+    def open_key(parent, name, reserved=0, access=key_read):
+        assert reserved == 0 and access == key_read
+        if parent is hkey:
+            assert name == uninstall_path
+            return Key("uninstall")
+        assert parent.name == "uninstall"
+        if name in vanished_keys:
+            raise FileNotFoundError(name)
+        if name in deny_keys:
+            raise PermissionError(name)
+        assert name in entries
+        return Key(name)
+
+    def enum_key(parent, index):
+        assert parent.name == "uninstall"
+        enumerated.append(index)
+        if index == deny_enumeration_at:
+            raise PermissionError("uninstall enumeration denied")
+        names = list(entries)
+        if index >= len(names):
+            exc = OSError("no more items")
+            exc.winerror = 259
+            raise exc
+        return names[index]
+
+    def query_value(key, field):
+        if field not in entries[key.name]:
+            raise FileNotFoundError(field)
+        return entries[key.name][field], 1
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setitem(sys.modules, "winreg", SimpleNamespace(
+        HKEY_CURRENT_USER=hkey, KEY_READ=key_read, OpenKey=open_key,
+        EnumKey=enum_key, QueryValueEx=query_value,
+    ))
+    return enumerated, closed
+
+
+def test_native_registry_enumerates_every_matching_uninstall_entry(monkeypatch):
+    entries = {
+        "first": {"DisplayName": "ComfyUI", "DisplayVersion": "0.7.2",
+                  "DisplayIcon": r'"C:\First\ComfyUI.exe",0'},
+        "unrelated": {"DisplayName": "Different app"},
+        "disappeared": {"DisplayName": "ComfyUI"},
+        "last": {"DisplayName": "ComfyUI", "DisplayVersion": "0.8.0",
+                 "InstallLocation": r"C:\Last"},
+    }
+    with monkeypatch.context() as m:
+        enumerated, closed = _install_native_registry_seam(
+            m, entries, vanished_keys=("disappeared",),
+        )
+        registrations = desktop.read_registrations(
+            {"APPDATA": r"C:\Roaming"},
+            read_text=lambda path: r'{"basePath": "C:\\Data"}',
+        )
+    assert enumerated == [0, 1, 2, 3, 4]
+    assert closed == ["first", "unrelated", "last", "uninstall"]
+    assert registrations == [
+        {"source": "registry+config", "version": "0.7.2", "executable": r"C:\First\ComfyUI.exe",
+         "data_dir": r"C:\Data", "server_port": 8000},
+        {"source": "registry+config", "version": "0.8.0", "executable": r"C:\Last\ComfyUI.exe",
+         "data_dir": r"C:\Data", "server_port": 8000},
+    ]
+
+
+def test_native_registry_keeps_all_incomplete_registrations(monkeypatch):
+    entries = {
+        "first": {"DisplayName": "ComfyUI", "DisplayVersion": "0.7.2"},
+        "last": {"DisplayName": "ComfyUI", "DisplayVersion": "0.8.0"},
+    }
+    with monkeypatch.context() as m:
+        enumerated, _ = _install_native_registry_seam(m, entries)
+        result = desktop.observe_installations(
+            environ={}, get_json=_unexpected_request, exists=_unexpected_request,
+        )
+    assert enumerated == [0, 1, 2]
+    assert [item["version"] for item in result] == ["0.7.2", "0.8.0"]
+    assert [item["state"] for item in result] == ["ambiguous", "ambiguous"]
+
+
+@pytest.mark.parametrize("deny_enumeration", [False, True])
+def test_native_registry_partial_denial_is_not_complete_absence(monkeypatch, deny_enumeration):
+    entries = {
+        "first": {"DisplayName": "ComfyUI", "DisplayVersion": "0.7.2"},
+        "denied": {"DisplayName": "ComfyUI"},
+        "last": {"DisplayName": "ComfyUI", "DisplayVersion": "0.8.0"},
+    }
+    with monkeypatch.context() as m:
+        enumerated, _ = _install_native_registry_seam(
+            m, entries, deny_keys=("denied",),
+            deny_enumeration_at=1 if deny_enumeration else None,
+        )
+        result = desktop.observe_installations(
+            environ={}, get_json=_unexpected_request, exists=_unexpected_request,
+        )
+    assert [item["state"] for item in result] == (
+        ["ambiguous", "denied"] if deny_enumeration else ["ambiguous", "denied", "ambiguous"]
+    )
+    assert enumerated == ([0, 1] if deny_enumeration else [0, 1, 2, 3])
 
 
 def test_no_registry_or_config(tmp_path):
