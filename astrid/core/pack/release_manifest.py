@@ -94,11 +94,11 @@ def installed_release_pins() -> dict[str, dict[str, str]] | None:
 def admitted_pack_pin(path: Path) -> dict[str, Any] | None:
     """Read origin/PIN authority bound by the canonical collection admission.
 
-    A freely authored folder has no admission and remains ordinary inventory.
-    An admitted object's missing/altered provenance cannot turn it into one:
-    its recorded PIN is in the same committed group record as its admission,
-    independent of the mutable PIN file. Incomplete admissions require explicit
-    re-admission; no user object is relabelled to manufacture that authority.
+    Freely authored folders and legacy unbound user admissions keep ordinary
+    inventory semantics. Every release-default publication writes its binding
+    before selection; its missing/altered PIN cannot opt out. A claimed managed
+    default without this binding is refused by verify_release_default. Never
+    manufacture origin authority from an ID shared with the selected release.
     """
     from astrid.core.pack.identity import _validate_pin
     from astrid.core.pack.transaction import (
@@ -108,9 +108,9 @@ def admitted_pack_pin(path: Path) -> dict[str, Any] | None:
     path = Path(path)
     with group_read_lock(path.parent):
         snapshot = read_group(path.parent)
-        if path.name not in snapshot.admissions:
+        if path.name not in snapshot.pins:
             return None
-        admission = snapshot.admissions[path.name]
+        admission = snapshot.admissions.get(path.name)
         if (snapshot.paths.get(path.name) != path or path.name in snapshot.removals
                 or not isinstance(admission, dict) or admission.get("packId") != path.name
                 or type(admission.get("committedRevision")) is not int
@@ -121,12 +121,10 @@ def admitted_pack_pin(path: Path) -> dict[str, Any] | None:
                     and admission["transactionId"] != snapshot.transaction_id)):
             raise PackInstallError("pin_mismatch", "Canonical pack admission has an invalid identity.")
         _retained_build_records(path.parent, {path.name: admission}, snapshot.revision)
-        if path.name not in snapshot.pins:
-            raise PackInstallError("pin_mismatch", "Canonical pack admission binds no origin/PIN; explicitly re-admit this pack.")
         pin = _validate_pin(snapshot.pins[path.name])
         if pin["origin"] in {"default", "user"} and pin["digest"] != admission.get("sourceDigest"):
             raise PackInstallError("pin_mismatch", "Canonical admitted PIN disagrees with its source digest.")
-        _verify_admitted_pins(path.parent, {path.name: pin})
+        _verify_admitted_pins(path.parent, {path.name: pin}, {path.name: admission})
         return pin
 
 
