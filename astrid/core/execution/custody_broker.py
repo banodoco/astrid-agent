@@ -2942,24 +2942,15 @@ class _CheckedPidTarget:
 
 
 def _checked_pid_target(pid: int, birth: str, *, held: bool) -> _CheckedPidTarget | None:
-    """Bind a sandbox registration to Runtime's identity; None when it is gone or differs."""
+    """Bind a sandbox registration to the exact scoped Runtime birth."""
     if held:
         return _CheckedPidTarget(None)
+    from astrid.core.execution.process_group import linux_birth_scope
+    if linux_birth_scope(birth) is None:
+        return None
     identity = platform.process_identity(pid)
-    if identity is None:
+    if identity is None or identity.get("pid") != pid or identity.get("birth_id") != birth:
         return None
-    # Agent records boot UUID:start ticks; Runtime also captures the target's
-    # PID namespace. Require the complete, unambiguous native scope at admission
-    # and agree on BOTH Agent fields. Tick-only evidence cannot prove the boot.
-    runtime_birth = identity.get("birth_id")
-    scoped = (
-        re.fullmatch(r"proc-start-ticks:([0-9]+);boot:([^;:]+);pidns:[1-9][0-9]*", runtime_birth)
-        if isinstance(runtime_birth, str) else None
-    )
-    if scoped is None or f"{scoped[2]}:{scoped[1]}" != birth:
-        return None
-    # Keep every scope for Runtime's exact recheck immediately before signalling;
-    # a changed or unreadable boot/namespace must never become signal authority.
     return _CheckedPidTarget(identity)
 
 
@@ -3255,9 +3246,21 @@ class ProcessCustody:
                 else:
                     from astrid.core.execution.process_group import (
                         _PidfdExitProof,
+                        _linux_parent_edge,
                         held_child_birth_identity,
                         process_birth_identity,
                     )
+                    parent_anchor = (_observation.get("linux_parent") if isinstance(_observation, Mapping) else None)
+
+                    def revalidate_parent():
+                        if parent_anchor is None:
+                            return
+                        parent, expected = parent_anchor
+                        entry = self._handles.get(parent)
+                        if entry is None or entry[0] != expected:
+                            raise CustodyError("census parent lacks retained matching custody")
+                        _linux_parent_edge(parent, expected, pid, birth)
+
                     # Our own unreaped launch may already be a zombie; any other
                     # candidate that exited (or whose pid was reused) between the
                     # census and now is simply absent: nothing is left to signal,
@@ -3268,6 +3271,7 @@ class ProcessCustody:
                         if held:
                             raise CustodyError("launch registration identity is uncertain")
                         return
+                    revalidate_parent()
                     stage = "pidfd-bind"
                     try:
                         descriptor = platform.pidfd_open(pid)
@@ -3283,6 +3287,7 @@ class ProcessCustody:
                             if held:
                                 raise CustodyError("launch changed during sandbox registration") from exc
                             return
+                        revalidate_parent()
                         self._handles[pid] = (birth, target)
                         return
                     retained = False
@@ -3304,6 +3309,7 @@ class ProcessCustody:
                         proof = _PidfdExitProof(descriptor)
                         proofs[pid] = proof
                         proof_registered = True
+                        revalidate_parent()
                         terminal_births.pop(pid, None)
                         self._handles[pid] = (birth, descriptor)
                         retained = True
@@ -3462,6 +3468,49 @@ class ProcessCustody:
         other registration failures retain their existing semantics.
         """
         broker = getattr(self, "_launch_broker", None)
+        if sys.platform.startswith("linux"):
+            # A census row is observation only. Admit a new candidate only
+            # through its actual retained immediate parent, in ancestry order.
+            # register() brackets that edge again across native capture.
+            with self._lock:
+                if self._uncertain is not None:
+                    raise CustodyError("custody registration or observation is unresolved") from self._uncertain
+                pending = dict(members)
+                admitted = {}
+                try:
+                    while pending:
+                        progressed = False
+                        for pid, birth in tuple(pending.items()):
+                            entry = self._handles.get(pid)
+                            if entry is not None and entry[0] == birth:
+                                admitted[pid] = birth
+                            else:
+                                row = census.get(pid)
+                                if row is None or row.get("birth_id") != birth:
+                                    raise CustodyError("census candidate lacks matching birth")
+                                parent = row["parent_pid"]
+                                parent_entry = self._handles.get(parent)
+                                if parent_entry is None:
+                                    continue
+                                parent_row = census.get(parent)
+                                if parent_row is None or parent_row.get("birth_id") != parent_entry[0]:
+                                    raise CustodyError("census parent lacks retained matching birth")
+                                self.register(pid, birth, _observation={"linux_parent": (parent, parent_entry[0])})
+                                if self._handles.get(pid, (None,))[0] == birth:
+                                    admitted[pid] = birth
+                                else:
+                                    # Candidate disappeared before capture: do
+                                    # not silently turn the missing capability
+                                    # into proof of absence or follow its children.
+                                    raise CustodyError("census candidate exited before retained admission")
+                            del pending[pid]
+                            progressed = True
+                        if not progressed:
+                            raise CustodyError("census candidate ancestry lacks retained authority")
+                    return admitted
+                except BaseException as error:
+                    self._uncertain = error
+                    raise
         if (sys.platform != "darwin" or not isinstance(broker, RoleBoundCustodyBroker)
                 or broker.role != "command"):
             if sys.platform == "darwin" and deadline is not None:

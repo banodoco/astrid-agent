@@ -41,11 +41,12 @@ def test_owner_process_state_distinguishes_live_and_reused_pid():
     current = process_group.process_birth_identity()
     pid = os.getpid()
     assert custody._owner_process_state({"process": {"pid": pid, "birth_id": current}}) == ("alive", "pid_start_ticks")
-    other = current.rsplit(":", 1)[0] + ":0"
+    ticks, boot, namespace = process_group.linux_birth_scope(current)
+    other = process_group.platform.linux_birth_id("0", boot_id=boot, pidns_inode=int(namespace))
     state, evidence = custody._owner_process_state({"process": {"pid": pid, "birth_id": other}})
     assert (state, evidence) == ("dead", "pid_start_ticks")
-    boot, ticks = current.split(":", 1)
-    changed_boot = ("0" if boot[0] != "0" else "1") + boot[1:] + ":" + ticks
+    changed_boot_id = ("0" if boot[0] != "0" else "1") + boot[1:]
+    changed_boot = process_group.platform.linux_birth_id(ticks, boot_id=changed_boot_id, pidns_inode=int(namespace))
     assert custody._owner_process_state({"process": {"pid": pid, "birth_id": changed_boot}}) == ("dead", "boot_id")
 
 
@@ -138,13 +139,13 @@ def test_process_evidence_requires_native_flock_mount(tmp_path, monkeypatch, cap
     process = None
     pod_id = None
     if case == "boot_id":
-        boot, ticks = process_group.process_birth_identity().split(":", 1)
+        ticks, boot, namespace = process_group.linux_birth_scope(process_group.process_birth_identity())
         changed_boot = ("0" if boot[0] != "0" else "1") + boot[1:]
-        process = {"pid": os.getpid(), "birth_id": f"{changed_boot}:{ticks}"}
+        process = {"pid": os.getpid(), "birth_id": process_group.platform.linux_birth_id(ticks, boot_id=changed_boot, pidns_inode=int(namespace))}
     elif case == "pid_reuse":
         birth = process_group.process_birth_identity()
-        boot, ticks = birth.split(":", 1)
-        process = {"pid": os.getpid(), "birth_id": f"{boot}:{int(ticks) + 1}"}
+        ticks, boot, namespace = process_group.linux_birth_scope(birth)
+        process = {"pid": os.getpid(), "birth_id": process_group.platform.linux_birth_id(str(int(ticks) + 1), boot_id=boot, pidns_inode=int(namespace))}
     elif case == "reaped_child":
         child = subprocess.Popen([sys.executable, "-c", "import time;time.sleep(30)"])
         birth = process_group.process_birth_identity(child.pid)
@@ -288,3 +289,19 @@ def test_owner_marker_contains_supervisor_evidence_and_logs_no_secrets(tmp_path,
         changed.call("probe", {}, deadline=time.monotonic() + 2)
     assert marker["owner_id"] not in caplog.text
     client.stop_owned(deadline=time.monotonic() + 10)
+
+
+@pytest.mark.parametrize("encoding", ["ticks", "boot_ticks", "partial"])
+def test_legacy_owner_birth_never_retires_marker(tmp_path, encoding):
+    ticks, boot, namespace = process_group.linux_birth_scope(process_group.process_birth_identity())
+    birth = {"ticks": ticks, "boot_ticks": f"{boot}:{ticks}",
+             "partial": f"proc-start-ticks:{ticks};boot:{boot}"}[encoding]
+    control, marker = _marker(tmp_path, process={"pid": os.getpid(), "birth_id": birth})
+    client = custody.LinuxEngineServiceClient(**_identity(tmp_path))
+    assert custody._owner_process_state(marker) == ("unknown", "none")
+    dirfd = os.open(control, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        assert client._retire_dead_owner(dirfd, time.monotonic() + 2) is False
+    finally:
+        os.close(dirfd)
+    assert json.loads((control / "session.json").read_text()) == marker

@@ -8,7 +8,7 @@ the process alone and returns manual-start guidance, never inferred readiness.
 
 Direct Python/main.py launches are supported. Desktop/Pinokio wrappers without
 an independently observable exact child command require manual start. The
-default observer uses Linux procfs without helper processes or Runtime imports;
+default observer uses Linux procfs without helper processes, using Runtime birth observations;
 other platforms can supply the same read-only observer interface or fail closed.
 """
 from __future__ import annotations
@@ -131,13 +131,13 @@ class ProcLaunchObserver:
         return value
 
     def _birth(self, folder):
-        fields = self._read(folder / "stat").decode().rsplit(")", 1)[1].split()
-        if fields[0] in {"Z", "X"}:
+        from astrid.core.execution.process_group import scoped_linux_identity
+
+        identity = scoped_linux_identity(int(folder.name))
+        if identity is None:
             return None
-        boot = self._read("/proc/sys/kernel/random/boot_id").decode().strip()
-        if not boot or not fields[19].isdigit():
-            raise LaunchVerificationError("process birth is unknown")
-        return boot + ":" + fields[19]
+        birth = identity["birth_id"]
+        return birth
 
     def process(self, pid, *, deadline):
         self._check(deadline)
@@ -389,6 +389,10 @@ def launch_target(target: TargetRecord | TargetSelection, *, consent=(),
         _revalidate(plan, record)
         if plan.previous_process:
             pid, birth = plan.previous_process
+            if isinstance(observer, ProcLaunchObserver):
+                from astrid.core.execution.process_group import linux_birth_scope
+                if linux_birth_scope(birth) is None:
+                    raise LaunchVerificationError("recorded process birth is legacy or unscoped")
             process = observer.process(pid, deadline=deadline)
             if process is not None:
                 if process.birth_id != birth:

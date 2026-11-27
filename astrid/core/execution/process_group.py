@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import json
 import os
+import re
 import select
 import signal
 import subprocess
@@ -16,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from runtime_protocol import platform
+from runtime_protocol import platform, process_binding
 
 from astrid.core.execution.custody_broker import (
     CustodyError as CleanupUncertainError,
@@ -51,7 +52,6 @@ class _ProcessInfo:
 _CENSUS_TIMEOUT_SECONDS = 5.0
 _CENSUS_ATTEMPTS = 3
 _CENSUS_RETRY_DELAY_SECONDS = 0.1
-_PROC_ROOT = Path("/proc")
 
 
 class _Census(dict):
@@ -67,11 +67,15 @@ class _Census(dict):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.exited: dict[int, str] = {}
+        self.status = "complete"
+        self.unknown: dict[int, str] = {}
+        self.unverified_parents: frozenset[int] = frozenset()
 
 
 def _failed_census(reason: str) -> _Census:
     census = _Census()
     census.failure = reason
+    census.status = "unavailable"
     return census
 
 
@@ -126,76 +130,86 @@ def _process_snapshot() -> dict[int, _ProcessInfo]:
     return _failed_census("ps " + "; ".join(outcomes))
 
 
-def _linux_process_record(path: Path, boot_id: str) -> tuple[_ProcessInfo, bytes]:
-    """Read topology and start time together, without splitting the comm field.
+def linux_birth_scope(birth: Any) -> tuple[str, str, str] | None:
+    """Validate a complete Runtime Linux birth, never infer missing scope.
 
-    A proc-directory descriptor keeps stat and status tied to one incarnation
-    even if the numeric PID is recycled between those reads.
+    The old boot:tick encoding and bare registry ticks are diagnostic only.
     """
-    directory = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    if not isinstance(birth, str):
+        return None
+    match = re.fullmatch(r"proc-start-ticks:([0-9]+);boot:([^;:]+);pidns:([1-9][0-9]*)", birth)
+    return match.groups() if match is not None else None
+
+
+def scoped_linux_identity(pid: int) -> Mapping[str, Any] | None:
+    """Runtime observation with the complete scope required by Agent custody."""
     try:
-        with os.fdopen(os.open("stat", os.O_RDONLY | os.O_CLOEXEC, dir_fd=directory), "rb") as stream:
-            prefix, separator, suffix = stream.read().rpartition(b")")
-        fields = suffix.split()
-        pid = int(path.name)
-        if (not separator or b" (" not in prefix or prefix.partition(b" (")[0] != str(pid).encode("ascii")
-                or len(fields) < 20 or not fields[19].isdigit()):
-            raise ValueError(f"malformed /proc/{pid}/stat")
-        ppid, pgid, session = map(int, fields[1:4])
-        with os.fdopen(os.open("status", os.O_RDONLY | os.O_CLOEXEC, dir_fd=directory), "rb") as stream:
-            uid_fields = next((line.split() for line in stream if line.startswith(b"Uid:")), ())
-        if len(uid_fields) != 5:
-            raise ValueError(f"malformed /proc/{pid}/status uid")
-        uid = int(uid_fields[2])  # ps uid/euid is the effective uid.
-        if min(pid, ppid, pgid, session, uid) < 0 or pid == 0:
-            raise ValueError(f"invalid /proc/{pid} topology")
-        return (_ProcessInfo(pid, ppid, pgid, boot_id + ":" + fields[19].decode("ascii"),
-                             uid=uid, session=session), fields[0])
-    finally:
-        os.close(directory)
+        identity = platform.process_identity(pid)
+    except (UnicodeError, ValueError, IndexError) as exc:
+        raise OSError("Linux process identity observation malformed") from exc
+    if identity is not None and (identity.get("pid") != pid
+                                or linux_birth_scope(identity.get("birth_id")) is None):
+        raise OSError("Linux process identity scope unavailable")
+    return identity
 
 
 def _linux_process_snapshot() -> _Census:
-    """Census without observer processes; disappearance alone is not exit proof."""
-    entries = _Census()
+    """Adapt the producer's non-atomic, explicitly qualified observations."""
     try:
-        boot_id = (_PROC_ROOT / "sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
-        if not boot_id or ":" in boot_id:
-            raise ValueError("Linux boot identity unavailable")
-        paths = [path for path in _PROC_ROOT.iterdir() if path.name.isascii() and path.name.isdigit()]
+        observed = process_binding.census()
+        entries = _Census()
+        entries.status = observed.status
+        entries.failure = observed.failure
+        entries.unknown = dict(observed.unknown)
+        entries.unverified_parents = frozenset(observed.unverified_parents)
+        for pid, row in observed.live.items():
+            if row.get("pid") != pid or linux_birth_scope(row.get("birth_id")) is None:
+                raise OSError("Linux census row lacks complete birth scope")
+            entries[pid] = _ProcessInfo(
+                pid, row["parent_pid"], row["process_group"], row["birth_id"],
+                uid=row["uid"], session=row["session_id"])
+        for pid, birth in observed.exited.items():
+            if linux_birth_scope(birth) is None:
+                raise OSError("Linux zombie witness lacks complete birth scope")
+            entries.exited[pid] = birth
+        if entries.status not in {"complete", "partial", "unavailable"}:
+            raise OSError("Linux census status unavailable")
+        if entries.status == "complete" and (entries.unknown or entries.unverified_parents or entries.failure):
+            raise OSError("Linux census status contradicts its observations")
+        return entries
+    except (OSError, ValueError, UnicodeError, KeyError, AttributeError) as exc:
+        return _failed_census(f"Linux census unavailable: {exc}")
 
-        def read(path: Path) -> _ProcessInfo | None:
-            try:
-                info, state = _linux_process_record(path, boot_id)
-            except OSError as exc:
-                if exc.errno in {errno.ENOENT, errno.ESRCH}:
-                    return None  # A racing exit gives no terminal witness.
-                raise
-            if state == b"Z":
-                entries.exited[info.pid] = info.birth
-            return None if state in {b"Z", b"X"} else info
 
-        for path in paths:
-            if (info := read(path)) is not None:
-                entries[info.pid] = info
-        # A parent may exit between enumeration and reading its row. Re-read
-        # such children's complete record, never splice an old birth token
-        # onto a possibly recycled PID's fresh parent id.
-        for pid, info in tuple(entries.items()):
-            if info.ppid and info.ppid not in entries:
-                fresh = read(_PROC_ROOT / str(pid))
-                if fresh is None or fresh.birth != info.birth:
-                    del entries[pid]
-                else:
-                    entries[pid] = fresh
-    except (OSError, ValueError, UnicodeError) as exc:
-        return _failed_census(f"/proc census unavailable: {exc}")
-    return entries
+def _census_complete(snapshot: Mapping[int, _ProcessInfo]) -> bool:
+    return bool(snapshot) and getattr(snapshot, "status", "complete") == "complete" and not getattr(snapshot, "failure", None)
+
+
+def _linux_parent_edge(parent: int, parent_birth: str, child: int, child_birth: str) -> None:
+    """Bracket a proposed edge with fresh, fully scoped parent observations.
+
+    This is observation, not a handle. The caller must already retain the
+    parent and must capture/revalidate the child before admitting it.
+    """
+    try:
+        before = scoped_linux_identity(parent)
+        current = scoped_linux_identity(child)
+        after = scoped_linux_identity(parent)
+    except OSError as exc:
+        raise CleanupUncertainError("owned parent/child birth unavailable") from exc
+    if (before is None or after is None or current is None
+            or before["birth_id"] != parent_birth or after["birth_id"] != parent_birth
+            or before["uid"] != after["uid"]
+            or current["birth_id"] != child_birth or current["parent_pid"] != parent):
+        raise CleanupUncertainError("owned parent or child identity changed after census")
 
 
 def _parse_census(stdout: str) -> _Census:
+    # Linux does not consume the non-atomic ps table; its birth and topology
+    # must come from the same producer observation.
+    if sys.platform.startswith("linux"):
+        return _linux_process_snapshot()
     entries = _Census()
-    vanished: set[int] = set()
     for line in stdout.splitlines():
         fields = line.strip().split(None, 3)
         if len(fields) != 4:
@@ -204,34 +218,8 @@ def _parse_census(stdout: str) -> _Census:
             pid, ppid, pgid = (int(value) for value in fields[:3])
         except ValueError:
             continue
-        birth = process_birth_identity(pid) if sys.platform.startswith("linux") else "ps-lstart:" + fields[3]
-        if birth:
-            entries[pid] = _ProcessInfo(pid, ppid, pgid, birth)
-        else:
-            vanished.add(pid)
-            if sys.platform.startswith("linux") and (exited := _zombie_birth_identity(pid)):
-                entries.exited[pid] = exited
-    if vanished:
-        # ``ps`` lists a process, then its /proc identity is read later.  A
-        # parent that exits in between is dropped from the census while its
-        # children's listed ppid still names it, which reads as an unverified
-        # child of a missing parent.  The kernel reparents a process's
-        # children before it is visible as a zombie, so a fresh ppid is
-        # authoritative: re-read it for exactly those children.
-        for pid, info in tuple(entries.items()):
-            if info.ppid in vanished:
-                fresh = _linux_ppid(pid) if sys.platform.startswith("linux") else None
-                if fresh is not None and fresh != info.ppid:
-                    entries[pid] = _ProcessInfo(pid, fresh, info.pgid, info.birth)
+        entries[pid] = _ProcessInfo(pid, ppid, pgid, "ps-lstart:" + fields[3])
     return entries
-
-
-def _linux_ppid(pid: int) -> int | None:
-    try:
-        with open("/proc/%d/stat" % pid, encoding="ascii") as stream:
-            return int(stream.read().rsplit(")", 1)[1].split()[1])
-    except (OSError, IndexError, ValueError, UnicodeError):
-        return None
 
 
 CLEANUP_LATCH_NAME = "generic-host.cleanup-uncertain.json"
@@ -290,7 +278,11 @@ def read_cleanup_latch(path: Path) -> dict[str, Any] | None:
         reason = getattr(census, "failure", None) or "census empty"
         return {**record, "liveness": f"unverified: {reason}"}
     info = census.get(record["pid"])
+    if sys.platform.startswith("linux") and linux_birth_scope(record.get("process_birth_id")) is None:
+        return {**record, "liveness": "unverified: legacy or unscoped birth"}
     if info is None:
+        if not _census_complete(census):
+            return {**record, "liveness": "unverified: incomplete census"}
         return None
     if record.get("process_birth_id") not in (None, info.birth):
         return None
@@ -304,12 +296,7 @@ def describe_cleanup_latch(record: Mapping[str, Any]) -> str:
 
 
 def process_birth_identity(pid: int | None = None) -> str:
-    """Return the canonical PID-reuse token shared with remote worker ownership.
-
-    Linux exposes a kernel boot ID and process start tick in ``/proc``. Using
-    that pair lets the SSH-side owner and GenericPackHost attest the same
-    incarnation. Other platforms retain the existing ``ps lstart`` token.
-    """
+    """Return the Runtime birth of a live process; unavailable is not death."""
     process_id = int(pid if pid is not None else os.getpid())
     if process_id <= 0:
         return ""
@@ -318,42 +305,21 @@ def process_birth_identity(pid: int | None = None) -> str:
         return str(identity["birth_id"]) if identity is not None else ""
     if sys.platform.startswith("linux"):
         try:
-            with open("/proc/%d/stat" % process_id, encoding="ascii") as stream:
-                stat_fields = stream.read().rsplit(")", 1)[1].split()
-            if stat_fields[0] in {"Z", "X"}:
-                return ""
-            with open("/proc/sys/kernel/random/boot_id", encoding="ascii") as stream:
-                boot_id = stream.read().strip()
-            start_ticks = stat_fields[19]
-            if not boot_id or not start_ticks.isdigit():
-                return ""
-            return boot_id + ":" + start_ticks
-        except (OSError, IndexError, UnicodeError):
+            identity = scoped_linux_identity(process_id)
+        except OSError:
             return ""
+        return str(identity["birth_id"]) if identity is not None else ""
     info = _process_snapshot().get(process_id)
     return info.birth if info is not None else ""
 
 
 def _zombie_birth_identity(pid: int) -> str:
-    """Linux: the birth token of *pid* only while it is an exited, unreaped zombie.
-
-    Returns ``""`` for a live, absent, unreadable or merely dying (``X``) pid.
-    The token is built exactly like ``process_birth_identity`` so an equal token
-    names the same incarnation; a reused pid carries a different start tick.
-    """
+    """Observe an exact Runtime-scoped Z witness; never infer one from absence."""
     try:
-        with open("/proc/%d/stat" % pid, encoding="ascii") as stream:
-            stat_fields = stream.read().rsplit(")", 1)[1].split()
-        if stat_fields[0] != "Z":
-            return ""
-        with open("/proc/sys/kernel/random/boot_id", encoding="ascii") as stream:
-            boot_id = stream.read().strip()
-        start_ticks = stat_fields[19]
-        if not boot_id or not start_ticks.isdigit():
-            return ""
-        return boot_id + ":" + start_ticks
-    except (OSError, IndexError, UnicodeError):
+        birth = process_binding.zombie_birth(pid)
+    except (OSError, ValueError, AttributeError):
         return ""
+    return birth if linux_birth_scope(birth) is not None else ""
 
 
 def held_child_birth_identity(pid: int) -> str:
@@ -517,17 +483,12 @@ def _retained_incarnation_exited(process: subprocess.Popen, pid: int, birth: str
 
 
 def _linux_later_birth(previous: str, current: str) -> bool:
-    """A later start tick in the same boot proves the old PID was reaped.
-
-    This proves nothing about ownership of the replacement, and cannot replace
-    a retained child's wait/reap or a retained pidfd's own integrity checks.
-    """
+    """A later tick in the same boot AND PID namespace proves old PID reuse."""
     if not sys.platform.startswith("linux"):
         return False
-    old, new = previous.split(":"), current.split(":")
-    return (len(old) == len(new) == 2 and bool(old[0]) and old[0] == new[0]
-            and old[1].isascii() and old[1].isdigit()
-            and new[1].isascii() and new[1].isdigit() and int(new[1]) > int(old[1]))
+    old, new = linux_birth_scope(previous), linux_birth_scope(current)
+    return bool(old is not None and new is not None and old[1:] == new[1:]
+                and int(new[0]) > int(old[0]))
 
 
 def _group_members_owned(
@@ -600,8 +561,12 @@ def _tree_members(
         children.setdefault(info.ppid, []).append(info)
     pending = [pid for pid in (process.pid, *known)
                if not (reaped_root_reused and pid == process.pid)]
+    visited: set[int] = set()
     while pending:
         parent = pending.pop()
+        if parent in visited:
+            continue
+        visited.add(parent)
         # A PID in ``known`` is only an identity, not a permanent process.
         # Revalidate that identity before following its children.  Without
         # this guard, a child that exits and whose PID is reused can make us
@@ -619,6 +584,10 @@ def _tree_members(
             if prior is not None and prior != info.birth:
                 continue
             if prior is None:
+                if sys.platform.startswith("linux") and isinstance(snapshot, _Census):
+                    if info.pid in snapshot.unverified_parents:
+                        raise CleanupUncertainError("unverified child edge of owned parent")
+                    _linux_parent_edge(parent, expected_birth, info.pid, info.birth)
                 known[info.pid] = info.birth
             pending.append(info.pid)
     return {
@@ -674,7 +643,7 @@ def observe_tree(process: subprocess.Popen, *, deadline: float | None = None,
 def _observe_tree(process: subprocess.Popen, *, deadline: float | None = None,
                   _transaction=None) -> dict[int, str]:
     snapshot = _process_snapshot()
-    if not snapshot:
+    if not snapshot or getattr(snapshot, "status", "complete") == "unavailable":
         raise CleanupUncertainError(_census_message("owned process census unavailable", snapshot))
     known = getattr(process, "_astrid_tree_members", None)
     if known is None:
@@ -723,6 +692,11 @@ def _observe_tree(process: subprocess.Popen, *, deadline: float | None = None,
                 f"parent_pid={current.ppid}, root={pid == process.pid}, "
                 f"handle={type(entry[1]).__name__ if entry is not None else 'none'})"
             )
+        if (current is None and not _census_complete(snapshot)
+                and not (getattr(snapshot, "exited", {}).get(pid) == birth
+                         or _retained_incarnation_exited(process, pid, birth)
+                         or (pid == process.pid and process.returncode is not None))):
+            raise CleanupUncertainError(_census_message("owned identity missing from incomplete census", snapshot))
         if current is None and any(
             info.ppid == pid and info.pid not in known for info in snapshot.values()
         ):
@@ -756,6 +730,8 @@ def _observe_tree(process: subprocess.Popen, *, deadline: float | None = None,
             }
     else:
         custody.observe(live)
+    if not live and not _census_complete(snapshot):
+        raise CleanupUncertainError(_census_message("owned tree absence is unproved by incomplete census", snapshot))
     return live
 
 
@@ -798,8 +774,8 @@ def _verify_tree_absent(process: subprocess.Popen, *, deadline: float | None = N
             raise CleanupUncertainError("owned command descendants remain")
         if isinstance(custody, ProcessCustody) or hasattr(process, "_astrid_process_group_id"):
             snapshot = _process_snapshot()
-            if not snapshot:
-                raise CleanupUncertainError("owned group absence census unavailable")
+            if not _census_complete(snapshot):
+                raise CleanupUncertainError(_census_message("owned group absence census unavailable", snapshot))
             if isinstance(custody, ProcessCustody):
                 custody.validate_final_census(_census_evidence(snapshot))
             if (hasattr(process, "_astrid_process_group_id")
@@ -985,6 +961,15 @@ def _signal_valid_tree_members(
             custody = getattr(process, "_astrid_custody", None)
             if custody is None:
                 raise CleanupUncertainError("owned signal lacks retained cleanup custody")
+            if sys.platform.startswith("linux") and isinstance(snapshot, _Census):
+                # Previously admitted detached children have independent native
+                # handles. Where the census claims an owned parent edge, bracket
+                # it again immediately before the retained signal operation.
+                parent_entry = getattr(custody, "_handles", {}).get(info.ppid)
+                if parent_entry is not None and info.ppid in snapshot:
+                    if info.pid in snapshot.unverified_parents:
+                        raise CleanupUncertainError("owned signal parent edge unverified")
+                    _linux_parent_edge(info.ppid, parent_entry[0], pid, birth)
             if isinstance(custody, ProcessCustody) and cleanup_deadline is not None:
                 custody.signal(pid, birth, sig, cleanup_deadline=cleanup_deadline)
             else:
