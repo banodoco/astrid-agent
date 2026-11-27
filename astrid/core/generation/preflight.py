@@ -237,28 +237,28 @@ LADDER_REASONS = {
 
 LADDER_TEXT = {
     "files_missing": {
-        "message": "The folder recorded for this ComfyUI no longer exists.",
-        "step": "Tell me the address of a ComfyUI that is running, or reinstall it, then ask me to check again.",
+        "message": "The recorded ComfyUI folder is missing.",
+        "step": "Tell me the address of the ComfyUI you want to use.",
         "who": "person",
     },
     "not_answering": {
-        "message": "Nothing is answering at {url}.",
-        "step": "Start your ComfyUI so it answers at {url}, then ask me to check again.",
+        "message": "ComfyUI is not answering at {url}.",
+        "step": "Start your ComfyUI at {url}, then I will check again.",
         "who": "person",
     },
     "access_denied": {
         "message": "Access to {url} was denied.",
-        "step": "Retry the same check through the normal permission request.",
+        "step": "I'll retry the same check through the normal permission request.",
         "who": "agent",
     },
     "installation_access_denied": {
-        "message": "Access to ComfyUI Desktop registration or files was denied; its installation could not be verified.",
-        "step": "Retry the installation check through the normal permission request.",
+        "message": "Access to ComfyUI Desktop's registration or files was denied. I could not verify the installation.",
+        "step": "I'll retry the installation check through the normal permission request.",
         "who": "agent",
     },
     "not_comfyui": {
         "message": "Something that is not ComfyUI answers at {url}.",
-        "step": "Close it, or tell me the address of your ComfyUI.",
+        "step": "Tell me the address of the ComfyUI you want to use.",
         "who": "person",
     },
     "api_unsupported": {
@@ -267,52 +267,52 @@ LADDER_TEXT = {
         "who": "person",
     },
     "stale_registration": {
-        "message": "Your ComfyUI Desktop registration points at files that no longer exist.",
-        "step": "Reinstall ComfyUI Desktop without deleting your existing files, then ask me to check again.",
+        "message": "Your ComfyUI Desktop registration points to missing files.",
+        "step": "Reinstall ComfyUI Desktop without deleting your existing files, then I will check again.",
         "who": "person",
     },
     "closed": {
-        "message": "Found your registered ComfyUI Desktop, but it is not answering at {url}.",
-        "step": "Open ComfyUI Desktop yourself, then I will recheck its endpoint.",
+        "message": "I found your ComfyUI Desktop. It is closed at {url}.",
+        "step": "Open ComfyUI Desktop yourself, then I will check the same address again.",
         "who": "person",
     },
     "not_this_install": {
-        "message": "The responder at {url} does not match the registered ComfyUI Desktop.",
+        "message": "The service answering at {url} does not match your registered ComfyUI Desktop.",
         "step": "Tell me the address of the ComfyUI you want to use.",
         "who": "person",
     },
     "cannot_tell_which_install": {
-        "message": "I cannot establish which ComfyUI installation answers at {url}.",
-        "step": "Tell me which ComfyUI to use, or check its installation details.",
+        "message": "I cannot tell which ComfyUI installation is answering at {url}.",
+        "step": "Tell me which ComfyUI you want to use.",
         "who": "person",
     },
     "several_installs": {
-        "message": "More than one ComfyUI candidate was found.",
-        "step": "Choose the ComfyUI you want to use.",
+        "message": "I found more than one ComfyUI.",
+        "step": "Which one should I use?",
         "who": "person",
     },
     "not_supported_here": {
-        "message": "ComfyUI Desktop discovery is only supported on Windows here.",
-        "step": "Choose a running ComfyUI Portable, Git or Pinokio endpoint.",
+        "message": "Astrid can only discover ComfyUI Desktop installations on Windows.",
+        "step": "Choose the address of a running ComfyUI Portable, Git or Pinokio copy.",
         "who": "person",
     },
     "no_install_found": {
-        "message": "Completed local discovery found no registered Desktop or answering ComfyUI candidate.",
+        "message": "The completed local check found no registered Desktop or answering ComfyUI.",
         "step": "Tell me an existing ComfyUI address if you have one.",
         "who": "person",
     },
     "discovery_incomplete": {
-        "message": "Local discovery is incomplete; I cannot establish whether an installation exists.",
-        "step": "Retry discovery or tell me the exact ComfyUI address.",
+        "message": "The local check is incomplete. I cannot tell whether ComfyUI is installed.",
+        "step": "Tell me the exact ComfyUI address if you know it, then I will check again.",
         "who": "person",
     },
     "timeout": {
-        "message": "The observation at {url} timed out; this does not establish absence.",
+        "message": "The check at {url} timed out. That does not mean ComfyUI is missing.",
         "step": "Check that the endpoint is responding, then ask me to retry.",
         "who": "person",
     },
     "running_desktop": {
-        "message": "Your ComfyUI Desktop endpoint is identified and API-compatible. Compute, workflow and delivery have not been checked.",
+        "message": "I found your running ComfyUI Desktop and its API is compatible. Compute, workflow and delivery have not been checked.",
     },
 }
 

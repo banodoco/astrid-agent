@@ -160,14 +160,38 @@ with `--doctor`, as in step 2.
 "${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate scan --json
 ```
 
-`defaults` lists each slot with `ready` and `reason`. `targets` shows where
-generation would run. The scan lists running ComfyUI servers and their saved
-workflows, newest first. If their ComfyUI is not running, ask the user to start it.
+`defaults` lists each slot with `ready` and `reason`. The scan lists running
+ComfyUI servers and their saved workflows, newest first; it is evidence, not a
+separate placement decision.
 
-**Use it.** If a ComfyUI is running, ask: "Use the ComfyUI at this address to
-generate?" On that yes, save the connection with the command below. Saving it
-creates no project; the first generation creates one if there is none. Undo it
-with `settings unset placement`.
+**Read the target.** Use `generate targets` as the decision about the selected
+endpoint. Read `status`, `ladder.through`, `ladder.stopped_at`, the stopped rung's
+`reason` and `message`, and the single `next_action`. With `through=compatible`,
+`ready` means the endpoint prefix passed; compute, workflow and delivery are not
+yet checked. A bound running Desktop has no next action; report its summary and
+keep that endpoint.
+
+If blocked, report the stopped message and follow only the emitted action. For
+`who=person`, say its `step`, wait for the person, then use `then_argv` if present.
+For `choices`, show their labels and endpoints and ask which to use; check only
+the chosen endpoint. For `who=agent`, use the emitted `argv` through the installed
+launcher, replacing only the leading `astrid` token. If access was denied, retry
+through the normal permission request; if that is denied, report the access
+block. Do not change permission defaults.
+
+For a closed Desktop, the person opens it and you recheck its same address. For
+stale registration, ask the person to reinstall without deleting their existing
+files. An `alternative` with `available=false` is not executable; a separate copy
+is optional and needs its own fresh consent once available. Do not infer absence
+from timeout or incomplete discovery. Never launch, restart, patch, or update
+their Desktop or Pinokio yourself.
+
+**Use it.** If the emitted action has `requires_consent=attach_existing`, ask:
+"Use the ComfyUI at this address to generate?" On that yes, save the connection
+with the exact emitted command (the form below is an example, not an additional
+step). On no, do not change placement or automatically offer another route.
+Saving creates no project; the first generation creates one if there is none.
+Undo on request with `settings unset placement`.
 
 ```sh
 "${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" generate settings set placement http://127.0.0.1:PORT
