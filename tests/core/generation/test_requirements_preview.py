@@ -164,45 +164,6 @@ def test_accepted_preproducer_pin_refuses_without_plan_or_writes(tmp_path, monke
     assert snapshot([tmp_path]) == before
 
 
-def replay_preview(*, args, cwd, env, roots, expected, agent_sha, vibecomfy_sha, receipt):
-    """Run the actual installed CLI, pin-check actual imports and compare WS2 JSON.
-
-    Native golden cases supply exact expected envelope/digest and isolated target,
-    source, entry and settings roots. Receipt must be outside those roots.
-    No plan mock, fake producer or acceptance of an unverified checkout.
-    """
-    assert "--json" in args
-    assert not any(arg == "--apply" or arg.startswith("--apply=") for arg in args)
-    argv = [sys.executable, "-m", "astrid", "generate", "requirements", *args]
-    import_check = (
-        "import astrid, vibecomfy, runtime_protocol, json, subprocess;"
-        "from pathlib import Path;"
-        "mods=(astrid,vibecomfy,runtime_protocol);"
-        "print(json.dumps({m.__name__:{'origin':str(Path(m.__file__).resolve()),"
-        "'sha':subprocess.check_output(['git','-C',str(Path(m.__file__).resolve().parent),"
-        "'rev-parse','HEAD'],text=True).strip()} for m in mods}))"
-    )
-    observed = subprocess.run([sys.executable, "-c", import_check], cwd=cwd, env=env,
-                              capture_output=True, text=True, timeout=30, check=True)
-    imports = json.loads(observed.stdout)
-    assert imports["astrid"]["sha"] == agent_sha
-    assert imports["vibecomfy"]["sha"] == vibecomfy_sha
-    before = snapshot(roots)
-    result = subprocess.run(argv, cwd=cwd, env=env, capture_output=True,
-                            text=True, timeout=120, check=False)
-    after = snapshot(roots)
-    payload = json.loads(result.stdout)
-    receipt.write_text(json.dumps({
-        "argv": argv, "exit": result.returncode, "json": payload, "stderr": result.stderr,
-        "digest": payload.get("plan", {}).get("digest"), "imports": imports,
-        "before": before, "after": after,
-    }, indent=2, sort_keys=True) + "\n")
-    assert before == after
-    assert result.returncode == (2 if expected["status"] == "blocked" else 0)
-    assert payload == expected
-    assert payload["plan"]["digest"] == expected["plan"]["digest"]
-    return payload
-
 
 # Real WS2 fixture files are taken from the exact dependency checkout, not
 # copied into Agent or regenerated from our output.
@@ -408,10 +369,11 @@ def command_case(tmp_path, monkeypatch, vc_fixtures):
 
 def _command(case, capsys, *argv):
     from vibecomfy.requirements import plan_digest
+    from astrid import console
     from astrid.core.generation.preflight import generation_error
 
     before = snapshot([case.root])
-    rc = cli.main(list(argv))
+    rc = console.main(["generate", *argv])
     capture = capsys.readouterr()
     after = snapshot([case.root])
     assert after == before, "declined/read-only preview changed selected state"
@@ -616,7 +578,8 @@ def test_public_cli_refuses_credential_sources_before_producer(command_case, cap
     source = case.root / "source.json"
     source.write_bytes((case.files / "local.workflow.api.json").read_bytes())
     before = snapshot([case.root])
-    rc = cli.main(["requirements", str(source), "--placement", "managed", "--add", addition, "--json"])
+    from astrid import console
+    rc = console.main(["generate", "requirements", str(source), "--placement", "managed", "--add", addition, "--json"])
     result = capsys.readouterr()
     assert rc == 2 and json.loads(result.out)["status"] == "blocked"
     assert "fixture-only-password" not in result.out + result.err
