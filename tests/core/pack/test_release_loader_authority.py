@@ -91,6 +91,25 @@ def test_explicit_user_replacement_changes_canonical_provenance(authority):
     assert inventory() == (True, ())
 
 
+@pytest.mark.parametrize("origin", ["user", "folder"])
+def test_legacy_user_admission_is_not_relabelled_as_selected_default(authority, origin):
+    repo, root, manifest = authority
+    if origin == "user":
+        install_release_manifest(manifest=manifest, packs_root=root, origin="user")
+    else:
+        install_group(source=repo.work, packs={"default_one": "default_one"}, packs_root=root,
+                      python_packages={}, origin="folder")
+    # The original v1 canonical format had no collection PIN bindings. Keep
+    # its actual admissions/definitions/source/PIN and all user edits intact.
+    state = json.loads((root / ".group.json").read_bytes())
+    state.pop("pins")
+    (root / ".group.json").write_text(json.dumps(state))
+    (root / "default_one/payload.txt").write_bytes(b"existing user edits\n")
+    before = {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+    assert inventory() == (True, ())
+    assert before == {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+
+
 def test_explicit_removal_and_unadmitted_folder_do_not_become_defaults(authority):
     repo, root, manifest = authority
     install_release_manifest(manifest=manifest, packs_root=root)

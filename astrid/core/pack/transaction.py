@@ -470,9 +470,8 @@ def _state(root: Path) -> dict[str, Any]:
         raise PackInstallError("invalid_state", "Group transaction id must identify a private retained generation.")
     bindings = value.get("pins", {})
     try:
-        if (not isinstance(bindings, dict) or not set(bindings) <= set(value["admissions"])
-                or set(bindings) & set(value["removals"])):
-            raise ValueError("PIN bindings must name admitted, nonremoved packs")
+        if not isinstance(bindings, dict):
+            raise ValueError("PIN bindings must be an object")
         for pack_id, pin in bindings.items():
             if not _ID.fullmatch(pack_id):
                 raise ValueError("Invalid admitted PIN id")
@@ -1053,10 +1052,13 @@ def _retained_build_records(root: Path, admissions: Mapping[str, Any], group_rev
     return records
 
 
-def _verify_admitted_pins(root: Path, bindings: Mapping[str, Mapping[str, Any]]) -> None:
+def _verify_admitted_pins(root: Path, bindings: Mapping[str, Mapping[str, Any]],
+                          admissions: Mapping[str, Any]) -> None:
     """Verify per-pack PINs against the independently committed collection."""
     for pack_id, expected in bindings.items():
         try:
+            if pack_id not in admissions:
+                raise ValueError("PIN binding has no canonical admission")
             if read_pin(root / pack_id / "PIN") != expected:
                 raise ValueError("PIN differs from its admission")
         except (OSError, ValueError) as exc:
@@ -1300,7 +1302,7 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
             carried = _retained_collection_bytes(candidate, carried_ids)
             admissions = {i: a for i, a in old["admissions"].items() if i not in remove and i not in packs}
             pin_bindings = {i: p for i, p in old["pins"].items() if i not in remove and i not in packs}
-            _verify_admitted_pins(candidate, pin_bindings)
+            _verify_admitted_pins(candidate, pin_bindings, admissions)
             build_records = _retained_build_records(candidate, admissions, old["revision"])
             facts: dict[str, dict[str, Any]] = dict(host_selected)
             for pack_id, path in _paths(candidate).items():
@@ -1520,7 +1522,7 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
                         raise PackInstallError("pin_mismatch", "Local source changed after consent; retry the group transaction.")
             for request, result, admitted_revision in build_records:
                 _verify_artifacts(request, result, committed_revision=admitted_revision)
-            _verify_admitted_pins(candidate, pin_bindings)
+            _verify_admitted_pins(candidate, pin_bindings, admissions)
             if _state(candidate) != state:
                 raise PackInstallError("invalid_state", "Prepared group record changed before publication; retry the transaction.")
             verified_facts, verified_apis = _compose_resulting_facts(
@@ -1643,7 +1645,7 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
         # new admission epoch. Historical source pins are preserved, subject
         # to any currently applicable authoritative release pin below.
         prior_build_records = _retained_build_records(prior, prior_state["admissions"], prior_state["revision"])
-        _verify_admitted_pins(prior, prior_state["pins"])
+        _verify_admitted_pins(prior, prior_state["pins"], prior_state["admissions"])
         prior_facts = {}
         for pack_id, path in prior_paths.items():
             if pack_id == "personal":
@@ -1769,7 +1771,7 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
                     continue
                 candidate_facts[pack_id] = (pack_digest(path), read_pin(path / "PIN") if (path / "PIN").is_file() else {})
             _retained_build_records(candidate, admissions, state["revision"] + 1)
-            _verify_admitted_pins(candidate, pin_bindings)
+            _verify_admitted_pins(candidate, pin_bindings, admissions)
             mark("prepared")
             changed_ids = tuple(sorted(set(ids) | (set(state["refresh"]["changed_ids"]) if state["refresh"] else set())))
             new_state = {"version": 1, "revision": state["revision"] + 1, "transaction_id": tx,
@@ -1797,7 +1799,7 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
                     if pack_digest(path) != item["observed_digest"] or (read_pin(path / "PIN") if (path / "PIN").is_file() else {}) != pin:
                         raise PackInstallError("pin_mismatch", f"Historical source/PIN facts for {pack_id} changed before rollback publication.")
             _retained_build_records(candidate, admissions, new_state["revision"])
-            _verify_admitted_pins(candidate, pin_bindings)
+            _verify_admitted_pins(candidate, pin_bindings, admissions)
             if _state(candidate) != new_state:
                 raise PackInstallError("invalid_state", "Prepared rollback record changed before publication; retry the transaction.")
             verified_facts, verified_apis = _compose_resulting_facts(
