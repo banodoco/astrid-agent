@@ -400,8 +400,16 @@ def test_marker_rerun_still_verifies_installed_astrid(tmp_path):
     assert sum("--reinstall-package astrid" in c for c in _uv_calls(log)) == 1
 
 
+def _pack_bootstrap_script() -> str:
+    # Read the actual shipped shell payload, not the retired checkout shell script.
+    import runpy
+
+    path = SCRIPT.parents[1] / "astrid" / "packs" / "runpod" / "pod_bootstrap.py"
+    return runpy.run_path(str(path))["SCRIPT"]
+
+
 def _gpu_sanity_function() -> str:
-    text = SCRIPT.read_text()
+    text = _pack_bootstrap_script()
     start = text.index("run_gpu_sanity() {")
     return text[start:text.index("\n}\n", start) + 3]
 
@@ -437,7 +445,7 @@ def test_gpu_sanity_runs_when_engine_venv_present(tmp_path):
     venv = _engine_venv(tmp_path / "engine")
     r, log = _run_sanity(tmp_path, tmp_path / "engine")
     assert r.returncode == 0, r.stderr
-    assert log.read_text().split() == ["src/astrid-agent/scripts/gpu_sanity.py", "--venv", str(venv)]
+    assert log.read_text().split() == ["src/astrid-agent/astrid/packs/runpod/gpu_sanity.py", "--venv", str(venv)]
 
 
 def test_gpu_sanity_failure_exits_2_and_names_the_venv(tmp_path):
@@ -447,10 +455,15 @@ def test_gpu_sanity_failure_exits_2_and_names_the_venv(tmp_path):
 
 
 def test_bootstrap_wires_sanity_before_engine_side_work_and_into_install():
-    text = SCRIPT.read_text()
-    assert 'ENGINE_ROOT="${ASTRID_ENGINE_ROOT:-' in text and "/root" not in text
-    assert text.index('[ -f "$marker" ]') < text.index("  run_gpu_sanity\n") < text.index("verify_astrid_install\n    setup_runtime")
-    assert "ASTRID_ENGINE_SANITY_CMD" in text and "cap 128" in text.split("set -euo")[0]
+    text = _pack_bootstrap_script()
+    assert 'ENGINE_ROOT="${ASTRID_ENGINE_ROOT:-' in text
+    assert "/root" not in _gpu_sanity_function()  # honor the selected engine root
+    marker = text.index('[ -f "$marker" ]')
+    sanity = text.index("  run_gpu_sanity\n", marker)
+    verify = text.index("verify_astrid_install", sanity)
+    assert marker < sanity < verify < text.index("setup_runtime", verify)
+    assert 'export ASTRID_ENGINE_SANITY_CMD="$SANITY_PY $(cd src/astrid-agent && pwd)/astrid/packs/runpod/gpu_sanity.py"' in text
+    assert "cap 128" in text.split("set -euo")[0]
 
 
 def test_large_freeze_and_present_pip_skip_all_install_commands(tmp_path):
